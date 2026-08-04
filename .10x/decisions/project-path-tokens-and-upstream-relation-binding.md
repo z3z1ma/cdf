@@ -1,159 +1,294 @@
 Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
-Completes: the focused D1.5/D3 checkpoints left by `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+Supersedes: `.10x/decisions/superseded/project-path-tokens-and-upstream-relation-binding.md`
+Completes: D3 authoring grammar and binding choices under `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 
-# Project path tokens and `upstream(...)` relation binding
+# Project path tokens, query-first resources, and explicit upstream binding
 
 ## Context
 
-`.10x/decisions/filesystem-source-resource-and-configuration-authority.md` established the
-filesystem and root configuration as source/resource authority, but deliberately left three
-user-visible choices open: the exact path-token grammar, whether a configured source may exist
-without resources, and how one SQL resource names its driver-owned relation.
+After resource identity and configured-source identity were separated, D3 still required exact
+choices for file form, relation binding, structured values, envelope clauses, defaults, merge keys,
+semantics, and execution policy. These are user-visible and affect hashes, manifests, diagnostics,
+and runtime admission. They cannot be invented by an executor or delegated to DataFusion.
 
-The live source makes the relation problem broader than database table naming:
-
-- PostgreSQL and SQLite require a table selector;
-- ClickHouse requires a table and may require a stable key;
-- REST requires a path and records selector and may require parameters/pagination;
-- files require a glob and may require format/compression/discovery settings;
-- Iceberg and Glue require structured namespace/table selectors and may require snapshot,
-  partition, or format details.
-
-A separate `USING public.orders` clause would privilege database-shaped sources and then require a
-second extension surface for the other adapters. A fixed query alias such as `FROM source` would
-hide rather than express the resource-specific relation arguments. The current driver boundary
-already owns one closed `resource` option schema independently from its shared `source` option
-schema, so that schema is the smallest existing authority capable of typing every relation shape.
-
-The kernel's `ResourceId` accepts any non-empty string and destination name normalization is a
-separate destination concern. Neither is suitable as project filesystem-token authority.
-
-On 2026-08-04 the user confirmed all three recommendations exactly. CDF is net new and customer
-zero, so this decision creates only the current grammar and no compatibility behavior.
+The user ratified the complete D3 handoff on 2026-08-04. It supersedes the earlier mandatory
+`CREATE RESOURCE`, path-bound source, split `DISPOSITION MERGE`/`MERGE KEY`, and source-less
+`upstream(...)` grammar. Unchanged decisions—strict tokens, no inactive source configuration,
+closed driver schemas, native CDF runtime authority, and rejection of unsupported relational
+operators—remain in force.
 
 ## Decision
 
-### Exact filesystem token grammar
+### Exact project-name token grammar
 
-Both the immediate source directory and the resource file stem MUST match:
+Resource namespace, resource file stem, and configured source names MUST each match:
 
 ```text
 [a-z][a-z0-9_]{0,127}
 ```
 
-Equivalently, each token is 1 through 128 ASCII bytes, begins with a lowercase ASCII letter, and
-then contains only lowercase ASCII letters, digits, or underscores.
+Each is 1 through 128 ASCII bytes, begins with a lowercase ASCII letter, and thereafter contains
+only lowercase ASCII letters, digits, or underscores. The compiler strips exactly one terminal
+`.cdf.sql` before validating a resource stem. It preserves accepted tokens byte-for-byte and MUST
+NOT case-fold, transliterate, normalize Unicode, substitute punctuation, reuse destination name
+normalization, or accept quoted filesystem identities. Invalid tokens fail at their exact authored
+path/config location.
 
-The compiler strips exactly one terminal `.cdf.sql` suffix before validating the resource token.
-It preserves each accepted token byte-for-byte and forms exactly `<source>.<resource>`. It MUST NOT
-case-fold, transliterate, normalize Unicode, substitute punctuation, call destination identifier
-normalization, or accept quoted filesystem identities. Uppercase, hyphenated, Unicode, leading-
-digit, leading-underscore, empty, and overlength tokens fail with the exact path and required
-grammar. The leading-letter rule leaves underscore-prefixed `_cdf` names to CDF system authority.
+### Query-first file grammar
 
-Project path tokens receive dedicated types at the project/compiler boundary. Tightening the
-general-purpose kernel `ResourceId` or reusing `SourceDriverId` is rejected because both represent
-different domains and already carry broader internal values.
+A resource file contains exactly one of:
 
-### Configured sources are never inactive
+```text
+resource_file := select_query | resource_definition
 
-Every `[sources.<source>]` entry MUST join to an exact `sources/<source>/` directory containing at
-least one valid regular `<resource>.cdf.sql` file. A configured source with a missing directory,
-an empty directory, or no valid resource file is a blocking `Contract` diagnostic. There is no
-`disabled`, `inactive`, `preconfigured`, warning-only, or environment-dependent escape hatch.
-
-An otherwise empty project MAY contain no configured sources and no resources. Once source
-configuration is authored, it represents active project authority and must have a resource.
-`cdf add`/generation publishes a new source configuration and its first explicit resource files in
-one crash-safe transaction; it never parks dead configuration for a later run.
-
-### The query owns one typed `upstream(...)` relation
-
-There is no separate relation clause and no compiler-provided `source`/`input` table alias. The
-relational body MUST contain exactly one base table reference whose exact function name is
-`upstream`:
-
-```sql
-CREATE RESOURCE
-TARGET warehouse.issues
-DISPOSITION MERGE
-MERGE KEY (id)
-CURSOR updated_at
-TRUST GOVERNED
-AS
-SELECT id, state, updated_at
-FROM upstream(table => 'public.issues')
-WHERE state <> 'spam';
+resource_definition :=
+    RESOURCE
+    [target_clause]
+    [disposition_clause]
+    [cursor_clause]
+    [trust_clause]
+    [semantics_clause]
+    [execution_clause]
+    AS select_query
 ```
 
-The path-bound source is resolved before the SQL relation. Its selected driver defines the closed
-compile-time `upstream(...)` signature from its resource authority. Arguments use the named
-`name => value` form shown above. Unknown, repeated, missing, or source-level arguments fail at
-their exact source location; argument order is not semantic. Arguments lower through the ordinary
-driver resource-option/`SourceCompileRequest` boundary rather than creating a second connector
-configuration authority.
+`SELECT` alone is the normal form. `RESOURCE` is an optional metadata envelope and carries no
+identifier. Canonical envelope order is exactly:
 
-The complete literal/collection/tagged-variant grammar for structured resource arguments remains a
-focused D3 checkpoint. It MUST be data-only, express the already-supported REST/files/Iceberg/Glue
-resource shapes, validate through the selected driver's closed resource schema, and MUST NOT
-become a generic top-level option bag, secret surface, or arbitrary row-expression/function
-evaluator. The manifest separately retains authored SQL identity and canonical upstream
-relation/resource-option identity.
+```text
+RESOURCE
+TARGET
+DISPOSITION
+CURSOR
+TRUST
+SEMANTICS
+EXECUTION
+AS
+```
 
-### Ratified core envelope spelling
+Unknown, repeated, contradictory, or out-of-order clauses fail with exact source spans. D3 has no
+`CREATE RESOURCE`, identifier after `RESOURCE`, `FROM SOURCE`, `SINK`, generic top-level `WITH`,
+generic `OPTIONS`, metadata header, or companion per-resource metadata file.
 
-The CDF-owned envelope begins with bare `CREATE RESOURCE`; neither token is followed by an id. The
-confirmed core form and order is exactly the example above: `TARGET`, `DISPOSITION`, conditional
-`MERGE KEY`, optional `CURSOR`, `TRUST`, then `AS <SELECT body>`. A clause appears at most once;
-contradictory, missing required, or out-of-order core clauses fail rather than normalize silently.
+### Required explicit configured-source binding
 
-The exact placement/value grammar for additional already-named policy clauses such as
-`PRIMARY KEY`, `CONTRACT`, and `EXECUTION`, plus semantic annotations, remains a focused D3
-checkpoint. It cannot add a SQL resource/source id, add a separate relation clause, or alter
-path/source/`upstream(...)` authority.
+The one admitted base relation is:
+
+```sql
+upstream(source => '<configured_source>', <driver-owned arguments>...)
+```
+
+`source` is a reserved CDF relation argument, required exactly once, named rather than positional,
+and a string-literal configured-source name. It is not passed to the driver resource schema. CDF
+resolves it against the selected project's typed `[sources.<name>]`, selects that source's immutable
+driver type, validates the effective source configuration, removes `source`, and validates all
+remaining arguments through the selected driver's closed resource schema.
+
+Missing, repeated, positional, non-literal, or unknown `source` fails at the relation before
+external I/O. A source type, driver id, URI, credential, secret reference/value, source-level
+option, egress policy, catalog credential, or environment endpoint in SQL also fails. The resource
+path namespace is never consulted to infer or validate the configured source name.
+
+### Data-only structured relation arguments
+
+Top-level driver arguments use only `identifier => structured_value` and MUST be named. Their value
+grammar is recursively data-only:
+
+```text
+structured_value :=
+    string_literal
+  | numeric_literal
+  | boolean_literal
+  | NULL
+  | ARRAY '[' [structured_value (',' structured_value)*] ']'
+  | OBJECT '(' [identifier '=>' structured_value
+                 (',' identifier '=>' structured_value)*] ')'
+```
+
+Objects are typed named values, not JSON strings. Argument and object-member order is nonsemantic;
+canonical typed identity sorts/maps according to the closed schema while authored SQL identity
+retains exact bytes/order. Duplicate names fail rather than choose a winner.
+
+Column references, arbitrary identifiers as values, functions, arithmetic or Boolean expressions,
+casts, subqueries, interpolation, environment references, secret references, JSON escape hatches,
+and any executable expression are rejected. Values lower through the ordinary driver resource-
+option boundary; no second connector grammar or option authority is created.
+
+### Typed metadata clauses and defaults
+
+The focused clause forms are:
+
+```sql
+TARGET logical.target
+DISPOSITION APPEND
+DISPOSITION REPLACE
+DISPOSITION MERGE(key_column, ...)
+CURSOR output_column
+TRUST EXPERIMENTAL
+TRUST GOVERNED
+SEMANTICS (output_column => 'canonical.semantic@version(parameters)', ...)
+EXECUTION BOUNDED
+EXECUTION DRAIN (...)
+```
+
+Omission of trust, disposition, or execution is resolved before native plan or manifest publication
+with strict precedence:
+
+1. explicit authored clause;
+2. applicable typed project resource default;
+3. a narrow built-in default;
+4. compile failure.
+
+Runtime, ambient environment, destination introspection, and map iteration never supply defaults.
+Each effective value records its origin as `authored`, `project_default`, `built_in_default`, or
+`resource_path_default`, plus canonical identity and authored span when present.
+
+`TARGET` is deliberately narrower: explicit authored target wins, otherwise it defaults exactly to
+the canonical path-derived resource id with `resource_path_default` origin. There is no project
+target default. The target is logical; environment configuration still chooses the physical
+destination. Cursor and semantic bindings are present only when authored and otherwise resolve to
+absence, not a guessed value.
+
+When `TRUST` is omitted and no project default applies, it defaults to `EXPERIMENTAL`. `GOVERNED`
+is never implicit. The two trust values are a closed set and retain the existing compiler,
+contract, deployment, publication, and observability consequences; D3 does not reduce them to
+labels.
+
+The typed project default table is the existing `[defaults]` model. D3 admits only
+`experimental|governed` trust, `append|replace` disposition, and complete bounded/drain execution
+there. Keyed merge remains explicit because a project-wide `merge` value without resource-specific
+keys is incomplete; `cdc_apply` is outside D3.
+
+When `DISPOSITION` is omitted, built-in `REPLACE` applies only when the compiler proves the input is
+bounded and replayable and the destination capability admits the operation. Incremental or
+unbounded input requires an explicit disposition or an applicable typed project default; otherwise
+compilation fails. CDF never silently selects `APPEND`.
+
+`DISPOSITION MERGE(keys...)` requires a nonempty, unique ordered key list. Every key resolves
+exactly once against the final output schema and the destination must truthfully support merge.
+Native package authority defines null-key handling and duplicate-source-effect reduction. Merge
+updates existing keys and inserts missing keys; it does not delete target rows absent from the
+input. First-class captured deletes remain separately governed package effects and are applicable
+only to merge/CDC policies.
+
+`CURSOR` resolves against exactly one final output column and does not change relation identity.
+
+### Semantic annotations
+
+Any resource with semantic annotations uses the expanded envelope:
+
+```sql
+SEMANTICS (
+  amount => 'finance.currency@1(code="USD")',
+  email => 'cdf.pii@1(class="email")'
+)
+```
+
+Each left side names exactly one final output field. Each right side is a string literal containing
+one canonical semantic reference under `.10x/specs/semantic-type-registry.md`. Compilation fails
+on duplicate or unknown fields, malformed references, unavailable definition/version/hash,
+Arrow-incompatible semantics, or annotation of protected control fields. Semantic annotation
+never changes physical representation; SQL casts remain the physical type-changing operation.
+Resolved definition, version, hash, normalized parameters, validation/redaction/mapping effects,
+and field binding enter lock/manifest authority.
+
+### Execution policy
+
+Bounded execution is:
+
+```sql
+EXECUTION BOUNDED
+```
+
+The D3 drain form is purpose-built rather than a generic map:
+
+```sql
+EXECUTION DRAIN (
+  CHECKPOINT ROWS 100000,
+  PACKAGE BYTES 67108864,
+  UNTIL DURATION MILLISECONDS 60000,
+  WATERMARK DISABLED,
+  LATE DATA QUARANTINE,
+  SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION
+)
+```
+
+A bounded source may omit the clause only when boundedness is provable from the relation or an
+applicable typed project policy. An unbounded source requires a complete explicit or typed-project
+drain policy. Missing, contradictory, inapplicable, or incomplete drain policy fails compilation.
+Resident supervision is not available through D3.
+
+### Relational admission boundary
+
+D3 admits exactly one `upstream(...)` relation, projection, aliases, deterministic D2 scalar
+expressions, Arrow-compatible casts, Boolean `WHERE`, semantic annotations, source pushdown with
+recorded residuals, and typed target/disposition/cursor/trust/contract/execution metadata.
+
+D3 rejects joins, cross-resource references, aggregates/grouping, windows, all set operations
+including `UNION ALL`, recursive queries, subqueries, nondeterministic or D2-inadmissible
+functions, DDL/DML, arbitrary source-native SQL, arbitrary table functions/UDFs, runtime discovery
+expansion, and row-level Python/WASM. A known output type is necessary but not sufficient for D2
+scalar admission.
+
+General joins are rejected because CDF has no ratified multi-input checkpoint consistency,
+shuffle/partition/spill/memory, skew, failure-recovery, or replay contract. Static lookup joins are
+also excluded until a dedicated bounded-lookup capability is designed. `UNION ALL` is a future
+candidate, not D3: the AST and manifest may support multiple source nodes later, but D3 compiles
+exactly one and checkpoints it alone.
+
+### Identity law
+
+The compiler records two distinct identities:
+
+- **authored identity** — exact SQL bytes/hash, bare-versus-envelope form, authored spans/order, and
+  normalized authored AST hash;
+- **effective execution identity** — all resolved metadata, canonical typed source/config/argument
+  identity, native scalar/relational plan, policies, and compiler dependency tuple.
+
+A bare query and an explicit envelope may share effective execution identity only when every
+effective value and relevant canonical policy is equal. Their authored hashes remain distinct.
+Stable source-node identity derives from resource id, configured source, canonical typed arguments,
+and logical query-node identity—not source-node ordinal alone.
 
 ## Alternatives considered
 
-### Permit kebab-case, Unicode, or case normalization
+### Require a declaration keyword in every file
 
-Rejected. Those forms require quoting/case/collision policies across filesystems, TOML, SQL, CLI
-selectors, artifacts, and destinations. Silent normalization would create a second identity and
-reuse of destination normalization would leak a downstream constraint into project authority.
+Rejected. The file path already declares the resource. Mandatory ceremony makes the common case
+no clearer and duplicates information supplied by typed defaults.
 
-### Allow inactive configured sources
+### Keep `CREATE RESOURCE`
 
-Rejected. An inactive state adds lifecycle/default semantics for dead configuration and makes a
-missing directory ambiguous with intentional staging. Atomic `cdf add` publication handles the
-legitimate source-plus-first-resources workflow without another state.
+Rejected. CDF is not issuing catalog DDL. `RESOURCE` is an optional metadata envelope, not an
+object-creation statement.
 
-### Put the relation in a separate `USING` clause
+### Keep split `MERGE KEY`
 
-Rejected. A scalar relation token fits relational databases but not the structured selectors
-already required by REST, files, Iceberg, and Glue. Adding driver-specific envelope clauses would
-make the CDF parser an open connector grammar.
+Rejected. Keys are intrinsic to the merge disposition; separating them permits contradictory and
+order-dependent states.
 
-### Use a generic `WITH (...)` map
+### Allow arbitrary SQL functions when DataFusion finds a type
 
-Rejected. It would recreate the spike-era resource option map in SQL and blur source-level versus
-resource-level authority. `upstream(...)` is a table-valued relation with a closed driver-selected
-signature, not an untyped metadata bag.
+Rejected. Output type alone does not prove determinism, representability, ambient independence, or
+reproducible vectorized execution under native CDF authority.
 
-### Infer the relation from the resource filename
+### Admit joins or `UNION ALL` now
 
-Rejected. `orders` need not select `public.orders`, a REST path, an Iceberg snapshot, or a file
-glob. The path owns CDF identity; `upstream(...)` owns upstream relation identity.
+Rejected. Explicit source binding removes the architectural coupling that would block future
+multi-source work, but admitting operators before checkpoint/package/memory/replay semantics exist
+would create leaky partial support.
 
 ## Consequences
 
-- Source/resource paths are predictable unquoted snake-case identities with no collision
-  normalizer or destination leakage.
-- Every configured source contributes at least one resource to compilation and manifest output.
-- The relational query visibly contains its one upstream relation while source configuration
-  remains written exactly once in `cdf.toml`.
-- Existing driver resource schemas remain the relation-type authority; no parallel connector
-  grammar registry or single-implementation abstraction is introduced.
-- D1.5 can validate project paths/configuration and D3 can parse/lower one common relation form
-  across every source type.
-- The spike-era resource maps/declarations and all compatibility readers remain excluded.
+- The smallest resource is a readable query with one explicit logical dependency.
+- Effective defaults are typed, deterministic, observable, and hashable; no behavior remains
+  implicit at runtime.
+- Driver resource schemas remain the only connector-specific relation-argument authority.
+- Semantic types, trust, merge keys, and drain behavior receive exact compile-time diagnostics and
+  durable manifest evidence.
+- Future multi-source work can extend an AST that already models source nodes explicitly without
+  changing resource identity, but no such execution promise exists in D3.
+- D3 must reject every retired syntax with focused current-form guidance, not parse it through a
+  shim.

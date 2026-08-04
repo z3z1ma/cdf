@@ -1,248 +1,219 @@
 Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
-Supersedes: `.10x/decisions/superseded/sql-resource-envelope-and-profile-boundary.md`
+Supersedes: `.10x/decisions/superseded/filesystem-source-resource-and-configuration-authority.md`
 
-# Filesystem source/resource identity and configuration authority
+# Resource-path identity and configured-source authority
 
 ## Context
 
-CDF's spike-era project model uses `source` for four different things:
+CDF needs a project model in which users can define many resources against one configured
+upstream without repeating connection and policy configuration. The first Foundation D model used
+`sources/<source>/<resource>.cdf.sql` as both logical resource identity and upstream-source binding.
+That collapsed three independent concepts:
 
-- an internal Rust driver implementation and its registered kinds/schemes;
-- a user-named configured upstream instance;
-- a declarative-file or direct-URI locator in `ProjectResource.source`;
-- the source half of the compiled `<source>.<resource>` identity.
+- the CDF resource users author, compile, run, package, checkpoint, and inspect;
+- the named configured upstream instance from which one relation reads; and
+- the logical destination target to which the resource writes.
 
-The current Postgres example demonstrates the resulting duplication: root `cdf.toml` maps
-`[resources."warehouse.*"]` to `resources/warehouse.toml`; that file declares
-`[source.warehouse]` and `[resource.orders]`; compilation then concatenates those names into
-`warehouse.orders`. The mapping key, file name, source declaration, and compiler all participate in
-an identity a user cannot see in one place. The user confirmed that the sandbox configuration looks
-and feels wrong and asked Foundation D to cement the project model before later CDC, connector,
-configuration, and hook work builds on it.
+It also forced every file to begin with `CREATE RESOURCE` even though the file path already declared
+the resource and the common case needed only a query. The user ratified the complete D3 query-first
+handoff on 2026-08-04 and explicitly authorized superseding the earlier model. CDF is net new and
+customer zero, so there is no compatibility obligation, temporary dual root, legacy reader, or
+migration surface to preserve.
 
-The previously active SQL decision moved connection configuration out of SQL but required every
-SQL statement to repeat an explicit canonical resource id. It therefore retained two competing
-identity authorities: the filesystem path users navigate and the id written inside the file.
-
-The phrase `source-driver catalog` in the SQL spec was also imprecise. `SourceRegistry` is an
-internal process registry mapping driver ids, accepted source kinds, and URI schemes to stateless
-driver implementations and their option schemas. It is not a project namespace and is not where a
-SQL relation name should resolve.
-
-CDF is net-new and customer zero. There is no compatibility obligation requiring the spike-era
-resource map, declarative authoring shape, explicit SQL id, or a dual reader.
-
-This decision also supersedes only the spike-era mapping/layout statements in
-`.10x/decisions/data-onramp-source-identity-preview-disposition.md` and
-`.10x/decisions/cdf-init-local-scaffold-defaults.md`. Their append/key, normalization,
-preview/run-parity, safe overwrite, artifact-preservation, and no-runtime-artifacts rules remain
-active.
+`SourceRegistry` remains an internal process registry mapping source-driver ids, accepted kinds,
+and URI schemes to implementations and their closed option schemas. It is not a project namespace,
+not an authored source catalog, and not where a SQL identifier resolves.
 
 ## Decision
 
-### Ubiquitous language
+### Ubiquitous language and independent identities
 
 CDF uses these terms exactly:
 
-- **source type** — a user-facing connector type such as `postgres`, `rest`, `salesforce`, or
-  `mongodb`; it selects an implementation through the internal source-driver registry;
-- **source** — one project-named, configured upstream instance such as `warehouse` or
-  `salesforce`; it owns common typed connection, policy, egress, and driver options;
-- **relation** — the driver-owned upstream object selected for one resource, such as
-  `public.orders`, `/issues`, or `accounts`;
-- **resource** — one CDF-owned integration unit compiled, packaged, checkpointed, and delivered
-  independently, with canonical id `<source>.<resource>`;
-- **driver** — an internal Rust implementation selected by source type; it is not a project-level
-  source name and its registry is not a user-authored catalog.
+- **source type** — a connector type such as `postgres`, `rest`, `files`, or `mongodb` that selects
+  one internal driver implementation;
+- **configured source** — one project-named upstream instance such as `github` or `warehouse`, with
+  shared typed connection, secret-reference, policy, egress, quota, and driver configuration;
+- **upstream relation** — one driver-owned object or selector such as a table, collection, REST
+  path, catalog table, or file glob;
+- **resource namespace** — the first path component below `resources/`; it organizes CDF resources
+  and does not select a configured source;
+- **resource** — one path-authored CDF integration unit compiled, packaged, checkpointed, and
+  delivered independently;
+- **logical target** — the destination-side name compiled for the resource, independent of the
+  environment-selected physical destination connection;
+- **driver** — an internal Rust implementation selected by a configured source's immutable type.
 
-The same separation applies on the destination side: destination type/implementation, configured
-destination, and logical target are distinct concepts, although their exact multi-destination
-project shape remains separately governed.
+For `resources/analytics/userdata.cdf.sql`, the canonical resource id is
+`analytics.userdata`. A query in that file may read `source => 'github'` and explicitly target
+`warehouse.userdata`. Those three names are independent and MUST NOT be inferred from one another.
 
-### Filesystem identity
+### Filesystem resource identity
 
-SQL-authored source resources live at exactly:
+Current SQL-authored resources live only at:
 
 ```text
-sources/<source>/<resource>.cdf.sql
+resources/<namespace>/<resource>.cdf.sql
 ```
 
-For the first language version, `<source>` is exactly one directory component and `<resource>` is
-exactly one file stem. The path is authoritative:
+The compiler derives exactly:
 
-- directory `sources/warehouse/` names source `warehouse`;
-- file `orders.cdf.sql` names resource `orders`;
-- the canonical resource id is `warehouse.orders`;
-- the SQL file MUST NOT repeat either the source name or canonical resource id;
-- duplicate canonical paths cannot exist, and canonical-identifier collisions across filesystem
-  spellings fail deterministically;
-- the compiler MUST reject invalid or noncanonical path identifiers rather than silently minting a
-  different identity;
-- renaming the source directory or resource file is a semantic identity change, recorded as such in
-  manifest/diff output; it is not an alias, redirect, or compatibility migration.
+- resource namespace from `<namespace>`;
+- resource name from `<resource>`;
+- canonical resource id `<namespace>.<resource>`; and
+- default logical target `<namespace>.<resource>`.
 
-Nested source/resource namespaces, multi-source models, and filename id overrides are excluded from
-v1. A future multi-source transformation surface must receive its own explicit namespace rather
-than weakening the one-source-resource path law.
+The path never selects the upstream source. The SQL file MUST NOT declare or override its canonical
+resource id. Renaming either path token is a semantic identity change, not an alias or checkpoint
+migration. Duplicate or colliding canonical identities fail before plan publication.
 
-### Shared source configuration
+The previously proposed `sources/<name>/<resource>.cdf.sql` root is retired immediately. CDF MUST
+NOT implement a temporary mode that reinterprets its first component as a namespace, because that
+would create a second current authoring shape contrary to the ratified net-new policy.
 
-Root `cdf.toml` owns the comparatively small set of named source configurations. The project model
-has a typed `[sources.<source>]` entry for every source directory. Each entry declares:
+### Shared configured-source authority
 
-- immutable project-level `type`, resolved through the internal driver registry;
-- source-level options shared by all resources in that directory;
-- secret references, never resolved credential values;
-- shared egress, rate/quota, trust, retry, catalog/database, and connection facts where the source
-  driver's closed schema admits them.
-
-The exact structural model is:
+Root `cdf.toml` owns the closed map of named configured sources:
 
 ```toml
-[sources.warehouse]
-type = "postgres"
-connection = "secret://env/WAREHOUSE_DSN"
+[sources.github]
+type = "files"
+root = "s3://example-bucket/export"
+credentials = "secret://env/GITHUB_EXPORT_CREDENTIALS"
 
-[environments.prod.sources.warehouse]
-connection = "secret://vault/prod/warehouse"
+[environments.prod.sources.github]
+root = "s3://production-bucket/export"
+credentials = "secret://vault/prod/github-export"
 ```
 
-Base source configuration is inherited by each environment. An environment may override only
-driver-admitted source option values; it MUST NOT change the source name or source type. Source
-type is project structural authority because changing it changes relation grammar, capabilities,
-position semantics, and compiled identity.
+Each base source contains exactly one immutable `type`; all remaining fields are source-level
+values validated by that driver's closed source schema. A selected environment may override only
+driver-admitted source option values. It cannot add, remove, rename, or change the type of a base
+configured source. Secret-bearing values remain `secret://provider/key` references. Arbitrary
+`${...}`, shell, Jinja, or runtime string interpolation is forbidden.
 
-Secrets use the existing `secret://provider/key` authority. CDF does not add arbitrary `${VAR}` or
-runtime string interpolation. `secret://env/NAME` is the explicit environment-provider form for
-credentials; non-secret environmental differences use typed source option overlays and are
-manifested.
+Each accepted `upstream(...)` relation names one configured source explicitly through the required
+reserved argument `source => '<configured_source>'`. A configured source name is a safe logical
+project dependency, not a credential or connection string. SQL still MUST NOT contain a source
+type, URI, credential, secret reference/value, source-level option, egress policy, catalog
+credential, or environment endpoint.
 
-`cdf.toml` contains no resource-to-file map, wildcard resource mapping, direct resource URI, or
-per-resource declaration. Resource discovery is deterministic filesystem enumeration under the
-`sources/` path fence. A source directory without a corresponding configuration is a blocking
-compile-time diagnostic, never an implicit source. A source configuration without a current
-resource directory is always reported; whether that report is blocking or permits a deliberately
-inactive/preconfigured source remains a focused D1.5 checkpoint.
-
-Source sidecar files such as `sources/warehouse/source.toml` are excluded. They would split one
-source's environment/configuration authority across files, complicate atomic publication, and add
-no capability beyond one typed `cdf.toml` entry per source.
+The previously ratified no-inactive-source law remains: every `[sources.<name>]` entry MUST be
+referenced by at least one accepted resource relation in the selected project. It no longer implies
+or requires a same-named resource directory. An otherwise empty project may have no configured
+sources and no resources. `cdf add`/generation publishes a new source and its first referencing
+resource atomically.
 
 ### SQL/resource authority
 
-One `.cdf.sql` file defines exactly one resource. Its CDF-owned envelope declares only facts that
-vary per resource:
+The `.cdf.sql` file itself is the resource declaration. The normal form is one admitted bare
+`SELECT`; an optional no-identifier `RESOURCE ... AS SELECT` envelope carries per-resource metadata
+only when needed. The file owns:
 
-- the upstream relation/selector interpreted by the selected source type;
-- projection, filtering, casts, aliases, and semantic annotations;
-- logical destination target, disposition, keys, cursor, trust/contract, and execution policy.
+- one explicit configured-source binding and its driver-owned structured relation arguments;
+- projection, filtering, aliases, deterministic scalar expressions, and casts;
+- logical target, disposition and merge keys, cursor, trust, semantic annotations, and execution
+  policy through typed clauses or typed defaults; and
+- contract effects governed by the existing contract/trust authorities.
 
-It contains no source name, source type, connection URI, credential, source-level option map,
-canonical resource id, or generic `WITH` configuration bag. The exact relation-clause token and
-remaining D3 SQL grammar are governed by the SQL authoring spec; this decision fixes ownership, not
-that final spelling.
+It owns no connection configuration, physical destination selection, canonical resource id,
+generic option bag, or executable configuration expression.
 
-### Resolution and validation
+### Resolution and validation order
 
-Compilation resolves in this order:
+Compilation resolves in this exact authority order:
 
 ```text
 project-relative resource path
-→ derived source name and resource id
-→ selected environment's named source configuration
-→ source type
+→ canonical resource id and default target
+→ resource envelope and SELECT syntax
+→ required upstream(source => '<configured_source>', ...)
+→ exact configured source in typed project configuration
+→ immutable source type
 → internal SourceRegistry driver
-→ driver validation of source-level options
-→ driver validation of resource relation/options
-→ CompiledSourcePlan
-→ native operator/contract/semantic/destination plans
+→ closed source-configuration validation
+→ driver-owned resource-argument validation
+→ DataFusion query-body analysis
+→ CDF schema/contract/semantic/policy validation
+→ typed default resolution
+→ native CDF source/scalar/relational/destination IR
 → project manifest
 ```
 
-A `FROM`/relation name never resolves directly against `SourceRegistry`. The project source is
-resolved first; only its type selects a driver. The existing driver boundary already distinguishes
-source-level and resource-level options, and the new project compiler must preserve that split.
+The compiler MUST resolve `source` before validating the remaining relation arguments because the
+selected driver owns their schema. SQL never names a driver directly and never bypasses typed
+project configuration. Runtime receives a complete native plan and MUST NOT reparse SQL, resolve
+defaults or source names, or run DataFusion planning.
 
-### Manifest and lock authority
+### Manifest, lock, and destination authority
 
-The selected-environment manifest records, for every source and resource:
+The selected-environment manifest records authored identity separately from effective execution
+identity. It explains the path-derived resource id, default or explicit logical target, configured
+source, effective secret-redacted source-configuration identity, driver identity, canonical typed
+relation arguments, resolved metadata with origin, native IR, schema, semantics, contracts,
+lineage, and pushdown/residual choices.
 
-- the authoritative project-relative path and its content hash;
-- derived source name, resource name, and canonical resource id;
-- source type and exact driver descriptor/option-schema hashes;
-- canonical secret-redacted effective source configuration and its hash;
-- which base fields and environment overrides produced that configuration;
-- driver-owned upstream relation/selector identity;
-- all ordinary compiled plan, schema, semantic, contract, destination, and lineage facts.
-
-The lockfile pins semantic/dependency expectations; the manifest records the complete resolved
-environment-specific compilation. Neither may preserve a hidden wildcard mapping or reconstruct
-identity from display SQL.
+The lockfile remains dependency and expectation authority. Physical destination selection remains
+environment-owned; a resource's `TARGET` is logical destination identity only.
 
 ### Current-only transition
 
-Foundation D replaces the spike-era authoring model outright:
+Foundation D replaces all retired authoring shapes together:
 
-- no `[resources."pattern"]` project mappings;
-- no `resources/<source>.toml` declarative project resources;
-- no `ProjectResource.source` file-locator semantics in the resulting project model;
-- no explicit resource id in `.cdf.sql`;
-- no legacy project reader, migration warning, dual authoring mode, alias, or compatibility shim.
+- no root wildcard resource maps;
+- no declarative `resources/<source>.toml` resource files;
+- no `sources/<source>/<resource>.cdf.sql` path-bound-source root;
+- no SQL-declared resource id;
+- no `CREATE RESOURCE`, `FROM SOURCE`, `SINK`, generic top-level `WITH`, or generic `OPTIONS`;
+- no source sidecars, compatibility readers, aliases, shims, migration modes, or dual publication.
 
-Internal typed structures may be reused as compiler IR only when their names and authority are no
-longer exposed as the retired project contract. `cdf init`, `cdf add`, examples, validation,
-inspection, lock generation, manifest compilation, and docs must transition together.
+Internal typed structures may survive only when their names and authority fit the current compiler
+model. `cdf init`, `cdf add`, generation, validation, compile, lock, manifest, inspection,
+examples, and documentation transition atomically with D3.
 
 ## Alternatives considered
 
-### Explicit canonical id inside every SQL file
+### Bind the source from `sources/<source>/...`
 
-Rejected. The filesystem remains how humans navigate and organize the project, so repeating the id
-creates two authorities and allows meaningless path/id disagreement. A path-derived id is explicit
-because the path itself is a required, validated compiler input.
+Rejected. It overloads organizational namespace as connection selection, prevents resources from
+being grouped by domain or destination purpose, and precludes a clean future multi-source AST.
 
-### Keep root wildcard resource mappings
+### Keep `sources/` temporarily but reinterpret it as a namespace
 
-Rejected. They add an indirection layer without representing a distinct concept, permit zero/many
-matching surprises, and force users to repeat information already present in the source directory.
+Rejected for this project. Although mechanically possible, it creates two current roots and a
+future deletion task with no customer compatibility requirement.
 
-### Put shared source configuration in every SQL file
+### Repeat source configuration in every SQL file
 
-Rejected. It duplicates credentials and driver options, makes environment changes touch many
-resources, and turns a relational resource language into stringly operational configuration.
+Rejected. It duplicates credentials and policy, turns environment changes into broad edits, and
+recreates stringly configuration inside SQL.
 
-### Put `source.toml` beside the SQL files
+### Infer configured source from resource namespace
 
-Rejected. Colocation is attractive, but environment selection, secret resolution, and atomic
-project configuration would be split between root and source directories. Source count is expected
-to be much smaller than resource count, so one root entry per source remains legible.
+Rejected. Namespace and source are independent identities; inference would merely recreate the
+retired coupling under a new root name.
 
-### Arbitrary environment-variable interpolation
+### Declare resource id in SQL
 
-Rejected. `${VAR}` expansion makes authored bytes insufficient to explain compilation, can leak
-values into diagnostics/manifests, and creates stringly behavior. Typed overlays and secret-provider
-references express the two legitimate cases directly.
+Rejected. The file path is already mandatory authored identity. A second declaration creates
+conflict and makes moves ambiguous.
 
-### Resolve SQL names against the source-driver registry
+### Resolve directly against the driver registry
 
-Rejected. Drivers are implementations, not configured upstream instances or query namespaces.
-Direct resolution would bypass project configuration and conflate `postgres` with `warehouse`.
+Rejected. Drivers are implementations, not configured project dependencies. Direct resolution
+would bypass source configuration and conflate `postgres` with an instance such as `warehouse`.
 
 ## Consequences
 
-- The active SQL authoring spec and project-format spec must use this vocabulary and path law.
-- Existing spike-era examples and product code are deliberate source/spec drift until the bounded
-  Foundation D implementation replaces them; they are not compatibility authority.
-- The source filesystem is a semantic compiler input and must use existing project-root path-fence,
-  stable-read, hashing, and crash-safe publication rules.
-- One source can naturally own many resources while connection and policy configuration appears
-  once.
-- Environment-specific compilation changes effective source configuration hashes without changing
-  filesystem resource identity.
-- Future `cdf add`/discovery generation writes or proposes an explicit source config plus one or
-  more path-derived `.cdf.sql` resources; it never reintroduces wildcard maps.
-- Exact safe path-token grammar, the exact SQL relation-clause token, and blocking versus explicitly
-  inactive handling for a configured source with no directory remain focused D1.5/D3 checkpoints.
-  They cannot change the authority allocation decided here.
+- Users can group resources by business or project namespace while reusing any named source.
+- A configured source can be shared across many resource namespaces without duplicated config.
+- Bare queries become the default authoring experience; metadata appears only where behavior
+  differs from resolved defaults.
+- Explicit relation binding makes source dependencies visible and leaves the AST structurally
+  capable of future multi-source resources, while D3 still admits exactly one relation.
+- The D1.5a inventory remains useful as typed source/config/path input machinery, but D3 must change
+  its path interpretation and source-binding order before exposing it.
+- Existing spike-era source, resource, CLI, scaffold, lock, and manifest code is deliberate drift
+  until the one current-only D3 cutover; it carries no compatibility authority.

@@ -324,8 +324,10 @@ redaction changes.
 - C2 adds project definition files through the Foundation D project compiler after C1 and D1 are
   stable. Their exact authored file grammar/path remains a focused C2 contract, but they use the
   existing data-only `SemanticDefinition` model and cannot add executable type behavior.
-- SQL annotation syntax remains owned by `.10x/specs/sql-project-authoring.md`; it resolves to the
-  same canonical reference and introduces no alternate semantic model.
+- D3's ratified `SEMANTICS (output_column => 'canonical.reference', ...)` syntax remains owned by
+  `.10x/specs/sql-project-authoring.md`; it resolves each exact final output field through this
+  registry, records definition/version/hash/parameters and consumer effects, changes no physical
+  representation, and introduces no alternate semantic model.
 
 ## References
 

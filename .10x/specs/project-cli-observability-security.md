@@ -11,19 +11,24 @@ This specification governs the user-facing project format, lockfile, CLI command
 ## Project format
 
 `cdf.toml` MUST define project metadata, default environment, normalizer, environments, Python
-interpreter, defaults, and one typed shared configuration for every filesystem-named source. It
-MUST NOT contain resource-to-file maps or wildcard resource mappings. Resources live at
-`sources/<source>/<resource>.cdf.sql`, derive canonical id `<source>.<resource>`, and bind to the
-same-named `[sources.<source>]` entry as governed by
-`.10x/specs/project-source-resource-layout.md`. Environments overlay inherited source option values
-but cannot change source name/type. Secrets MUST appear only as `secret://provider/key` URIs;
-arbitrary environment/string interpolation is forbidden.
+interpreter, typed resource defaults, and one typed shared configuration for every configured
+source. It MUST NOT contain resource-to-file maps or wildcard resource mappings. Resources live at
+`resources/<namespace>/<resource>.cdf.sql`, derive canonical id and default logical target
+`<namespace>.<resource>`, and explicitly bind one configured `[sources.<name>]` through
+`upstream(source => '<name>', ...)` as governed by
+`.10x/specs/project-source-resource-layout.md`. Resource namespace, configured source, and logical
+target are independent. Environments overlay inherited source option values but cannot change
+source name/type. Secrets MUST appear only as `secret://provider/key` URIs; arbitrary environment/
+string interpolation is forbidden.
 
-Source directory and resource stem tokens MUST match `[a-z][a-z0-9_]{0,127}` without
-normalization. Every configured source MUST own at least one valid resource; there is no inactive
-source state. Each resource query binds exactly one path-selected, driver-typed `upstream(...)`
-table function as governed by
-`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`.
+Namespace, resource-stem, and configured-source tokens MUST match
+`[a-z][a-z0-9_]{0,127}` without normalization. Every configured source MUST be referenced by at
+least one valid resource; there is no inactive source state. Each resource file is one bare admitted
+`SELECT` or optional no-id `RESOURCE ... AS SELECT` envelope and binds exactly one explicitly
+selected, driver-typed `upstream(...)` relation as governed by
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. `CREATE RESOURCE`, the
+retired `sources/` resource root, path-inferred source identity, and compatibility readers are
+rejected.
 
 Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
 
@@ -92,7 +97,8 @@ Supply-chain gates SHOULD include `cargo deny`, `cargo vet`, committed lockfiles
 
 ## Acceptance criteria
 
-- `cdf.toml` and `cdf.lock` parse into typed models, path/config source-resource joins are total,
+- `cdf.toml` and `cdf.lock` parse into typed models, explicit configured-source references are
+  total, resource/source/target identities remain independent, typed defaults are fully resolved,
   and secret-bearing fields reject values where only references are allowed.
 - CLI commands provide stable JSON output where required and meaningful exit codes.
 - Redaction tests prove a resolved secret cannot appear in traces, error messages, plan output, or package traces.

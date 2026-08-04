@@ -19,7 +19,8 @@ The core rule is:
 
 Current compilation facts are distributed across:
 
-- `cdf.toml`, path-derived source SQL resources, and project semantic definitions;
+- `cdf.toml`, path-derived SQL resources with explicit configured-source bindings, and project
+  semantic definitions;
 - `cdf.lock` dependency/resource/schema/contract/destination pins;
 - in-memory `CompiledSourcePlan` and compiler bindings;
 - compiled operator/contract/destination plans;
@@ -123,7 +124,10 @@ For every input:
   expansion, etc.);
 - byte/content hash;
 - parser/schema version;
-- path-derived source/resource identity and effective named-source configuration;
+- path-derived resource namespace/name/id/default target, explicit configured-source binding, and
+  effective named-source configuration;
+- bare-query versus expanded-envelope form, normalized authored AST hash, and effective normalized
+  resource-definition hash;
 - generated/explicit status and generator identity;
 - no absolute host paths in canonical identity unless the active project policy requires them.
 
@@ -136,10 +140,17 @@ silently serve the last compiled view of changed authored files.
 
 For each canonical resource id:
 
-- authoritative `sources/<source>/<resource>.cdf.sql` origin, derived source/resource names, and
-  expansion origin when a future explicit generator is used;
-- selected source type, exact driver descriptor/option-schema hashes, driver-owned upstream
-  relation identity, and canonical secret-redacted base/overlay/effective source configurations;
+- authoritative `resources/<namespace>/<resource>.cdf.sql` origin, derived namespace/resource/id,
+  default logical target, and expansion origin when a future explicit generator is used;
+- exact authored SQL bytes/hash, bare/envelope form, normalized authored AST hash, and effective
+  normalized definition/execution hash;
+- effective target, disposition and merge keys, cursor, trust, semantic bindings, and execution
+  policy, each with origin (`authored`, `project_default`, `built_in_default`, or
+  `resource_path_default`), canonical typed identity, and authored span where present;
+- explicit configured source name, selected immutable source type, exact driver descriptor/option-
+  schema hashes, stable source-node id, driver-owned upstream relation identity, canonical typed
+  structured relation arguments, and canonical secret-redacted base/overlay/effective source
+  configurations;
 - complete `ResourceDescriptor` and resource capabilities;
 - execution extent and compiled stream policy;
 - driver descriptor and option-schema hash;
@@ -156,6 +167,13 @@ For each canonical resource id:
 - hook declarations and code/schema/capability identities;
 - data/control lineage and source-position/watermark behavior;
 - exclusions/unsupported features and diagnostics.
+
+Configured source, canonical resource id, and logical target are separate manifest fields and
+lineage nodes. No serializer, query projection, or display surface may infer one from another or
+call the resource namespace a source. Authored identity and effective execution identity remain
+separate: bare and explicitly enveloped resources may share execution identity only when all
+resolved metadata, typed dependencies, and canonical policies are equal, while authored hashes
+remain distinct.
 
 Large sub-artifacts MAY be external content-addressed references, but the manifest MUST carry exact
 type, byte count, hash, and required/optional semantics. A resident cache is never authority.
@@ -175,7 +193,8 @@ not lockfile identities.
 
 Lineage MUST be compiler-derived, not reconstructed from display SQL:
 
-- resource-to-source relation;
+- resource-to-explicit-configured-source relation;
+- resource-path-to-resource-namespace/id/default-target derivation;
 - configured source-to-source-type/driver relation and source-to-upstream-relation selection;
 - output field to input field(s) and transform expression id;
 - contract rule to affected fields;
@@ -277,8 +296,10 @@ compiler or reinterpret identity.
 - Secret values and credentials MUST never enter authored-input excerpts, options, diagnostics,
   SQL text normalization, hook configuration, or lineage.
 - Named secret references may be recorded only under existing redaction rules.
-- SQL files that contain source/type names, connection configuration, or credential-shaped literals
-  SHOULD fail compilation under the path/config authority split.
+- SQL files MUST contain exactly one configured-source name in the reserved
+  `upstream(source => '<name>', ...)` argument. Source types, driver ids, connection configuration,
+  credentials, secret references/values, environment endpoints, and source-level options in SQL
+  fail under the project/source authority split.
 - Absolute host paths, environment values, and usernames are excluded or normalized unless they
   are intentionally semantic project inputs.
 - Hook code is recorded by content hash and project-relative reference; embedded code bytes are a
@@ -320,6 +341,14 @@ compiler or reinterpret identity.
    authored origins remain distinct.
 10. Given any project-relative authored input changes after compilation, `cdf sql` rejects the
     stale manifest without writing or recompiling.
+11. Given a resource namespace differs from its configured source, the manifest records both
+    independently and derives neither from the other.
+12. Given any omitted D3 metadata, the manifest records the resolved effective value and its exact
+    origin before execution can consume the resource.
+13. Given equivalent structured `upstream(...)` arguments in different orders, canonical typed
+    relation identity is equal while authored SQL hashes remain distinct.
+14. Given equivalent bare and expanded resource files, execution identity is equal only when all
+    effective values and policies are equal; authored identity remains different.
 
 ## Explicit exclusions
 
@@ -345,8 +374,10 @@ compiler or reinterpret identity.
   manifest carries full reachable definition and usage snapshots.
 - The seven tables above are the complete D1 SQLite surface.
 - The final Foundation D project compiler uses
-  `.10x/specs/project-source-resource-layout.md`: there is no root wildcard resource map, retired
-  declarative project reader, or explicit SQL resource id in current authority.
+  `.10x/specs/project-source-resource-layout.md`: the sole resource root is
+  `resources/<namespace>/<resource>.cdf.sql`; each query explicitly binds its configured source;
+  there is no root wildcard resource map, retired declarative/project reader, path-inferred source,
+  explicit SQL resource id, or compatibility mode in current authority.
 
 ## References
 

@@ -183,7 +183,7 @@ Depends-On: C0 and D1 manifest data-model coordination for final publication; im
 stage internal registry work before D1.
 
 Core/consumer owner:
-`.10x/tickets/2026-08-03-c1-semantic-registry-core-consumer-migration.md`.
+`.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`.
 
 **C2. Project-defined semantic definitions**
 
@@ -203,8 +203,8 @@ Depends-On: C1.
 - remove the Postgres-special-cased destination policy only through a separately bounded generic
   policy-model ticket.
 
-The initial explicit-id/profile decision was superseded on 2026-08-04 after the user rejected the
-spike-era taxonomy. Current authority is
+The initial explicit-id/profile decision and the later path-bound-source revision were superseded
+on 2026-08-04 after the user ratified the complete query-first D3 handoff. Current authority is
 `.10x/decisions/filesystem-source-resource-and-configuration-authority.md` and
 `.10x/specs/project-source-resource-layout.md`. The original inventory remains historical evidence.
 Manifest policy remains closed by
@@ -228,21 +228,21 @@ Owners:
 - `.10x/tickets/done/2026-08-03-d1-project-compilation-manifest-core.md`;
 - `.10x/tickets/done/2026-08-03-d1-compile-cli-and-manifest-sql.md`.
 
-**D1.5. Project source/resource model replacement**
+**D1.5. Typed project input authority**
 
-- replace root wildcard resource maps and declarative resource file locators with deterministic
-  `sources/<source>/<resource>.cdf.sql` enumeration;
-- derive canonical id `<source>.<resource>` from the validated path and prohibit SQL id/source
-  repetition;
-- add typed `[sources.<source>]` base configurations plus selected-environment source option
-  overlays, with immutable source type and schema-validated source/resource option separation;
-- D1.5a establishes the typed filesystem/configuration compiler input inventory without exposing a
-  second project reader or changing runtime behavior;
-- the D3 current-authoring cutover consumes that inventory and updates manifest/lock bindings,
-  scaffold, add/generate, examples, validation, and inspection atomically while deleting the old
-  authoring surface;
-- reject the spike-era shape with no legacy reader, migration, dual authoring mode, or compatibility
-  shim.
+- D1.5a established reusable typed configured-source definitions, immutable driver type, selected-
+  environment source-option overlays, source/resource schema separation, path-fenced stable SQL
+  input inventory, and no coequal runtime reader;
+- its then-ratified `sources/<source>/<resource>.cdf.sql` path-bound-source interpretation is
+  superseded shaping authority, not a compatibility requirement or D3 grammar;
+- D3 reuses the typed configuration, stable-read, path-fence, and source-schema machinery while
+  changing the only current resource root to `resources/<namespace>/<resource>.cdf.sql`, deriving
+  logical resource identity/default target from the path, and resolving the explicit relation
+  argument `source => '<configured_source>'` before driver-owned resource arguments;
+- D3 updates manifest/lock bindings, scaffold, add/generate, examples, validation, inspection, and
+  execution selection atomically while deleting both the spike-era declarative surface and the
+  never-exposed path-bound-source prototype;
+- no legacy reader, migration, dual authoring mode, alias, or compatibility shim is admitted.
 
 Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md` and
 `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. D1.5a is complete:
@@ -267,14 +267,28 @@ Status: complete. Closed at:
 
 **D3. SQL project front-end**
 
-- activate `.10x/specs/sql-project-authoring.md`;
-- parse exact CDF envelope/metadata plus DataFusion-compatible query body;
-- lower to native source/operator/contract/semantic/destination artifacts;
-- replace the retired project declarative front-end and publish the D1 manifest.
+- use `.10x/specs/sql-project-authoring.md` as the complete ratified D3 contract;
+- admit a bare `SELECT` as the normal resource form and an optional no-identifier
+  `RESOURCE ... AS SELECT` metadata envelope;
+- derive canonical resource id/default logical target from
+  `resources/<namespace>/<resource>.cdf.sql` while keeping configured source and target independent;
+- require `upstream(source => '<configured_source>', ...)`, resolve typed source/driver authority
+  first, and validate recursive data-only remaining arguments through the driver resource schema;
+- implement typed defaults with recorded origin, `DISPOSITION MERGE(key, ...)`, exact semantic
+  annotations, and bounded/purpose-built drain execution clauses;
+- use pinned DataFusion only for query-body parse/analysis and D2 lowering, then publish only native
+  source/operator/contract/semantic/destination artifacts and the complete D1 manifest;
+- continue rejecting joins, every set operation including `UNION ALL`, aggregation, windows,
+  subqueries, multiple upstream relations, and runtime DataFusion planning;
+- delete/reject `CREATE RESOURCE`, path-bound source identity, the `sources/` resource root, retired
+  project declarations/maps, and every compatibility/dual-reader shape.
 
 Depends-On: D1, D1.5a, D2, and C1 for first-class semantic syntax. D3 is also the current-only
 project-authoring cutover: it deletes the retired resource map/declarative reader in the same
 tranche that makes the SQL resources executable.
+
+Ratified authority is complete. Executable owner:
+`.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`.
 
 **D4. Explicit generation; templating remains parked**
 
@@ -362,8 +376,9 @@ deferred lanes are explicitly parked with owners. For a full close:
 - B1 is used by the existing relational sources and MySQL without dialect leakage;
 - C1 resolves all current behavior-bearing semantic tags and binds lock/manifest/contract/
   destination authority;
-- D1/D1.5/D2/D3 compile one path-derived SQL resource through one typed shared source configuration
-  to the ordinary native execution path with a deterministic queryable manifest;
+- D1/D1.5/D2/D3 compile one path-derived SQL resource with one explicit configured-source binding
+  through typed shared source configuration to the ordinary native execution path with a
+  deterministic queryable manifest; resource id, source, and target remain independent;
 - E1 executes one ratified batch hook runtime under exact schema/memory/determinism rules, or hooks
   are explicitly parked if the user retains D-23;
 - F0 removes the current accepted-but-inert transform behavior;
@@ -419,22 +434,31 @@ deferred lanes are explicitly parked with owners. For a full close:
   project definitions use the same data-only registry after built-in migration;
 - the generated manifest lives at `.cdf/manifest.json`; offline and explicit refresh compilation
   use existing crash-safe project publication, and `cdf sql` mounts rather than recompiles it;
-- SQL resources live at exactly `sources/<source>/<resource>.cdf.sql`; the path is the sole
-  canonical source/resource identity, SQL repeats neither, shared typed source configuration lives
-  once in `cdf.toml`, and environment overlays may change admitted source option values but not
-  source name/type;
-- `SourceRegistry` is an internal implementation catalog, never a project namespace: path resolves
-  configured source, source type resolves driver, and the resource relation then resolves through
-  that driver;
+- SQL resources live at exactly `resources/<namespace>/<resource>.cdf.sql`; the path supplies only
+  canonical resource id and default logical target, while each query explicitly names one
+  configured source through `upstream(source => '<name>', ...)`;
+- canonical resource id, configured source, and logical target are independent; resource namespace
+  is not required to equal source name;
+- `SourceRegistry` is an internal implementation catalog, never a project namespace: the relation
+  resolves a typed configured source, immutable source type resolves the driver, and only then does
+  that driver validate the remaining structured relation arguments;
 - root wildcard resource maps, declarative `resources/<source>.toml`, explicit SQL resource ids,
-  source sidecars, and arbitrary `${...}` interpolation are retired current-schema shapes with no
-  compatibility path;
-- source/resource path tokens match `[a-z][a-z0-9_]{0,127}` exactly with no normalization;
-- every configured source owns at least one valid explicit resource and no inactive source state
-  exists;
-- the query contains exactly one path-bound, driver-typed `upstream(...)` base relation whose
-  named data-only arguments validate through the selected driver's closed resource schema; there
-  is no separate relation clause or compiler-provided input/source alias;
+  the `sources/` resource root, `CREATE RESOURCE`, source sidecars, and arbitrary `${...}`
+  interpolation are retired current-schema shapes with no compatibility path;
+- resource namespace/stem and configured-source tokens match `[a-z][a-z0-9_]{0,127}` exactly with
+  no normalization;
+- every configured source is referenced by at least one valid explicit resource and no inactive
+  source state exists; it need not own a same-named resource directory;
+- one resource file may be a bare admitted `SELECT` or optional no-id `RESOURCE ... AS SELECT`;
+  every query contains exactly one explicitly source-bound, driver-typed `upstream(...)` relation;
+- omitted target/disposition/trust/execution values resolve before publication through explicit,
+  typed-project, narrow-built-in, or failure precedence and the manifest records each origin;
+- target defaults to the path-derived resource id, trust defaults to `EXPERIMENTAL`, and
+  disposition defaults to `REPLACE` only for proven bounded replayable input;
+- merge keys are intrinsic to `DISPOSITION MERGE(key, ...)`; semantic annotations use exact
+  canonical registry references; execution is bounded or a complete typed drain policy;
+- joins, all set operations including `UNION ALL`, aggregates, windows, subqueries, multiple
+  upstream relations, and runtime DataFusion planning remain rejected;
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
 - source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
@@ -464,12 +488,13 @@ deferred lanes are explicitly parked with owners. For a full close:
 ### Unratified blockers
 
 - PostgreSQL/MySQL maximum single-transaction resource behavior;
-- exact D3 semantic-annotation tokens, which must reuse the canonical semantic reference grammar;
-- exact D3 data-only structured-value grammar for complex `upstream(...)` resource arguments;
-- detailed D3 focused-policy value grammar, including drain execution, without changing the
-  ratified core envelope order;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
+
+D3 has no remaining semantic blocker. The user ratified its query-first form, independent identity
+model, explicit source binding, structured values, clause grammar/order, defaults, trust,
+disposition/merge keys, semantics, execution policy, relational exclusions, identity law,
+diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
 
@@ -547,12 +572,25 @@ deferred lanes are explicitly parked with owners. For a full close:
   `.10x/tickets/done/2026-08-04-d2-datafusion-scalar-relational-ir.md`. D2 closed after focused
   differential/performance validation, one independent adversarial review, bounded closure
   repairs, and a same-reviewer final pass; D3 may now consume the current typed IR.
+- 2026-08-04: The user ratified the complete D3 handoff in full and explicitly authorized
+  supersession. The prior mandatory `CREATE RESOURCE`, path-bound configured source, and
+  `sources/<source>/<resource>.cdf.sql` authority is preserved under `superseded/` only. Current D3
+  uses `resources/<namespace>/<resource>.cdf.sql`, derives only resource id/default target from the
+  path, requires `upstream(source => '<configured_source>', ...)`, and treats resource id, source,
+  and target as independent. Bare `SELECT` is the normal form; optional ordered `RESOURCE ... AS`
+  clauses own target, disposition with intrinsic merge keys, cursor, trust, semantic bindings, and
+  bounded/drain execution. Structured relation values are recursive and data-only. Defaults are
+  fully resolved with origin before manifest publication; `EXPERIMENTAL` is the conservative trust
+  default and `REPLACE` is available only for proven bounded replayable input. The complete
+  relational exclusion, identity, diagnostic, manifest, no-DataFusion-runtime, and no-compatibility
+  laws are now active. D3 shaping is closed and the executable cutover ticket is
+  `.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`.
 
 ## Blockers
 
-The exact unratified choices listed above still govern D3/E1 and CDC A2. D1.5a and D2 are closed;
-D3 now performs the single current-authoring cutover. CDC A1 is closed; the
-large-transaction policy must be settled before A2 closes. F0 is closed at `3487de68`.
+D3 has no semantic blockers and is ready for execution under its focused ticket. D1.5a and D2 are
+closed. E1 still requires its runtime ratification, and CDC A2 still requires the PostgreSQL/MySQL
+large-transaction policy. F0 is closed at `3487de68`.
 
 ## Evidence
 

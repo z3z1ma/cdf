@@ -1,14 +1,34 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # cdf glossary
 
 `cdf` is the CLI binary and crate prefix; CDF in prose is the project.
 
-Resource: the smallest stateful extraction unit. It declares schema, keys, cursor, state scope, disposition, contract, trust, and capabilities, and produces Arrow record batches.
+Resource: the smallest stateful extraction unit. In a D3 project its canonical identity comes from
+`resources/<namespace>/<resource>.cdf.sql`; it declares schema, keys, cursor, state scope,
+disposition, contract, trust, and capabilities, and produces Arrow record batches. Its namespace,
+configured source, and logical target are independent.
 
-Source: a configuration and discovery bundle over resources. It is not the unit of runtime state.
+Configured source: one project-named upstream instance in `[sources.<name>]`. It owns shared typed
+connection, secret-reference, policy, egress, quota, and driver configuration. It is selected
+explicitly by `upstream(source => '<name>', ...)` and is not the unit of runtime state.
+
+Source type: the immutable connector kind on a configured source, such as `postgres`, `files`, or
+`mongodb`, used to select an internal driver.
+
+Source driver: the internal Rust implementation selected by source type. Its registry is process
+composition authority, not a project namespace or configured-source catalog.
+
+Upstream relation: the driver-owned table, collection, REST path, catalog table, file selector, or
+equivalent object selected by the remaining typed `upstream(...)` arguments.
+
+Resource namespace: the first path component below `resources/`. It organizes canonical CDF
+resource identity and never infers a configured source.
+
+Logical target: the destination-side object name declared by `TARGET` or defaulted to the resource
+id. The selected environment independently owns the physical destination connection.
 
 Batch: Arrow payload plus resource, partition, schema hash, rows, bytes, source position, watermarks, stats, and optional CDC operation information.
 

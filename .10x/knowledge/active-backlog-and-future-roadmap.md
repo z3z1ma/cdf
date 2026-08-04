@@ -152,15 +152,26 @@ built-in in the pinned DataFusion registry that fits CDF's canonical Arrow closu
 uncaptured ambient semantics. Joins, aggregation, scheduling, volatile/UDF expressions, and runtime
 templates remain excluded.
 
-The project shape is now ratified: `sources/<source>/<resource>.cdf.sql` is the sole canonical
-source/resource identity, root `[sources.<source>]` holds one shared typed configuration, and the
-selected environment may sparsely override admitted source options but never source name/type.
-Path resolves configured source, source type resolves the internal driver, and only then does the
-driver resolve the sole query relation `upstream(...)` through its closed resource option schema.
-Source/resource path tokens use exact lowercase ASCII snake-case grammar, and every configured
-source must own at least one valid resource; inactive/preconfigured sources do not exist. Wildcard
-resource maps, declarative project resource files, source sidecars, explicit SQL ids/source names,
-and arbitrary environment interpolation are retired without compatibility readers.
+The project shape is now ratified: `resources/<namespace>/<resource>.cdf.sql` supplies canonical
+resource id and default logical target only. Root `[sources.<name>]` holds one shared typed
+configured-source definition, each query binds it explicitly through
+`upstream(source => '<name>', ...)`, and the selected environment may sparsely override admitted
+source options but never source name/type. Resource id, configured source, and logical target are
+independent; namespace/source equality is never required. The relation resolves configured source,
+source type resolves the internal driver, and only then does the driver validate the remaining
+recursive data-only arguments through its closed resource schema. Identity tokens use exact
+lowercase ASCII snake-case grammar, and every configured source must be referenced by at least one
+resource; inactive/preconfigured sources do not exist.
+
+Bare `SELECT` is the normal resource form. An optional no-id `RESOURCE ... AS SELECT` envelope adds
+ordered target, disposition with intrinsic merge keys, cursor, trust, semantic, and bounded/drain
+execution clauses. Omitted values resolve through typed precedence and enter the manifest with
+origin. Target defaults to resource id, trust defaults to `EXPERIMENTAL`, and `REPLACE` defaults
+only for proven bounded replayable input. Joins, all set operations including `UNION ALL`,
+aggregates, windows, subqueries, multiple upstream relations, and runtime DataFusion plans remain
+excluded. Wildcard maps, declarative resources, the `sources/` resource root, path-inferred source,
+`CREATE RESOURCE`, explicit SQL ids, source sidecars, arbitrary interpolation, and compatibility
+readers are retired.
 
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
@@ -173,11 +184,12 @@ and arbitrary environment interpolation are retired without compatibility reader
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 
 Manifest path/publication, source/resource layout, configuration ownership, and semantic registry
-authority are ratified. Path-token, configured-source, `upstream(...)`, envelope, and D2
-deterministic scalar/typed-IR authority are also ratified; D2 is complete. Remaining Foundation D
-shaping is limited to D3 semantic SQL annotation tokens, structured `upstream(...)` argument
-values, and detailed focused-policy values such as drain execution. The old declarative project
-surface is implementation drift to replace, not a coequal front-end or migration authority.
+authority are ratified. Path tokens, explicit configured-source binding, recursive relation values,
+query/envelope grammar, defaults, merge keys, semantic annotations, bounded/drain execution,
+relational exclusions, identities, diagnostics, and manifest obligations are ratified; D2 is
+complete and D3 has no remaining shaping blocker. Execution owner:
+`.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`. Every older authoring surface
+is implementation drift to delete, not a coequal front-end or migration authority.
 
 ### Plan-declared hooks
 

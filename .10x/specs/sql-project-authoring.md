@@ -1,388 +1,635 @@
 Status: active
 Created: 2026-08-03
 Updated: 2026-08-04
+Supersedes: `.10x/specs/superseded/sql-project-authoring.md`
 
-# SQL project authoring and native CDF lowering
-
-## Status and product direction
-
-The user has established a SQL-like project authoring experience as the preferred direction for
-CDF's configuration overhaul: project files resemble explicit SQL resources, DataFusion may
-parse/analyze them, and CDF executes an opaque native plan. On 2026-08-04 the user superseded the
-explicit-id/profile model with filesystem-derived source/resource identity and one typed shared
-source configuration in `cdf.toml`, governed by
-`.10x/decisions/filesystem-source-resource-and-configuration-authority.md` and
-`.10x/specs/project-source-resource-layout.md`.
+# Query-first SQL project authoring and native CDF lowering
 
 ## Purpose
 
-Add a second authoring front-end that lets users define extraction/load resources and bounded
-in-flight transformations in SQL-shaped files while preserving every existing CDF authority:
+This specification defines D3: the current, query-first `.cdf.sql` authoring language and its
+deterministic lowering into native CDF plans. It replaces the mandatory `CREATE RESOURCE`,
+path-bound-source, and declarative project-resource front ends.
 
-- typed shared-source/driver options and secret references;
-- source discovery/capability truth;
-- native Arrow schemas, contracts, semantics, and normalization;
-- compiled source/operator/destination identities;
-- deterministic packages, receipts, and checkpoints;
-- DataFusion's compile-time analysis and non-authoritative scalar-implementation boundary.
+The SQL surface is a compiler front-end, not a runtime query engine, scheduler, catalog DDL
+language, source-native SQL pass-through, or second connector configuration system.
 
-The SQL front-end is a compiler, not a runtime query engine and not a new scheduler.
-
-## Non-negotiable boundary
+## Non-negotiable architecture
 
 ```text
-authoritative source/resource path + authored SQL resource + typed effective source configuration
-→ CDF parse and source binding
-→ DataFusion SQL analysis where useful
-→ validation against CDF source/schema/contract/semantic authority
-→ deterministic lowering into native CDF IR
-→ versioned project compilation manifest
-→ ordinary native CDF execution/package/receipt/checkpoint path
+resource path + authored SQL + typed source/destination/default configuration
+→ path-derived resource context
+→ CDF envelope/query parsing
+→ explicit configured-source resolution
+→ driver-owned resource-argument validation
+→ ephemeral DataFusion analysis
+→ CDF schema/contract/semantic/policy validation
+→ typed default resolution
+→ closed native CDF source/scalar/relational/destination IR
+→ canonical project manifest
+→ ordinary CDF execution/package/receipt/checkpoint path
 ```
 
-DataFusion types/plans MAY exist ephemerally inside the compiler/engine implementation layer. They
-MUST NOT appear in kernel/runtime/source public types, serialized execution identity,
-checkpoint/package formats, or destination protocols. Runtime MUST NOT reparse, reoptimize,
-re-infer, or reinterpret authored SQL. A CDF-owned typed batch operator MAY invoke the exact pinned
-DataFusion/Arrow scalar implementation governed by
-`.10x/decisions/datafusion-deterministic-scalar-closure.md`; that implementation is never durable
-plan or replay identity.
+DataFusion owns query parsing and deterministic scalar analysis where specified below. It MAY exist
+ephemerally inside compiler/engine implementation crates. A DataFusion logical/physical plan,
+expression debug string, session state, or runtime replanning MUST NOT appear in kernel/runtime/
+source public types, native plan identity, manifest, package, receipt, checkpoint, destination
+protocol, or replay authority.
 
-## Authoring separation
+Runtime receives a completely resolved native plan. It MUST NOT reparse SQL, re-resolve defaults or
+source bindings, repeat semantic analysis, reinterpret the envelope, or choose an alternate plan.
+A native batch operator may invoke the exact pinned DataFusion/Arrow scalar implementation under
+`.10x/decisions/datafusion-deterministic-scalar-closure.md`.
 
-### Typed project/source authority
+## Authoring forms
 
-Root `cdf.toml` retains non-relational operational concerns:
-
-- named configured sources, their immutable source types, shared connection options, and secret
-  references;
-- named destinations and environment selection;
-- state/package roots and retention;
-- egress, retry/rate/quota, trust, and destination policies;
-- driver-specific capability options validated by driver JSON schemas;
-- compiler/dependency/semantic pins.
-
-These MUST NOT be embedded as arbitrary SQL strings or connection literals. A resource does not
-refer to its configured source by name: `sources/<source>/<resource>.cdf.sql` binds it before SQL is
-parsed. SQL may refer to logical destination targets as separately governed.
-
-### SQL resource authority
-
-An explicit SQL resource defines:
-
-- one driver-owned upstream relation/selector in the first language version;
-- projection, aliases, deterministic scalar expressions, casts, and filters;
-- semantic annotations through the semantic registry;
-- resource contract/disposition/cursor/keys in the typed CDF statement envelope;
-- optional destination target binding where project policy permits it.
-
-The authoritative path supplies source name, resource name, and canonical resource id exactly as
-specified by `.10x/specs/project-source-resource-layout.md`. SQL MUST NOT repeat or override them.
-Path validation, collision behavior, renames, and manifest evidence are compiler contracts, so the
-identity is filesystem-derived but never incidental.
-
-## Ratified grammar boundary
-
-Each `sources/<source>/<resource>.cdf.sql` file contains exactly one CDF-owned resource statement.
-The path declares canonical id `<source>.<resource>`; the statement cannot declare an id or source.
-CDF parses the typed envelope and DataFusion parses/analyzes only the `SELECT` body.
-
-The prior example repeated `CREATE RESOURCE github.issues` and `FROM SOURCE github`. Both are
-retired. There is no separate relation clause and no compiler-provided `source` or `input` table.
-The query contains exactly one driver-typed, path-bound `upstream(...)` base relation:
+### Bare query: the normal form
 
 ```sql
-CREATE RESOURCE
-TARGET warehouse.issues
-DISPOSITION MERGE
-MERGE KEY (id)
-CURSOR updated_at
-TRUST GOVERNED
-AS
-SELECT id, state, updated_at
-FROM upstream(table => 'public.issues')
-WHERE state <> 'spam';
+SELECT *
+FROM upstream(
+  source => 'github',
+  glob => 'part-*.snappy.parquet',
+  format => 'parquet'
+);
 ```
 
-The path-bound source type selects the driver before relation analysis. That driver's closed
-`resource` option schema defines the `upstream(...)` signature. Top-level arguments MUST use
-`name => value`; positional, unknown, duplicate, missing, or source-level arguments fail at their
-exact source location. Argument order is nonsemantic, and arguments lower through the ordinary
-driver resource-option boundary. Their complete data-only structured-value grammar remains a D3
-checkpoint and must cover the selected driver's existing closed resource schema without becoming
-an arbitrary function/expression/secret surface.
+The file is the declaration. A bare query is syntactic sugar for a resource whose effective target,
+disposition, trust, and execution policy have been fully resolved, and whose absent cursor and
+semantic bindings have been recorded, before publication.
 
-The ratified core order is `TARGET`, `DISPOSITION`, conditional `MERGE KEY`, optional `CURSOR`,
-`TRUST`, then `AS <SELECT>`. `CREATE RESOURCE` carries no id. Exact placement/value grammar for
-additional policy clauses such as `PRIMARY KEY`, `CONTRACT`, and `EXECUTION`, plus semantic
-annotations, remains a D3 checkpoint; it cannot change the ratified path/relation authority.
+### Optional typed metadata envelope
 
-The typed `upstream(...)` relation and envelope clauses together cover driver-owned relation
-selection, logical destination target, disposition, primary or merge keys, cursor, contract/trust,
-and execution extent. Unknown, repeated, contradictory, or out-of-order clauses fail with exact
-source location. Defaults may come only from the typed project model and are resolved into the
-manifest; no generic `WITH` map exists.
+```sql
+RESOURCE
+TARGET warehouse.userdata
+DISPOSITION MERGE(user_id)
+TRUST GOVERNED
+AS
+SELECT user_id, email, updated_at
+FROM upstream(
+  source => 'github',
+  glob => 'part-*.snappy.parquet',
+  format => 'parquet'
+);
+```
 
-Named source configuration, driver options, policy, and secret references live once in `cdf.toml`
-and are validated by driver option schemas. SQL cannot contain a source name/type, connection URI,
-credential, secret reference/value, or source-level option. Destination connection remains selected
-by the environment while the statement may declare only its logical target. Companion metadata
-files and metadata headers are forbidden in v1.
+`RESOURCE` is an envelope marker, not DDL, and takes no identifier. Bare and expanded forms lower
+to the same native resource-definition IR after defaults are resolved.
 
-The chosen form MUST prove:
+## Independent identities and path authority
 
-- deterministic parsing and helpful source locations;
-- DataFusion compatibility for the relational query body;
-- typed, schema-validated non-relational options rather than stringly TOML-in-SQL;
-- no credentials or secret values;
-- exact path-derived resource/source identity and explicit logical destination identity;
-- canonical formatting/normalization for hashing without changing SQL semantics;
-- forward-compatible rejection of unknown CDF clauses.
+For `resources/analytics/userdata.cdf.sql`:
 
-This path/upstream/envelope syntax is ratified by
-`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. The remaining D3 syntax
-blocker is limited to structured resource-argument values, semantic annotations, and the detailed
-value/placement grammar of focused policies such as drain execution; it cannot alter source,
-resource, or relation authority.
+- canonical authored resource id is `analytics.userdata`;
+- `upstream(source => 'github', ...)` selects configured source `github`;
+- `TARGET warehouse.userdata` selects logical destination target `warehouse.userdata`.
+
+None is inferred from another. The path derives only namespace, resource name, canonical id, and
+default logical target. The resource namespace need not equal the configured source name. SQL
+cannot declare the canonical id. Physical destination selection remains environment-owned.
+
+The only current root is `resources/`. The compiler rejects retired `sources/` resource trees,
+wildcard maps, declarative resource files, explicit SQL ids, and all compatibility forms.
+
+## Grammar
+
+### File and envelope grammar
+
+```text
+resource_file := select_query | resource_definition
+
+resource_definition :=
+    RESOURCE
+    [target_clause]
+    [disposition_clause]
+    [cursor_clause]
+    [trust_clause]
+    [semantics_clause]
+    [execution_clause]
+    AS select_query
+```
+
+Canonical clause order is exactly:
+
+```text
+RESOURCE
+TARGET
+DISPOSITION
+CURSOR
+TRUST
+SEMANTICS
+EXECUTION
+AS
+```
+
+Every clause appears at most once. Unknown, repeated, contradictory, or out-of-order clauses fail
+with exact file/line/column spans and a stable CDF diagnostic code. No parser normalization may
+silently reorder authored clauses.
+
+D3 rejects:
+
+- `CREATE RESOURCE`;
+- an identifier following `RESOURCE`;
+- `FROM SOURCE`;
+- `SINK`;
+- generic top-level `WITH` or `OPTIONS` maps;
+- metadata headers or sidecar per-resource configuration;
+- multiple statements or resources in one file.
+
+### Target
+
+```text
+target_clause := TARGET logical_target
+```
+
+The target uses the existing logical destination identifier rules. When omitted, it resolves
+exactly to the canonical path-derived resource id with origin `resource_path_default`. There is no
+typed project target default. It never selects a physical destination or connection.
+
+### Disposition
+
+```text
+disposition_clause :=
+    DISPOSITION APPEND
+  | DISPOSITION REPLACE
+  | DISPOSITION MERGE '(' output_column (',' output_column)* ')'
+```
+
+`MERGE` requires at least one key. Keys preserve authored order, are unique, and each resolves
+exactly once against the final output schema after projection/aliasing. Empty, duplicate, missing,
+ambiguous, or unknown keys fail at their exact token. The destination must truthfully advertise
+merge support.
+
+Merge updates existing keys and inserts missing keys. It does not delete target rows absent from
+the input. Package-native captured delete effects and explicit hard/soft/ignore application remain
+governed by `.10x/specs/package-keyed-delete-effects.md`. Null-key behavior and duplicate input
+effect reduction MUST use native package authority; SQL does not create a second rule.
+
+When disposition is omitted, precedence is explicit clause, applicable typed `[defaults]`
+`write_disposition`, narrow built-in default, then compile failure. Project defaults admit only
+`append` or capability-safe `replace`; keyed merge remains explicit because a keyless project
+default is incomplete. Built-in `REPLACE` is admitted only when the compiler proves the source is
+bounded and replayable and the selected destination supports it. Incremental or unbounded input
+without an applicable explicit/project disposition fails. The compiler never silently chooses
+`APPEND`; `cdc_apply` remains outside D3.
+
+### Cursor
+
+```text
+cursor_clause := CURSOR output_column
+```
+
+The cursor resolves to exactly one final output column and records exact Arrow type/nullability and
+origin. A missing/ambiguous column or incompatible source capability fails at the clause. Cursor
+metadata cannot override the source's truthful position semantics.
+
+### Trust
+
+```text
+trust_clause := TRUST EXPERIMENTAL | TRUST GOVERNED
+```
+
+The D3 authoring and typed `[defaults].trust` set is closed to these two values. Omission resolves
+through an applicable typed project default, otherwise built-in `EXPERIMENTAL`; `GOVERNED` is
+never implicit. Older `financial`/`serving` project-default spellings receive no D3 compatibility
+path; the underlying kernel presets remain separate non-D3 authority.
+
+The consequences are concrete:
+
+- `EXPERIMENTAL` lowers to the existing experimental contract preset: evolve schema, variant
+  capture for nested unknowns, sampled profiling, quarantine disabled, ephemeral retention, and
+  fail-on-violation behavior. Compile/manifest publication records the effective trust and origin;
+  it makes no governed deployment or promotion claim.
+- `GOVERNED` lowers to the existing governed contract preset: evolved columns require the governed
+  review artifact, row validation is full, quarantine is enabled, and packages are retained. A
+  missing required governed contract/review artifact blocks plan publication or execution under
+  the existing contract authority. Manifest, plan/explain, run/status, package evidence, and trust
+  ledger surfaces all expose the governed level and resulting policy hashes.
+
+D3 does not invent an independent deployment engine or trust lifecycle. Promotion/demotion,
+contract freeze/review, publication safety, status, and runtime enforcement remain governed by the
+existing contract/trust records; D3's obligation is exact preset binding, prerequisite validation,
+and complete manifest/observability evidence.
+
+### Semantic annotations
+
+```text
+semantics_clause :=
+    SEMANTICS '(' semantic_binding (',' semantic_binding)* ')'
+
+semantic_binding := output_column '=>' string_literal
+```
+
+Example:
+
+```sql
+SEMANTICS (
+  amount => 'finance.currency@1(code="USD")',
+  email => 'cdf.pii@1(class="email")'
+)
+```
+
+Each right side contains exactly one canonical semantic reference under
+`.10x/specs/semantic-type-registry.md`; this clause creates no alias or second grammar. Each left
+side resolves to one final output field. The compiler rejects empty clauses, duplicate fields,
+unknown/ambiguous output fields, malformed references, unresolved definition/version/hash,
+incompatible Arrow types, or protected CDF control fields.
+
+An annotation changes semantic meaning and downstream validation/redaction/mapping behavior, never
+physical representation. `CAST`/`TRY_CAST` remain the only SQL type-changing constructs. The
+manifest records the field binding, exact definition/version/hash, normalized parameters, Arrow
+compatibility, validation, redaction, and destination mapping refinement. Because a bare query has
+no annotation surface, any annotated resource uses the expanded envelope.
+
+### Execution policy
+
+Bounded form:
+
+```sql
+EXECUTION BOUNDED
+```
+
+Drain form:
+
+```sql
+EXECUTION DRAIN (
+  CHECKPOINT ROWS 100000,
+  PACKAGE BYTES 67108864,
+  UNTIL DURATION MILLISECONDS 60000,
+  WATERMARK DISABLED,
+  LATE DATA QUARANTINE,
+  SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION
+)
+```
+
+The drain members are purpose-built typed policy, not an open map. Their canonical order, units,
+positive/range validation, source-capability applicability, and required/optional status are owned
+by the existing stream-policy model. D3 MUST parse this exact vocabulary into that model and reject
+unknown, repeated, contradictory, incomplete, zero/overflowing, or inapplicable members at their
+tokens.
+
+A bounded source may omit execution only when boundedness is proven from the compiled relation or
+an applicable typed `[defaults].execution` policy. An unbounded source requires a complete explicit
+or typed project drain policy. The existing `[defaults]` table gains the closed execution
+declaration; no generic option map is introduced. If the compiler cannot prove extent or fully
+resolve policy, it fails.
+Resident supervision is excluded.
+
+## `upstream(...)` relation
+
+### Reserved source argument
+
+Every D3 resource query contains exactly one base relation named `upstream` with exactly one
+required reserved argument:
+
+```sql
+source => '<configured_source>'
+```
+
+`source` must be named and a string literal. It is owned and removed by CDF before driver resource
+validation. Resolution is:
+
+1. validate the source-name token;
+2. resolve exact `[sources.<name>]` in typed project config;
+3. apply the selected environment overlay;
+4. select the immutable source type and internal driver;
+5. validate effective source options through the driver source schema;
+6. validate every remaining relation argument through the driver resource schema.
+
+Missing, positional, duplicate, non-literal, or unknown `source` fails before driver argument
+validation, DataFusion planning that could contact a provider, or external I/O. The path namespace
+is irrelevant to this lookup.
+
+The SQL file MUST NOT contain a source type, driver id, connection URI, credential, secret value or
+reference, source-level configuration, egress policy, catalog credential, or environment endpoint.
+Focused diagnostics direct users to `[sources.<name>]` without echoing secret-shaped input.
+
+### Recursive structured values
+
+Remaining top-level arguments use only `identifier => structured_value`:
+
+```text
+structured_value :=
+    string_literal
+  | numeric_literal
+  | boolean_literal
+  | NULL
+  | ARRAY '[' [structured_value (',' structured_value)*] ']'
+  | OBJECT '(' [identifier '=>' structured_value
+                 (',' identifier '=>' structured_value)*] ')'
+```
+
+Values are data, never executable expressions. The compiler rejects column references, arbitrary
+identifiers as values, functions, arithmetic/Boolean expressions, casts, subqueries,
+interpolation, environment lookups, secret references, JSON escape hatches, and executable tagged
+forms. Objects use named members and reject duplicates.
+
+Top-level and object-member order is nonsemantic after closed-schema validation. Equivalent values
+in different orders share canonical typed relation identity; authored bytes and normalized authored
+AST identity remain separate. Unknown, missing, repeated, wrong-type, source-level, or unsupported
+driver arguments fail at exact spans through ordinary driver-schema error ownership.
 
 ## Initial relational language
 
-The first active language SHOULD support only the surface that can lower completely into reviewed
-native CDF operators:
+D3 admits only the surface that lowers completely into reviewed native CDF operators:
 
-- exactly one `upstream(...)` base relation per resource, interpreted only by the path-bound source
-  type;
-- explicit `SELECT` projection and aliases;
-- deterministic literals and the rule-based pinned-DataFusion scalar closure;
-- explicit Arrow-compatible casts;
-- Boolean `WHERE` predicates with three-valued semantics;
-- semantic annotations resolved by exact registry version;
-- source pushdown negotiation with `Exact`/`Inexact`/`Unsupported` residual recording;
-- primary/merge key, cursor, disposition, contract, and execution metadata through the typed
-  envelope.
+- exactly one `upstream(...)` base relation;
+- explicit projection, aliases, and literals;
+- deterministic D2-admitted built-in scalar expressions;
+- explicit Arrow-compatible `CAST` and `TRY_CAST`;
+- Boolean `WHERE` with DataFusion three-valued semantics;
+- output semantic annotations;
+- source pushdown negotiation with exact/inexact/unsupported residual recording;
+- typed target, disposition/merge keys, cursor, trust/contract, and execution metadata.
 
-The first language MUST reject rather than defer to runtime:
+D3 rejects before external I/O or native-plan publication:
 
 - joins and cross-resource references;
-- aggregation, grouping, windows, set operations, recursive queries, and subqueries;
-- nondeterministic functions such as random/current-time unless one later contract freezes their
-  value in plan identity;
-- DML/DDL against external systems;
-- stored procedure/function calls;
-- arbitrary source-native SQL or aggregation pipelines;
-- runtime table discovery expansion;
-- non-built-in, non-immutable, ambient-session, user-defined, or unrepresentable functions/types;
-- row-level Python/WASM calls.
+- all set operations, including `UNION ALL`, `UNION`, `INTERSECT`, and `EXCEPT`;
+- aggregation, grouping, windows, recursive queries, and subqueries;
+- nondeterministic, stable/volatile, ambient-session, UDF, extension, opaque, or otherwise D2-
+  inadmissible functions even if DataFusion knows an output type;
+- table functions other than CDF's `upstream(...)` boundary;
+- DDL/DML, stored procedures, arbitrary source-native SQL/aggregation pipelines;
+- runtime table-discovery expansion and row-level Python/WASM.
 
-This is not a permanent SQL feature ceiling. It is the smallest complete language consistent with
-the active in-flight-transform boundary.
+General joins require multi-input source positions, consistency, checkpoint alignment,
+partition/shuffle/hash/spill/memory/skew policy, failure recovery, and replay semantics that D3 does
+not own. Static lookup joins receive no exception. `UNION ALL` remains a future design candidate;
+explicit source binding and source-node ASTs leave room for it without making a D3 promise.
 
-### Ratified DataFusion scalar closure
+### D2 scalar admission
 
-The scalar surface is not a hand-maintained list of function names. Under the exact pinned
-DataFusion compiler/feature set, CDF MUST admit every fully resolved built-in scalar expression
-whose functions are `Immutable`, whose coerced inputs and output/nullability are exact members of
-CDF's canonical Arrow closure, whose behavior needs no uncaptured ambient/session authority, and
-whose canonical function/signature/cast graph can be recorded and rebound batch-vectorially from
-typed CDF IR. Known output type is necessary but not sufficient.
+DataFusion parses, resolves overloads, inserts/coerces casts, simplifies, and determines output
+types/nullability using the exact pinned compiler and feature tuple. CDF admits only fully resolved
+built-in scalar expressions whose functions are `Immutable`, whose exact inputs/output/nullability
+are within CDF's canonical Arrow closure, whose behavior needs no uncaptured ambient/session
+authority, and whose function/signature/cast graph can be represented and rebound vectorially from
+typed native IR.
 
-Aggregates, windows, table functions other than the CDF-owned `upstream(...)` boundary, UDFs,
-extensions, `Stable`/`Volatile` functions, and opaque/unrepresentable outputs fail even when
-DataFusion can assign them a type. Function aliases canonicalize through DataFusion resolution;
-authored SQL hashes remain separate. Implicit casts, explicit `CAST`, and `TRY_CAST` are distinct
-durable nodes and preserve DataFusion's exact error/null semantics.
+Function aliases canonicalize through DataFusion resolution. Authored hashes remain distinct.
+Implicit casts, explicit `CAST`, and `TRY_CAST` remain different durable nodes with exact failure/
+null semantics. Unknown or excluded expressions fail with the authored span and failed admission
+gate; there is no manual fallback list or opaque runtime node.
 
-DataFusion owns parsing, function/overload resolution, coercion, simplification, and output typing.
-CDF owns the closed typed scalar/relational IR, hashes, lineage, schema assertions, memory,
-cancellation, source residuals, control fields, package output, replay, and dependency/version
-verification. Runtime may bind and call the pinned vectorized scalar implementation but MUST NOT
-repeat semantic analysis. The full D2 contract is
-`.10x/specs/datafusion-scalar-relational-ir.md`.
+## Compiler-owned models
 
-## Native IR expansion
+The D3 compiler SHOULD model at least:
 
-Current `cdf-expression` is insufficient for general SQL projection because it supports Boolean
-columns/literals, logical/null/comparison operations, and Boolean derived columns. Before the SQL
-front-end can claim a construct, native CDF IR MUST represent and execute it with:
+```text
+ResourceFile
+  authored_form: BareSelect | ResourceEnvelope
+  resource_context: ResourceCompilationContext
+  envelope: AuthoredResourceEnvelope
+  query: AuthoredQuery
+  span: SourceSpan
 
-- exact Arrow input/output types and nullability;
-- versioned function identity and semantics;
-- deterministic canonical serialization/hash;
-- compile-time cast/failure behavior;
-- native vectorized execution under CDF memory accounting;
-- source pushdown/residual fidelity;
-- output-schema and field-lineage derivation;
-- golden equivalence against DataFusion analysis for the admitted subset.
+ResourceCompilationContext
+  canonical_resource_id
+  namespace
+  resource_name
+  authoritative_path
+  default_target
 
-The current expression/compiled-plan artifact versions are replaced outright by D2. The new typed
-IR records canonical built-in/signature, resolved argument/result Arrow types and nullability,
-implicit/explicit/try casts, projection order/aliases, Boolean filter, and field lineage. It does
-not serialize a DataFusion plan or keep a prior-version reader.
+AuthoredResourceEnvelope
+  target?
+  disposition?
+  cursor?
+  trust?
+  semantics?
+  execution?
 
-The compiler MAY use DataFusion to parse, resolve, type, simplify, and optimize. It MUST lower the
-result into a closed CDF scalar/relational IR and record both authored-input identity and native
-lowered identity. An unstable DataFusion debug string or physical plan is never identity authority.
+EffectiveResourceEnvelope
+  target: ResolvedValue
+  disposition: ResolvedValue
+  cursor: ResolvedValue?
+  trust: ResolvedValue
+  semantics: ResolvedValue
+  execution: ResolvedValue
 
-DataFusion expression nodes/functions that fail the ratified admission predicate fail compilation
-with exact syntax location and the failed gate. They do not enter a manual name-list fallback or
-remain opaque runtime expressions.
+ResolvedValue<T>
+  value: T
+  origin: authored | project_default | built_in_default | resource_path_default
+  canonical_identity
+  authored_span?
 
-## Source and destination binding
+UpstreamRelation
+  configured_source
+  effective_source_configuration_identity
+  driver_identity
+  typed_resource_arguments
+  stable_source_node_id
+  span
+```
 
-- the resource path resolves one configured project source before SQL parsing; that source's type
-  selects an internal driver, and only then does `upstream(...)` resolve through driver-owned
-  semantics. SQL names never resolve directly against the source-driver registry.
-- One resource binds to one `CompiledSourcePlan`; SQL does not bypass driver option schemas,
-  discovery, egress, health, or type policy.
-- Projection/filter requests flow through ordinary `QueryableResource`/source pushdown
-  negotiation, preserving residual obligations.
-- Destination selection/disposition/target compiles through ordinary destination sheets and plan
-  validation; SQL cannot issue DDL/DML directly.
-- Source-native query features may be exposed only by a separately typed adapter capability with
-  truthful output/identity semantics, not by passing arbitrary SQL through the resource language.
+These names describe authority, not mandatory Rust type names. The implementation SHOULD reuse
+existing typed compiler models where their ownership remains correct and MUST NOT add speculative
+single-implementation interfaces.
 
-## Contracts and semantic types
+Stable source-node identity derives from resource id, configured source, canonical typed
+arguments, and logical query-node identity, never positional order alone. The AST may become a
+collection of source nodes in a future language, but D3 validates exactly one.
 
-- Every output field has an exact Arrow type, nullability, source provenance, and optional resolved
-  semantic reference before contract compilation.
-- SQL casts affect Arrow type; semantic annotations affect meaning and validation through the
-  registry. Neither may impersonate the other.
-- Contract rules and trust policy remain CDF artifacts, not DataFusion constraints.
-- Semantic casts/annotations resolve to versioned definitions and are included in the manifest.
-- A SQL transform cannot remove/alter CDC operation/key control fields or other compiler-declared
+## Defaults and identity
+
+Trust, disposition, and execution resolution precedence is:
+
+1. authored clause;
+2. applicable typed project resource default;
+3. narrow built-in default;
+4. compile failure.
+
+Target resolves from an explicit clause or the path-derived resource id only. Cursor and semantics
+resolve from authored clauses or absence only. The existing typed `[defaults]` table owns trust,
+write disposition, and execution: D3 permits `experimental|governed`, `append|replace`, and complete
+bounded/drain values respectively. Applicability is checked against compiled source extent/
+capabilities, destination capabilities, schema, and policy. No default is resolved from runtime
+state, ambient environment, map order, destination introspection, or configured source name.
+
+The compiler retains:
+
+- exact authored SQL bytes and hash;
+- bare/envelope form and normalized authored AST hash;
+- effective normalized resource-definition hash;
+- every resolved value, origin, policy identity, and authored span;
+- parser/DataFusion/Arrow/scalar/compiler/normalizer versions.
+
+Two authored files share execution identity only if every effective field, typed dependency,
+native plan, and relevant canonical policy is equal. Authored identity never collapses.
+
+## Source, destination, contracts, and semantics
+
+- One resource lowers through the selected driver's ordinary resource schema to one
+  `CompiledSourcePlan`; SQL cannot bypass discovery, egress, health, capability, or type policy.
+- Projection/filter requests flow through ordinary queryable-resource pushdown; exact/inexact/
+  unsupported decisions and native residuals enter plan and manifest identity.
+- Destination target/disposition compiles through ordinary destination sheets and validation. SQL
+  cannot issue destination DDL/DML or select connection credentials.
+- Every output field has exact Arrow type, nullability, provenance, and optional resolved semantic
+  reference before contract compilation.
+- SQL casts change Arrow representation; semantic annotations change meaning/validation only.
+- Contract and trust rules remain CDF artifacts, not DataFusion constraints.
+- Transforms cannot remove, rename, or change compiler-declared CDC operation/key or other
   control-critical fields.
 
-## Project compilation and manifest
+## Manifest contract
 
-SQL authoring requires `.10x/specs/project-compilation-manifest.md` to be active. Compilation MUST
-record:
+Successful compilation records at minimum:
 
-- exact SQL input bytes/hash and normalized AST hash;
-- parser/DataFusion/native function-version tuple;
-- path-derived source/resource, effective source-configuration, driver, and upstream-relation
-  bindings;
-- lowered native expression/operator graph and hash;
-- output schema, contracts, semantics, destination plan, and lineage;
-- pushdown/residual decisions;
-- diagnostics and unsupported/excluded constructs;
-- template/macro expansion origin if that later capability exists.
+- exact authored SQL bytes/hash, bare/envelope form, and normalized authored AST hash;
+- effective normalized resource definition and execution identity;
+- parser, DataFusion, Arrow, scalar registry, compiler, and normalizer versions;
+- authoritative path, namespace, resource name, canonical resource id, and default target;
+- effective target, disposition/merge keys, cursor, trust, semantics, and execution policy, each
+  with origin, canonical identity, and authored span where present;
+- configured source, effective typed secret-redacted source-config identity, immutable source type,
+  driver id/version/descriptor/schema hashes, canonical structured resource arguments, and stable
+  source-node identity;
+- exact resolved semantic references/definitions/versions/hashes/parameters and field effects;
+- native source/scalar/relational/contract/destination IR and typed hashes;
+- output schema and nullability, contracts, field/data/control lineage, and protected fields;
+- source pushdown and residual decisions;
+- excluded/rejected construct diagnostics and their ownership.
 
-Two SQL spellings that normalize to the same semantics MAY share execution identity only if the
-canonicalization law is explicit and tested. Authored-origin hashes remain separately inspectable.
+No DataFusion plan or debug representation is durable authority. Manifest details additionally obey
+`.10x/specs/project-compilation-manifest.md`.
 
-## Current-only authoring transition
+## Diagnostics and security
 
-CDF is net-new/customer zero. The spike-era TOML/YAML project resource front-end, root wildcard
-resource mappings, declaration-file locator, and explicit SQL id receive no coexistence period,
-migration reader, or compatibility schema. Foundation D replaces them together.
+The compiler MUST produce focused stable diagnostics for:
 
-Reusable declarative/compiler structures MAY remain internal lowering types if their authority and
-naming fit the new model. Runtime and destination code MUST remain authoring-format agnostic.
-`cdf add`/generation MUST write the source configuration and explicit SQL resource paths through
-atomic multi-file publication; it cannot emit the retired mapping/declaration shape.
+- retired `CREATE RESOURCE`, identifier after `RESOURCE`, or retired project layout;
+- missing, duplicate, positional, non-literal, or unknown configured `source`;
+- source type, URI, credential, secret, environment, or source-level config in SQL;
+- positional, duplicate, unknown, missing, wrong-type, or executable driver arguments;
+- invalid recursive structured values;
+- unknown, repeated, contradictory, or out-of-order envelope clauses;
+- unsafe or unresolved disposition/execution defaults;
+- empty, duplicate, ambiguous, or unknown merge keys;
+- invalid semantic field/reference/definition/version/hash/type/control binding;
+- incomplete or inapplicable drain execution policy;
+- joins, all set operations including `UNION ALL`, aggregates, windows, subqueries, unsupported
+  functions, and every D2 admission failure.
 
-## Explicitness, discovery, and templating
+Every diagnostic retains project-relative file, one-based line/column, exact construct span, stable
+error code, and error owner. Contract/admission failures are `Contract`; source/destination
+refresh/execution failures retain adapter provenance. DataFusion internal failures pass through the
+existing error-ownership boundary rather than leaking opaque planner strings. Human/JSON output,
+manifest diagnostics, and excerpts share one redaction authority.
 
-Initial SQL authoring has no general Jinja/template runtime.
+Compilation diagnostics occur before external I/O except explicit refresh behavior separately
+authorized by the manifest policy. Secret-shaped values are not echoed even when their presence is
+itself invalid.
 
-- Catalog discovery may enumerate upstream relations through existing source discovery authority.
-- `cdf add` or a future generate command materializes explicit resource files.
-- Repeated explicit files are preferred until real duplication establishes a macro requirement.
+## Current-only cutover and tooling
 
-If macros are later activated, they MUST:
+D3 atomically replaces the spike-era project resource reader and every earlier Foundation D
+authoring prototype. It updates parser/compiler wiring, project loading, lock/manifest binding,
+run/preview/plan/validate/inspect selection, `cdf init`, `cdf add`/generation, fixtures, examples,
+and docs in one current model. It deletes retired fields/readers and does not retain legacy enums,
+fallback detection, migration code, aliases, feature flags, or compatibility tests.
 
-- expand at compile/generate time only;
-- use a closed deterministic input model;
-- produce canonical rendered resource artifacts;
-- record template hash, parameters, expansion tool/version, and each output hash in the manifest;
-- expose rendered diffs before acceptance;
-- prohibit runtime environment/network/filesystem discovery and secret interpolation.
-
-Runtime string templating is permanently excluded.
-
-## Security and error behavior
-
-- SQL containing a source/type name, credential, DSN, secret reference, or source-level option
-  fails Contract with remediation to the path-bound `[sources.<name>]` configuration.
-- Unknown configured source, relation, resource field, function, or semantic reference fails
-  compilation before I/O.
-- Positional, repeated, missing, unknown, or source-level `upstream(...)` arguments fail at the
-  argument location before external I/O; admitted arguments are validated by the selected driver's
-  resource schema.
-- Ambiguous names require qualification; resolution cannot depend on map iteration order.
-- Parser/type/lowering errors retain file, line, column, construct, and stable error code.
-- Source/destination discovery and execution errors retain adapter provenance.
-- DataFusion internal/planning failures are classified through existing error ownership and never
-  exposed as unchecked strings.
-- Compiler diagnostics and manifest content use the same redaction authority as CLI JSON/human
-  output.
+Generation writes explicit SQL files. D3 includes no Jinja/template runtime or macro language. A
+future macro system requires render-and-pin semantics, canonical output hashes/diffs, and a separate
+ratified contract. Runtime interpolation remains forbidden.
 
 ## Acceptance scenarios
 
-1. Given a simple one-source SQL resource, compile produces the expected native source/operator/
-   contract/destination artifacts without a runtime SQL or authoring-format branch.
-2. Given projection/filter/cast/alias expressions, DataFusion analysis and native CDF execution
-   agree on Arrow schema, null behavior, values, and errors over property-generated batches.
-3. Given an inexact source pushdown, the manifest records it and native residual evaluation
-   preserves results.
-4. Given a join/window/aggregate or a non-built-in, non-immutable, session-dependent, unknown, or
-   unrepresentable scalar function, compilation fails at the exact source location and no runtime
-   plan or external I/O is produced.
-5. Given a path-bound named source configuration, the SQL/manifest contain no resolved secret
-   value.
-6. Given `sources/warehouse/orders.cdf.sql`, compilation derives exactly `warehouse.orders`; SQL
-   cannot override it, and canonical path collisions fail before manifest publication.
-7. Given a spike-era project mapping/declarative resource file, current validation rejects the
-   retired shape with regeneration guidance and no compatibility reader.
-8. Given a semantic annotation, its exact definition/version/hash and validation/destination
-   effects appear in the manifest.
-9. Given an attempted transform of `_cdf_op` or a CDC key, compilation fails as control-critical.
-10. Given generated resources, every rendered output is explicit, hashed, diffable, and frozen
-    before execution.
-11. Given equivalent `upstream(...)` named arguments in different authored order, their canonical
-    relation/resource-option identity is equal while authored SQL hashes remain distinct.
-12. Given a REST/files/Iceberg structured selector, the eventual ratified data-only structured
-    argument grammar lowers to the same typed resource options accepted by the ordinary source
-    driver without a generic top-level SQL option bag.
+1. Given `resources/analytics/userdata.cdf.sql` contains one valid bare `SELECT`, compile derives
+   resource id and default target `analytics.userdata`.
+2. Given a bare query, every omitted effective metadata value is resolved and recorded before
+   native plan publication.
+3. Given a bounded replayable source and no disposition override, applicable built-in `REPLACE` is
+   resolved deterministically.
+4. Given an incremental or unbounded source without an applicable disposition default, compile
+   fails rather than selecting `APPEND`.
+5. Given no trust clause/project override, effective trust is `EXPERIMENTAL` with built-in origin.
+6. Given `RESOURCE ... AS SELECT`, explicit clauses override project and built-in defaults.
+7. Given `CREATE RESOURCE`, compile rejects it with exact current-form guidance.
+8. Given `RESOURCE analytics.userdata`, compile rejects the SQL-declared id.
+9. Given omitted `source`, compile fails at `upstream(...)`.
+10. Given `source => 'github'`, compile resolves `[sources.github]`, selects its immutable driver,
+    and validates only remaining arguments through that driver's resource schema.
+11. Given resource namespace and configured-source name differ, compile succeeds.
+12. Given equivalent structured relation args in different orders, canonical relation identity is
+    equal and authored SQL hashes differ.
+13. Given `DISPOSITION MERGE(user_id)`, the key resolves against the final output schema.
+14. Given empty, duplicate, ambiguous, or unknown merge keys, compile fails at their locations.
+15. Given valid `SEMANTICS (...)`, exact field binding, definition, version, parameters, and hash
+    are recorded and Arrow compatibility is enforced.
+16. Given a join, compile fails before external I/O or native plan publication.
+17. Given `UNION ALL`, compile fails as unsupported in D3.
+18. Given equivalent bare and expanded resources, effective execution identity matches only when
+    all resolved metadata/policy/dependencies match; authored hashes remain distinct.
+19. Given successful compilation, no DataFusion plan appears in any durable public, manifest,
+    package, receipt, checkpoint, or destination type.
+20. Given any defaulted value, the manifest records effective value and exact origin.
+21. Given projection/filter/cast/alias expressions, pinned DataFusion analysis and native CDF
+    execution agree on schema, values, nulls, and errors over differential/property fixtures.
+22. Given inexact pushdown, manifest records the decision and native residual evaluation preserves
+    results.
+23. Given a non-immutable, ambient, UDF, table, aggregate, window, opaque, or otherwise inadmissible
+    function, compile fails at the expression and publishes no plan.
+24. Given SQL attempts to alter a protected CDF operation/key field, compile fails as control-
+    critical.
+25. Given a complete DRAIN policy, it lowers exactly to native stream policy; an incomplete or
+    inapplicable policy fails.
+26. Given `TRUST GOVERNED`, the governed contract preset and required review/validation/quarantine/
+    retention evidence are compiled and exposed consistently.
+27. Given any retired project resource map/declaration/root, validation rejects it and current
+    scaffolding never emits it.
 
 ## Performance requirements
 
-- SQL compilation performance is measured separately from execution throughput.
-- Native execution of the admitted SQL subset MUST stay on vectorized Arrow kernels and the
-  existing fused operator/memory path.
-- No per-row parser, dynamic-language call, per-cell/scalar materialization, per-row boxed dispatch,
-  or runtime DataFusion semantic re-planning is permitted. Batch-level dispatch into pinned
-  vectorized DataFusion/Arrow scalar kernels is admitted under D2's differential and 15% roofline
-  gates.
-- Source/destination direct-library roofline standards remain unchanged by authoring syntax.
+- Measure compilation separately from execution throughput.
+- Native execution remains vectorized over Arrow under the existing fused operator/memory path.
+- No per-row parser, dynamic-language call, cell materialization, boxed row dispatch, or runtime
+  DataFusion semantic planning is permitted.
+- D2's differential and roofline gates govern pinned scalar kernels; source/destination direct-
+  library/protocol rooflines remain unchanged by authoring syntax.
+- Focused D3 validation targets affected crates and compiler fixtures; one affected-boundary
+  certificate follows a stable tranche rather than whole-workspace repetition after each edit.
 
-## Staged implementation
+## D3 implementation scope
 
-1. D1 publishes the active manifest before SQL parsing lands.
-2. D2 implements `.10x/specs/datafusion-scalar-relational-ir.md`: the ratified rule-based
-   deterministic DataFusion scalar closure and a new current-only typed scalar/relational IR. There
-   is no remaining hand-authored scalar-name checkpoint.
-3. D0 removed the current Postgres-special-cased merge-dedup policy. The path-derived source model,
-   typed base configuration, and selected-environment overlays are governed by
-   `.10x/specs/project-source-resource-layout.md`; driver options stay schema-validated.
-4. C1/C2 provide canonical semantic references. Exact SQL semantic-annotation token syntax remains
-   a focused D3 shaping checkpoint; it cannot create a second reference grammar.
-5. SQL target is logical target authority only; environment configuration owns destination
-   connection selection.
+D3 is authorized to implement:
+
+1. bare `SELECT` resources;
+2. optional no-id `RESOURCE ... AS` envelope;
+3. removal/rejection of `CREATE RESOURCE`;
+4. `resources/<namespace>/<resource>.cdf.sql` path identity and default target;
+5. typed project/built-in defaults with origin;
+6. required `source => '<configured_source>'`;
+7. source resolution before driver resource-argument validation;
+8. recursive data-only structured values;
+9. `DISPOSITION MERGE(key, ...)`;
+10. `SEMANTICS (...)`;
+11. bounded and purpose-built drain execution syntax;
+12. native lowering and complete manifest recording;
+13. rejection/deletion of every retired authoring surface;
+14. continued rejection of joins, set operations, and multiple upstream relations.
+
+D3 is not authorized to implement path-inferred source identity, resource namespace/source
+equality, SQL-declared ids, connection details in SQL, joins/static lookup joins, `UNION ALL`,
+multiple upstream relations, aggregation/windows/subqueries, arbitrary SQL pass-through, source-
+native query text, runtime DataFusion planning, resident supervision, generic option bags, or
+templating.
 
 ## References
 
-- `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
-- `.10x/specs/project-compilation-manifest.md`
-- `.10x/specs/project-source-resource-layout.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
+- `.10x/specs/project-source-resource-layout.md`
+- `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/semantic-type-registry.md`
-- `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
 - `.10x/decisions/datafusion-deterministic-scalar-closure.md`
 - `.10x/specs/datafusion-scalar-relational-ir.md`
+- `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
 - `.10x/decisions/compiled-fused-streaming-operator-graph.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/specs/types-contracts-normalization.md`
+- `.10x/specs/package-keyed-delete-effects.md`
+- `.10x/knowledge/net-new-no-compatibility-policy.md`
 - `VISION.md` D-1, D-2, D-9, D-19, D-20

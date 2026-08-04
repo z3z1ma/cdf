@@ -71,10 +71,10 @@ the retired resource map/declarative reader atomically.
 
 ## References
 
-- `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
-- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
-- `.10x/specs/project-source-resource-layout.md`
-- `.10x/specs/sql-project-authoring.md`
+- `.10x/decisions/superseded/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/superseded/project-path-tokens-and-upstream-relation-binding.md`
+- `.10x/specs/superseded/project-source-resource-layout.md`
+- `.10x/specs/superseded/sql-project-authoring.md`
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/research/2026-08-03-project-compiler-authority-inventory.md`
 - `.10x/knowledge/net-new-no-compatibility-policy.md`
