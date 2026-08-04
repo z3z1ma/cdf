@@ -388,6 +388,17 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ## Journal
 
+- 2026-08-03: The user reordered execution to complete foundation lane C (semantic types) and lane
+  D (project compiler/manifest) before returning to lane A, requested bounded fast-feedback
+  validation, lane-boundary review, incremental commit/push, and asynchronous CI observation.
+  C0/D0 source inventories are recorded in
+  `.10x/research/2026-08-03-semantic-authority-inventory.md` and
+  `.10x/research/2026-08-03-project-compiler-authority-inventory.md`. They confirm six current
+  behavior-bearing semantic families, one meaningless descriptive fixture, a configurable variant
+  invalid state, reusable typed plan/lock identities, the existing crash-safe publication seam, a
+  `cdf sql` recompilation leak, and still-live Postgres-owned merge-dedup policy drift. The only
+  remaining C0/D0 blockers are the compact user-visible ratification checkpoint derived from those
+  inventories.
 - 2026-08-03: Program opened as a non-executable owner after live-source reconciliation of the
   supplied external review. Six focused draft specs and one immediate correctness ticket were
   created. No product code, external state, build, or test was changed/run.
