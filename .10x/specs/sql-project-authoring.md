@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-03
 Updated: 2026-08-03
 
@@ -7,10 +7,9 @@ Updated: 2026-08-03
 ## Status and product direction
 
 The user has established a SQL-like project authoring experience as the preferred direction for
-CDF's configuration overhaul: project files should resemble explicit SQL resources, DataFusion may
-parse/analyze them, and CDF executes an opaque native plan. This draft defines the safe compiler
-boundary and a deliberately narrow first language. Exact file layout and statement grammar remain
-unratified.
+CDF's configuration overhaul: project files resemble explicit SQL resources, DataFusion may
+parse/analyze them, and CDF executes an opaque native plan. The CDF-owned envelope, explicit-id
+rule, profile boundary, and absence of companion/generic-option files were ratified on 2026-08-03.
 
 ## Purpose
 
@@ -73,23 +72,39 @@ An explicit SQL resource defines:
 The file path may supply the resource id only if path-to-id normalization and collision behavior is
 specified and manifest-recorded. Relying on incidental filenames without validation is forbidden.
 
-## Grammar decision still open
+## Ratified grammar boundary
 
-Three viable shapes remain:
+Each `resources/**/*.cdf.sql` file contains exactly one CDF-owned `CREATE RESOURCE ... AS SELECT`
+statement. The statement declares its canonical resource id explicitly; filename-to-id inference is
+forbidden and duplicate ids fail deterministically. CDF parses the typed envelope and DataFusion
+parses/analyzes only the `SELECT` body.
 
-1. CDF-owned `CREATE RESOURCE ... AS SELECT ...` envelope, with CDF parsing the envelope and
-   DataFusion parsing/analyzing the query body;
-2. standard SQL `SELECT`/view-shaped file plus a typed companion metadata file;
-3. standard SQL with a small, strictly parsed metadata header.
-
-The supplied external example is illustrative, not ratified:
+The envelope has this required structural order; optional clauses are omitted rather than given
+sentinel values:
 
 ```sql
 CREATE RESOURCE github.issues
-FROM SOURCE github
-WITH (cursor = updated_at, disposition = 'merge')
-AS SELECT id, state, updated_at FROM source WHERE state <> 'spam';
+FROM SOURCE github RESOURCE issues
+TARGET warehouse.issues
+DISPOSITION MERGE
+MERGE KEY (id)
+CURSOR updated_at
+TRUST GOVERNED
+AS
+SELECT id, state, updated_at
+FROM source
+WHERE state <> 'spam';
 ```
+
+Typed clauses cover source profile/relation, logical destination target, disposition, primary or
+merge keys, cursor, contract/trust, and execution extent. Unknown, repeated, contradictory, or
+out-of-order clauses fail with exact source location. Defaults may come only from the typed project
+model and are resolved into the manifest; no generic `WITH` map exists.
+
+Named connection profiles, driver options, policy, and secret references live in `cdf.toml` and are
+validated by driver option schemas. SQL cannot contain a connection URI, credential, or secret
+value. Destination connection remains selected by the environment while the statement may declare
+only its logical target. Companion metadata files and metadata headers are forbidden in v1.
 
 The chosen form MUST prove:
 
@@ -274,15 +289,17 @@ Runtime string templating is permanently excluded.
   DataFusion re-planning is permitted without measured roofline evidence and a separate decision.
 - Source/destination direct-library roofline standards remain unchanged by authoring syntax.
 
-## Open blockers
+## Staged implementation
 
-1. Exact file layout and resource-id derivation.
-2. Exact CDF statement envelope versus companion metadata grammar.
-3. First native scalar function/cast allowlist and IR version.
-4. Project/profile model replacing the current Postgres-special-cased destination policy.
-5. Manifest activation and offline/refresh compile semantics.
-6. Semantic registry activation and SQL annotation grammar.
-7. Whether an initial destination binding belongs in SQL or project metadata.
+1. D1 publishes the active manifest before SQL parsing lands.
+2. D2 must activate a focused native scalar/cast allowlist and IR version before D3 accepts those
+   expressions. That exact allowlist remains a D2 shaping checkpoint, not parser discretion.
+3. D0 removes the current Postgres-special-cased merge-dedup policy. General named connection
+   profiles receive a focused project-model ticket before D3; driver options stay schema-validated.
+4. C1/C2 provide canonical semantic references. Exact SQL semantic-annotation token syntax remains
+   a focused D3 shaping checkpoint; it cannot create a second reference grammar.
+5. SQL target is logical target authority only; environment configuration owns destination
+   connection selection.
 
 ## References
 

@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-03
 Updated: 2026-08-03
 
@@ -6,15 +6,15 @@ Updated: 2026-08-03
 
 ## Status and design invariant
 
-This draft proposes first-class semantic-definition authority. It MUST remain subordinate to the
+This specification defines first-class semantic-definition authority. It remains subordinate to the
 active Arrow type invariant:
 
 > Arrow is CDF's closed canonical physical/logical data type system. A semantic type is a
 > versioned annotation profile over an Arrow field, not a parallel value representation or custom
 > kernel type lattice.
 
-The registry is not executable until namespace/version syntax, project-defined type scope, and
-direct replacement of existing free-form tags are ratified.
+The namespace/version syntax, fail-closed unknown policy, direct replacement map, and inclusion of
+data-only project definitions were user-ratified on 2026-08-03.
 
 ## Purpose
 
@@ -50,7 +50,7 @@ for schema/package/hash changes. No alias or compatibility resolution layer is p
 
 ## Semantic reference
 
-Every semantic-bearing field SHOULD resolve to a canonical reference with:
+Every semantic-bearing field MUST resolve to a canonical reference with:
 
 - namespace;
 - stable name;
@@ -58,16 +58,26 @@ Every semantic-bearing field SHOULD resolve to a canonical reference with:
 - optional validated parameters;
 - definition content hash in the compiled/locked registry snapshot.
 
-Recommended human form: `namespace.name@version` plus canonical parameters. The exact grammar is
-unratified. The serialized Arrow metadata SHOULD carry a compact canonical reference and the
-compiled plan/manifest MUST bind it to the full definition hash.
+The canonical human and artifact form is:
 
-Unversioned aliases MAY be accepted only at authoring time and MUST lower immediately to a pinned
-version. Runtime/package artifacts MUST NOT depend on “latest.”
+```text
+namespace.name@version
+namespace.name@version(key=<canonical-json-scalar>,...)
+```
+
+`namespace`, `name`, and parameter keys MUST be lowercase ASCII snake identifiers. `version` MUST
+be a positive `u32` definition version. Parameter keys MUST be unique, declared by the definition,
+and serialized in lexical order; values MUST be canonical JSON strings, numbers, or Booleans.
+Arrays, objects, null, duplicate keys, whitespace variants, unknown parameters, and noncanonical
+escaping/numbers MUST fail compilation. The serialized Arrow metadata carries this pinned canonical
+reference and the compiled plan/manifest binds it to the full definition hash.
+
+Aliases and unversioned references are not accepted. An id/version definition is immutable; a
+behavior change requires a new version. Runtime/package artifacts MUST NOT depend on “latest.”
 
 ## Definition model
 
-A semantic definition MUST be data, not arbitrary executable code. It SHOULD include:
+A semantic definition MUST be data, not arbitrary executable code. It MUST include:
 
 ### Identity
 
@@ -139,12 +149,17 @@ encoding, and verification.
 
 ### Built-ins
 
-CDF SHOULD ship a small built-in registry for semantics already present in source:
+CDF MUST ship this initial built-in registry:
 
-- framework variant;
-- PII classifications currently represented by `pii:*`;
-- exact PostgreSQL JSON/JSONB/NUMERIC text profiles;
-- any canonical CDC operation/key semantics approved by the CDC contract.
+- `cdf.variant@1` for the nullable UTF-8 framework residual column;
+- `cdf.package_row_ordinal@1` for the non-null internal `UInt64` package ordinal;
+- `cdf.pii@1(class="...")` preserving the current any-Arrow-type PII redaction behavior;
+- `postgres.json_text@1`, `postgres.jsonb_text@1`, and `postgres.numeric_text@1` for exact
+  PostgreSQL values with their existing UTF-8 and physical-provenance prerequisites.
+
+The current `json`, `package-row-ord-v1`, `pii:*`, and `postgres_*_value_text_v1` strings MUST be
+replaced directly. Descriptive `id` and other behavior-free tags MUST be removed rather than
+aliased. Approved future CDC control semantics may add separately versioned definitions.
 
 Built-ins are versioned with CDF and included in the dependency tuple/manifest snapshot.
 
@@ -156,14 +171,15 @@ id. Conflicting ids/versions/hashes fail catalog construction.
 
 ### Project-defined definitions
 
-Project-defined semantic types are desirable but add compatibility, sharing, trust, and validation
-surface. Recommended staging:
+Project-defined semantic types are in scope and add compatibility, sharing, trust, and validation
+surface. Required staging:
 
 1. first implement built-ins, exact resolution, locking, and all existing consumers;
 2. then admit project definitions using the same data-only schema and closed validation vocabulary;
 3. later consider signed external registries after a concrete distribution requirement.
 
-Whether project definitions are part of the first slice is an explicit ratification blocker.
+Project definitions MUST use the same data-only schema and closed predicate/mapping vocabulary as
+built-ins. They are implemented after built-in migration and manifest publication are stable.
 
 ## Compilation and identity
 
@@ -193,7 +209,7 @@ usage. No runtime network lookup or mutable global registry is permitted.
 
 ## Destination-sheet evolution
 
-Current destination mappings select only by Arrow type. The registry program SHOULD extend the
+Current destination mappings select only by Arrow type. The registry program MUST extend the
 shared mapping model to distinguish:
 
 - base Arrow mapping;
@@ -201,8 +217,11 @@ shared mapping model to distinguish:
 - physical-provenance prerequisites;
 - deterministic specificity/ambiguity rules.
 
-Resolution order SHOULD be most-specific valid semantic+Arrow+parameter mapping, then base Arrow
-mapping only when the semantic permits fallback. Equal-specificity matches are a contract error.
+Each semantic destination selector MUST name an exact destination id, allowed Arrow pattern,
+adapter-owned mapping profile id, fidelity, required metadata predicates, and whether base Arrow
+fallback is legal. Resolution order is the most-specific valid semantic+Arrow+parameter mapping,
+then base Arrow mapping only when the definition explicitly permits fallback. Equal-specificity or
+conflicting matches are a Contract error.
 
 An unknown semantic MUST NOT be ignored when it claims exact-value or control-critical meaning.
 Descriptive tags retained by the new contract require a canonical definition; unneeded old tags are
@@ -293,14 +312,16 @@ consumers. It then MUST:
 Golden fixtures must distinguish intended artifact-version/hash changes from accidental data or
 redaction changes.
 
-## Open blockers
+## Ratified staging
 
-- canonical id/version/parameter syntax;
-- first-slice project-defined type support;
-- exact current tag inventory and direct replacement map;
-- whether descriptive unknown tags remain allowed and, if so, with what no-behavior contract;
-- destination-sheet selector schema and new artifact version;
-- lockfile versus manifest placement for the reachable registry snapshot.
+- C1 implements canonical parsing, built-ins, direct producer/consumer migration, validation,
+  redaction classification, and destination mapping profiles.
+- D1 adds `CdfLock.semantics`, a map from each reachable canonical reference to its definition
+  hash, while the manifest records the complete reachable definitions, normalized parameters, and
+  per-field usage. The lock therefore pins expectation without duplicating the snapshot.
+- C2 adds project definition files through the project compiler after C1 and D1 are stable.
+- SQL annotation syntax remains owned by `.10x/specs/sql-project-authoring.md`; it resolves to the
+  same canonical reference and introduces no alternate semantic model.
 
 ## References
 

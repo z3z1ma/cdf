@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-03
 Updated: 2026-08-03
 
@@ -6,7 +6,7 @@ Updated: 2026-08-03
 
 ## Status and purpose
 
-This draft defines the canonical output of compiling a CDF project. It is the prerequisite for a
+This specification defines the canonical output of compiling a CDF project. It is the prerequisite for a
 SQL authoring front-end and plan-declared hooks. It complements `cdf.lock`; it does not replace or
 silently broaden lockfile semantics.
 
@@ -78,8 +78,8 @@ The manifest MUST be:
 - bounded or stream-decodable for large projects;
 - stable enough for diffing and tooling, while version changes explicitly mark schema evolution.
 
-The exact path and whether generated manifests are committed are unratified. A logical artifact name
-such as `cdf.manifest.json` is recommended; path policy belongs to the CLI/project spec.
+The artifact path is `.cdf/manifest.json`. It is generated local state and MUST NOT be committed by
+the standard scaffold; the scaffold MUST ignore `.cdf/` while retaining committed `cdf.lock`.
 
 ## Compilation modes
 
@@ -87,7 +87,7 @@ Compilation must distinguish external observation from pure lowering.
 
 ### Locked/offline compile
 
-Recommended default:
+`cdf compile` is the default locked/offline command:
 
 - read project files, `cdf.lock`, built-in driver/semantic catalogs, and referenced local artifacts;
 - perform no external network I/O and no destination mutation;
@@ -96,12 +96,10 @@ Recommended default:
 
 ### Refresh compile
 
-A separately explicit mode may run source discovery/health to refresh schema/catalog observations.
-It is read-only with respect to external sources but can publish updated project/lock/manifest files
-only under the existing atomic project publication contract and user-authorized command semantics.
-
-The exact CLI spelling is not ratified. `cdf compile` is the recommended pure command; refresh
-should not be an implicit side effect of every compile.
+`cdf compile --refresh` is the only initial refresh form. It MAY run source discovery/health to
+refresh schema/catalog observations. It is read-only with respect to external sources and
+destinations but may publish updated project/lock/manifest files only under the existing atomic
+project publication contract. Refresh is never an implicit side effect of ordinary compile.
 
 ## Manifest sections
 
@@ -238,22 +236,26 @@ identity verification.
 
 ## Query exposure
 
-Current `cdf sql` mounts artifacts in an in-memory SQLite catalog. The first implementation SHOULD
-add read-only tables/views over the manifest using that existing engine, for example:
+Current `cdf sql` mounts artifacts in an in-memory SQLite catalog. The first implementation MUST
+add these read-only tables over the manifest using that existing engine:
 
-- `manifest_projects`;
+- `manifest_project`;
 - `manifest_inputs`;
 - `manifest_resources`;
 - `manifest_fields`;
-- `manifest_source_plans`;
-- `manifest_contracts` and `manifest_rules`;
 - `manifest_semantics`;
 - `manifest_lineage`;
-- `manifest_hooks`;
 - `manifest_diagnostics`.
 
-Exact names are not ratified. Tables must preserve stable column contracts and expose canonical
-JSON for nested facts where normalization would lose meaning.
+`manifest_project` contains exactly one row. Nested source plans, contracts, destination facts, and
+other structures remain available as canonical JSON columns on the owning resource/field rows
+where normalization would lose meaning. Hook or generation tables are added only when those
+features exist; empty speculative tables are forbidden. These names and column contracts are
+versioned manifest-query API.
+
+`cdf sql` MUST locate the project and selected environment without compiling resource files, then
+verify and mount the matching manifest. It MUST NOT contact a registry/source/destination, compile,
+refresh, publish, or recover an interrupted publication.
 
 Future DataFusion/ADBC/catalog serving MAY expose the same artifact; it MUST NOT become a second
 compiler or reinterpret identity.
@@ -313,14 +315,19 @@ compiler or reinterpret identity.
 - runtime template expansion or hook code lookup;
 - mandatory publication to a remote service.
 
-## Open blockers
+## Ratified first implementation
 
-- artifact path, commit/ignore policy, and retention;
-- exact offline/refresh command grammar;
-- manifest schema normalization versus content-addressed child artifacts at large scale;
-- project-file publication ordering integration;
-- initial `cdf sql` table names/columns;
-- how `cdf.lock` pins semantic definitions without duplicating the full reachable snapshot.
+- `.cdf/manifest.json` retains the latest successful selected-environment compilation. Packages,
+  receipts, source control, or explicit copies retain historical evidence; D1 adds no manifest
+  history database.
+- The first artifact is one canonical bounded JSON document. Content-addressed children are added
+  only after a measured project exceeds the declared manifest bound or another feature requires
+  independently addressable payloads.
+- Offline manifest-only publication uses the manifest as the final transaction target. Refresh
+  publication installs the manifest before `cdf.lock`, which remains the final public commit point.
+- `CdfLock.semantics` pins reachable canonical reference → definition hash expectations. The
+  manifest carries full reachable definition and usage snapshots.
+- The seven tables above are the complete D1 SQLite surface.
 
 ## References
 

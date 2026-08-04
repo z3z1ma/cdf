@@ -167,6 +167,9 @@ chosen by actual shared dependency evidence.
 - ratify canonical namespace/version/parameter grammar, unknown-tag policy, project-defined type
   staging, and destination mapping selector shape.
 
+Closed by `.10x/research/2026-08-03-semantic-authority-inventory.md`,
+`.10x/decisions/semantic-reference-registry-and-unknown-policy.md`, and the active semantic spec.
+
 **C1. Built-in semantic registry and consumer migration**
 
 - activate `.10x/specs/semantic-type-registry.md`;
@@ -177,6 +180,9 @@ chosen by actual shared dependency evidence.
 
 Depends-On: C0 and D1 manifest data-model coordination for final publication; implementation may
 stage internal registry work before D1.
+
+Core/consumer owner:
+`.10x/tickets/2026-08-03-c1-semantic-registry-core-consumer-migration.md`.
 
 **C2. Project-defined semantic definitions**
 
@@ -196,6 +202,12 @@ Depends-On: C1.
 - remove the Postgres-special-cased destination policy only through a separately bounded generic
   policy-model ticket.
 
+Inventory/ratification closed by
+`.10x/research/2026-08-03-project-compiler-authority-inventory.md`,
+`.10x/decisions/project-manifest-path-compile-and-query-policy.md`, and
+`.10x/decisions/sql-resource-envelope-and-profile-boundary.md`. Postgres policy cleanup owner:
+`.10x/tickets/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`.
+
 **D1. Project compilation manifest**
 
 - activate `.10x/specs/project-compilation-manifest.md`;
@@ -205,6 +217,11 @@ Depends-On: C1.
 - no read-only command recovers pending publication.
 
 Depends-On: D0. Must use `.10x/skills/audit-project-file-publication/SKILL.md` during execution.
+
+Owners:
+
+- `.10x/tickets/2026-08-03-d1-project-compilation-manifest-core.md`;
+- `.10x/tickets/2026-08-03-d1-compile-cli-and-manifest-sql.md`.
 
 **D2. Native scalar/relational IR expansion**
 
@@ -352,6 +369,12 @@ deferred lanes are explicitly parked with owners. For a full close:
 - SQL-like explicit project definitions, semantic types, manifests, and inline hook capability are
   desired directions.
 - explicit resources are preferred over implicit templating.
+- semantic references use the exact active canonical grammar, unknown semantics fail closed, and
+  project definitions use the same data-only registry after built-in migration;
+- the generated manifest lives at `.cdf/manifest.json`; offline and explicit refresh compilation
+  use existing crash-safe project publication, and `cdf sql` mounts rather than recompiles it;
+- SQL resources use one explicit typed `CREATE RESOURCE ... AS SELECT` envelope under
+  `resources/**/*.cdf.sql`; connection/profile authority remains outside SQL;
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
 - source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
@@ -381,13 +404,19 @@ deferred lanes are explicitly parked with owners. For a full close:
 ### Unratified blockers
 
 - PostgreSQL/MySQL maximum single-transaction resource behavior;
-- exact SQL grammar/profile split;
-- semantic registry naming/project scope;
+- exact D2 native scalar/cast allowlist and IR version;
+- final named-profile TOML field model and exact D3 semantic-annotation tokens, within the active
+  profile/envelope boundaries;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
 ## Journal
 
+- 2026-08-03: The user accepted all C0/D0 recommendations. Semantic grammar/built-ins/unknown
+  policy/project-definition scope, manifest path/compile/query/publication policy, and the typed SQL
+  envelope/profile boundary are now active decisions/specs. Four executable children own C1 core,
+  Postgres policy drift removal, D1 manifest core, and D1 CLI/query integration. Product code remains
+  untouched in this required ratification/publication turn.
 - 2026-08-03: The user reordered execution to complete foundation lane C (semantic types) and lane
   D (project compiler/manifest) before returning to lane A, requested bounded fast-feedback
   validation, lane-boundary review, incremental commit/push, and asynchronous CI observation.
@@ -429,8 +458,9 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ## Blockers
 
-The exact unratified choices listed above still govern B1/C1/D1/D3/E1. CDC A1 is unblocked; the
-large-transaction policy must be settled before A2 closes. F0 is closed at `3487de68`.
+The exact unratified choices listed above still govern D2/D3/E1. C1 and D0/D1 are executable in the
+recorded dependency order. CDC A1 is unblocked; the large-transaction policy must be settled before
+A2 closes. F0 is closed at `3487de68`.
 
 ## Evidence
 
