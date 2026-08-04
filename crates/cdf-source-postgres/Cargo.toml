@@ -15,6 +15,7 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-http = { path = "../cdf-http" }
 cdf-postgres = { path = "../cdf-postgres" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
 postgres = "0.19"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

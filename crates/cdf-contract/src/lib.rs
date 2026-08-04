@@ -24,8 +24,9 @@ pub use aggregation::{
 };
 pub use compiler::{
     TypeMappingDecision, bind_validation_program_to_resource, compile_resource_validation_program,
-    compile_validation_program, redaction_decision_for_field, redaction_decision_for_semantic,
-    resolve_destination_type_mapping, validate_destination_schema_mappings, validate_type_mapping,
+    compile_validation_program, redaction_decision_for_field,
+    redaction_decision_for_resolved_semantic, resolve_destination_type_mapping,
+    validate_destination_schema_mappings, validate_type_mapping,
 };
 pub use correction::{
     correction_operations_digest, decode_destination_correction_value,
@@ -51,11 +52,11 @@ pub use normalization::{
     normalize_schema,
 };
 pub use policy::{
-    ContractPolicy, DedupKeep, IdentifierCharset, IdentifierPolicy, LineagePolicy,
-    NORMALIZER_NAMECASE_V1, NestedDataPolicy, NormalizationPolicy, PiiRedactionPolicy,
-    ProfilingPolicy, PromotionPolicy, QuarantinePolicy, RedactionDecision, RetentionClass,
-    RowPolicy, RowRule, SchemaEvolutionMode, SchemaPolicy, TransformDescription, TypePolicy,
-    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, ValidationDepth, VariantColumnSpec, VerdictAction,
+    CDF_VARIANT_SEMANTIC, ContractPolicy, DedupKeep, IdentifierCharset, IdentifierPolicy,
+    LineagePolicy, NORMALIZER_NAMECASE_V1, NestedDataPolicy, NormalizationPolicy,
+    PiiRedactionPolicy, ProfilingPolicy, PromotionPolicy, QuarantinePolicy, RedactionDecision,
+    RetentionClass, RowPolicy, RowRule, SchemaEvolutionMode, SchemaPolicy, TransformDescription,
+    TypePolicy, VARIANT_COLUMN_NAME, ValidationDepth, VariantColumnSpec, VerdictAction,
     VerdictPolicy, identifier_policy_from_destination_rules, is_framework_variant_field,
 };
 pub(crate) use program::NativeRowRule;

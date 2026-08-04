@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type, with_semantic};
+use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type};
 use cdf_runtime::SourceEgressScope;
+use cdf_semantic::{
+    POSTGRES_JSON_TEXT_SEMANTIC, POSTGRES_JSONB_TEXT_SEMANTIC, POSTGRES_NUMERIC_TEXT_SEMANTIC,
+    SemanticAuthority, builtin_catalog,
+};
 use postgres::{Client, GenericClient, NoTls, Row};
 
-use cdf_postgres::{
-    POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
-    POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, PostgresTarget,
-};
+use cdf_postgres::PostgresTarget;
 
 use crate::error::classify_postgres_error;
 
@@ -68,6 +69,7 @@ pub(crate) fn schema_from_catalog_columns(
         )));
     }
 
+    let semantic_catalog = builtin_catalog()?;
     let fields = columns
         .into_iter()
         .map(|column| {
@@ -80,10 +82,12 @@ pub(crate) fn schema_from_catalog_columns(
                 Field::new(&column.name, data_type, column.nullable),
                 physical_type,
             );
-            Ok(match semantic {
-                Some(semantic) => with_semantic(field, semantic),
-                None => field,
-            })
+            match semantic {
+                Some(semantic) => {
+                    semantic_catalog.apply_reference(field, semantic, SemanticAuthority::Observed)
+                }
+                None => Ok(field),
+            }
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Schema::new(fields))
@@ -130,18 +134,18 @@ fn arrow_type_for_catalog_column(
     column: &PostgresCatalogColumn,
 ) -> Option<(DataType, Option<&'static str>)> {
     match catalog_base_type(&column.observed_type) {
-        "json" => Some((DataType::Utf8, Some(POSTGRES_JSON_VALUE_TEXT_SEMANTIC))),
-        "jsonb" => Some((DataType::Utf8, Some(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC))),
+        "json" => Some((DataType::Utf8, Some(POSTGRES_JSON_TEXT_SEMANTIC))),
+        "jsonb" => Some((DataType::Utf8, Some(POSTGRES_JSONB_TEXT_SEMANTIC))),
         "numeric" | "decimal" => {
             let Some((precision, scale)) = column.arrow_decimal_precision_scale() else {
-                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC)));
+                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_TEXT_SEMANTIC)));
             };
             let data_type = if precision <= 38 && (-38..=38).contains(&scale) {
                 DataType::Decimal128(precision, scale)
             } else if precision <= 76 && (-76..=76).contains(&scale) {
                 DataType::Decimal256(precision, scale)
             } else {
-                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC)));
+                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_TEXT_SEMANTIC)));
             };
             Some((data_type, None))
         }
@@ -363,14 +367,14 @@ mod tests {
         assert_eq!(fields[0].data_type(), &DataType::Utf8);
         assert_eq!(
             fields[0].metadata()["cdf:semantic"],
-            POSTGRES_JSONB_VALUE_TEXT_SEMANTIC
+            POSTGRES_JSONB_TEXT_SEMANTIC
         );
         assert_eq!(fields[1].data_type(), &DataType::Decimal128(38, 9));
         assert_eq!(fields[2].data_type(), &DataType::Decimal256(60, 18));
         assert_eq!(fields[3].data_type(), &DataType::Utf8);
         assert_eq!(
             fields[3].metadata()["cdf:semantic"],
-            POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+            POSTGRES_NUMERIC_TEXT_SEMANTIC
         );
         assert_eq!(fields[2].metadata()["cdf:physical_type"], "numeric(60,18)");
     }

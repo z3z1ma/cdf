@@ -567,6 +567,28 @@ fn declared_schema_is_normalized_and_preserves_source_identity() {
 }
 
 #[test]
+fn declared_semantics_resolve_canonically_and_unknowns_fail_contract() {
+    let resource = compile(&base_document(
+        r#"schema = { fields = [{ name = "email", type = "utf8", semantic = 'cdf.pii@1(class="email")' }] }"#,
+    ))
+    .unwrap()
+    .remove(0);
+    assert_eq!(
+        cdf_kernel::semantic(resource.schema().field(0)),
+        Some(r#"cdf.pii@1(class="email")"#)
+    );
+
+    for semantic in ["pii:email", "project.unknown@1"] {
+        let document = base_document(&format!(
+            "schema = {{ fields = [{{ name = \"email\", type = \"utf8\", semantic = '{semantic}' }}] }}"
+        ));
+        let error = compile(&document).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert!(error.message.contains("semantic"), "{error}");
+    }
+}
+
+#[test]
 fn normalization_collisions_fail_before_driver_compilation() {
     let error = compile(&base_document(
         "schema = { fields = [{ name = \"VendorID\", type = \"int32\" }, { name = \"vendor_id\", type = \"int64\" }] }",

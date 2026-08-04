@@ -611,15 +611,14 @@ fn sample_commit_segment(state: StateSegment) -> CommitSegment {
 #[test]
 fn metadata_helpers_round_trip_cdf_annotations() {
     let field = Field::new("normalized_name", DataType::Utf8, true);
-    let field = with_cdf_metadata(
-        field,
-        Some("Original Name"),
-        Some("pii:email"),
-        Some("source_absent"),
-    );
+    let field = with_cdf_metadata(field, Some("Original Name"), Some("source_absent"));
+    let semantic_ref = "cdf.pii@1(class=\"email\")"
+        .parse::<SemanticReference>()
+        .unwrap();
+    let field = with_semantic(field, &semantic_ref);
 
     assert_eq!(source_name(&field), Some("Original Name"));
-    assert_eq!(semantic(&field), Some("pii:email"));
+    assert_eq!(semantic(&field), Some("cdf.pii@1(class=\"email\")"));
     let field = with_physical_type(field, "Int32");
 
     assert_eq!(null_origin(&field), Some("source_absent"));

@@ -1,24 +1,18 @@
 [package]
-name = "cdf-declarative"
+name = "cdf-semantic"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Declarative resource authoring boundary for cdf."
+description = "Data-only semantic type registry and resolution authority for cdf."
 
 [dependencies]
 arrow-schema = "58.3.0"
-cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
-cdf-runtime = { path = "../cdf-runtime" }
-cdf-semantic = { path = "../cdf-semantic" }
 hex = "0.4.3"
-schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-serde_yaml = "0.9.34"
 sha2 = "0.10.9"
-toml = "1.1.2"
 
 [lints]
 workspace = true

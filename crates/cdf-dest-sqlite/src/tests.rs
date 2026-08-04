@@ -28,6 +28,10 @@ use crate::{
     transaction::{SqliteCommitSession, install_progress_handler, verify_receipt},
 };
 
+fn semantic_field(field: Field, reference: &str) -> Field {
+    cdf_kernel::with_semantic(field, &reference.parse().unwrap())
+}
+
 #[test]
 fn sheet_type_mappings_exactly_match_the_physical_scalar_mapper() {
     let supported = vec![
@@ -357,9 +361,9 @@ fn test_plan(
 
 #[test]
 fn only_exact_governed_variant_field_enters_the_sqlite_system_namespace() {
-    let variant = cdf_kernel::with_semantic(
+    let variant = semantic_field(
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        cdf_contract::VARIANT_SEMANTIC_TAG,
+        cdf_contract::CDF_VARIANT_SEMANTIC,
     );
     let mut exact_metadata = variant.metadata().clone();
     exact_metadata.insert(
@@ -389,15 +393,15 @@ fn only_exact_governed_variant_field_enters_the_sqlite_system_namespace() {
 
     let impostors = [
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         ),
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true).with_metadata(
             std::collections::HashMap::from([
                 (
                     cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                    "wrong".to_owned(),
+                    r#"cdf.pii@1(class="wrong")"#.to_owned(),
                 ),
                 (
                     cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
@@ -405,33 +409,33 @@ fn only_exact_governed_variant_field_enters_the_sqlite_system_namespace() {
                 ),
             ]),
         ),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Int64, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata.clone()),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, false),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata.clone()),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(std::collections::HashMap::from([
             (
                 cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+                cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
             ),
             (
                 cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
                 "wrong".to_owned(),
             ),
         ])),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new("_cdf_other", DataType::Utf8, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata),
     ];

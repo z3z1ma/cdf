@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -69,6 +69,40 @@ acceptable only if it preserves one resolver without moving project/driver code 
 
 - 2026-08-03: Opened after C0 inventory and user ratification. No product code changed in this
   shaping turn.
+- 2026-08-03: Execution started on `main`. The user reiterated that every legacy spelling and
+  compatibility path must be deleted rather than supported. The scoped error audit covers the new
+  semantic crate plus changed contract/declarative/package/Postgres source/destination boundaries;
+  authored invalidity is Contract, unapproved source metadata is Data, and impossible compiled
+  absence is Internal.
+- 2026-08-03: Added the canonical `SemanticReference`/parameter grammar to `cdf-kernel` and a
+  focused data-only `cdf-semantic` crate. The registry validates definitions before admission,
+  hashes their canonical serialized descriptors, composes project definitions with built-ins, and
+  resolves field compatibility, privacy classification, and most-specific destination mappings.
+  The initial six definitions are `cdf.variant@1`, `cdf.package_row_ordinal@1`, parameterized
+  `cdf.pii@1`, and PostgreSQL JSON/JSONB/NUMERIC exact-text definitions.
+- 2026-08-03: Migrated declarative compilation, contract redaction/variant ownership, package-row
+  ownership, Postgres discovery and native reconstruction, engine variant producers, destination
+  preflight, and all affected fixtures directly. Deleted the old Postgres constants and the
+  configurable variant semantic field; no aliases, compatibility readers, or permissive unknown
+  fallback remain. The package golden identity intentionally changed because the package-row
+  semantic is artifact-bearing.
+- 2026-08-03: A build-graph test caught an upward dependency from `cdf-package-contract` to
+  `cdf-semantic`. Repaired the layering instead of exempting it: kernel owns only canonical
+  reference syntax and the framework ordinal id, while `cdf-semantic` owns the full definition.
+- 2026-08-03: The user clarified that project authors must be able to define parameterized types
+  such as `finance.currency@1(code="USD")`. The public descriptor/catalog model already composes
+  those definitions with built-ins. Closed the authoring boundary further: malformed exact Arrow
+  selectors, noncanonical/disallowed mapping parameters, empty or duplicate metadata predicates,
+  undeclared validation/equivalence parameters, malformed related references, and fail-open PII
+  classifiers now fail catalog construction. A decimal currency definition with USD/EUR
+  constraints and a USD-specific destination profile proves the extension seam. Loading project
+  files and binding their snapshot remains C2, without requiring a registry-model redesign.
+- 2026-08-03: Completed the scoped error-ownership audit. The reproducible manifest, seven-site
+  ledger, and classification note live under
+  `.10x/evidence/2026-08-03-c1-semantic-error-ownership.md`; all new `Internal` sites are owned
+  CDF invariants, while authored and observed invalidity remain Contract and Data respectively.
+- 2026-08-03: Attempted the required post-edit `graphify update .`; the local `graphify`
+  executable is unavailable (`command not found`), so no graph artifact was regenerated.
 
 ## Blockers
 
@@ -76,7 +110,46 @@ None.
 
 ## Evidence
 
-Pending execution.
+1. Canonical grammar: `cargo test -p cdf-kernel semantic` passed all three selected tests,
+   including canonical render/serde round trips and explicit rejection of unversioned, aliased,
+   duplicate, unordered, whitespace-bearing, null, array, and noncanonical references.
+2. Registry/built-ins/custom seam: `cargo test -p cdf-semantic` passed 6/6. It proves six unique
+   deterministic definition hashes, parameter enforcement and authority ownership, Arrow/
+   nullability/metadata fences, mapping specificity/ambiguity rejection, project+built-in
+   composition, constrained `finance.currency@1(code="USD")`, and malformed project descriptor
+   rejection.
+3. Direct producer/consumer migration: source search finds old spellings only in negative rejection
+   tests and governing historical records. `cdf-postgres` no longer defines or reexports the old
+   constants; `VariantColumnSpec` no longer admits a semantic override; active `VISION.md`
+   examples use canonical references and resolved privacy.
+4. Error ownership: `.10x/evidence/2026-08-03-c1-semantic-error-ownership.md` freezes seven scoped
+   behavior files, six justified `Internal` construction sites, and one test assertion. Authored
+   unknowns are Contract, observed unknowns are Data, and compiled absence is Internal.
+5. Contract behavior: `cargo test -p cdf-contract` passed 95 tests with 2 deliberate performance
+   tests ignored. This includes registry-based PII redaction, exact framework variant recognition,
+   recursive destination semantic preflight, and unchanged verdict actions.
+6. Package/engine ownership: `cargo test -p cdf-package-contract` passed 17 unit tests plus its
+   build-graph integration test after the acyclic boundary repair. Targeted engine variant,
+   redaction, schema-admission, and package-evidence tests passed. The golden package hash changed
+   from `5009…` to `13dac4da32ed673cbfbf4e0074da28abf5ca3a14760fdbf2055dad584b4f5817`;
+   isolated one-batch/many-batch equality proved determinism before updating the expected identity.
+7. PostgreSQL exact fidelity: `cargo test -p cdf-dest-postgres exact_` passed 8/8, including live
+   exact/replay/correction coverage. With the existing local DuckDB dylib made visible to the
+   linker, `cargo test -p cdf-conformance postgres_exact` passed the live binary-source to native-
+   destination JSON/JSONB/NUMERIC equivalence case. `cargo test -p cdf-source-postgres` passed 25
+   tests with its opt-in live test ignored.
+8. Destination resolution: the semantic crate mapping test proves most-specific selection and
+   equal-specificity rejection; seven contract destination-mapping tests and governed SQLite/
+   DuckDB variant tests passed; Postgres exact mapping is selected only through adapter-owned
+   profile ids and unknown semantics fail closed.
+9. Focused migration coverage also passed for `cdf-declarative` (22), `cdf-package-contract` (17),
+   affected engine selectors, and the exact Postgres conformance path. No whole-workspace test suite
+   was run.
+10. Quality: explicit affected-package `cargo check --tests` and strict Clippy covered
+    `cdf-kernel`, `cdf-semantic`, `cdf-contract`, `cdf-declarative`, `cdf-package-contract`, both
+    Postgres adapters, `cdf-engine`, SQLite/DuckDB destinations, `cdf-project`, `cdf-cli`, and
+    `cdf-conformance`. The final kernel/semantic/contract strict-Clippy delta passed after the
+    custom-definition closure. `cargo fmt --all -- --check` and `git diff --check` pass.
 
 ## Review
 
@@ -84,4 +157,14 @@ Pending one independent lane-boundary red-team review.
 
 ## Retrospective
 
-Pending execution.
+- The existing package-crate layer fence was valuable: canonical syntax belongs in the kernel,
+  while behavioral definitions belong in the registry. Keeping those separate made the package
+  artifact independently parseable without pulling policy upward.
+- Artifact-bearing semantic metadata correctly changes schema/package identity. Isolating the
+  golden comparison distinguished an intended hash update from nondeterministic packaging.
+- The user-defined currency scenario exposed the right final hardening target: validating a
+  definition means rejecting dead selectors and fail-open classifiers at registration, not merely
+  validating references later. The same public descriptor now serves C2 directly.
+- The local no-run Postgres link initially could not find `libduckdb`; using the already-built
+  `target/debug/deps/libduckdb.dylib` through `LIBRARY_PATH`/`DYLD_LIBRARY_PATH` recovered the
+  targeted validation without broad rebuilding or weakening tests.

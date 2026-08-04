@@ -7092,10 +7092,11 @@ fn append_residual_variant(
             capture.variant_column
         )));
     }
-    let field = cdf_kernel::with_semantic(
+    let field = cdf_semantic::builtin_catalog()?.apply_reference(
         Field::new(&capture.variant_column, DataType::Utf8, true),
-        capture.semantic.clone(),
-    );
+        &capture.semantic,
+        cdf_semantic::SemanticAuthority::Compiled,
+    )?;
     let mut metadata = field.metadata().clone();
     metadata.insert(
         RESIDUAL_ENCODING_METADATA_KEY.to_owned(),

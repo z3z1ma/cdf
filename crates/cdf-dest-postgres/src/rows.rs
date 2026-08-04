@@ -9,9 +9,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{CdfError, Result, physical_type, semantic};
-use cdf_postgres::{
-    POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
-    POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+use cdf_semantic::{
+    POSTGRES_JSON_TEXT_MAPPING_PROFILE, POSTGRES_JSON_TEXT_SEMANTIC,
+    POSTGRES_JSONB_TEXT_MAPPING_PROFILE, POSTGRES_JSONB_TEXT_SEMANTIC,
+    POSTGRES_NUMERIC_TEXT_MAPPING_PROFILE, POSTGRES_NUMERIC_TEXT_SEMANTIC, SemanticAuthority,
+    builtin_catalog,
 };
 
 use crate::identifiers::PostgresColumn;
@@ -26,9 +28,9 @@ pub(crate) enum PostgresExactValueText {
 impl PostgresExactValueText {
     fn semantic(self) -> &'static str {
         match self {
-            Self::Json => POSTGRES_JSON_VALUE_TEXT_SEMANTIC,
-            Self::Jsonb => POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
-            Self::Numeric => POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            Self::Json => POSTGRES_JSON_TEXT_SEMANTIC,
+            Self::Jsonb => POSTGRES_JSONB_TEXT_SEMANTIC,
+            Self::Numeric => POSTGRES_NUMERIC_TEXT_SEMANTIC,
         }
     }
 }
@@ -118,10 +120,17 @@ fn postgres_mapping_for_field(field: &Field) -> Result<(String, Option<&'static 
 }
 
 pub(crate) fn exact_value_text_kind(field: &Field) -> Result<Option<PostgresExactValueText>> {
-    let exact = match semantic(field) {
-        Some(POSTGRES_JSON_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Json,
-        Some(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Jsonb,
-        Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Numeric,
+    let catalog = builtin_catalog()?;
+    let Some(resolved) = catalog.resolve_field(field, SemanticAuthority::Observed)? else {
+        return Ok(None);
+    };
+    let Some(mapping) = catalog.resolve_destination_mapping(&resolved, field, "postgres")? else {
+        return Ok(None);
+    };
+    let exact = match mapping.mapping_profile.as_str() {
+        POSTGRES_JSON_TEXT_MAPPING_PROFILE => PostgresExactValueText::Json,
+        POSTGRES_JSONB_TEXT_MAPPING_PROFILE => PostgresExactValueText::Jsonb,
+        POSTGRES_NUMERIC_TEXT_MAPPING_PROFILE => PostgresExactValueText::Numeric,
         _ => return Ok(None),
     };
     if field.data_type() != &DataType::Utf8 {
@@ -486,6 +495,10 @@ mod tests {
 
     use super::*;
 
+    fn semantic_field(field: Field, reference: &str) -> Field {
+        with_semantic(field, &reference.parse().unwrap())
+    }
+
     #[test]
     fn decimal_schema_maps_to_precision_and_scale_numeric() {
         let schema = Schema::new(vec![
@@ -501,7 +514,7 @@ mod tests {
     }
 
     fn exact_field(name: &str, semantic: &str, physical: &str) -> Field {
-        with_semantic(
+        semantic_field(
             with_physical_type(Field::new(name, DataType::Utf8, true), physical),
             semantic,
         )
@@ -510,12 +523,12 @@ mod tests {
     #[test]
     fn exact_postgres_text_tags_resolve_native_target_declarations() {
         let schema = Schema::new(vec![
-            exact_field("document", POSTGRES_JSON_VALUE_TEXT_SEMANTIC, "json"),
-            exact_field("payload", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "jsonb"),
-            exact_field("unbounded", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, "numeric"),
+            exact_field("document", POSTGRES_JSON_TEXT_SEMANTIC, "json"),
+            exact_field("payload", POSTGRES_JSONB_TEXT_SEMANTIC, "jsonb"),
+            exact_field("unbounded", POSTGRES_NUMERIC_TEXT_SEMANTIC, "numeric"),
             exact_field(
                 "wide",
-                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                POSTGRES_NUMERIC_TEXT_SEMANTIC,
                 "numeric(1000,-1000)",
             ),
         ]);
@@ -530,47 +543,49 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                ("JSON", POSTGRES_JSON_VALUE_TEXT_SEMANTIC),
-                ("JSONB", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC),
-                ("NUMERIC", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC),
-                ("NUMERIC(1000,-1000)", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC),
+                ("JSON", POSTGRES_JSON_TEXT_SEMANTIC),
+                ("JSONB", POSTGRES_JSONB_TEXT_SEMANTIC),
+                ("NUMERIC", POSTGRES_NUMERIC_TEXT_SEMANTIC),
+                ("NUMERIC(1000,-1000)", POSTGRES_NUMERIC_TEXT_SEMANTIC),
             ]
         );
         validate_schema_matches_plan(&schema, &columns).unwrap();
     }
 
     #[test]
-    fn ordinary_physical_only_and_foreign_tagged_utf8_remain_text() {
-        let schema = Schema::new(vec![
+    fn ordinary_physical_only_remains_text_and_unknown_semantics_fail_closed() {
+        let ordinary = Schema::new(vec![
             Field::new("ordinary", DataType::Utf8, true),
             with_physical_type(Field::new("physical", DataType::Utf8, true), "numeric"),
-            with_semantic(
-                with_physical_type(Field::new("foreign", DataType::Utf8, true), "numeric"),
-                "mongodb_decimal128_value_text_v1",
-            ),
         ]);
-
-        let columns = postgres_columns_for_schema(&schema).unwrap();
+        let columns = postgres_columns_for_schema(&ordinary).unwrap();
         assert!(columns.iter().all(|column| column.data_type == "TEXT"));
         assert!(columns.iter().all(|column| column.semantic.is_none()));
+
+        let foreign = semantic_field(
+            with_physical_type(Field::new("foreign", DataType::Utf8, true), "numeric"),
+            "mongodb.decimal128_text@1",
+        );
+        let error = postgres_columns_for_schema(&Schema::new(vec![foreign])).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
     }
 
     #[test]
     fn incomplete_or_incompatible_exact_fields_fail_preflight() {
         let cases = [
-            with_semantic(
+            semantic_field(
                 Field::new("missing", DataType::Utf8, true),
-                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                POSTGRES_NUMERIC_TEXT_SEMANTIC,
             ),
-            exact_field("wrong_physical", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "json"),
+            exact_field("wrong_physical", POSTGRES_JSONB_TEXT_SEMANTIC, "json"),
             exact_field(
                 "invalid_numeric",
-                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                POSTGRES_NUMERIC_TEXT_SEMANTIC,
                 "numeric(1001,0)",
             ),
-            with_semantic(
+            semantic_field(
                 with_physical_type(Field::new("wrong_arrow", DataType::Int64, true), "numeric"),
-                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                POSTGRES_NUMERIC_TEXT_SEMANTIC,
             ),
         ];
 
@@ -590,7 +605,7 @@ mod tests {
         )]);
         let column = PostgresColumn::new("payload", "JSONB", true)
             .unwrap()
-            .with_exact_value_text_semantic(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC);
+            .with_exact_value_text_semantic(POSTGRES_JSONB_TEXT_SEMANTIC);
 
         let error = validate_schema_matches_plan(&schema, &[column]).unwrap_err();
         assert!(error.message.contains("semantic"), "{error}");

@@ -15,6 +15,10 @@ use cdf_kernel::{
     with_semantic, with_source_name,
 };
 
+fn semantic_field(field: Field, reference: &str) -> Field {
+    with_semantic(field, &reference.parse().unwrap())
+}
+
 #[test]
 fn validation_program_serializes_and_has_total_lattice() {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
@@ -764,7 +768,7 @@ fn nested_variant_policy_compiles_variant_capture_action() {
         program.column_programs[0].nested_action,
         NestedAction::CaptureVariant {
             column_name: VARIANT_COLUMN_NAME.to_owned(),
-            semantic: VARIANT_SEMANTIC_TAG.to_owned(),
+            semantic: CDF_VARIANT_SEMANTIC.to_owned(),
         }
     );
     assert!(program.schema_verdicts.iter().any(|rule| {
@@ -775,9 +779,9 @@ fn nested_variant_policy_compiles_variant_capture_action() {
 
 #[test]
 fn framework_variant_field_classifier_requires_the_exact_contract() {
-    let exact = with_semantic(
+    let exact = semantic_field(
         Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        VARIANT_SEMANTIC_TAG,
+        CDF_VARIANT_SEMANTIC,
     );
     let mut exact_metadata = exact.metadata().clone();
     exact_metadata.insert(
@@ -789,33 +793,33 @@ fn framework_variant_field_classifier_requires_the_exact_contract() {
 
     let impostors = [
         Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        with_semantic(
+        semantic_field(
             Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            "wrong",
+            r#"cdf.pii@1(class="wrong")"#,
         ),
-        with_semantic(
+        semantic_field(
             Field::new(VARIANT_COLUMN_NAME, DataType::Int64, true),
-            VARIANT_SEMANTIC_TAG,
+            CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata.clone()),
-        with_semantic(
+        semantic_field(
             Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, false),
-            VARIANT_SEMANTIC_TAG,
+            CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata.clone()),
-        with_semantic(
+        semantic_field(
             Field::new("variant", DataType::Utf8, true),
-            VARIANT_SEMANTIC_TAG,
+            CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(exact_metadata.clone()),
-        with_semantic(
+        semantic_field(
             Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            VARIANT_SEMANTIC_TAG,
+            CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(std::collections::HashMap::from([
             (
                 cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                VARIANT_SEMANTIC_TAG.to_owned(),
+                CDF_VARIANT_SEMANTIC.to_owned(),
             ),
             (
                 RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
@@ -830,7 +834,10 @@ fn framework_variant_field_classifier_requires_the_exact_contract() {
 
 #[test]
 fn pii_redaction_decision_is_available_from_semantic_metadata() {
-    let field = with_semantic(Field::new("email", DataType::Utf8, false), "pii:email");
+    let field = semantic_field(
+        Field::new("email", DataType::Utf8, false),
+        r#"cdf.pii@1(class="email")"#,
+    );
     let decision = redaction_decision_for_field(&field, &PiiRedactionPolicy::default());
 
     assert_eq!(
@@ -867,7 +874,7 @@ fn schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields(
         Field::new("ignored_physical_column", DataType::Utf8, true),
     ]);
     let constraint = Schema::new(vec![with_source_name(
-        with_semantic(Field::new("vendor_id", DataType::Int64, false), "id"),
+        Field::new("vendor_id", DataType::Int64, false),
         "VendorID",
     )]);
 
@@ -878,7 +885,7 @@ fn schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields(
     assert_eq!(field.name(), "vendor_id");
     assert_eq!(source_name(field), Some("VendorID"));
     assert_eq!(physical_type(field), Some("Int64"));
-    assert_eq!(field.metadata().get("cdf:semantic"), Some(&"id".to_owned()));
+    assert!(!field.metadata().contains_key("cdf:semantic"));
     assert_eq!(
         decision_for(&reconciliation.plan, "VendorID").decision,
         FieldCoercionDecision::Preserved

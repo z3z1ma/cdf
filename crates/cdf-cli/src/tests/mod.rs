@@ -18,8 +18,8 @@ use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::{FileWriter, StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, VARIANT_COLUMN_NAME,
-    VARIANT_SEMANTIC_TAG,
+    CDF_VARIANT_SEMANTIC, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
+    VARIANT_COLUMN_NAME,
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
@@ -1177,7 +1177,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         .collect::<Vec<_>>();
     let mut variant = cdf_kernel::with_semantic(
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        cdf_contract::VARIANT_SEMANTIC_TAG,
+        &cdf_contract::CDF_VARIANT_SEMANTIC.parse().unwrap(),
     );
     let mut metadata = variant.metadata().clone();
     metadata.insert(
@@ -2788,7 +2788,7 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
     let builder = package_builder!(&package_dir, package_id).unwrap();
     let mut variant = with_semantic(
         Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        VARIANT_SEMANTIC_TAG,
+        &CDF_VARIANT_SEMANTIC.parse().unwrap(),
     );
     let mut metadata = variant.metadata().clone();
     metadata.insert(

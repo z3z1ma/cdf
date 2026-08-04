@@ -15,6 +15,10 @@ use cdf_kernel::{
 };
 use std::sync::Arc;
 
+fn semantic_field(field: Field, reference: &str) -> Field {
+    cdf_kernel::with_semantic(field, &reference.parse().unwrap())
+}
+
 fn columns() -> Vec<PostgresColumn> {
     vec![
         PostgresColumn::new("id", "BIGINT", false).unwrap(),
@@ -497,9 +501,9 @@ fn identifiers_quote_safely_and_reject_reserved_user_names() {
 
 #[test]
 fn framework_variant_column_is_system_owned_but_user_prefixed_columns_stay_rejected() {
-    let variant = cdf_kernel::with_semantic(
+    let variant = semantic_field(
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        cdf_contract::VARIANT_SEMANTIC_TAG,
+        cdf_contract::CDF_VARIANT_SEMANTIC,
     );
     let mut metadata = variant.metadata().clone();
     metadata.insert(
@@ -512,54 +516,54 @@ fn framework_variant_column_is_system_owned_but_user_prefixed_columns_stay_rejec
 
     let impostors = [
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            "wrong",
+            r#"cdf.pii@1(class="wrong")"#,
         ),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         ),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Int64, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(std::collections::HashMap::from([
             (
                 cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+                cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
             ),
             (
                 cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
                 cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
             ),
         ])),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, false),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(std::collections::HashMap::from([
             (
                 cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+                cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
             ),
             (
                 cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
                 cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
             ),
         ])),
-        cdf_kernel::with_semantic(
+        semantic_field(
             Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-            cdf_contract::VARIANT_SEMANTIC_TAG,
+            cdf_contract::CDF_VARIANT_SEMANTIC,
         )
         .with_metadata(std::collections::HashMap::from([
             (
                 cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+                cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
             ),
             (
                 cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
-                "wrong".to_owned(),
+                r#"cdf.pii@1(class="wrong")"#.to_owned(),
             ),
         ])),
     ];
@@ -843,15 +847,15 @@ fn existing_table_migrations_add_only_safe_missing_columns() {
 
 #[test]
 fn exact_value_plan_retains_semantic_and_rejects_existing_text_target() {
-    let field = cdf_kernel::with_semantic(
+    let field = semantic_field(
         cdf_kernel::with_physical_type(Field::new("payload", DataType::Utf8, true), "jsonb"),
-        cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+        cdf_semantic::POSTGRES_JSONB_TEXT_SEMANTIC,
     );
     let columns = postgres_columns_for_schema(&Schema::new(vec![field])).unwrap();
     assert_eq!(columns[0].data_type, "JSONB");
     assert_eq!(
         columns[0].semantic.as_deref(),
-        Some(cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC)
+        Some(cdf_semantic::POSTGRES_JSONB_TEXT_SEMANTIC)
     );
 
     let destination = PostgresDestination::new();

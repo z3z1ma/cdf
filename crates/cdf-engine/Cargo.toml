@@ -21,6 +21,7 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
 futures-executor = "0.3.32"
 futures-util = "0.3.32"
 half = "2.7.1"

@@ -2018,11 +2018,11 @@ mod tests {
         assert_eq!(schema.field(7).data_type(), &DataType::Utf8);
         assert_eq!(
             schema.field(8).metadata()["cdf:semantic"],
-            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+            cdf_semantic::POSTGRES_NUMERIC_TEXT_SEMANTIC
         );
         assert_eq!(
             schema.field(9).metadata()["cdf:semantic"],
-            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+            cdf_semantic::POSTGRES_NUMERIC_TEXT_SEMANTIC
         );
 
         let scan = PostgresTableScan {

@@ -16,9 +16,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, Expression, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RedactionDecision, RowRule,
-    SchemaChangeKind, SchemaEvolutionMode, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG,
+    CDF_VARIANT_SEMANTIC, ContractPolicy, DedupKeep, Expression, FieldCoercionDecision,
+    NestedDataPolicy, ObservedSchema, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
+    RedactionDecision, RowRule, SchemaChangeKind, SchemaEvolutionMode, VARIANT_COLUMN_NAME,
     VerdictAction, compile_resource_validation_program, compile_validation_program,
     reconcile_schema,
 };
@@ -66,6 +66,10 @@ use tracing::{
 };
 
 use super::*;
+
+fn semantic_field(field: Field, reference: &str) -> Field {
+    with_semantic(field, &reference.parse().unwrap())
+}
 
 mod determinism;
 mod execution;

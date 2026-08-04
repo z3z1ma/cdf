@@ -1,18 +1,17 @@
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{CdfError, IdentifierRules, Result, TrustLevel, semantic};
+pub use cdf_semantic::CDF_VARIANT_SEMANTIC;
 use serde::{Deserialize, Serialize};
 
 use crate::schema::ArrowType;
 
 pub const NORMALIZER_NAMECASE_V1: &str = "namecase-v1";
 pub const VARIANT_COLUMN_NAME: &str = "_cdf_variant";
-pub const VARIANT_SEMANTIC_TAG: &str = "json";
-
 pub fn is_framework_variant_field(field: &Field) -> bool {
     field.name() == VARIANT_COLUMN_NAME
         && field.data_type() == &DataType::Utf8
         && field.is_nullable()
-        && semantic(field) == Some(VARIANT_SEMANTIC_TAG)
+        && semantic(field) == Some(CDF_VARIANT_SEMANTIC)
         && field
             .metadata()
             .get(crate::RESIDUAL_ENCODING_METADATA_KEY)
@@ -468,14 +467,12 @@ pub enum NestedDataPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VariantColumnSpec {
     pub column_name: String,
-    pub semantic: String,
 }
 
 impl Default for VariantColumnSpec {
     fn default() -> Self {
         Self {
             column_name: VARIANT_COLUMN_NAME.to_owned(),
-            semantic: VARIANT_SEMANTIC_TAG.to_owned(),
         }
     }
 }

@@ -591,7 +591,7 @@ fn residual_batch(rows: &[(i64, i64, Option<&str>)]) -> RecordBatch {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
         cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-        cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+        cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
     );
     metadata.insert(
         cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
@@ -943,27 +943,27 @@ fn decimal_batch(rows: &[(i64, Option<i128>)]) -> RecordBatch {
 }
 
 fn exact_value_batch(numeric_declaration: &str, rows: &[(i64, &str, &str, &str)]) -> RecordBatch {
-    let exact = |name, semantic, physical| {
+    let exact = |name, semantic: &str, physical| {
         cdf_kernel::with_semantic(
             cdf_kernel::with_physical_type(Field::new(name, DataType::Utf8, false), physical),
-            semantic,
+            &semantic.parse().unwrap(),
         )
     };
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         exact(
             "document",
-            cdf_postgres::POSTGRES_JSON_VALUE_TEXT_SEMANTIC,
+            cdf_semantic::POSTGRES_JSON_TEXT_SEMANTIC,
             "json",
         ),
         exact(
             "payload",
-            cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+            cdf_semantic::POSTGRES_JSONB_TEXT_SEMANTIC,
             "jsonb",
         ),
         exact(
             "amount",
-            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            cdf_semantic::POSTGRES_NUMERIC_TEXT_SEMANTIC,
             numeric_declaration,
         ),
     ]));

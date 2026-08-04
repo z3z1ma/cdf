@@ -9,9 +9,7 @@ use cdf_contract::{
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RedactionDecision,
     ResidualCandidateVerdict, ResidualFieldRef, ValidationProgram, encode_residual_json_v1,
 };
-use cdf_kernel::{
-    BatchId, CdfError, Result, SchemaHash, source_name, with_semantic, with_source_name,
-};
+use cdf_kernel::{BatchId, CdfError, Result, SchemaHash, source_name, with_source_name};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,7 +155,11 @@ pub(crate) fn normalize_batch(
                 "variant capture column {column_name:?} conflicts with normalized output schema"
             )));
         }
-        let variant_field = with_semantic(Field::new(column_name, DataType::Utf8, true), semantic);
+        let variant_field = cdf_semantic::builtin_catalog()?.apply_reference(
+            Field::new(column_name, DataType::Utf8, true),
+            &semantic,
+            cdf_semantic::SemanticAuthority::Compiled,
+        )?;
         let mut metadata = variant_field.metadata().clone();
         metadata.insert(
             RESIDUAL_ENCODING_METADATA_KEY.to_owned(),

@@ -15,9 +15,8 @@ use super::support::{
     execute_to_package, execute_to_package_with_segment_positions,
     execute_to_package_with_streaming_hooks, incompatible_sample_schema, plan_input,
     plan_input_for_schema, read_package_segment, reconcile_schema, rename_column_program_output,
-    sample_batches, sample_schema, schema_observation_binding, source_name,
+    sample_batches, sample_schema, schema_observation_binding, semantic_field, source_name,
     stream_admission_coercion, terminal_effective_schema_runtime, terminal_file_position,
-    with_semantic,
 };
 use super::support::{ResourceStream, Result};
 
@@ -1040,7 +1039,10 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
 
     let physical_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, true),
-        with_semantic(Field::new("note", DataType::Int32, true), "pii:note"),
+        semantic_field(
+            Field::new("note", DataType::Int32, true),
+            r#"cdf.pii@1(class="note")"#,
+        ),
     ]));
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let reconciliation = reconcile_schema(
@@ -1082,7 +1084,10 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
             10,
             0,
             vec!["note".to_owned()],
-            with_semantic(Field::new("note", DataType::Utf8, true), "pii:note"),
+            semantic_field(
+                Field::new("note", DataType::Utf8, true),
+                r#"cdf.pii@1(class="note")"#,
+            ),
             Some(note_field),
             Arc::new(StringArray::from(vec![CAPTURE_SENTINEL])) as ArrayRef,
             0,
@@ -1130,7 +1135,10 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
             20,
             0,
             vec!["new_secret".to_owned()],
-            with_semantic(Field::new("new_secret", DataType::Utf8, true), "pii:secret"),
+            semantic_field(
+                Field::new("new_secret", DataType::Utf8, true),
+                r#"cdf.pii@1(class="secret")"#,
+            ),
             None,
             Arc::new(StringArray::from(vec![QUARANTINE_SENTINEL])) as ArrayRef,
             0,

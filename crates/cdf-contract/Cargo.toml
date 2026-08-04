@@ -15,6 +15,7 @@ arrow-row = "58.3.0"
 arrow-select = "58.3.0"
 base64 = "0.22.1"
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-semantic = { path = "../cdf-semantic" }
 half = "2.7.1"
 regex = "1.12.4"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -566,6 +566,7 @@ fn compile_schema(resource: &ResourceDeclaration) -> Result<Schema> {
         return Ok(Schema::empty());
     };
 
+    let semantic_catalog = cdf_semantic::builtin_catalog()?;
     let fields = schema
         .fields
         .iter()
@@ -576,12 +577,16 @@ fn compile_schema(resource: &ResourceDeclaration) -> Result<Schema> {
                 .source_name
                 .clone()
                 .unwrap_or_else(|| field.name.clone());
-            Ok(with_cdf_metadata(
-                arrow_field,
-                Some(source_name),
-                field.semantic.clone(),
-                field.null_origin.clone(),
-            ))
+            let arrow_field =
+                with_cdf_metadata(arrow_field, Some(source_name), field.null_origin.clone());
+            match field.semantic.as_deref() {
+                Some(semantic) => semantic_catalog.apply_reference(
+                    arrow_field,
+                    semantic,
+                    cdf_semantic::SemanticAuthority::Authored,
+                ),
+                None => Ok(arrow_field),
+            }
         })
         .collect::<Result<Vec<_>>>()?;
     normalize_arrow_schema(&Schema::new(fields), &IdentifierPolicy::default())

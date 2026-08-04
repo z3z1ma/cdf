@@ -1213,6 +1213,7 @@ dependencies = [
  "arrow-select",
  "base64",
  "cdf-kernel",
+ "cdf-semantic",
  "half",
  "proptest",
  "regex",
@@ -1230,6 +1231,7 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-runtime",
+ "cdf-semantic",
  "hex",
  "schemars 1.2.1",
  "serde",
@@ -1328,6 +1330,7 @@ dependencies = [
  "cdf-package-contract",
  "cdf-postgres",
  "cdf-runtime",
+ "cdf-semantic",
  "hex",
  "postgres",
  "serde",
@@ -1384,6 +1387,7 @@ dependencies = [
  "cdf-package",
  "cdf-package-contract",
  "cdf-runtime",
+ "cdf-semantic",
  "datafusion",
  "futures-executor",
  "futures-util",
@@ -1741,6 +1745,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-semantic"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-schema",
+ "cdf-kernel",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "cdf-source-clickhouse"
 version = "0.2.0-alpha.1"
 dependencies = [
@@ -1874,6 +1890,7 @@ dependencies = [
  "cdf-memory",
  "cdf-postgres",
  "cdf-runtime",
+ "cdf-semantic",
  "postgres",
  "serde",
  "serde_json",

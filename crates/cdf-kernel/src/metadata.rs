@@ -1,5 +1,7 @@
 use arrow_schema::Field;
 
+use crate::SemanticReference;
+
 pub const SEMANTIC_METADATA_KEY: &str = "cdf:semantic";
 pub const SOURCE_NAME_METADATA_KEY: &str = "cdf:source_name";
 pub const NULL_ORIGIN_METADATA_KEY: &str = "cdf:null_origin";
@@ -12,8 +14,8 @@ pub fn source_name(field: &Field) -> Option<&str> {
     metadata_value(field, SOURCE_NAME_METADATA_KEY)
 }
 
-pub fn with_semantic(field: Field, semantic: impl Into<String>) -> Field {
-    with_metadata_value(field, SEMANTIC_METADATA_KEY, semantic)
+pub fn with_semantic(field: Field, semantic: &SemanticReference) -> Field {
+    with_metadata_value(field, SEMANTIC_METADATA_KEY, semantic.to_string())
 }
 
 pub fn semantic(field: &Field) -> Option<&str> {
@@ -39,15 +41,10 @@ pub fn physical_type(field: &Field) -> Option<&str> {
 pub fn with_cdf_metadata(
     field: Field,
     source_name: Option<impl Into<String>>,
-    semantic: Option<impl Into<String>>,
     null_origin: Option<impl Into<String>>,
 ) -> Field {
     let field = match source_name {
         Some(value) => with_source_name(field, value),
-        None => field,
-    };
-    let field = match semantic {
-        Some(value) => with_semantic(field, value),
         None => field,
     };
     match null_origin {

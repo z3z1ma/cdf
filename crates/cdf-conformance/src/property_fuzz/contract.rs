@@ -8,9 +8,9 @@ use arrow_array::{
 use arrow_cast::cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, NestedAction, ObservedSchema,
-    RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome, VARIANT_COLUMN_NAME,
-    VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
+    CDF_VARIANT_SEMANTIC, ContractEvaluationContext, ContractPolicy, FieldCoercionDecision,
+    NestedAction, ObservedSchema, RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome,
+    VARIANT_COLUMN_NAME, ValidationProgram, assert_verdict_lattice_total,
     compile_validation_program, evaluate_record_batch, reconcile_schema,
 };
 use proptest::prelude::*;
@@ -275,7 +275,7 @@ fn conformance_nested_unknown_fields_compile_to_variant_capture() {
         program.column_programs[0].nested_action,
         NestedAction::CaptureVariant {
             column_name: VARIANT_COLUMN_NAME.to_owned(),
-            semantic: VARIANT_SEMANTIC_TAG.to_owned(),
+            semantic: CDF_VARIANT_SEMANTIC.to_owned(),
         }
     );
 }

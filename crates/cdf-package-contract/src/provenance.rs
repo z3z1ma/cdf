@@ -2,12 +2,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use cdf_kernel::{CdfError, Result, SEMANTIC_METADATA_KEY};
+pub use cdf_kernel::CDF_PACKAGE_ROW_ORDINAL_SEMANTIC;
+use cdf_kernel::{CdfError, Result, SEMANTIC_METADATA_KEY, SemanticReference};
 
 use crate::SegmentEntry;
 
 pub const CDF_PACKAGE_ROW_ORD_FIELD: &str = "_cdf_package_row_ord";
-pub const CDF_PACKAGE_ROW_ORD_SEMANTIC: &str = "package-row-ord-v1";
 pub const CDF_VISIBILITY_METADATA_KEY: &str = "cdf:visibility";
 pub const CDF_INTERNAL_VISIBILITY: &str = "internal";
 
@@ -15,7 +15,7 @@ pub fn package_row_ord_field() -> Field {
     Field::new(CDF_PACKAGE_ROW_ORD_FIELD, DataType::UInt64, false).with_metadata(HashMap::from([
         (
             SEMANTIC_METADATA_KEY.to_owned(),
-            CDF_PACKAGE_ROW_ORD_SEMANTIC.to_owned(),
+            CDF_PACKAGE_ROW_ORDINAL_SEMANTIC.to_owned(),
         ),
         (
             CDF_VISIBILITY_METADATA_KEY.to_owned(),
@@ -25,13 +25,15 @@ pub fn package_row_ord_field() -> Field {
 }
 
 pub fn is_package_row_ord_field(field: &Field) -> bool {
+    let resolved_is_package_ordinal = field
+        .metadata()
+        .get(SEMANTIC_METADATA_KEY)
+        .and_then(|value| value.parse::<SemanticReference>().ok())
+        .is_some_and(|reference| reference.to_string() == CDF_PACKAGE_ROW_ORDINAL_SEMANTIC);
     field.name() == CDF_PACKAGE_ROW_ORD_FIELD
         && field.data_type() == &DataType::UInt64
         && !field.is_nullable()
-        && field
-            .metadata()
-            .get(SEMANTIC_METADATA_KEY)
-            .is_some_and(|value| value == CDF_PACKAGE_ROW_ORD_SEMANTIC)
+        && resolved_is_package_ordinal
         && field
             .metadata()
             .get(CDF_VISIBILITY_METADATA_KEY)

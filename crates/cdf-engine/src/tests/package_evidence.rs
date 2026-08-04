@@ -1,18 +1,18 @@
 use super::support::{
     Arc, ArrayRef, AtomicU64, Attributes, BTreeMap, BTreeSet, Batch, BatchHeader, BatchId,
-    BooleanArray, CanonicalSegmentationPolicy, ContractPolicy, DEDUP_SUMMARY_FILE, DataType,
-    DedupKeep, DeduplicationSpec, DrainTermination, EXECUTION_EXTENT_VERSION,
-    EngineExecutionConfig, EnginePackageDraft, EnginePreviewLimits, Event, ExecutionExtent,
-    Expression, Field, FieldCoercionDecision, FileManifest, FilePosition, HashMap, Id, Int32Array,
-    Int32Builder, Int32Type, Int64Array, ListArray, MapBuilder, Metadata, MockResource, Mutex,
-    NestedDataPolicy, ObservedSchema, OperatorNode, Ordering, PackageStatus, PartitionAttestation,
-    PartitionId, Planner, PreContractObservedValue, PreContractQuarantineFact,
-    PreContractResidualCandidate, QuarantineObservedValue, RESIDUAL_ENCODING_METADATA_KEY,
-    RESIDUAL_ENCODING_NAME, Record, RecordBatch, ResourceId, RowRule, RunId, RunPhase,
-    RunPhaseStatus, Schema, SchemaEvolutionMode, SchemaHash, SchemaRef, SegmentEntry,
-    SourcePosition, StandaloneExecutionHost, StringArray, StringBuilder, StringDictionaryBuilder,
-    StructArray, Subscriber, TempDir, TimeUnit, TimestampMillisecondArray, TracingField,
-    TrustLevel, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, Visit, WriteDisposition,
+    BooleanArray, CDF_VARIANT_SEMANTIC, CanonicalSegmentationPolicy, ContractPolicy,
+    DEDUP_SUMMARY_FILE, DataType, DedupKeep, DeduplicationSpec, DrainTermination,
+    EXECUTION_EXTENT_VERSION, EngineExecutionConfig, EnginePackageDraft, EnginePreviewLimits,
+    Event, ExecutionExtent, Expression, Field, FieldCoercionDecision, FileManifest, FilePosition,
+    HashMap, Id, Int32Array, Int32Builder, Int32Type, Int64Array, ListArray, MapBuilder, Metadata,
+    MockResource, Mutex, NestedDataPolicy, ObservedSchema, OperatorNode, Ordering, PackageStatus,
+    PartitionAttestation, PartitionId, Planner, PreContractObservedValue,
+    PreContractQuarantineFact, PreContractResidualCandidate, QuarantineObservedValue,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, Record, RecordBatch, ResourceId,
+    RowRule, RunId, RunPhase, RunPhaseStatus, Schema, SchemaEvolutionMode, SchemaHash, SchemaRef,
+    SegmentEntry, SourcePosition, StandaloneExecutionHost, StringArray, StringBuilder,
+    StringDictionaryBuilder, StructArray, Subscriber, TempDir, TimeUnit, TimestampMillisecondArray,
+    TracingField, TrustLevel, VARIANT_COLUMN_NAME, VerdictAction, Visit, WriteDisposition,
     assert_explain_carries_required_fields, assert_honest_cdf_native_operator_metadata,
     batch_for_partition, batch_for_partition_with_schema, batch_strings, block_on,
     coercion_decision, collect_quarantine_records, compile_resource_validation_program,
@@ -20,8 +20,8 @@ use super::support::{
     execute_to_package_with_segment_positions_and_pre_finalize, fmt, incompatible_sample_schema,
     plan_input, plan_input_for_schema, preview_resource, read_package_segment, reconcile_schema,
     rename_column_program_output, sample_batches, sample_schema, sample_stream_epoch_policy,
-    stream_admission_coercion, terminal_effective_schema_runtime, terminal_file_position,
-    with_semantic,
+    semantic_field, stream_admission_coercion, terminal_effective_schema_runtime,
+    terminal_file_position,
 };
 use super::support::{Array, ResourceStream};
 
@@ -421,7 +421,10 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     let raw_pii = "pii-fixture-sensitive";
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
-        with_semantic(Field::new("name", DataType::Utf8, false), "pii:email"),
+        semantic_field(
+            Field::new("name", DataType::Utf8, false),
+            r#"cdf.pii@1(class="email")"#,
+        ),
         Field::new("active", DataType::Boolean, false),
     ]));
     let mut batch = batch_for_partition_with_schema(
@@ -777,7 +780,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
     let variant_field = batch_schema.field_with_name(VARIANT_COLUMN_NAME).unwrap();
     assert_eq!(
         cdf_kernel::semantic(variant_field),
-        Some(VARIANT_SEMANTIC_TAG)
+        Some(CDF_VARIANT_SEMANTIC)
     );
     assert_eq!(
         variant_field
@@ -833,7 +836,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
             "name": VARIANT_COLUMN_NAME,
             "data_type": "Utf8",
             "nullable": true,
-            "semantic": VARIANT_SEMANTIC_TAG,
+            "semantic": CDF_VARIANT_SEMANTIC,
             "metadata": {
                 (RESIDUAL_ENCODING_METADATA_KEY): RESIDUAL_ENCODING_NAME
             }
@@ -850,17 +853,17 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
             {
                 "source_field": "attributes",
                 "variant_column": VARIANT_COLUMN_NAME,
-                "semantic": VARIANT_SEMANTIC_TAG
+                "semantic": CDF_VARIANT_SEMANTIC
             },
             {
                 "source_field": "payload",
                 "variant_column": VARIANT_COLUMN_NAME,
-                "semantic": VARIANT_SEMANTIC_TAG
+                "semantic": CDF_VARIANT_SEMANTIC
             },
             {
                 "source_field": "tags",
                 "variant_column": VARIANT_COLUMN_NAME,
-                "semantic": VARIANT_SEMANTIC_TAG
+                "semantic": CDF_VARIANT_SEMANTIC
             }
         ])
     );
@@ -886,7 +889,10 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
 #[test]
 fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_controls() {
     let id_field = Field::new("id", DataType::Int32, true);
-    let note_field = with_semantic(Field::new("note", DataType::Int32, true), "pii:note");
+    let note_field = semantic_field(
+        Field::new("note", DataType::Int32, true),
+        r#"cdf.pii@1(class="note")"#,
+    );
     let schema = Arc::new(Schema::new(vec![id_field.clone(), note_field.clone()]));
     let record_batch = RecordBatch::try_new(
         schema.clone(),
@@ -910,7 +916,10 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
             1,
             1,
             vec!["note".to_owned()],
-            with_semantic(Field::new("note", DataType::Utf8, true), "pii:note"),
+            semantic_field(
+                Field::new("note", DataType::Utf8, true),
+                r#"cdf.pii@1(class="note")"#,
+            ),
             Some(note_field),
             note_values,
             0,
@@ -923,7 +932,10 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
             1,
             1,
             vec!["new_secret".to_owned()],
-            with_semantic(Field::new("new_secret", DataType::Utf8, true), "pii:secret"),
+            semantic_field(
+                Field::new("new_secret", DataType::Utf8, true),
+                r#"cdf.pii@1(class="secret")"#,
+            ),
             None,
             unknown_values,
             0,
@@ -1740,7 +1752,10 @@ fn nested_variant_batch() -> Batch {
     let attributes = attributes.finish();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
-        with_semantic(Field::new("email", DataType::Utf8, false), "pii:email"),
+        semantic_field(
+            Field::new("email", DataType::Utf8, false),
+            r#"cdf.pii@1(class="email")"#,
+        ),
         Field::new("payload", payload.data_type().clone(), true),
         Field::new("tags", tags.data_type().clone(), true),
         Field::new("attributes", attributes.data_type().clone(), true),

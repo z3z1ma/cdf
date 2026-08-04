@@ -381,12 +381,12 @@ A watermark is a claim about event time: "no further data with event time earlie
 CDF invents no type lattice. The logical type system is Arrow's, closed, with three annotations carried in `Field` metadata:
 
 ```text
-cdf:semantic     optional tag: json | uuid | url | currency:<code> | pii:<class> | ...
+cdf:semantic     optional canonical reference: cdf.pii@1(class="email") | finance.currency@1(code="USD") | ...
 cdf:source_name  the source's identifier, verbatim, forever
 cdf:null_origin  declared | inferred | widened   — why is this field nullable?
 ```
 
-The intuition for why annotations ride in metadata rather than in wrapper types: a shipping label changes how a parcel is *handled* — fragile, refrigerated, customs-declared — without changing what the parcel *is*, and every conveyor in the warehouse keeps working on labeled parcels unmodified. Semantic tags never change physical execution; they change policy. A `pii:email` tag arms redaction in previews and quarantine artifacts; a `json` tag steers destinations toward their native JSON type; a `currency` tag arms a contract rule. Every DataFusion kernel keeps working untouched, and the annotations ride along for free — the design pays zero execution cost for its semantics.
+The intuition for why annotations ride in metadata rather than in wrapper types: a shipping label changes how a parcel is *handled* — fragile, refrigerated, customs-declared — without changing what the parcel *is*, and every conveyor in the warehouse keeps working on labeled parcels unmodified. Semantic types never change physical execution; they change policy. A `cdf.pii@1(class="email")` reference arms redaction in previews and quarantine artifacts; `postgres.jsonb_text@1` selects the adapter's lossless native JSONB mapping; a project definition such as `finance.currency@1(code="USD")` can arm validation and destination mapping rules. Every reference resolves to one immutable, content-hashed data-only definition while every DataFusion kernel keeps working on the underlying Arrow values untouched.
 
 ### 7.2 The fidelity rules
 
@@ -712,7 +712,7 @@ ResourceBatchStream
   → PackageSink               # segment into the package; propose state deltas
 ```
 
-`ContractExec` and `NormalizeExec` are DataFusion `ExecutionPlan`s over the accepted stream; the quarantine side channel is framework-owned per D-3, flowing into `quarantine/part-*.parquet` with `(row, rule_id, error_code, source_position, observed_value_redacted)`. Redaction obeys semantic tags: a `pii:*` field's offending value is hashed in the artifact, never stored — the quarantine record proves *that* and *where* a value failed without republishing *what* it was.
+`ContractExec` and `NormalizeExec` are DataFusion `ExecutionPlan`s over the accepted stream; the quarantine side channel is framework-owned per D-3, flowing into `quarantine/part-*.parquet` with `(row, rule_id, error_code, source_position, observed_value_redacted)`. Redaction obeys the resolved semantic definition's privacy classification: a PII field's offending value is hashed in the artifact, never stored — the quarantine record proves *that* and *where* a value failed without republishing *what* it was.
 
 ### 11.4 Policy vocabulary and trust presets
 

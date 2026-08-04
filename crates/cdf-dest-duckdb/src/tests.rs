@@ -78,7 +78,7 @@ fn residual_batch() -> RecordBatch {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
         cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
-        cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+        cdf_contract::CDF_VARIANT_SEMANTIC.to_owned(),
     );
     metadata.insert(
         cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),

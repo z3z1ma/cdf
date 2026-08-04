@@ -1,0 +1,8 @@
+site	owner	classification
+crates/cdf-dest-postgres/src/rows.rs:380	Internal	Arrow concrete-array downcast contradicts the already matched Arrow schema type; this is a pre-existing adapter invariant.
+crates/cdf-package-contract/src/provenance.rs:207	Internal	A package row ordinal moving backwards contradicts the private CDF accumulator invariant; this is a pre-existing package invariant.
+crates/cdf-semantic/src/lib.rs:341	Internal	CDF's statically owned built-in definitions failed catalog validation.
+crates/cdf-semantic/src/lib.rs:563	Internal	Serialization of a CDF-owned validated destination-mapping descriptor failed.
+crates/cdf-semantic/src/lib.rs:853	Internal	Serialization of a CDF-owned validated semantic definition failed while deriving its content hash.
+crates/cdf-semantic/src/lib.rs:862	Internal	A compiled artifact references semantic authority absent or invalid after compilation; authored and observed paths are classified separately as Contract and Data.
+crates/cdf-semantic/src/lib.rs:1114	test assertion	Asserts that compiled-authority absence retains Internal ownership; it is not an error constructor.

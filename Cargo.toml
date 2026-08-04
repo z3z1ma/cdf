@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/cdf-kernel",
+    "crates/cdf-semantic",
     "crates/cdf-engine",
     "crates/cdf-contract",
     "crates/cdf-expression",

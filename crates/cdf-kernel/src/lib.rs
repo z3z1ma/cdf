@@ -31,6 +31,7 @@ mod retention;
 mod run_event;
 mod schema_fingerprint;
 mod scope;
+mod semantic;
 mod statistics;
 mod stratified_selection;
 
@@ -161,6 +162,10 @@ pub use run_event::{
 };
 pub use schema_fingerprint::canonical_arrow_schema_hash;
 pub use scope::{ScopeKey, ScopeKind};
+pub use semantic::{
+    CDF_PACKAGE_ROW_ORDINAL_SEMANTIC, SemanticParameterValue, SemanticReference,
+    SemanticReferenceError,
+};
 pub use statistics::{
     BatchStats, ColumnStats, IncompleteStatisticsReason, STATISTICS_MODEL_VERSION,
     StatisticsArrowField, StatisticsArrowType, StatisticsArrowUnionField, StatisticsCompleteness,

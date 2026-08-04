@@ -1,0 +1,7 @@
+crates/cdf-contract/src/compiler.rs
+crates/cdf-declarative/src/compiled.rs
+crates/cdf-dest-postgres/src/rows.rs
+crates/cdf-kernel/src/semantic.rs
+crates/cdf-package-contract/src/provenance.rs
+crates/cdf-semantic/src/lib.rs
+crates/cdf-source-postgres/src/catalog.rs

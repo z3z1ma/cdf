@@ -5,10 +5,6 @@ use std::fmt;
 use cdf_kernel::{CdfError, Result, TargetName};
 use serde::{Deserialize, Serialize};
 
-pub const POSTGRES_JSON_VALUE_TEXT_SEMANTIC: &str = "postgres_json_value_text_v1";
-pub const POSTGRES_JSONB_VALUE_TEXT_SEMANTIC: &str = "postgres_jsonb_value_text_v1";
-pub const POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC: &str = "postgres_numeric_value_text_v1";
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PostgresIdentifier(String);

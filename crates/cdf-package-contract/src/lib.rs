@@ -38,7 +38,7 @@ pub use model::{
     SegmentEntry, SignatureSlot, TRACE_FILE, TombstoneReport, VerificationReport,
 };
 pub use provenance::{
-    CDF_INTERNAL_VISIBILITY, CDF_PACKAGE_ROW_ORD_FIELD, CDF_PACKAGE_ROW_ORD_SEMANTIC,
+    CDF_INTERNAL_VISIBILITY, CDF_PACKAGE_ROW_ORD_FIELD, CDF_PACKAGE_ROW_ORDINAL_SEMANTIC,
     CDF_VISIBILITY_METADATA_KEY, PackageRowOrdinalValidator, append_package_row_ord,
     canonical_segment_schema, is_package_row_ord_field, logical_output_schema,
     package_row_ord_array, package_row_ord_field, strip_package_row_ord,

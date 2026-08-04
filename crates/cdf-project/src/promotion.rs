@@ -3822,7 +3822,7 @@ mod tests {
         let field = if canonical_field {
             let field = cdf_kernel::with_semantic(
                 Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
-                cdf_contract::VARIANT_SEMANTIC_TAG,
+                &cdf_contract::CDF_VARIANT_SEMANTIC.parse().unwrap(),
             );
             let mut metadata = field.metadata().clone();
             metadata.insert(

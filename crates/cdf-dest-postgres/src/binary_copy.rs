@@ -570,12 +570,15 @@ mod tests {
     };
     use arrow_schema::{Field, Schema};
     use cdf_kernel::{with_physical_type, with_semantic};
-    use cdf_postgres::{
-        POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
-        POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+    use cdf_semantic::{
+        POSTGRES_JSON_TEXT_SEMANTIC, POSTGRES_JSONB_TEXT_SEMANTIC, POSTGRES_NUMERIC_TEXT_SEMANTIC,
     };
 
     use super::*;
+
+    fn semantic_field(field: Field, reference: &str) -> Field {
+        with_semantic(field, &reference.parse().unwrap())
+    }
 
     struct EmbeddedFailureWriter;
 
@@ -642,7 +645,7 @@ mod tests {
     #[test]
     fn exact_text_binary_uses_native_json_jsonb_and_numeric_formats() {
         let exact = |name, semantic, physical| {
-            with_semantic(
+            semantic_field(
                 with_physical_type(Field::new(name, DataType::Utf8, false), physical),
                 semantic,
             )
@@ -652,9 +655,9 @@ mod tests {
         let numeric = "-12345.6700";
         let logical = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                exact("document", POSTGRES_JSON_VALUE_TEXT_SEMANTIC, "json"),
-                exact("payload", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "jsonb"),
-                exact("amount", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, "numeric"),
+                exact("document", POSTGRES_JSON_TEXT_SEMANTIC, "json"),
+                exact("payload", POSTGRES_JSONB_TEXT_SEMANTIC, "jsonb"),
+                exact("amount", POSTGRES_NUMERIC_TEXT_SEMANTIC, "numeric"),
             ])),
             vec![
                 Arc::new(StringArray::from(vec![json])),
@@ -697,9 +700,9 @@ mod tests {
 
     #[test]
     fn invalid_exact_numeric_text_is_field_owned_data() {
-        let field = with_semantic(
+        let field = semantic_field(
             with_physical_type(Field::new("amount", DataType::Utf8, false), "numeric"),
-            POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            POSTGRES_NUMERIC_TEXT_SEMANTIC,
         );
         let logical = RecordBatch::try_new(
             Arc::new(Schema::new(vec![field])),

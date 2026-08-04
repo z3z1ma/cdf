@@ -199,14 +199,14 @@ fn assert_discovered_exact_schema(schema: &Schema) {
         schema,
         "document",
         &DataType::Utf8,
-        Some("postgres_json_value_text_v1"),
+        Some("postgres.json_text@1"),
         "json",
     );
     assert_field(
         schema,
         "payload",
         &DataType::Utf8,
-        Some("postgres_jsonb_value_text_v1"),
+        Some("postgres.jsonb_text@1"),
         "jsonb",
     );
     assert_field(
@@ -227,14 +227,14 @@ fn assert_discovered_exact_schema(schema: &Schema) {
         schema,
         "wide_numeric",
         &DataType::Utf8,
-        Some("postgres_numeric_value_text_v1"),
+        Some("postgres.numeric_text@1"),
         "numeric(77,1)",
     );
     assert_field(
         schema,
         "unbounded_numeric",
         &DataType::Utf8,
-        Some("postgres_numeric_value_text_v1"),
+        Some("postgres.numeric_text@1"),
         "numeric",
     );
     assert_field(schema, "ordinary_text", &DataType::Utf8, None, "text");

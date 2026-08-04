@@ -1,11 +1,13 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionMode};
 use cdf_kernel::{
     CdfError, DeduplicationSpec, DestinationSheet, ResourceDescriptor, Result, TypeMapping,
-    TypeMappingFidelity, semantic,
+    TypeMappingFidelity,
 };
+use cdf_semantic::{ResolvedSemantic, SemanticAuthority, SemanticCatalog, builtin_catalog};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,12 +31,19 @@ pub fn compile_validation_program(
 ) -> Result<ValidationProgram> {
     validate_normalizer(&policy.normalization.identifier)?;
     let normalized_schema = normalize_schema(observed_schema, &policy.normalization.identifier)?;
+    let semantic_catalog = builtin_catalog()?;
+    let resolved_semantics = observed_schema
+        .fields
+        .iter()
+        .map(|field| resolve_observed_semantic(semantic_catalog, field))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut column_programs = Vec::with_capacity(observed_schema.fields.len());
-    for (field, normalized) in observed_schema
+    for ((field, normalized), resolved_semantic) in observed_schema
         .fields
         .iter()
         .zip(normalized_schema.fields.iter())
+        .zip(&resolved_semantics)
     {
         validate_type_fidelity(policy, field)?;
 
@@ -64,11 +73,8 @@ pub fn compile_validation_program(
                 &field.arrow_type,
                 &policy.normalization,
             )?,
-            redaction: redaction_decision_for_semantic(
-                field
-                    .metadata
-                    .get(cdf_kernel::SEMANTIC_METADATA_KEY)
-                    .map(String::as_str),
+            redaction: redaction_decision_for_resolved_semantic(
+                resolved_semantic.as_ref(),
                 &policy.quarantine.pii_redaction,
             ),
         });
@@ -109,6 +115,7 @@ pub fn compile_validation_program(
             observed_schema,
             &normalized_schema,
             &row_rules,
+            &resolved_semantics,
             None,
         )),
         schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
@@ -221,6 +228,7 @@ fn residual_program(
     observed_schema: &ObservedSchema,
     normalized_schema: &NormalizedSchema,
     row_rules: &[RowRuleProgram],
+    resolved_semantics: &[Option<ResolvedSemantic>],
     descriptor: Option<&ResourceDescriptor>,
 ) -> ResidualProgram {
     let explicit_capture = matches!(
@@ -236,11 +244,11 @@ fn residual_program(
     let capture = if capture_allowed {
         let (variant_column, semantic) = match &policy.normalization.nested {
             NestedDataPolicy::VariantCapture(spec) => {
-                (spec.column_name.clone(), spec.semantic.clone())
+                (spec.column_name.clone(), CDF_VARIANT_SEMANTIC.to_owned())
             }
             _ => (
                 VARIANT_COLUMN_NAME.to_owned(),
-                VARIANT_SEMANTIC_TAG.to_owned(),
+                CDF_VARIANT_SEMANTIC.to_owned(),
             ),
         };
         Some(ResidualCaptureOutput {
@@ -279,7 +287,8 @@ fn residual_program(
             .fields
             .iter()
             .zip(&normalized_schema.fields)
-            .map(|(field, normalized)| {
+            .zip(resolved_semantics)
+            .map(|((field, normalized), resolved_semantic)| {
                 let required = required.contains(field.source_name.as_str())
                     || required.contains(normalized.output_name.as_str());
                 let control_critical = controls.contains(&field.source_name)
@@ -291,11 +300,8 @@ fn residual_program(
                     output_name: normalized.output_name.clone(),
                     required,
                     control_critical,
-                    redaction: redaction_decision_for_semantic(
-                        field
-                            .metadata
-                            .get(cdf_kernel::SEMANTIC_METADATA_KEY)
-                            .map(String::as_str),
+                    redaction: redaction_decision_for_resolved_semantic(
+                        resolved_semantic.as_ref(),
                         &policy.quarantine.pii_redaction,
                     ),
                 }
@@ -307,16 +313,101 @@ pub fn redaction_decision_for_field(
     field: &Field,
     policy: &PiiRedactionPolicy,
 ) -> RedactionDecision {
-    redaction_decision_for_semantic(semantic(field), policy)
+    let resolved = builtin_catalog()
+        .and_then(|catalog| catalog.resolve_field(field, SemanticAuthority::Compiled));
+    match resolved {
+        Ok(resolved) => redaction_decision_for_resolved_semantic(resolved.as_ref(), policy),
+        Err(_) => RedactionDecision::Omit,
+    }
 }
 
-pub fn redaction_decision_for_semantic(
-    semantic: Option<&str>,
+pub fn redaction_decision_for_resolved_semantic(
+    semantic: Option<&ResolvedSemantic>,
     policy: &PiiRedactionPolicy,
 ) -> RedactionDecision {
     match semantic {
-        Some(tag) if tag.starts_with("pii:") => policy.pii_action.clone(),
+        Some(resolved) if resolved.pii_class().is_some() => policy.pii_action.clone(),
         _ => policy.default_action.clone(),
+    }
+}
+
+fn resolve_observed_semantic(
+    catalog: &SemanticCatalog,
+    field: &ObservedField,
+) -> Result<Option<ResolvedSemantic>> {
+    let arrow_type = observed_arrow_data_type(&field.arrow_type);
+    let arrow_field = Field::new(&field.name, arrow_type, field.nullable).with_metadata(
+        field
+            .metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    );
+    catalog.resolve_field(&arrow_field, SemanticAuthority::Observed)
+}
+
+fn observed_arrow_data_type(arrow_type: &ArrowType) -> DataType {
+    match arrow_type {
+        ArrowType::Null => DataType::Null,
+        ArrowType::Boolean => DataType::Boolean,
+        ArrowType::Int { signed: true, bits } => match bits {
+            8 => DataType::Int8,
+            16 => DataType::Int16,
+            32 => DataType::Int32,
+            64 => DataType::Int64,
+            _ => DataType::Null,
+        },
+        ArrowType::Int {
+            signed: false,
+            bits,
+        } => match bits {
+            8 => DataType::UInt8,
+            16 => DataType::UInt16,
+            32 => DataType::UInt32,
+            64 => DataType::UInt64,
+            _ => DataType::Null,
+        },
+        ArrowType::Float { bits } => match bits {
+            16 => DataType::Float16,
+            32 => DataType::Float32,
+            64 => DataType::Float64,
+            _ => DataType::Null,
+        },
+        ArrowType::Decimal {
+            bits,
+            precision,
+            scale,
+        } => match bits {
+            32 => DataType::Decimal32(*precision, *scale),
+            64 => DataType::Decimal64(*precision, *scale),
+            128 => DataType::Decimal128(*precision, *scale),
+            256 => DataType::Decimal256(*precision, *scale),
+            _ => DataType::Null,
+        },
+        ArrowType::Timestamp { unit, timezone } => DataType::Timestamp(
+            match unit {
+                TimeUnitName::Second => TimeUnit::Second,
+                TimeUnitName::Millisecond => TimeUnit::Millisecond,
+                TimeUnitName::Microsecond => TimeUnit::Microsecond,
+                TimeUnitName::Nanosecond => TimeUnit::Nanosecond,
+            },
+            timezone.clone().map(Into::into),
+        ),
+        ArrowType::Utf8 => DataType::Utf8,
+        ArrowType::Binary => DataType::Binary,
+        ArrowType::Struct => DataType::Struct(Vec::<Field>::new().into()),
+        ArrowType::List => DataType::List(Arc::new(Field::new("item", DataType::Null, true))),
+        ArrowType::Map => DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Vec::<Field>::new().into()),
+                false,
+            )),
+            false,
+        ),
+        ArrowType::Other { display } => {
+            cdf_kernel::parse_arrow_field_type(display).unwrap_or(DataType::Null)
+        }
     }
 }
 
@@ -388,8 +479,111 @@ pub fn validate_destination_schema_mappings(
             sheet.destination
         )));
     }
+    let semantic_catalog = builtin_catalog()?;
     for field in schema.fields() {
+        validate_destination_field_semantics(
+            policy,
+            sheet,
+            field.name(),
+            field.as_ref(),
+            semantic_catalog,
+        )?;
         validate_destination_field_mapping(policy, sheet, field.name(), field.data_type())?;
+    }
+    Ok(())
+}
+
+fn validate_destination_field_semantics(
+    policy: &TypePolicy,
+    sheet: &DestinationSheet,
+    path: &str,
+    field: &Field,
+    catalog: &SemanticCatalog,
+) -> Result<()> {
+    if let Some(resolved) = catalog.resolve_field(field, SemanticAuthority::Authored)?
+        && let Some(mapping) =
+            catalog.resolve_destination_mapping(&resolved, field, sheet.destination.as_str())?
+    {
+        match mapping.fidelity {
+            TypeMappingFidelity::Lossless => {}
+            TypeMappingFidelity::LossyRequiresContractAllowance if policy.allow_lossy_mapping => {}
+            TypeMappingFidelity::LossyRequiresContractAllowance => {
+                return Err(CdfError::contract(format!(
+                    "destination {} maps semantic {} on field `{path}` to {} lossily; enable `allow_lossy_mapping` only if that loss is intended",
+                    sheet.destination,
+                    resolved.reference(),
+                    mapping.destination_type
+                )));
+            }
+            TypeMappingFidelity::Unsupported => {
+                return Err(CdfError::contract(format!(
+                    "destination {} does not support semantic {} on field `{path}`",
+                    sheet.destination,
+                    resolved.reference()
+                )));
+            }
+        }
+    }
+
+    match field.data_type() {
+        DataType::Struct(fields) => {
+            for child in fields {
+                validate_destination_field_semantics(
+                    policy,
+                    sheet,
+                    &format!("{path}.{}", child.name()),
+                    child.as_ref(),
+                    catalog,
+                )?;
+            }
+        }
+        DataType::List(child)
+        | DataType::LargeList(child)
+        | DataType::ListView(child)
+        | DataType::LargeListView(child)
+        | DataType::FixedSizeList(child, _) => validate_destination_field_semantics(
+            policy,
+            sheet,
+            &format!("{path}[]"),
+            child.as_ref(),
+            catalog,
+        )?,
+        DataType::Map(entries, _) => {
+            if let DataType::Struct(fields) = entries.data_type() {
+                for child in fields {
+                    validate_destination_field_semantics(
+                        policy,
+                        sheet,
+                        &format!("{path}.{}", child.name()),
+                        child.as_ref(),
+                        catalog,
+                    )?;
+                }
+            }
+        }
+        DataType::Union(fields, _) => {
+            for (_, child) in fields.iter() {
+                validate_destination_field_semantics(
+                    policy,
+                    sheet,
+                    &format!("{path}.{}", child.name()),
+                    child.as_ref(),
+                    catalog,
+                )?;
+            }
+        }
+        DataType::RunEndEncoded(run_ends, values) => {
+            for (suffix, child) in [("run_ends", run_ends), ("values", values)] {
+                validate_destination_field_semantics(
+                    policy,
+                    sheet,
+                    &format!("{path}.{suffix}"),
+                    child.as_ref(),
+                    catalog,
+                )?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -952,7 +1146,7 @@ fn nested_action_for_field(
         }),
         NestedDataPolicy::VariantCapture(spec) => Ok(NestedAction::CaptureVariant {
             column_name: spec.column_name.clone(),
-            semantic: spec.semantic.clone(),
+            semantic: CDF_VARIANT_SEMANTIC.to_owned(),
         }),
     }
 }
