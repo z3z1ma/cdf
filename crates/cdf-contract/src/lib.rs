@@ -24,9 +24,11 @@ pub use aggregation::{
 };
 pub use compiler::{
     TypeMappingDecision, bind_validation_program_to_resource, compile_resource_validation_program,
-    compile_validation_program, redaction_decision_for_field,
-    redaction_decision_for_resolved_semantic, resolve_destination_type_mapping,
-    validate_destination_schema_mappings, validate_type_mapping,
+    compile_resource_validation_program_with_semantic_catalog, compile_validation_program,
+    compile_validation_program_with_semantic_catalog, redaction_decision_for_field,
+    redaction_decision_for_field_with_semantic_catalog, redaction_decision_for_resolved_semantic,
+    resolve_destination_type_mapping, validate_destination_schema_mappings,
+    validate_destination_schema_mappings_with_semantic_catalog, validate_type_mapping,
 };
 pub use correction::{
     correction_operations_digest, decode_destination_correction_value,

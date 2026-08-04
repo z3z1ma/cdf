@@ -28,9 +28,16 @@ pub fn compile_validation_program(
     policy: &ContractPolicy,
     observed_schema: &ObservedSchema,
 ) -> Result<ValidationProgram> {
+    compile_validation_program_with_semantic_catalog(policy, observed_schema, builtin_catalog()?)
+}
+
+pub fn compile_validation_program_with_semantic_catalog(
+    policy: &ContractPolicy,
+    observed_schema: &ObservedSchema,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<ValidationProgram> {
     validate_normalizer(&policy.normalization.identifier)?;
     let normalized_schema = normalize_schema(observed_schema, &policy.normalization.identifier)?;
-    let semantic_catalog = builtin_catalog()?;
     let resolved_semantics = observed_schema
         .fields
         .iter()
@@ -133,7 +140,25 @@ pub fn compile_resource_validation_program(
     observed_schema: &ObservedSchema,
     descriptor: &ResourceDescriptor,
 ) -> Result<ValidationProgram> {
-    let program = compile_validation_program(policy, observed_schema)?;
+    compile_resource_validation_program_with_semantic_catalog(
+        policy,
+        observed_schema,
+        descriptor,
+        builtin_catalog()?,
+    )
+}
+
+pub fn compile_resource_validation_program_with_semantic_catalog(
+    policy: &ContractPolicy,
+    observed_schema: &ObservedSchema,
+    descriptor: &ResourceDescriptor,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<ValidationProgram> {
+    let program = compile_validation_program_with_semantic_catalog(
+        policy,
+        observed_schema,
+        semantic_catalog,
+    )?;
     bind_validation_program_to_resource(program, descriptor)
 }
 
@@ -313,7 +338,16 @@ pub fn redaction_decision_for_field(
     policy: &PiiRedactionPolicy,
     authority: SemanticAuthority,
 ) -> Result<RedactionDecision> {
-    let resolved = builtin_catalog()?.resolve_field(field, authority)?;
+    redaction_decision_for_field_with_semantic_catalog(field, policy, authority, builtin_catalog()?)
+}
+
+pub fn redaction_decision_for_field_with_semantic_catalog(
+    field: &Field,
+    policy: &PiiRedactionPolicy,
+    authority: SemanticAuthority,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<RedactionDecision> {
+    let resolved = semantic_catalog.resolve_field(field, authority)?;
     Ok(redaction_decision_for_resolved_semantic(
         resolved.as_ref(),
         policy,
@@ -428,13 +462,26 @@ pub fn validate_destination_schema_mappings(
     sheet: &DestinationSheet,
     schema: &Schema,
 ) -> Result<()> {
+    validate_destination_schema_mappings_with_semantic_catalog(
+        policy,
+        sheet,
+        schema,
+        builtin_catalog()?,
+    )
+}
+
+pub fn validate_destination_schema_mappings_with_semantic_catalog(
+    policy: &TypePolicy,
+    sheet: &DestinationSheet,
+    schema: &Schema,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<()> {
     if sheet.type_mappings.is_empty() {
         return Err(CdfError::contract(format!(
             "destination {} declares no Arrow type mappings",
             sheet.destination
         )));
     }
-    let semantic_catalog = builtin_catalog()?;
     for field in schema.fields() {
         validate_destination_field_semantics(
             policy,

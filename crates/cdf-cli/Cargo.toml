@@ -28,6 +28,7 @@ cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-util = "0.3.32"
 mimalloc = { version = "0.1.52", default-features = false }

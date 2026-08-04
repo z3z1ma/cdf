@@ -2361,8 +2361,9 @@ fn write_minimal_lockfile(project: &TestProject) {
     fs::write(
         project.root.join("cdf.lock"),
         r#"
-version = 1
+version = 2
 normalizer = "namecase-v1"
+semantics = {}
 
 [project]
 name = "cli_test"

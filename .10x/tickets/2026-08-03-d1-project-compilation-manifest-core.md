@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -63,6 +63,36 @@ authority, reachable semantic snapshot binding, and crash-safe `.cdf/manifest.js
 
 - 2026-08-03: Opened after D0 inventory and user ratification. The required publication skill was
   read during shaping. No product code changed in this turn.
+- 2026-08-03: Began execution after both dependencies closed. Re-read the publication recovery
+  authority and confirmed `graphify` is unavailable in this environment, so source inspection is
+  the fallback permitted by the project instructions.
+- 2026-08-03: Implemented one current-only lockfile v2 with mandatory reachable semantic pins;
+  version 1 now fails closed and no reader, default, migration, or compatibility shim remains.
+- 2026-08-03: Added the bounded closed manifest v1 model and typed layered identities for inputs,
+  environment/dependency/lock binding, each compiled resource, semantic profiles/snapshot,
+  lineage, and the complete semantic artifact. The full typed `CompiledSourcePlan`, compiler
+  binding, canonical Arrow schema/fields, lock contract snapshot, and destination sheet retain
+  their existing meanings instead of being reconstructed from display text.
+- 2026-08-03: Added typed project/adapter/built-in semantic provenance, complete reachable
+  definitions, normalized parameter values, nested-field usage, and full definition/profile
+  hashes. The manifest compiler requires explicit provenance for every non-built-in definition.
+  A project-defined `finance.currency@1(code="USD")` is compiled directly onto a Decimal field,
+  pinned in `cdf.lock`, and snapshotted as project authority.
+- 2026-08-03: Cut the semantic-catalog injection seam through declarative field compilation,
+  contract compilation/redaction/destination validation, project lock generation/freezing/schema
+  pinning, and CLI project context. Existing built-in compilation remains the ordinary catalog,
+  while the project compiler can supply one composed catalog without another type lattice.
+- 2026-08-03: Implemented canonical parsing with exact byte round-trip, count/size/order bounds,
+  typed cross-reference and child-hash recomputation, secret/host-path stop-lines, selected
+  environment and exact lock validation, and a stable read that samples both transaction generation
+  and all three public files before returning.
+- 2026-08-03: Reused the existing multi-file transaction protocol. Manifest-only publication
+  reasserts the bound `cdf.lock` under the same guard and commits the manifest last; combined
+  publication installs the manifest before `cdf.lock`. The existing pending marker, synced private
+  temporary, forward recovery, and third-value preservation mechanisms remain the sole authority.
+- 2026-08-03: The first focused test attempt reached link only and failed because local DuckDB was
+  not on the linker path. Re-running the same selection with the repository's existing
+  `target/b3-perf/deps` library path passed; no product change was made for that host setup.
 
 ## Blockers
 
@@ -70,7 +100,22 @@ None after dependencies close.
 
 ## Evidence
 
-Pending execution.
+- AC 1–5 and 7: `cargo check -p cdf-project --all-targets` passed. The four focused manifest tests
+  passed under nextest: custom currency pin/snapshot, byte/hash determinism and timestamp exclusion,
+  closed parse/hash tamper rejection, and manifest/lock publication plus stable read. The custom
+  test proves the full definition, `code = USD` normalized parameter, field path, provenance, and
+  lock pin rather than only presence of a semantic string.
+- AC 2–5: the focused existing lock/contract tests passed (3/3): lock semantic round-trip/diff,
+  contract freeze authority preservation, and contract drift reporting. The lock test also rejects
+  version 1 explicitly.
+- AC 6 and 8: the new manifest publication test proves manifest-before-lock ordering, exact stable
+  load, expectation drift rejection, and preservation of an unrelated public value. Existing
+  `cdf-project` process-loss, pending read-only failure, forward recovery, race, marker-corruption,
+  missing-managed-temporary, and Environment/Contract/Internal ownership tests remain the reused
+  publication protocol evidence. Their focused nextest rerun passed 7/7 with 269 tests skipped.
+- AC 9: `cargo check -p cdf-cli --all-targets`, `cargo fmt --all`, `git diff --check`, and strict
+  warning-free Clippy for `cdf-contract`, `cdf-declarative`, `cdf-project`, and `cdf-cli` all passed.
+  No whole-workspace test suite ran.
 
 ## Review
 

@@ -14,6 +14,7 @@ use cdf_project::{
     SchemaSnapshotStore, parse_cdf_toml, parse_lock, project_file_transaction_generation,
     read_lock_file_authority, recover_project_file_transaction,
 };
+use cdf_semantic::SemanticCatalog;
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
 
@@ -28,6 +29,7 @@ pub struct ProjectContext {
     pub resource_origins: Vec<ProjectResourceOrigin>,
     pub lock: Option<CdfLock>,
     pub lock_authority: Option<LockFileAuthority>,
+    pub semantic_catalog: SemanticCatalog,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -181,18 +183,19 @@ impl ProjectContext {
         let environment = config.effective_environment(env_name)?;
         let resolver = FileResourceSourceResolver::new(root);
         let source_registry = crate::source_registry::builtin_source_registry()?;
-        let entries = cdf_project::compile_project_declarative_resource_entries_with_root(
+        let semantic_catalog = SemanticCatalog::builtins()?;
+        let entries = cdf_project::compile_project_declarative_resource_entries_with_root_and_semantic_catalog(
             source_registry,
             &config,
             &resolver,
             root,
+            &semantic_catalog,
         )?;
         let (resources, resource_origins) = entries
             .into_iter()
             .map(|entry| (entry.resource, entry.origin))
             .unzip();
         let (lock, lock_authority) = load_lock(root)?;
-
         Ok(Self {
             root: root.to_path_buf(),
             config,
@@ -201,6 +204,7 @@ impl ProjectContext {
             resource_origins,
             lock,
             lock_authority,
+            semantic_catalog,
         })
     }
 

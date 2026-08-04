@@ -3242,7 +3242,7 @@ mod tests {
         )
         .unwrap();
         let lock = CdfLock {
-            version: 1,
+            version: crate::LOCKFILE_VERSION,
             project: crate::ProjectLock {
                 name: "fixture".to_owned(),
                 default_environment: "test".to_owned(),
@@ -3256,6 +3256,7 @@ mod tests {
                 rust: None,
             },
             normalizer: "namecase-v1".to_owned(),
+            semantics: BTreeMap::new(),
             resources: BTreeMap::new(),
             destinations: BTreeMap::from([("warehouse".to_owned(), locked_destination)]),
         };

@@ -14,9 +14,9 @@ use super::{
     QueryableResource, RECEIPTS_FILE, Receipt, ReceiptId, ResolvedProjectDestination, ResourceId,
     ResourceStream, Result, RewindReport, RewindRequest, RunEventKind, RunEventValue, RunId,
     RunPhase, RunPhaseStatus, RunTelemetryConfig, RuntimeStage, STATE_INPUT_CHECKPOINT_FILE,
-    STATE_PROPOSED_DELTA_FILE, Schema, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
-    SqliteCheckpointStore, SqliteRunLedger, StateDelta, StateDeltaPreimage, TargetName,
-    VerifyClause, WriteDisposition, canonical_json_bytes, fs,
+    STATE_PROPOSED_DELTA_FILE, Schema, SchemaHash, ScopeKey, SegmentAck, SemanticCatalog,
+    SourcePosition, SqliteCheckpointStore, SqliteRunLedger, StateDelta, StateDeltaPreimage,
+    TargetName, VerifyClause, WriteDisposition, canonical_json_bytes, fs,
     generate_lockfile_with_destination_artifacts, identifier_policy_from_destination_rules,
     parse_cdf_toml, record_package_receipt_once, recover_package_from_artifacts,
     replay_package_from_artifacts, replay_package_from_artifacts_with_stage_hook,
@@ -1669,6 +1669,7 @@ source = "resources/mock.toml"
         },
         std::slice::from_ref(&inspection.sheet_artifact),
         BTreeMap::new(),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
     assert_eq!(

@@ -51,6 +51,12 @@ use cdf_runtime::SourceRegistry;
     unused_imports,
     reason = "white-box crate tests aggregate project internals"
 )]
+use cdf_semantic::SemanticCatalog;
+#[cfg(test)]
+#[allow(
+    unused_imports,
+    reason = "white-box crate tests aggregate project internals"
+)]
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 #[cfg(test)]
 #[allow(
@@ -61,13 +67,14 @@ use sha2::{Digest, Sha256};
 
 pub const PROJECT_FILE_NAME: &str = "cdf.toml";
 pub const LOCK_FILE_NAME: &str = "cdf.lock";
-pub const LOCKFILE_VERSION: u16 = 1;
+pub const LOCKFILE_VERSION: u16 = 2;
 
 mod backfill;
 mod discovery_manifest;
 mod internal;
 mod lock_cas;
 mod lockfile;
+mod manifest;
 mod models;
 mod observation_cache;
 mod project_files;
@@ -79,6 +86,7 @@ mod scaffold;
 mod schema_discovery;
 mod schema_snapshot;
 mod secrets;
+mod semantic_uses;
 mod sources;
 #[cfg(test)]
 mod test_destinations;
@@ -113,11 +121,29 @@ pub use lockfile::{
     ContractSnapshotVerdict, ContractTestReport, DependencyTuple, LockDiff, LockDiffKind,
     LockedDestination, LockedResource, ProjectLock, ProjectResourceOrigin, ProjectValidationReport,
     SecretCheck, SecretCheckStatus, compile_project_declarative_resource_entries_with_root,
+    compile_project_declarative_resource_entries_with_root_and_semantic_catalog,
     compile_project_declarative_resources, compile_project_declarative_resources_with_root,
-    contract_snapshot_for_resource, contract_snapshots_for_resources, diff_lockfiles,
+    compile_project_declarative_resources_with_semantic_catalog, contract_snapshot_for_resource,
+    contract_snapshot_for_resource_with_semantic_catalog, contract_snapshots_for_resources,
+    contract_snapshots_for_resources_with_semantic_catalog, diff_lockfiles,
     freeze_contract_snapshots, generate_lockfile_with_destination_artifacts, lock_to_toml,
-    parse_cdf_toml, parse_lock, pin_schema_snapshot_in_lockfile,
-    pin_schema_snapshot_in_project_lockfile, test_contract_snapshots, validate_project,
+    parse_cdf_toml, parse_lock, pin_schema_snapshot_in_project_lockfile, test_contract_snapshots,
+    test_contract_snapshots_with_semantic_catalog, validate_project,
+};
+pub use manifest::{
+    AuthoredInputSetHash, DependencyTupleHash, EnvironmentBindingHash, LineageHash,
+    ManifestDestinationBinding, ManifestDiagnostic, ManifestDiagnosticSeverity, ManifestField,
+    ManifestInputContentHash, ManifestInputGeneration, ManifestInputKind, ManifestInputLocation,
+    ManifestLineageEdge, ManifestLineageKind, ManifestLineageNode, ManifestResource,
+    ManifestResourceOrigin, ManifestSemanticDefinition, ManifestSemanticFieldUsage,
+    ManifestSemanticReferenceUsage, ManifestSemanticSource, PROJECT_MANIFEST_MAX_BYTES,
+    PROJECT_MANIFEST_RELATIVE_PATH, PROJECT_MANIFEST_VERSION, ProjectCompilationMode,
+    ProjectLockBindingHash, ProjectLockContentHash, ProjectLockSemanticHash, ProjectManifest,
+    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, ProjectManifestHash,
+    ProjectManifestHashes, ProjectManifestHeader, ProjectManifestSnapshot, ResourceCompilationHash,
+    SemanticProfileHash, SemanticSnapshotHash, compile_project_manifest,
+    load_project_manifest_snapshot, parse_project_manifest, publish_project_manifest,
+    publish_project_manifest_and_lock, validate_project_manifest_authority,
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,

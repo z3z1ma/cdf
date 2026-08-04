@@ -1,7 +1,8 @@
 use super::{
     BTreeMap, DependencyTuple, DestinationProtocolCapabilities, DestinationSheetArtifact,
-    InMemoryResourceSourceResolver, TypeMappingFidelity, compile_project_declarative_resources,
-    freeze_contract_snapshots, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
+    InMemoryResourceSourceResolver, SemanticCatalog, TypeMappingFidelity,
+    compile_project_declarative_resources, freeze_contract_snapshots,
+    generate_lockfile_with_destination_artifacts, parse_cdf_toml,
     support::{BOOK_PROJECT, GITHUB_RESOURCE, destination_sheet, test_source_registry},
     test_contract_snapshots,
 };
@@ -30,6 +31,7 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         dependency_tuple.clone(),
         std::slice::from_ref(&sheet_artifact),
         BTreeMap::new(),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
 
@@ -39,6 +41,7 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         Some(&existing),
         &[],
         Some("github.issues"),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
 
@@ -74,8 +77,15 @@ fn contract_test_reports_field_level_snapshot_drift() {
         cdf_kernel::DestinationProtocolCapabilities::default(),
     )
     .unwrap();
-    let (lock, _) =
-        freeze_contract_snapshots(&config, &resources, None, &[artifact], None).unwrap();
+    let (lock, _) = freeze_contract_snapshots(
+        &config,
+        &resources,
+        None,
+        &[artifact],
+        None,
+        &SemanticCatalog::builtins().unwrap(),
+    )
+    .unwrap();
     let changed_resource = GITHUB_RESOURCE.replace(
         "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },",
         concat!(

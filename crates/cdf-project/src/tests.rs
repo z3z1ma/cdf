@@ -59,6 +59,7 @@ use sha2::{Digest, Sha256};
 use syn::visit::Visit;
 
 mod discovery_schema;
+mod manifest;
 mod project_files;
 mod promotion;
 mod publication_recovery;

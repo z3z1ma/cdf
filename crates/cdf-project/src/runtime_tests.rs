@@ -52,6 +52,7 @@ use cdf_package_contract::{
     ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
+use cdf_semantic::SemanticCatalog;
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver};
 use cdf_source_rest::RestSourceDriver;
 use cdf_state_sqlite::{

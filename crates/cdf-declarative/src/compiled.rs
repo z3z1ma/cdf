@@ -181,7 +181,15 @@ pub fn compile_document(
     registry: &SourceRegistry,
     document: &DeclarativeDocument,
 ) -> Result<Vec<CompiledResource>> {
-    compile_document_inner(registry, document, None)
+    compile_document_inner(registry, document, None, cdf_semantic::builtin_catalog()?)
+}
+
+pub fn compile_document_with_semantic_catalog(
+    registry: &SourceRegistry,
+    document: &DeclarativeDocument,
+    semantic_catalog: &cdf_semantic::SemanticCatalog,
+) -> Result<Vec<CompiledResource>> {
+    compile_document_inner(registry, document, None, semantic_catalog)
 }
 
 pub fn compile_document_with_project_root(
@@ -189,13 +197,33 @@ pub fn compile_document_with_project_root(
     document: &DeclarativeDocument,
     project_root: impl AsRef<Path>,
 ) -> Result<Vec<CompiledResource>> {
-    compile_document_inner(registry, document, Some(project_root.as_ref()))
+    compile_document_inner(
+        registry,
+        document,
+        Some(project_root.as_ref()),
+        cdf_semantic::builtin_catalog()?,
+    )
+}
+
+pub fn compile_document_with_project_root_and_semantic_catalog(
+    registry: &SourceRegistry,
+    document: &DeclarativeDocument,
+    project_root: impl AsRef<Path>,
+    semantic_catalog: &cdf_semantic::SemanticCatalog,
+) -> Result<Vec<CompiledResource>> {
+    compile_document_inner(
+        registry,
+        document,
+        Some(project_root.as_ref()),
+        semantic_catalog,
+    )
 }
 
 fn compile_document_inner(
     registry: &SourceRegistry,
     document: &DeclarativeDocument,
     project_root: Option<&Path>,
+    semantic_catalog: &cdf_semantic::SemanticCatalog,
 ) -> Result<Vec<CompiledResource>> {
     if document.source.is_empty() {
         return Err(CdfError::contract(
@@ -218,7 +246,15 @@ fn compile_document_inner(
                     "resource `{name}` references unknown source `{source_name}`"
                 ))
             })?;
-            compile_resource(registry, name, &source_name, source, resource, project_root)
+            compile_resource(
+                registry,
+                name,
+                &source_name,
+                source,
+                resource,
+                project_root,
+                semantic_catalog,
+            )
         })
         .collect()
 }
@@ -258,10 +294,11 @@ fn compile_resource(
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
     project_root: Option<&Path>,
+    semantic_catalog: &cdf_semantic::SemanticCatalog,
 ) -> Result<CompiledResource> {
     let resource_id = format!("{source_name}.{name}");
     let descriptor_resource_id = ResourceId::new(resource_id.clone())?;
-    let schema = compile_schema(resource)?;
+    let schema = compile_schema(resource, semantic_catalog)?;
     let schema_source = compile_schema_source(&resource_id, resource)?;
     let cursor = compile_cursor(resource.cursor.as_ref())?;
     let write_disposition = compile_write_disposition(resource)?;
@@ -561,12 +598,14 @@ fn compile_deduplication(
     }
 }
 
-fn compile_schema(resource: &ResourceDeclaration) -> Result<Schema> {
+fn compile_schema(
+    resource: &ResourceDeclaration,
+    semantic_catalog: &cdf_semantic::SemanticCatalog,
+) -> Result<Schema> {
     let Some(schema) = &resource.schema else {
         return Ok(Schema::empty());
     };
 
-    let semantic_catalog = cdf_semantic::builtin_catalog()?;
     let fields = schema
         .fields
         .iter()

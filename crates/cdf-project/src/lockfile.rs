@@ -1,13 +1,20 @@
 use std::{collections::BTreeMap, env, path::Path};
 
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
-use cdf_declarative::{CompiledResource, compile_document, compile_document_with_project_root};
+use cdf_contract::{
+    ContractPolicy, ObservedSchema, compile_resource_validation_program,
+    compile_resource_validation_program_with_semantic_catalog,
+};
+use cdf_declarative::{
+    CompiledResource, compile_document_with_project_root_and_semantic_catalog,
+    compile_document_with_semantic_catalog,
+};
 use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, DestinationProtocolCapabilities, DestinationSheet, DestinationSheetArtifact,
     ExecutionExtent, ResourceCapabilities, ResourceDescriptor, Result, SchemaSnapshotReference,
 };
 use cdf_runtime::{CompiledStreamPolicy, SourceRegistry};
+use cdf_semantic::SemanticCatalog;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -19,6 +26,7 @@ use crate::{
     },
     models::{EffectiveEnvironment, ProjectConfig, ResourceSourceKind},
     secrets::SecretRef,
+    semantic_uses::semantic_pins_for_resources,
     sources::ResourceSourceResolver,
 };
 
@@ -63,6 +71,7 @@ pub struct CdfLock {
     pub project: ProjectLock,
     pub dependency_tuple: DependencyTuple,
     pub normalizer: String,
+    pub semantics: BTreeMap<String, String>,
     #[serde(default)]
     pub resources: BTreeMap<String, LockedResource>,
     #[serde(default)]
@@ -222,6 +231,22 @@ pub fn lock_to_toml(lock: &CdfLock) -> Result<String> {
 }
 
 fn validate_lock(lock: &CdfLock) -> Result<()> {
+    if lock.version != LOCKFILE_VERSION {
+        return Err(CdfError::contract(format!(
+            "unsupported cdf.lock version {}; expected {LOCKFILE_VERSION}",
+            lock.version
+        )));
+    }
+    for (reference, definition_hash) in &lock.semantics {
+        reference
+            .parse::<cdf_kernel::SemanticReference>()
+            .map_err(|error| {
+                CdfError::contract(format!(
+                    "locked semantic reference {reference:?} is invalid: {error}"
+                ))
+            })?;
+        validate_sha256("locked semantic definition", definition_hash)?;
+    }
     for (resource_id, resource) in &lock.resources {
         resource.descriptor.validate()?;
         resource.capabilities.validate()?;
@@ -272,13 +297,53 @@ fn validate_lock(lock: &CdfLock) -> Result<()> {
     Ok(())
 }
 
+fn validate_sha256(label: &str, value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(CdfError::contract(format!(
+            "{label} hash must use the sha256:<hex> form"
+        )));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(CdfError::contract(format!(
+            "{label} hash must contain exactly 64 hexadecimal characters"
+        )));
+    }
+    Ok(())
+}
+
 pub fn compile_project_declarative_resources(
     registry: &SourceRegistry,
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
 ) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resource_entries_inner(registry, config, resolver, None)
-        .map(resource_entries)
+    compile_project_declarative_resource_entries_inner(
+        registry,
+        config,
+        resolver,
+        None,
+        cdf_semantic::builtin_catalog()?,
+    )
+    .map(resource_entries)
+}
+
+pub fn compile_project_declarative_resources_with_semantic_catalog(
+    registry: &SourceRegistry,
+    config: &ProjectConfig,
+    resolver: &dyn ResourceSourceResolver,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<Vec<CompiledResource>> {
+    compile_project_declarative_resource_entries_inner(
+        registry,
+        config,
+        resolver,
+        None,
+        semantic_catalog,
+    )
+    .map(resource_entries)
 }
 
 pub fn compile_project_declarative_resources_with_root(
@@ -292,6 +357,7 @@ pub fn compile_project_declarative_resources_with_root(
         config,
         resolver,
         Some(project_root.as_ref()),
+        cdf_semantic::builtin_catalog()?,
     )
     .map(resource_entries)
 }
@@ -307,6 +373,23 @@ pub fn compile_project_declarative_resource_entries_with_root(
         config,
         resolver,
         Some(project_root.as_ref()),
+        cdf_semantic::builtin_catalog()?,
+    )
+}
+
+pub fn compile_project_declarative_resource_entries_with_root_and_semantic_catalog(
+    registry: &SourceRegistry,
+    config: &ProjectConfig,
+    resolver: &dyn ResourceSourceResolver,
+    project_root: impl AsRef<Path>,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<Vec<CompiledProjectResource>> {
+    compile_project_declarative_resource_entries_inner(
+        registry,
+        config,
+        resolver,
+        Some(project_root.as_ref()),
+        semantic_catalog,
     )
 }
 
@@ -315,6 +398,7 @@ fn compile_project_declarative_resource_entries_inner(
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
     project_root: Option<&Path>,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<Vec<CompiledProjectResource>> {
     let mut entries = Vec::new();
     for (pattern, mapping) in &config.resources {
@@ -323,10 +407,13 @@ fn compile_project_declarative_resource_entries_inner(
         };
         let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
         let compiled = match project_root {
-            Some(project_root) => {
-                compile_document_with_project_root(registry, &document, project_root)?
-            }
-            None => compile_document(registry, &document)?,
+            Some(project_root) => compile_document_with_project_root_and_semantic_catalog(
+                registry,
+                &document,
+                project_root,
+                semantic_catalog,
+            )?,
+            None => compile_document_with_semantic_catalog(registry, &document, semantic_catalog)?,
         };
         validate_mapping_pattern(pattern, &path, &compiled)?;
         entries.extend(
@@ -441,8 +528,13 @@ pub fn validate_project(
     validate_environment_uri_fields(&environment)?;
 
     let mut secret_refs = collect_secret_refs_from_environment(&environment)?;
-    let compiled_entries =
-        compile_project_declarative_resource_entries_inner(registry, config, resolver, None)?;
+    let compiled_entries = compile_project_declarative_resource_entries_inner(
+        registry,
+        config,
+        resolver,
+        None,
+        cdf_semantic::builtin_catalog()?,
+    )?;
     let declarative_resources = compiled_entries.len();
     let mut external_resources = 0;
 
@@ -481,6 +573,7 @@ pub fn generate_lockfile_with_destination_artifacts(
     dependency_tuple: DependencyTuple,
     destination_artifacts: &[DestinationSheetArtifact],
     contract_snapshots: BTreeMap<String, ContractSnapshot>,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<CdfLock> {
     validate_project_shape(config)?;
     let mut locked_resources = BTreeMap::new();
@@ -491,7 +584,9 @@ pub fn generate_lockfile_with_destination_artifacts(
         let schema_snapshot = descriptor.schema_source.pinned_snapshot().cloned();
         let contract = Some(match contract_snapshots.get(&resource_id) {
             Some(snapshot) => snapshot.clone(),
-            None => contract_snapshot_for_resource(resource)?,
+            None => {
+                contract_snapshot_for_resource_with_semantic_catalog(resource, semantic_catalog)?
+            }
         });
         let compiled_stream_policy = compiled_stream_policy_for_lock(resource)?;
         locked_resources.insert(
@@ -526,6 +621,7 @@ pub fn generate_lockfile_with_destination_artifacts(
         },
         dependency_tuple,
         normalizer: config.project.normalizer.clone(),
+        semantics: semantic_pins_for_resources(resources, semantic_catalog)?,
         resources: locked_resources,
         destinations,
     })
@@ -535,12 +631,24 @@ pub fn contract_snapshots_for_resources(
     resources: &[CompiledResource],
     selector: Option<&str>,
 ) -> Result<BTreeMap<String, ContractSnapshot>> {
+    contract_snapshots_for_resources_with_semantic_catalog(
+        resources,
+        selector,
+        cdf_semantic::builtin_catalog()?,
+    )
+}
+
+pub fn contract_snapshots_for_resources_with_semantic_catalog(
+    resources: &[CompiledResource],
+    selector: Option<&str>,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<BTreeMap<String, ContractSnapshot>> {
     let selected = selected_contract_resources(resources, selector)?;
     let mut snapshots = BTreeMap::new();
     for resource in selected {
         snapshots.insert(
             resource.descriptor().resource_id.to_string(),
-            contract_snapshot_for_resource(resource)?,
+            contract_snapshot_for_resource_with_semantic_catalog(resource, semantic_catalog)?,
         );
     }
     Ok(snapshots)
@@ -560,14 +668,40 @@ pub fn contract_snapshot_for_resource(resource: &CompiledResource) -> Result<Con
     })
 }
 
+pub fn contract_snapshot_for_resource_with_semantic_catalog(
+    resource: &CompiledResource,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<ContractSnapshot> {
+    let descriptor = resource.descriptor();
+    let policy = ContractPolicy::for_trust(descriptor.trust_level.clone());
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_resource_validation_program_with_semantic_catalog(
+        &policy,
+        &observed_schema,
+        descriptor,
+        semantic_catalog,
+    )?;
+    Ok(ContractSnapshot {
+        contract_ref: descriptor.contract.as_ref().map(ToString::to_string),
+        schema_hash: schema_hash_from_source(&descriptor.schema_source),
+        policy_hash: Some(semantic_hash(&policy)?),
+        validation_program_hash: Some(semantic_hash(&validation_program)?),
+    })
+}
+
 pub fn freeze_contract_snapshots(
     config: &ProjectConfig,
     resources: &[CompiledResource],
     existing_lock: Option<&CdfLock>,
     destination_artifacts: &[DestinationSheetArtifact],
     selector: Option<&str>,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<(CdfLock, ContractFreezeReport)> {
-    let snapshots = contract_snapshots_for_resources(resources, selector)?;
+    let snapshots = contract_snapshots_for_resources_with_semantic_catalog(
+        resources,
+        selector,
+        semantic_catalog,
+    )?;
     let mut lock = match existing_lock {
         Some(lock) => lock.clone(),
         None => generate_lockfile_with_destination_artifacts(
@@ -576,22 +710,23 @@ pub fn freeze_contract_snapshots(
             current_dependency_tuple(),
             destination_artifacts,
             snapshots.clone(),
+            semantic_catalog,
         )?,
     };
 
     if existing_lock.is_some() {
         for resource in selected_contract_resources(resources, selector)? {
             let resource_id = resource.descriptor().resource_id.to_string();
-            let snapshot = snapshots
-                .get(&resource_id)
-                .expect("selected resource snapshot was computed")
-                .clone();
+            let snapshot = snapshots.get(&resource_id).cloned().ok_or_else(|| {
+                CdfError::internal("selected resource contract snapshot was not computed")
+            })?;
             lock.resources.insert(
                 resource_id,
                 locked_resource_from_current(resource, snapshot)?,
             );
         }
     }
+    lock.semantics = semantic_pins_for_resources(resources, semantic_catalog)?;
 
     let resource_ids = snapshots.keys().cloned().collect::<Vec<_>>();
     let report = ContractFreezeReport {
@@ -609,28 +744,34 @@ pub fn freeze_contract_snapshots(
     Ok((lock, report))
 }
 
-pub fn pin_schema_snapshot_in_lockfile(
-    existing_lock: &CdfLock,
-    resource: &CompiledResource,
-) -> Result<CdfLock> {
-    let mut lock = existing_lock.clone();
-    let snapshot = contract_snapshot_for_resource(resource)?;
-    lock.resources.insert(
-        resource.descriptor().resource_id.to_string(),
-        locked_resource_from_current(resource, snapshot)?,
-    );
-    Ok(lock)
-}
-
 pub fn pin_schema_snapshot_in_project_lockfile(
     config: &ProjectConfig,
     resources: &[CompiledResource],
     existing_lock: Option<&CdfLock>,
     destination_artifacts: &[DestinationSheetArtifact],
     pinned_resource: &CompiledResource,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<CdfLock> {
     if let Some(lock) = existing_lock {
-        return pin_schema_snapshot_in_lockfile(lock, pinned_resource);
+        let mut updated = lock.clone();
+        let snapshot = contract_snapshot_for_resource_with_semantic_catalog(
+            pinned_resource,
+            semantic_catalog,
+        )?;
+        updated.resources.insert(
+            pinned_resource.descriptor().resource_id.to_string(),
+            locked_resource_from_current(pinned_resource, snapshot)?,
+        );
+        let mut current_resources = resources.to_vec();
+        if let Some(resource) = current_resources.iter_mut().find(|resource| {
+            resource.descriptor().resource_id == pinned_resource.descriptor().resource_id
+        }) {
+            *resource = pinned_resource.clone();
+        } else {
+            current_resources.push(pinned_resource.clone());
+        }
+        updated.semantics = semantic_pins_for_resources(&current_resources, semantic_catalog)?;
+        return Ok(updated);
     }
 
     let selected_id = pinned_resource.descriptor().resource_id.as_str();
@@ -663,6 +804,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
         current_dependency_tuple(),
         destination_artifacts,
         BTreeMap::new(),
+        semantic_catalog,
     )
 }
 
@@ -671,7 +813,25 @@ pub fn test_contract_snapshots(
     resources: &[CompiledResource],
     selector: Option<&str>,
 ) -> Result<ContractTestReport> {
-    let current_snapshots = contract_snapshots_for_resources(resources, selector)?;
+    test_contract_snapshots_with_semantic_catalog(
+        lock,
+        resources,
+        selector,
+        cdf_semantic::builtin_catalog()?,
+    )
+}
+
+pub fn test_contract_snapshots_with_semantic_catalog(
+    lock: &CdfLock,
+    resources: &[CompiledResource],
+    selector: Option<&str>,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<ContractTestReport> {
+    let current_snapshots = contract_snapshots_for_resources_with_semantic_catalog(
+        resources,
+        selector,
+        semantic_catalog,
+    )?;
     let mut comparisons = Vec::with_capacity(current_snapshots.len());
     let mut all_drifts = Vec::new();
 

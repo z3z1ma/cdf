@@ -2,7 +2,7 @@ use cdf_contract::ContractPolicy;
 use cdf_kernel::CdfError;
 use cdf_project::{
     ContractFreezeReport, ContractTestReport, LOCK_FILE_NAME, freeze_contract_snapshots,
-    lock_to_toml, test_contract_snapshots, write_lock_file_guarded,
+    lock_to_toml, write_lock_file_guarded,
 };
 use serde::Serialize;
 
@@ -63,6 +63,7 @@ fn freeze(
         context.lock.as_ref(),
         &destination_artifacts,
         selector.as_deref(),
+        &context.semantic_catalog,
     )?;
     let encoded = lock_to_toml(&lock)?;
     let lock_path = context.root.join(LOCK_FILE_NAME);
@@ -83,7 +84,12 @@ fn test(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError> 
             error_catalog::CONTRACT_LOCKFILE,
         )
     })?;
-    let report = test_contract_snapshots(lock, &context.resources, selector.as_deref())?;
+    let report = cdf_project::test_contract_snapshots_with_semantic_catalog(
+        lock,
+        &context.resources,
+        selector.as_deref(),
+        &context.semantic_catalog,
+    )?;
     let exit_code = if report.counts.drifted == 0 { 0 } else { 1 };
     CommandOutput::rendered_with_exit_code(
         "contract test",

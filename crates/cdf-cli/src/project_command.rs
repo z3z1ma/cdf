@@ -89,6 +89,7 @@ pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
         lock.dependency_tuple.clone(),
         &destination_artifacts,
         BTreeMap::new(),
+        &context.semantic_catalog,
     )?;
     let diffs = cdf_project::diff_lockfiles(lock, &regenerated)?;
     let report = DiffSchemaCliReport { diffs };

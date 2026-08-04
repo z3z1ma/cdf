@@ -4,7 +4,7 @@ use super::{
     ExecutionExtent, FileResourceSourceResolver, FileSecretProvider,
     InMemoryResourceSourceResolver, NORMALIZER_NAMECASE_V1, Path, PathBuf, ProjectScaffoldOptions,
     ResolvedProjectDestination, RetentionRule, SecretProvider, SecretRef, SecretUri,
-    SourceDeclaration, TargetName, TypeMappingFidelity, Visit,
+    SemanticCatalog, SourceDeclaration, TargetName, TypeMappingFidelity, Visit,
     compile_project_declarative_resources, compile_project_declarative_resources_with_root,
     diff_lockfiles, env, fs, generate_lockfile_with_destination_artifacts, lock_to_toml,
     parse_cdf_toml, parse_lock, semantic_hash,
@@ -988,6 +988,7 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         dependency_tuple.clone(),
         std::slice::from_ref(&sheet_artifact),
         BTreeMap::new(),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
     let encoded = lock_to_toml(&lock).unwrap();
@@ -996,6 +997,9 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let decoded = parse_lock(&encoded).unwrap();
     assert_eq!(decoded, lock);
     assert_eq!(lock_to_toml(&decoded).unwrap(), encoded);
+    let old_version = encoded.replacen("version = 2", "version = 1", 1);
+    let error = parse_lock(&old_version).unwrap_err();
+    assert!(error.message.contains("unsupported cdf.lock version"));
     assert_eq!(lock.normalizer, NORMALIZER_NAMECASE_V1);
     let resource = lock.resources.get("github.issues").unwrap();
     assert!(resource.capability_sheet_hash.starts_with("sha256:"));
@@ -1060,6 +1064,7 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         dependency_tuple.clone(),
         &[changed_artifact],
         BTreeMap::new(),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
     let diffs = diff_lockfiles(&lock, &changed).unwrap();
@@ -1087,6 +1092,7 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         dependency_tuple,
         &[postgres_artifact.clone(), parquet_artifact.clone()],
         BTreeMap::new(),
+        &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
     let typed_encoded = lock_to_toml(&typed_lock).unwrap();

@@ -343,6 +343,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             context.lock.as_ref(),
             &destination_artifacts,
             &prepared_resource,
+            &context.semantic_catalog,
         )?;
         let encoded = cdf_project::lock_to_toml(&updated_lock)?;
         let snapshot_written =

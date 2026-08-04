@@ -498,6 +498,7 @@ fn update_lockfile(
         context.lock.as_ref(),
         &destination_artifacts,
         pinned_resource,
+        &context.semantic_catalog,
     )?;
     let encoded = lock_to_toml(&updated)?;
     let path = context.root.join(LOCK_FILE_NAME);

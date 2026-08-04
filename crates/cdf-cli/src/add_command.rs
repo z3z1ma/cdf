@@ -293,6 +293,7 @@ fn write_add_artifacts(
         context.lock.as_ref(),
         &destination_artifacts,
         Some(request.resource_id.as_str()),
+        &context.semantic_catalog,
     )?;
     let lock_toml = lock_to_toml(&lock)?;
 
