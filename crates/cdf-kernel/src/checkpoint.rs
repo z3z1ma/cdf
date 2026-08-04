@@ -56,7 +56,7 @@ pub struct StateSegment {
     pub byte_count: u64,
 }
 
-pub const CHECKPOINT_STATE_VERSION: u16 = 1;
+pub const CHECKPOINT_STATE_VERSION: u16 = 2;
 
 impl StateDelta {
     /// Exact source restart authority, or the aggregate output when that position is sufficient.
@@ -70,8 +70,8 @@ impl StateDelta {
     pub fn validate(&self) -> Result<()> {
         if self.state_version != CHECKPOINT_STATE_VERSION {
             return Err(CdfError::contract(format!(
-                "unsupported checkpoint state version {}",
-                self.state_version
+                "unsupported checkpoint state version {}; expected current version {}; regenerate or recreate checkpoint artifacts",
+                self.state_version, CHECKPOINT_STATE_VERSION
             )));
         }
         if let Some(position) = &self.input_position {
@@ -118,6 +118,62 @@ impl StateDelta {
             &self.partition_watermarks,
         )
     }
+
+    /// Validates an ordinary checkpoint proposal against the exact committed head it extends.
+    /// Explicit rewind uses its separate marker path and does not call this transition gate.
+    pub fn validate_transition_from_head(&self, previous: Option<&Self>) -> Result<()> {
+        self.validate()?;
+        let Some(previous) = previous else {
+            if self.parent_checkpoint_id.is_some() || self.input_position.is_some() {
+                return Err(CdfError::data(
+                    "initial checkpoint cannot name a parent or input position when no committed head exists",
+                ));
+            }
+            return Ok(());
+        };
+        previous.validate()?;
+        if self.pipeline_id != previous.pipeline_id
+            || self.resource_id != previous.resource_id
+            || self.scope != previous.scope
+        {
+            return Err(CdfError::internal(
+                "checkpoint transition comparison requires one checkpoint scope",
+            ));
+        }
+        if self.parent_checkpoint_id.as_ref() != Some(&previous.checkpoint_id) {
+            return Err(CdfError::data(format!(
+                "checkpoint does not extend current head {}; re-plan from the committed head",
+                previous.checkpoint_id
+            )));
+        }
+        if self.input_position.as_ref() != Some(&previous.output_position) {
+            return Err(CdfError::data(
+                "checkpoint input position does not equal the current committed head output position; re-plan from the committed head",
+            ));
+        }
+        match (&previous.output_position, &self.output_position) {
+            (SourcePosition::Log(_), SourcePosition::Log(_)) => {
+                if !self.output_position.reaches(&previous.output_position)? {
+                    return Err(CdfError::data(
+                        "committed-log checkpoint output does not monotonically reach the current head",
+                    ));
+                }
+            }
+            (SourcePosition::ResumeToken(_), SourcePosition::ResumeToken(_)) => {
+                previous
+                    .output_position
+                    .advance_ordered_prefix(&self.output_position)?;
+            }
+            (SourcePosition::Log(_) | SourcePosition::ResumeToken(_), _)
+            | (_, SourcePosition::Log(_) | SourcePosition::ResumeToken(_)) => {
+                return Err(CdfError::data(
+                    "checkpoint cannot change committed-log or resume-token position kind",
+                ));
+            }
+            _ => {}
+        }
+        self.validate_watermark_transition_from(previous)
+    }
 }
 
 fn validate_partition_watermark_state_transition(
@@ -142,7 +198,7 @@ fn validate_partition_watermark_state_transition(
     Ok(())
 }
 
-pub const LATE_DATA_CARRYOVER_VERSION: u16 = 1;
+pub const LATE_DATA_CARRYOVER_VERSION: u16 = 2;
 
 /// Content-bound package artifact retained as input to the next finite epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,8 +219,8 @@ impl LateDataCarryoverRef {
     pub fn validate(&self) -> Result<()> {
         if self.version != LATE_DATA_CARRYOVER_VERSION {
             return Err(CdfError::contract(format!(
-                "unsupported late-data carryover version {}",
-                self.version
+                "unsupported late-data carryover version {}; expected current version {}; regenerate the package",
+                self.version, LATE_DATA_CARRYOVER_VERSION
             )));
         }
         if self.package_id.is_empty() || self.relative_path.is_empty() {

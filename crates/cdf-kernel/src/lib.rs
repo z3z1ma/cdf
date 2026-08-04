@@ -116,9 +116,12 @@ pub use metadata::{
     with_null_origin, with_physical_type, with_semantic, with_source_name,
 };
 pub use position::{
-    CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, ForeignState,
-    LogPosition, PageToken, SOURCE_POSITION_VERSION, SourcePosition, SourcePositionKind,
-    TableSnapshotPosition, TableSnapshotSelector,
+    CommittedLogPosition, CommittedLogProtocol, CommittedLogScope, CompositePosition,
+    CursorPosition, CursorValue, FileManifest, FilePosition, ForeignState,
+    MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode, MongoResumeTokenSource,
+    MongoWatchLevel, MySqlCommitPosition, MySqlLogScope, PageToken, PostgresCommitPosition,
+    PostgresLogScope, ResumeTokenPosition, SOURCE_POSITION_VERSION, SourcePosition,
+    SourcePositionKind, TableSnapshotPosition, TableSnapshotSelector,
 };
 pub use position_aggregation::{
     aggregate_position_set, aggregate_resource_closed_output_position,

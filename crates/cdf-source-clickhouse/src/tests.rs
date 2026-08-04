@@ -442,7 +442,7 @@ fn query_uses_bound_values_and_canonical_cursor_tie_order() {
         scope: descriptor.state_scope.clone(),
         planned_position: None,
         start_position: Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "sequence".to_owned(),
             value: CursorValue::U64(10),
         })),
@@ -578,7 +578,7 @@ fn narrow_integer_cursor_widening_is_explicit_and_cursor_only() {
         scope: descriptor.state_scope.clone(),
         planned_position: None,
         start_position: Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "sequence".to_owned(),
             value: CursorValue::U64(10),
         })),
@@ -724,7 +724,7 @@ fn negative_date32_resume_stays_in_the_signed_date32_domain() {
         scope: descriptor.state_scope.clone(),
         planned_position: None,
         start_position: Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "observed_on".to_owned(),
             value: CursorValue::I64(-3_653),
         })),
@@ -1135,7 +1135,7 @@ fn live_clickhouse_type_cursor_and_partial_stream_contract() {
     assert_eq!(
         position,
         Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "sequence".to_owned(),
             value: CursorValue::U64(20),
         }))
@@ -1163,7 +1163,7 @@ fn live_clickhouse_type_cursor_and_partial_stream_contract() {
         .block_on_root(read_resource_from(
             date_resource.as_ref(),
             Some(SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "observed_on".to_owned(),
                 value: CursorValue::I64(-3_653),
             })),
@@ -1173,7 +1173,7 @@ fn live_clickhouse_type_cursor_and_partial_stream_contract() {
     assert_eq!(
         date_position,
         Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "observed_on".to_owned(),
             value: CursorValue::I64(0),
         }))

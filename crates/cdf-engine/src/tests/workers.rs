@@ -53,7 +53,7 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
         EnginePartitionTaskInput {
             compatibility: cdf_runtime::WorkerCompatibility {
                 cdf_version: "0.1.0".to_owned(),
-                artifact_version: "package-v1".to_owned(),
+                artifact_version: "package-v3".to_owned(),
                 arrow_version: "58.3.0".to_owned(),
                 relational_engine: cdf_runtime::WorkerComponentVersion {
                     component: "datafusion".to_owned(),
@@ -166,7 +166,7 @@ fn engine_partition_task_rejects_package_global_work_before_writing_control_arti
         EnginePartitionTaskInput {
             compatibility: cdf_runtime::WorkerCompatibility {
                 cdf_version: "0.1.0".to_owned(),
-                artifact_version: "package-v2".to_owned(),
+                artifact_version: "package-v3".to_owned(),
                 arrow_version: "58.3.0".to_owned(),
                 relational_engine: cdf_runtime::WorkerComponentVersion {
                     component: "datafusion".to_owned(),
@@ -1886,7 +1886,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
 
     let compatibility = cdf_runtime::WorkerCompatibility {
         cdf_version: "0.1.0".to_owned(),
-        artifact_version: "package-v2".to_owned(),
+        artifact_version: "package-v3".to_owned(),
         arrow_version: "58.3.0".to_owned(),
         relational_engine: cdf_runtime::WorkerComponentVersion {
             component: "datafusion".to_owned(),

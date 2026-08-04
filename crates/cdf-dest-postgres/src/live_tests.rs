@@ -1008,7 +1008,7 @@ fn state_delta(manifest: &PackageManifest, checkpoint: &str) -> StateDelta {
         pipeline_id: PipelineId::new("pipe-live").unwrap(),
         resource_id: ResourceId::new("orders").unwrap(),
         scope: scope(),
-        state_version: 1,
+        state_version: cdf_kernel::CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
         output_position: position(10),
@@ -1030,7 +1030,7 @@ fn scope() -> ScopeKey {
 
 fn position(value: i64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(value),
     })

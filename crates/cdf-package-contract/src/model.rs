@@ -1,7 +1,7 @@
 use cdf_kernel::{CdfError, Result, SegmentId};
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_VERSION: u16 = 2;
+pub const MANIFEST_VERSION: u16 = 3;
 pub const MANIFEST_FILE: &str = "manifest.json";
 pub const TRACE_FILE: &str = "trace.jsonl";
 pub const RECEIPTS_FILE: &str = "destination/receipts.json";

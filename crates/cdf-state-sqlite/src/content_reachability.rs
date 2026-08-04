@@ -5,12 +5,12 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, CommittedContentMembership, CommittedContentRoot, CommittedContentRootCheck,
-    CommittedContentRootId, ContentPublicationClaim, ContentPublicationClaimId,
-    ContentPublicationClaimState, ContentReachabilityStore, ContentReclamationCandidate,
-    ContentReclamationCandidateSource, ContentReclamationProof, ContentReclamationReservation,
-    ContentReclamationReservationId, ContentReclamationSnapshot, ContentRootIntent,
-    ContentRootState, ImmutableContentIdentity, Result,
+    CHECKPOINT_STATE_VERSION, CdfError, CommittedContentMembership, CommittedContentRoot,
+    CommittedContentRootCheck, CommittedContentRootId, ContentPublicationClaim,
+    ContentPublicationClaimId, ContentPublicationClaimState, ContentReachabilityStore,
+    ContentReclamationCandidate, ContentReclamationCandidateSource, ContentReclamationProof,
+    ContentReclamationReservation, ContentReclamationReservationId, ContentReclamationSnapshot,
+    ContentRootIntent, ContentRootState, ImmutableContentIdentity, Result,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -918,7 +918,7 @@ fn decode_private_claim_values(
         String,
     ),
 ) -> Result<ContentPublicationClaim> {
-    let claim: ContentPublicationClaim = decode_json(&json, 1)?;
+    let claim: ContentPublicationClaim = decode_json(&json, CHECKPOINT_STATE_VERSION)?;
     private_state_decode(
         "validate CDF-managed content publication claim",
         claim.validate(),
@@ -951,7 +951,7 @@ fn decode_private_root_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentR
 fn decode_private_root_values(
     (root_id, generation, state, json): (String, i64, String, String),
 ) -> Result<ContentRootIntent> {
-    let intent: ContentRootIntent = decode_json(&json, 1)?;
+    let intent: ContentRootIntent = decode_json(&json, CHECKPOINT_STATE_VERSION)?;
     private_state_decode(
         "validate CDF-managed committed content root",
         intent.validate(),
@@ -1018,7 +1018,7 @@ fn decode_private_reservation_values(
         String,
     ),
 ) -> Result<ContentReclamationReservation> {
-    let reservation: ContentReclamationReservation = decode_json(&json, 1)?;
+    let reservation: ContentReclamationReservation = decode_json(&json, CHECKPOINT_STATE_VERSION)?;
     private_state_decode(
         "validate CDF-managed content reclamation reservation",
         reservation.validate(),

@@ -1,10 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "attempt_id": "attempt-4",
   "retry_ordinal": 0,
   "trace_id": "trace-4",
   "write_permit": {
-    "task_sha256": "sha256:946e6343c69023e3a402c1448bb0d816940cf03b62c3e5742fb8922a8027dfda",
+    "task_sha256": "sha256:b721a1e2ee3f0d29fef1617f860f93423190619445a15cabd8f1f52789d45407",
     "lease_authority_domain_id": "local-test-domain",
     "lease_scope": {
       "kind": "partition",

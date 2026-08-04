@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use cdf_kernel::{
-    CdfError, CursorValue, DrainTermination, EPOCH_CLOSURE_EVIDENCE_VERSION,
-    EPOCH_FRONTIER_VERSION, EpochClosureCause, EpochClosureEvidence, EpochClosureObservation,
-    EpochClosureTrigger, EpochFrontier, ExecutionExtent, FilePosition, PartitionWatermarkState,
-    Result, STREAM_EPOCH_POLICY_VERSION, SourcePosition, StreamEpochPolicy, WatermarkClaim,
-    WatermarkPolicy, WatermarkValue, validate_partition_watermark_states,
+    CdfError, DrainTermination, EPOCH_CLOSURE_EVIDENCE_VERSION, EPOCH_FRONTIER_VERSION,
+    EpochClosureCause, EpochClosureEvidence, EpochClosureObservation, EpochClosureTrigger,
+    EpochFrontier, ExecutionExtent, PartitionWatermarkState, Result, STREAM_EPOCH_POLICY_VERSION,
+    SourcePosition, StreamEpochPolicy, WatermarkClaim, WatermarkPolicy, WatermarkValue,
+    validate_partition_watermark_states,
 };
 
 /// One canonical point at which every admitted source position at or below
@@ -734,86 +732,14 @@ fn watermark_distance(start: &WatermarkValue, observed: &WatermarkValue) -> Opti
 }
 
 fn source_position_reaches(observed: &SourcePosition, target: &SourcePosition) -> Result<bool> {
-    observed.validate()?;
-    target.validate()?;
-    Ok(match (observed, target) {
-        (SourcePosition::Cursor(observed), SourcePosition::Cursor(target))
-            if observed.field == target.field =>
-        {
-            cursor_reaches(&observed.value, &target.value)
-        }
-        (SourcePosition::Log(observed), SourcePosition::Log(target))
-            if observed.log == target.log =>
-        {
-            observed.offset >= target.offset
-                && target
-                    .sequence
-                    .as_ref()
-                    .is_none_or(|sequence| observed.sequence.as_ref() == Some(sequence))
-        }
-        (SourcePosition::FileManifest(observed), SourcePosition::FileManifest(target)) => {
-            file_manifest_reaches(&observed.files, &target.files)
-        }
-        (SourcePosition::PageToken(observed), SourcePosition::PageToken(target)) => {
-            observed.token == target.token
-        }
-        (SourcePosition::Composite(observed), SourcePosition::Composite(target)) => {
-            for (name, target) in &target.positions {
-                let Some(observed) = observed.positions.get(name) else {
-                    return Ok(false);
-                };
-                if !source_position_reaches(observed, target)? {
-                    return Ok(false);
-                }
-            }
-            true
-        }
-        (SourcePosition::ForeignState(observed), SourcePosition::ForeignState(target)) => {
-            observed.protocol == target.protocol && observed.blob_sha256 == target.blob_sha256
-        }
-        _ => false,
-    })
-}
-
-fn cursor_reaches(observed: &CursorValue, target: &CursorValue) -> bool {
-    match (observed, target) {
-        (CursorValue::I64(observed), CursorValue::I64(target)) => observed >= target,
-        (CursorValue::U64(observed), CursorValue::U64(target)) => observed >= target,
-        (
-            CursorValue::TimestampMicros {
-                micros: observed,
-                timezone: observed_timezone,
-            },
-            CursorValue::TimestampMicros {
-                micros: target,
-                timezone: target_timezone,
-            },
-        ) => observed_timezone == target_timezone && observed >= target,
-        (CursorValue::String(observed), CursorValue::String(target)) => observed == target,
-        (CursorValue::DecimalString(observed), CursorValue::DecimalString(target)) => {
-            observed == target
-        }
-        _ => false,
-    }
-}
-
-fn file_manifest_reaches(observed: &[FilePosition], target: &[FilePosition]) -> bool {
-    let observed = observed
-        .iter()
-        .map(|file| (file.path.as_str(), file))
-        .collect::<BTreeMap<_, _>>();
-    target.iter().all(|target| {
-        observed
-            .get(target.path.as_str())
-            .is_some_and(|observed| *observed == target)
-    })
+    observed.reaches(target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cdf_kernel::{
-        CursorPosition, EventTimeDomain, LateDataAction, PartitionId,
+        CursorPosition, CursorValue, EventTimeDomain, LateDataAction, PartitionId,
         PartitionWatermarkAggregation, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION,
         SafeFrontierPolicy, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
         WatermarkObservationContext,

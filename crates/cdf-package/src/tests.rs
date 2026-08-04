@@ -82,7 +82,7 @@ fn replay_segment_stream(
 
 fn table_snapshot_position() -> SourcePosition {
     SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         protocol: "iceberg".to_owned(),
         catalog: "glue:us-east-1:123456789012".to_owned(),
         namespace: vec!["analytics".to_owned()],
@@ -839,7 +839,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         partition_id: PartitionId::new("p0").unwrap(),
     };
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(3),
     });
@@ -888,7 +888,7 @@ fn state_segment_for_entry(segment: &SegmentEntry, byte_count: u64) -> StateSegm
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(segment.row_count as i64),
         }),
@@ -1049,7 +1049,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
             rule_id: "row-rule-0000-regex".to_owned(),
             error_code: "regex_violation".to_owned(),
             source_position: Some(SourcePosition::Cursor(CursorPosition {
-                version: CHECKPOINT_STATE_VERSION,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(42),
             })),
@@ -1718,12 +1718,12 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: Some(CheckpointId::new("checkpoint-prev").unwrap()),
         input_position: Some(SourcePosition::Cursor(CursorPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(2),
         })),
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(3),
         }),
@@ -1738,7 +1738,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
                 partition_id: PartitionId::new("p0").unwrap(),
             },
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: CHECKPOINT_STATE_VERSION,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::I64(3),
             }),
@@ -1934,7 +1934,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
 
     let mut mismatched_input_position = state_delta.clone();
     mismatched_input_position.input_position = Some(SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(1),
     }));
@@ -2070,7 +2070,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         PackageHash::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .unwrap();
     let processed_position = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,
@@ -2144,7 +2144,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
 
     let mut mismatched = processed;
     mismatched.output_position = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "month-08.parquet".to_owned(),
             size_bytes: 42,
@@ -2248,7 +2248,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
 #[test]
 fn processed_observation_aggregation_respects_append_and_replace_dispositions() {
     let old = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "old.parquet".to_owned(),
             size_bytes: 10,
@@ -2259,7 +2259,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
         }],
     });
     let new = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "new.parquet".to_owned(),
             size_bytes: 20,

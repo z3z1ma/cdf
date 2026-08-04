@@ -436,9 +436,12 @@ fn position_to_dlt_state(position: &SourcePosition) -> Result<Value> {
         SourcePosition::ForeignState(foreign) => foreign_state_to_json(foreign),
         SourcePosition::PageToken(page) => Ok(json!({ "page_token": page.token })),
         SourcePosition::Log(log) => Ok(json!({
-            "log": log.log,
-            "offset": log.offset,
-            "sequence": log.sequence,
+            "_cdf_committed_log": serde_json::to_value(log)
+                .map_err(|error| CdfError::data(error.to_string()))?,
+        })),
+        SourcePosition::ResumeToken(token) => Ok(json!({
+            "_cdf_resume_token": serde_json::to_value(token)
+                .map_err(|error| CdfError::data(error.to_string()))?,
         })),
         SourcePosition::FileManifest(manifest) => {
             serde_json::to_value(manifest).map_err(|error| CdfError::data(error.to_string()))
@@ -686,7 +689,7 @@ fn tuple_attr(object: &Bound<'_, PyAny>, name: &str) -> Result<Vec<String>> {
 
 pub fn fixture_state_delta_position(field: &str, value: CursorValue) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: field.to_owned(),
         value,
     })
@@ -698,7 +701,7 @@ pub fn fixture_dlt_foreign_state(state: &Value) -> Result<SourcePosition> {
     let mut hasher = Sha256::new();
     hasher.update(&opaque_blob);
     Ok(SourcePosition::ForeignState(ForeignState {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         protocol: "dlt-state-v1".to_owned(),
         blob_sha256: format!("sha256:{}", hex::encode(hasher.finalize())),
         opaque_blob,
@@ -707,7 +710,7 @@ pub fn fixture_dlt_foreign_state(state: &Value) -> Result<SourcePosition> {
 
 pub fn composite_dlt_state(parts: BTreeMap<String, SourcePosition>) -> SourcePosition {
     SourcePosition::Composite(CompositePosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         positions: parts,
     })
 }

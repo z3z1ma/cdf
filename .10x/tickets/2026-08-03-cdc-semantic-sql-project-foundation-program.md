@@ -67,7 +67,8 @@ Recommended integration rule:
   fixture, and conformance artifacts coherently;
 - no CDC adapter ships before A1 closes.
 
-Owner: `.10x/tickets/2026-08-03-cdc-source-position-artifact-transition.md`, governed by
+Status: complete. Owner:
+`.10x/tickets/done/2026-08-03-cdc-source-position-artifact-transition.md`, governed by
 `.10x/specs/cdc-source-position-artifacts.md`.
 
 Depends-On: A0.

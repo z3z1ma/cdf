@@ -95,7 +95,7 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
                 segment_id: SegmentId::new("roofline-segment").unwrap(),
                 scope: ScopeKey::Resource,
                 output_position: SourcePosition::Cursor(CursorPosition {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     field: "id".to_owned(),
                     value: CursorValue::U64(ROWS as u64),
                 }),
@@ -348,7 +348,7 @@ fn correction_request(original_package_hash: &PackageHash) -> DestinationCorrect
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "correction".to_owned(),
                 value: CursorValue::U64(2),
             }),
@@ -480,7 +480,7 @@ fn state_segment(segment: &SegmentEntry) -> StateSegment {
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(segment.row_count as i64),
         }),
@@ -498,7 +498,7 @@ fn replay_inputs(request: &ParquetCommitRequest) -> PackageReplayInputs {
     let output_position = request.commit.segments.last().map_or_else(
         || {
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::U64(0),
             })
@@ -2859,7 +2859,7 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
             segment_id: SegmentId::new("seg-low-memory").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::U64(2),
             }),

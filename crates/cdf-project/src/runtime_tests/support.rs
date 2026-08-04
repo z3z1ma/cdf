@@ -922,7 +922,7 @@ pub(super) fn scope() -> ScopeKey {
 
 pub(super) fn position(value: i64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(value),
     })

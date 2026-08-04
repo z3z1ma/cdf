@@ -109,7 +109,7 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
         panic!("run matrix file source must checkpoint a FileManifest");
     };
-    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.version, cdf_kernel::SOURCE_POSITION_VERSION);
     assert_eq!(manifest.files.len(), 1);
     let file = &manifest.files[0];
     assert!(

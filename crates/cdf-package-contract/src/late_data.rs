@@ -3,9 +3,9 @@ use std::path::{Component, Path};
 use cdf_kernel::{LateDataAction, PartitionId, SourcePosition, WatermarkClaim, WatermarkValue};
 use serde::{Deserialize, Serialize};
 
-pub const LATE_DATA_EVIDENCE_VERSION: u16 = 1;
+pub const LATE_DATA_EVIDENCE_VERSION: u16 = 2;
 pub const LATE_DATA_EVIDENCE_FILE: &str = "stats/late-data.json";
-pub const LATE_DATA_PAYLOAD_CATALOG_VERSION: u16 = 1;
+pub const LATE_DATA_PAYLOAD_CATALOG_VERSION: u16 = 2;
 pub const LATE_DATA_PAYLOAD_CATALOG_FILE: &str = "stats/late-data-payloads.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

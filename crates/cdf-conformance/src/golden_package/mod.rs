@@ -390,7 +390,7 @@ fn write_prepared_orders_state_commit_artifacts(
         partition_id: PartitionId::new("p0")?,
     };
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(3),
     });

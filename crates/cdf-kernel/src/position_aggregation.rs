@@ -99,6 +99,34 @@ pub fn aggregate_position_set(
     }
     if positions
         .iter()
+        .any(|position| matches!(position, SourcePosition::ResumeToken(_)))
+    {
+        if positions.len() != 1
+            || !positions
+                .iter()
+                .all(|position| matches!(position, SourcePosition::ResumeToken(_)))
+        {
+            return Err(CdfError::data(
+                "MongoDB position aggregation requires exactly one source-attested terminal token for the retained event prefix",
+            ));
+        }
+        let terminal = &positions[0];
+        return match input {
+            Some(previous) => previous.advance_ordered_prefix(terminal),
+            None => {
+                terminal.validate()?;
+                Ok(terminal.clone())
+            }
+        };
+    }
+    if positions
+        .iter()
+        .any(|position| matches!(position, SourcePosition::Log(_)))
+    {
+        return SourcePosition::join_ordered(input, positions);
+    }
+    if positions
+        .iter()
         .all(|position| matches!(position, SourcePosition::Cursor(_)))
     {
         if input.is_some_and(|position| !matches!(position, SourcePosition::Cursor(_))) {
@@ -693,6 +721,9 @@ fn close_cursor(
 
 #[cfg(test)]
 mod tests {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+
     use super::*;
 
     fn table_snapshot(snapshot_id: i64, generation: &str) -> SourcePosition {
@@ -726,6 +757,57 @@ mod tests {
         }
     }
 
+    fn mongo_token(value: &str) -> SourcePosition {
+        let bytes = bson::doc! { "_data": value };
+        let bytes = bson::serialize_to_vec(&bytes).unwrap();
+        SourcePosition::ResumeToken(crate::ResumeTokenPosition::MongoChangeStream(
+            crate::MongoChangeStreamResumeToken {
+                version: crate::SOURCE_POSITION_VERSION,
+                scope: crate::MongoChangeStreamScope {
+                    source_binding: "orders-stream".to_owned(),
+                    watch_level: crate::MongoWatchLevel::Collection,
+                    database: Some("sales".to_owned()),
+                    collection: Some("orders".to_owned()),
+                    pipeline_sha256:
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                    options_sha256:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            .to_owned(),
+                },
+                token_bson_base64: STANDARD.encode(&bytes),
+                token_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
+                resume_mode: crate::MongoResumeMode::ResumeAfter,
+                token_source: crate::MongoResumeTokenSource::Event,
+            },
+        ))
+    }
+
+    #[test]
+    fn mongo_aggregation_advances_one_attested_terminal_prefix_only() {
+        let first = mongo_token("first");
+        let second = mongo_token("second");
+        assert_eq!(
+            aggregate_position_set(
+                "mongo.orders",
+                Some(&first),
+                std::slice::from_ref(&second),
+                &WriteDisposition::Merge,
+            )
+            .unwrap(),
+            second
+        );
+        assert!(
+            aggregate_position_set(
+                "mongo.orders",
+                Some(&first),
+                &[mongo_token("middle"), mongo_token("second")],
+                &WriteDisposition::Merge,
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn extraction_checksum_enriches_metadata_only_file_evidence() {
         let merged =
@@ -751,13 +833,13 @@ mod tests {
     fn closed_cursor_observations_aggregate_without_reapplying_lag() {
         let positions = [15, 12].map(|value| {
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: crate::SOURCE_POSITION_VERSION,
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(value),
             })
         });
         let prior = SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             field: "updated_at".to_owned(),
             value: CursorValue::I64(20),
         });
@@ -771,7 +853,7 @@ mod tests {
         assert_eq!(
             output,
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: crate::SOURCE_POSITION_VERSION,
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(20),
             })
@@ -876,19 +958,19 @@ mod tests {
     #[test]
     fn terminal_position_merge_is_total_and_recurses_through_composites() {
         let existing = SourcePosition::Composite(CompositePosition {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             positions: BTreeMap::from([
                 (
                     "file".to_owned(),
                     SourcePosition::FileManifest(FileManifest {
-                        version: 1,
+                        version: crate::SOURCE_POSITION_VERSION,
                         files: vec![file(None)],
                     }),
                 ),
                 (
                     "cursor".to_owned(),
                     SourcePosition::Cursor(CursorPosition {
-                        version: 1,
+                        version: crate::SOURCE_POSITION_VERSION,
                         field: "id".to_owned(),
                         value: CursorValue::I64(42),
                     }),
@@ -896,19 +978,19 @@ mod tests {
             ]),
         });
         let terminal = SourcePosition::Composite(CompositePosition {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             positions: BTreeMap::from([
                 (
                     "file".to_owned(),
                     SourcePosition::FileManifest(FileManifest {
-                        version: 1,
+                        version: crate::SOURCE_POSITION_VERSION,
                         files: vec![file(Some("sha256:content"))],
                     }),
                 ),
                 (
                     "cursor".to_owned(),
                     SourcePosition::Cursor(CursorPosition {
-                        version: 1,
+                        version: crate::SOURCE_POSITION_VERSION,
                         field: "id".to_owned(),
                         value: CursorValue::I64(42),
                     }),
@@ -933,7 +1015,7 @@ mod tests {
     #[test]
     fn terminal_position_merge_rejects_kind_value_and_path_changes() {
         let existing = SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             files: vec![file(None)],
         });
         let mut changed = file(Some("sha256:content"));
@@ -942,7 +1024,7 @@ mod tests {
             merge_terminal_position_evidence(
                 &existing,
                 &SourcePosition::FileManifest(FileManifest {
-                    version: 1,
+                    version: crate::SOURCE_POSITION_VERSION,
                     files: vec![changed],
                 }),
             )
@@ -951,12 +1033,12 @@ mod tests {
         assert!(
             merge_terminal_position_evidence(
                 &SourcePosition::Cursor(CursorPosition {
-                    version: 1,
+                    version: crate::SOURCE_POSITION_VERSION,
                     field: "id".to_owned(),
                     value: CursorValue::I64(1),
                 }),
                 &SourcePosition::Cursor(CursorPosition {
-                    version: 1,
+                    version: crate::SOURCE_POSITION_VERSION,
                     field: "id".to_owned(),
                     value: CursorValue::I64(2),
                 }),
@@ -967,7 +1049,7 @@ mod tests {
             merge_terminal_position_evidence(
                 &existing,
                 &SourcePosition::FileManifest(FileManifest {
-                    version: 1,
+                    version: crate::SOURCE_POSITION_VERSION,
                     files: vec![file(None), file(Some("sha256:content"))],
                 }),
             )

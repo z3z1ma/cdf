@@ -197,7 +197,7 @@ pub(super) fn terminal_effective_schema_runtime(
 
 pub(super) fn terminal_file_position() -> SourcePosition {
     SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "input-0".to_owned(),
             size_bytes: 10,

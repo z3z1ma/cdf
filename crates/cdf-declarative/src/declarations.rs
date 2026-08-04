@@ -5,7 +5,7 @@ use cdf_runtime::SourceRegistry;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v4";
+pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v5";
 pub const DECLARATIVE_SCHEMA_ARTIFACT_PATH: &str = "schemas/cdf-declarative.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,7 +54,7 @@ pub enum ExecutionDeclaration {
     Drain {
         checkpoint_cadence: EpochClosureDeclaration,
         package_rotation: EpochClosureDeclaration,
-        termination: DrainTerminationDeclaration,
+        termination: Box<DrainTerminationDeclaration>,
         watermark: Box<WatermarkDeclaration>,
         late_data: LateDataDeclaration,
         safe_frontier: SafeFrontierDeclaration,
@@ -68,7 +68,7 @@ enum UncheckedExecutionDeclaration {
     Drain {
         checkpoint_cadence: Option<EpochClosureDeclaration>,
         package_rotation: Option<EpochClosureDeclaration>,
-        termination: Option<DrainTerminationDeclaration>,
+        termination: Option<Box<DrainTerminationDeclaration>>,
         watermark: Option<Box<WatermarkDeclaration>>,
         late_data: Option<LateDataDeclaration>,
         safe_frontier: Option<SafeFrontierDeclaration>,
@@ -155,9 +155,7 @@ pub enum SourcePositionDeclaration {
         value: CursorValueDeclaration,
     },
     Log {
-        log: String,
-        offset: i64,
-        sequence: Option<String>,
+        position: CommittedLogPositionDeclaration,
     },
     FileManifest {
         files: Vec<FilePositionDeclaration>,
@@ -173,6 +171,95 @@ pub enum SourcePositionDeclaration {
         opaque_blob: Vec<u8>,
         blob_sha256: String,
     },
+    ResumeToken {
+        position: ResumeTokenPositionDeclaration,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "protocol", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommittedLogPositionDeclaration {
+    #[serde(rename = "postgresql")]
+    PostgreSql {
+        scope: PostgresLogScopeDeclaration,
+        commit_lsn: u64,
+        end_lsn: u64,
+        xid: u32,
+    },
+    #[serde(rename = "mysql")]
+    MySql {
+        scope: MySqlLogScopeDeclaration,
+        binlog_file: String,
+        file_sequence: u64,
+        end_log_position: u64,
+        executed_gtid_set: String,
+        transaction_gtid: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresLogScopeDeclaration {
+    pub system_identifier: String,
+    pub database_oid: u32,
+    pub slot: String,
+    pub output_plugin: String,
+    pub semantics_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MySqlLogScopeDeclaration {
+    pub source_binding: String,
+    pub active_server_uuid: String,
+    pub binlog_basename: String,
+    pub semantics_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "protocol", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResumeTokenPositionDeclaration {
+    #[serde(rename = "mongodb_change_stream")]
+    MongoChangeStream {
+        scope: MongoChangeStreamScopeDeclaration,
+        token_bson_base64: String,
+        token_sha256: String,
+        resume_mode: MongoResumeModeDeclaration,
+        token_source: MongoResumeTokenSourceDeclaration,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MongoChangeStreamScopeDeclaration {
+    pub source_binding: String,
+    pub watch_level: MongoWatchLevelDeclaration,
+    pub database: Option<String>,
+    pub collection: Option<String>,
+    pub pipeline_sha256: String,
+    pub options_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MongoWatchLevelDeclaration {
+    Cluster,
+    Database,
+    Collection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MongoResumeModeDeclaration {
+    ResumeAfter,
+    StartAfter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MongoResumeTokenSourceDeclaration {
+    Event,
+    PostBatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -143,7 +143,7 @@ pub fn representative_commit_request(disposition: WriteDisposition) -> Destinati
                 partition_id: PartitionId::new("p0").unwrap(),
             },
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::I64(42),
             }),

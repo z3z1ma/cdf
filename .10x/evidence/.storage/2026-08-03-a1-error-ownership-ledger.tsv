@@ -1,0 +1,4 @@
+file	line	construction	owner	classification
+crates/cdf-kernel/src/position.rs	217	CdfError::internal	Internal	Validated composite keys cannot disappear without a CDF-owned invariant failure.
+crates/cdf-kernel/src/position.rs	326	CdfError::internal	Internal	Validated equal composite key sets cannot lose a key during the same immutable join.
+crates/cdf-kernel/src/position/cdc.rs	-	None	-	BSON/base64/GTID/coordinate validation is caller-authored Contract input; ordered regression and conflicting evidence are Data.

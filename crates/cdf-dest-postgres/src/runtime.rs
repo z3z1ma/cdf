@@ -410,7 +410,7 @@ fn postgres_preflight_delta(
         segment_id: cdf_kernel::SegmentId::new("seg-postgres-preflight")?,
         scope: descriptor.state_scope.clone(),
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "preflight".to_owned(),
             value: CursorValue::I64(0),
         }),

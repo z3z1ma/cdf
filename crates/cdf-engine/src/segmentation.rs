@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use arrow_array::{
     Array, BinaryViewArray, DictionaryArray, FixedSizeListArray, LargeListArray,
     LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, RecordBatchOptions,
@@ -10,16 +8,13 @@ use arrow_array::{
     },
 };
 use arrow_select::take::{take, take_record_batch};
-use cdf_kernel::{
-    CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
-    SegmentId, SourcePosition, merge_file_position_evidence,
-};
+use cdf_kernel::{CdfError, Result, SegmentId, SourcePosition};
 use cdf_memory::MemoryLease;
 use cdf_memory::MemorySnapshot;
 use serde::{Deserialize, Serialize};
 
 pub const SEGMENTATION_POLICY_VERSION: u16 = 3;
-pub const POSITION_ALGEBRA_VERSION: u16 = 1;
+pub const POSITION_ALGEBRA_VERSION: u16 = 2;
 pub const SEGMENT_ID_NAMESPACE: &str = "partition-segment-ordinal-v3";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -930,111 +925,16 @@ pub enum PositionJoin {
 }
 
 pub fn join_positions(left: &SourcePosition, right: &SourcePosition) -> Result<PositionJoin> {
-    Ok(match (left, right) {
-        (SourcePosition::FileManifest(left), SourcePosition::FileManifest(right)) => {
-            PositionJoin::Joined(SourcePosition::FileManifest(join_file_manifests(
-                left, right,
-            )?))
-        }
-        (SourcePosition::Cursor(left), SourcePosition::Cursor(right)) => join_cursors(left, right)?
-            .map_or(PositionJoin::Boundary, |position| {
-                PositionJoin::Joined(SourcePosition::Cursor(position))
-            }),
-        (SourcePosition::Log(left), SourcePosition::Log(right))
-            if left.version == right.version
-                && left.log == right.log
-                && left.sequence == right.sequence =>
-        {
-            PositionJoin::Joined(SourcePosition::Log(if left.offset >= right.offset {
-                left.clone()
-            } else {
-                right.clone()
-            }))
-        }
-        (SourcePosition::Composite(left), SourcePosition::Composite(right))
-            if left.version == right.version
-                && left.positions.keys().eq(right.positions.keys()) =>
-        {
-            let mut positions = BTreeMap::new();
-            for (key, left_position) in &left.positions {
-                match join_positions(left_position, &right.positions[key])? {
-                    PositionJoin::Joined(position) => {
-                        positions.insert(key.clone(), position);
-                    }
-                    PositionJoin::Boundary => return Ok(PositionJoin::Boundary),
-                }
-            }
-            PositionJoin::Joined(SourcePosition::Composite(CompositePosition {
-                version: left.version,
-                positions,
-            }))
-        }
-        _ if left == right => PositionJoin::Joined(left.clone()),
-        _ => PositionJoin::Boundary,
-    })
-}
-
-fn join_file_manifests(left: &FileManifest, right: &FileManifest) -> Result<FileManifest> {
-    if left.version != right.version {
-        return Err(CdfError::contract(
-            "file-manifest position versions cannot be joined",
-        ));
-    }
-    let mut files = BTreeMap::<String, FilePosition>::new();
-    for file in left.files.iter().chain(&right.files) {
-        match files.get(&file.path) {
-            Some(existing) => {
-                let merged = merge_file_position_evidence(existing, file).map_err(|error| {
-                    CdfError::contract(format!(
-                        "file-manifest position has conflicting identity for `{}`: {error}",
-                        file.path
-                    ))
-                })?;
-                files.insert(file.path.clone(), merged);
-            }
-            None => {
-                files.insert(file.path.clone(), file.clone());
-            }
-        }
-    }
-    Ok(FileManifest {
-        version: left.version,
-        files: files.into_values().collect(),
-    })
-}
-
-fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<CursorPosition>> {
-    if left.version != right.version || left.field != right.field {
-        return Ok(None);
-    }
-    let value = match (&left.value, &right.value) {
-        (CursorValue::I64(left), CursorValue::I64(right)) => CursorValue::I64((*left).max(*right)),
-        (CursorValue::U64(left), CursorValue::U64(right)) => CursorValue::U64((*left).max(*right)),
-        (
-            CursorValue::TimestampMicros {
-                micros: left,
-                timezone: left_tz,
-            },
-            CursorValue::TimestampMicros {
-                micros: right,
-                timezone: right_tz,
-            },
-        ) if left_tz == right_tz => CursorValue::TimestampMicros {
-            micros: (*left).max(*right),
-            timezone: left_tz.clone(),
-        },
-        (left, right) if left == right => left.clone(),
-        _ => return Ok(None),
-    };
-    Ok(Some(CursorPosition {
-        version: left.version,
-        field: left.field.clone(),
-        value,
-    }))
+    Ok(
+        SourcePosition::join_pair(left, right)?
+            .map_or(PositionJoin::Boundary, PositionJoin::Joined),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use arrow_array::{
         Array, BooleanArray, Int8Array, Int64Array, StringArray, StringViewArray,
@@ -1042,7 +942,7 @@ mod tests {
             Int64Builder, ListBuilder, ListViewBuilder, StringDictionaryBuilder, UnionBuilder,
         },
     };
-    use cdf_kernel::{CursorPosition, FileManifest};
+    use cdf_kernel::{CursorPosition, CursorValue, FileManifest, FilePosition};
 
     fn ipc_stream_bytes(batch: &RecordBatch) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -1097,11 +997,11 @@ mod tests {
             sha256: None,
         };
         let left = SourcePosition::FileManifest(FileManifest {
-            version: 1,
-            files: vec![file("b"), file("a")],
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            files: vec![file("a"), file("b")],
         });
         let right = SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![file("c")],
         });
         let PositionJoin::Joined(SourcePosition::FileManifest(joined)) =
@@ -1120,7 +1020,7 @@ mod tests {
 
         let cursor = |value| {
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::U64(value),
             })
@@ -1132,11 +1032,11 @@ mod tests {
         assert_eq!(
             join_positions(
                 &SourcePosition::PageToken(cdf_kernel::PageToken {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     token: "a".to_owned()
                 }),
                 &SourcePosition::PageToken(cdf_kernel::PageToken {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     token: "b".to_owned()
                 })
             )
@@ -1246,7 +1146,7 @@ mod tests {
     fn positioned_oversize_preserves_one_exact_conservative_boundary() {
         let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
         let position = SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::U64(5),
         });
@@ -1262,7 +1162,7 @@ mod tests {
     #[test]
     fn oversized_file_batch_splits_with_terminal_manifest_on_every_segment() {
         let position = SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![FilePosition {
                 path: "part.parquet".to_owned(),
                 size_bytes: 42,
@@ -1357,7 +1257,7 @@ mod tests {
     fn target_flush_does_not_attach_next_position_to_previous_segment() {
         let cursor = |value| {
             Some(SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: CursorValue::U64(value),
             }))

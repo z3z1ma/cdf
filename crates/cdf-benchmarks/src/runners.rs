@@ -1744,7 +1744,7 @@ fn build_archive_input_fixture(
     let segment = builder.write_segment(SegmentId::new("seg-000001")?, 0, &batches)?;
     let scope = ScopeKey::Resource;
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64((spec.rows - 1) as i64),
     });
@@ -1805,7 +1805,7 @@ fn build_replay_package_fixture(
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
         )?;
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64((spec.rows - 1) as i64),
     });

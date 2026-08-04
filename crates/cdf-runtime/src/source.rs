@@ -767,8 +767,8 @@ impl SourceStreamCapabilities {
             (SourceFrontierCapability::Cursor { fields }, SourcePosition::Cursor(position)) => {
                 fields.binary_search(&position.field).is_ok()
             }
-            (SourceFrontierCapability::Log { logs }, SourcePosition::Log(position)) => {
-                logs.binary_search(&position.log).is_ok()
+            (SourceFrontierCapability::Log { scopes }, SourcePosition::Log(position)) => {
+                scopes.binary_search(&position.scope()).is_ok()
             }
             (SourceFrontierCapability::FileManifest, SourcePosition::FileManifest(_))
             | (SourceFrontierCapability::PageToken, SourcePosition::PageToken(_)) => true,
@@ -803,12 +803,18 @@ impl SourceWatermarkCapability {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceFrontierCapability {
-    Cursor { fields: Vec<String> },
-    Log { logs: Vec<String> },
+    Cursor {
+        fields: Vec<String>,
+    },
+    Log {
+        scopes: Vec<cdf_kernel::CommittedLogScope>,
+    },
     FileManifest,
     PageToken,
     Composite,
-    ForeignState { protocols: Vec<String> },
+    ForeignState {
+        protocols: Vec<String>,
+    },
 }
 
 impl SourceFrontierCapability {
@@ -826,7 +832,20 @@ impl SourceFrontierCapability {
     fn validate(&self) -> Result<()> {
         match self {
             Self::Cursor { fields } => validate_frontier_dimensions("cursor field", fields),
-            Self::Log { logs } => validate_frontier_dimensions("log name", logs),
+            Self::Log { scopes } if scopes.is_empty() => Err(CdfError::contract(
+                "source-frontier log capability requires at least one exact source scope",
+            )),
+            Self::Log { scopes } if scopes.windows(2).any(|pair| pair[0] >= pair[1]) => {
+                Err(CdfError::contract(
+                    "source-frontier log scopes must be unique and canonically sorted",
+                ))
+            }
+            Self::Log { scopes } => {
+                for scope in scopes {
+                    scope.validate()?;
+                }
+                Ok(())
+            }
             Self::ForeignState { protocols } => {
                 validate_frontier_dimensions("foreign-state protocol", protocols)
             }

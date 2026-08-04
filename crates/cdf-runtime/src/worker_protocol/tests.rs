@@ -171,7 +171,7 @@ fn position(value: u64) -> SourcePosition {
 fn compatibility() -> WorkerCompatibility {
     WorkerCompatibility {
         cdf_version: "0.1.0".to_owned(),
-        artifact_version: "package-v2".to_owned(),
+        artifact_version: "package-v3".to_owned(),
         arrow_version: "58.3.0".to_owned(),
         relational_engine: WorkerComponentVersion {
             component: "datafusion".to_owned(),
@@ -981,15 +981,15 @@ fn canonical_task_attempt_and_result_fixtures_round_trip() {
     }
     assert_eq!(
         task_json,
-        include_str!("../../tests/fixtures/portable_partition_task_v1.json").trim_end()
+        include_str!("../../tests/fixtures/portable_partition_task_v2.json").trim_end()
     );
     assert_eq!(
         attempt_json,
-        include_str!("../../tests/fixtures/partition_attempt_v1.json").trim_end()
+        include_str!("../../tests/fixtures/partition_attempt_v2.json").trim_end()
     );
     assert_eq!(
         result_json,
-        include_str!("../../tests/fixtures/partition_worker_result_v1.json").trim_end()
+        include_str!("../../tests/fixtures/partition_worker_result_v2.json").trim_end()
     );
     assert_eq!(
         PortablePartitionTask::decode_bounded(

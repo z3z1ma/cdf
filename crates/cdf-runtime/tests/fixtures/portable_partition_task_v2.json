@@ -1,8 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "compatibility": {
     "cdf_version": "0.1.0",
-    "artifact_version": "package-v2",
+    "artifact_version": "package-v3",
     "arrow_version": "58.3.0",
     "relational_engine": {
       "component": "datafusion",
@@ -43,10 +43,10 @@
       "store_namespace": "worker-fixtures",
       "object_key": "plans/partition-00000003.json",
       "byte_count": 440,
-      "content_sha256": "sha256:6e067c17cbedd52514cab6ea02c7b12bb079baff15bb86c85bf249a30f65717e",
+      "content_sha256": "sha256:e81c2aaa20325ba741280feb3264e5dc71244996ce2e6a417c094913c0708dda",
       "provider_generation": "generation-7"
     },
-    "schema_observation_binding": "sha256:9d2fee80ff41c076b75c9339ef5c2daa1c0991b13b095be2e9ed60c14c754b71",
+    "schema_observation_binding": "sha256:a989749776efaf3c52a2208b26a9792718b477312fd1d56bda2a028f30521584",
     "unit_authority_hash": "sha256:2626262626262626262626262626262626262626262626262626262626262626",
     "segment_authority_hash": "sha256:2727272727272727272727272727272727272727272727272727272727272727"
   },
@@ -147,12 +147,12 @@
     "scope": {
       "kind": "resource"
     },
-    "state_version": 1,
+    "state_version": 2,
     "position": {
       "kind": "inline",
       "position": {
         "kind": "cursor",
-        "version": 1,
+        "version": 2,
         "field": "offset",
         "value": {
           "kind": "u64",
@@ -210,5 +210,5 @@
     ],
     "maximum_artifact_bytes": 1073741824
   },
-  "task_sha256": "sha256:946e6343c69023e3a402c1448bb0d816940cf03b62c3e5742fb8922a8027dfda"
+  "task_sha256": "sha256:b721a1e2ee3f0d29fef1617f860f93423190619445a15cabd8f1f52789d45407"
 }

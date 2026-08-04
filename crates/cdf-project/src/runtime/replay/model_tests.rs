@@ -388,7 +388,7 @@ impl SettlementFixture {
 
 fn cursor_position(value: u64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::U64(value),
     })

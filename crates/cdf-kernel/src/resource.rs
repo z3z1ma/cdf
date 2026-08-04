@@ -645,10 +645,12 @@ impl PartitionPlan {
         let SourcePosition::FileManifest(manifest) = position else {
             return Ok(None);
         };
-        if manifest.version != 1 {
+        if manifest.version != crate::SOURCE_POSITION_VERSION {
             return Err(CdfError::contract(format!(
-                "partition `{}` uses unsupported file-manifest version {}",
-                self.partition_id, manifest.version
+                "partition `{}` uses unsupported file-manifest version {}; expected {}",
+                self.partition_id,
+                manifest.version,
+                crate::SOURCE_POSITION_VERSION
             )));
         }
         let [file] = manifest.files.as_slice() else {

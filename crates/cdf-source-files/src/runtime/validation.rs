@@ -438,7 +438,7 @@ pub(super) fn partition_for_file_record(
             path: file.path_text.clone(),
         },
         planned_position: Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![cdf_kernel::FilePosition {
                 path: file.path_text.clone(),
                 size_bytes: file.size_bytes,

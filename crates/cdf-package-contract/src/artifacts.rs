@@ -13,14 +13,14 @@ use crate::model::SegmentEntry;
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
-pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 2;
+pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 3;
 pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
 pub const DEDUP_SUMMARY_VERSION: u16 = 3;
 pub const DEDUP_PROVENANCE_VERSION: u16 = 1;
 pub const DEDUP_PROVENANCE_DIRECTORY: &str = "stats/dedup-dropped/";
 pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
-pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 1;
+pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,16 +274,11 @@ impl DestinationCommitPlanPreimage {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1 && self.version != DESTINATION_COMMIT_PLAN_VERSION {
+        if self.version != DESTINATION_COMMIT_PLAN_VERSION {
             return Err(CdfError::data(format!(
-                "unsupported destination commit plan version {}",
-                self.version
+                "unsupported destination commit plan version {}; regenerate the current package",
+                self.version,
             )));
-        }
-        if self.version == 1 && !self.destination_policy.is_empty() {
-            return Err(CdfError::data(
-                "destination commit plan version 1 cannot carry destination policy authority",
-            ));
         }
         Ok(())
     }
@@ -579,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn destination_policy_is_identity_bearing_and_v1_reads_fail_closed_empty() {
+    fn destination_policy_is_identity_bearing_and_old_versions_fail_closed() {
         let plan = DestinationCommitPlanPreimage::package_hash_token(
             TargetName::new("events").unwrap(),
             WriteDisposition::Merge,
@@ -602,6 +597,6 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("destination_policy");
         let legacy: DestinationCommitPlanPreimage = serde_json::from_value(legacy).unwrap();
         assert!(legacy.destination_policy.is_empty());
-        legacy.validate().unwrap();
+        assert!(legacy.validate().is_err());
     }
 }

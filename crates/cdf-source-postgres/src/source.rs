@@ -1335,7 +1335,7 @@ fn source_position_for_batch(
     let field = batch.schema().field(index).clone();
     let value = max_cursor_for_array(&field, batch.column(index))?;
     Ok(Some(SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: cursor_spec.field.clone(),
         value: value.into_cursor_value(),
     })))

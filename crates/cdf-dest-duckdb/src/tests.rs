@@ -407,7 +407,7 @@ fn write_current_state_artifacts(
         partition_id: PartitionId::new("p0").unwrap(),
     };
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(3),
     });
@@ -481,7 +481,7 @@ fn state_segment_for(segment_id: &str, rows: u64, cursor: i64) -> StateSegment {
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(cursor),
         }),

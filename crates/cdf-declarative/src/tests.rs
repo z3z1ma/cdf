@@ -116,7 +116,15 @@ impl SourceDriver for TestSourceDriver {
                         fields: vec!["id".to_owned()],
                     },
                     SourceFrontierCapability::Log {
-                        logs: vec!["events-0".to_owned()],
+                        scopes: vec![cdf_kernel::CommittedLogScope::PostgreSql(
+                            cdf_kernel::PostgresLogScope {
+                                system_identifier: "7421938841407953395".to_owned(),
+                                database_oid: 16_384,
+                                slot: "cdf_events".to_owned(),
+                                output_plugin: "pgoutput".to_owned(),
+                                semantics_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                            },
+                        )],
                     },
                 ],
                 idleness_capabilities: vec!["idle-v1".to_owned()],
@@ -310,7 +318,22 @@ mode = "disabled"
 
     let source_frontier = declared.replace(
         "kind = \"duration\"\nmilliseconds = 60000",
-        "kind = \"source_frontier\"\n\n[resource.raw.execution.termination.position]\nkind = \"log\"\nlog = \"events-0\"\noffset = 4242",
+        concat!(
+            "kind = \"source_frontier\"\n\n",
+            "[resource.raw.execution.termination.position]\n",
+            "kind = \"log\"\n\n",
+            "[resource.raw.execution.termination.position.position]\n",
+            "protocol = \"postgresql\"\n",
+            "commit_lsn = 4241\n",
+            "end_lsn = 4242\n",
+            "xid = 7\n\n",
+            "[resource.raw.execution.termination.position.position.scope]\n",
+            "system_identifier = \"7421938841407953395\"\n",
+            "database_oid = 16384\n",
+            "slot = \"cdf_events\"\n",
+            "output_plugin = \"pgoutput\"\n",
+            "semantics_sha256 = \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        ),
     );
     let resource = compile(&source_frontier).unwrap().remove(0);
     assert!(matches!(
@@ -320,8 +343,18 @@ mode = "disabled"
                 position: cdf_kernel::SourcePosition::Log(position)
             },
             ..
-        } if position.log == "events-0" && position.offset == 4_242
+        } if matches!(
+            position,
+            cdf_kernel::CommittedLogPosition::PostgreSql(position)
+                if position.scope.slot == "cdf_events" && position.end_lsn == 4_242
+        )
     ));
+    let wrong_scope = source_frontier.replace(
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let error = compile(&wrong_scope).unwrap_err();
+    assert!(error.message.contains("source_frontier"), "{error}");
 
     let missing_fields = [
         (
@@ -758,7 +791,7 @@ fn schema_rebinding_updates_the_compiled_plan_without_recompiling_the_driver() {
 #[test]
 fn generated_schema_merges_common_and_driver_fields_into_closed_objects() {
     let artifact = declarative_json_schema_artifact(&test_registry()).unwrap();
-    assert_eq!(artifact.version, "cdf-declarative-v4");
+    assert_eq!(artifact.version, "cdf-declarative-v5");
     let definitions = artifact.schema["$defs"].as_object().unwrap();
     let sources = definitions["SourceDeclaration"]["oneOf"]
         .as_array()

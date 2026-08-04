@@ -404,14 +404,14 @@ mod tests {
             (
                 "empty file list",
                 FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: Vec::new(),
                 },
             ),
             (
                 "empty path",
                 FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![FilePosition {
                         path: String::new(),
                         size_bytes: 42,
@@ -425,7 +425,7 @@ mod tests {
             (
                 "zero size",
                 FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 0,
@@ -439,7 +439,7 @@ mod tests {
             (
                 "missing sha256",
                 FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 42,
@@ -453,7 +453,7 @@ mod tests {
             (
                 "bad sha256",
                 FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 42,
@@ -763,7 +763,7 @@ mod tests {
 
     fn file_position(path: &str) -> SourcePosition {
         SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![FilePosition {
                 path: path.to_owned(),
                 size_bytes: 42,

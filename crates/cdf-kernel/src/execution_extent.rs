@@ -1329,7 +1329,7 @@ mod tests {
 
     fn cursor_position() -> SourcePosition {
         SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             field: "offset".to_owned(),
             value: CursorValue::U64(42),
         })

@@ -240,7 +240,7 @@ mod tests {
             segment_id: SegmentId::new("segment-1").unwrap(),
             scope: cdf_kernel::ScopeKey::Resource,
             output_position: cdf_kernel::SourcePosition::Cursor(cdf_kernel::CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "id".to_owned(),
                 value: cdf_kernel::CursorValue::U64(7),
             }),

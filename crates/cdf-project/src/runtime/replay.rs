@@ -1350,9 +1350,19 @@ fn partial_position_matches_partition_scope(
             .metadata
             .get("cursor_field")
             .is_some_and(|field| field == &cursor.field),
-        (cdf_kernel::SourcePosition::Log(log), cdf_kernel::ScopeKey::Stream { name }) => {
-            &log.log == name
-        }
+        (
+            position @ (cdf_kernel::SourcePosition::Log(_)
+            | cdf_kernel::SourcePosition::ResumeToken(_)),
+            cdf_kernel::ScopeKey::Stream { .. },
+        ) => partition
+            .start_position
+            .as_ref()
+            .or(partition.planned_position.as_ref())
+            .is_some_and(|planned| {
+                position
+                    .same_restart_scope(planned)
+                    .is_ok_and(std::convert::identity)
+            }),
         (position, _) => partition.start_position.as_ref() == Some(position),
     }
 }
@@ -2726,8 +2736,11 @@ mod stream_admission_replay_tests {
     };
 
     use cdf_kernel::{
-        CursorPosition, CursorValue, FileManifest, FilePosition, PartitionId, PartitionPlan,
-        ScopeKey, SegmentAck, SegmentId, SourcePosition, StateSegment,
+        CommittedLogPosition, CursorPosition, CursorValue, FileManifest, FilePosition,
+        MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
+        MongoResumeTokenSource, MongoWatchLevel, PartitionId, PartitionPlan,
+        PostgresCommitPosition, PostgresLogScope, ResumeTokenPosition, ScopeKey, SegmentAck,
+        SegmentId, SourcePosition, StateSegment,
     };
 
     use cdf_engine::{LineageInputObservation, LineageSummary};
@@ -2781,7 +2794,7 @@ mod stream_admission_replay_tests {
             segment_id: SegmentId::new(id).unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::FileManifest(FileManifest {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 files: Vec::new(),
             }),
             row_count: rows,
@@ -2844,7 +2857,7 @@ mod stream_admission_replay_tests {
     fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {
         let file_position = |etag: &str| {
             SourcePosition::FileManifest(FileManifest {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 files: vec![FilePosition {
                     path: "events.json".to_owned(),
                     size_bytes: 12,
@@ -2888,7 +2901,7 @@ mod stream_admission_replay_tests {
         };
         let cursor_position = |field: &str| {
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: field.to_owned(),
                 value: CursorValue::I64(7),
             })
@@ -2935,7 +2948,7 @@ mod stream_admission_replay_tests {
             &cursor_partition,
             7,
             &SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(8),
             }),
@@ -2978,5 +2991,80 @@ mod stream_admission_replay_tests {
             error.to_string().contains("duplicate stream-admission"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn partial_stream_position_binding_requires_full_restart_scope() {
+        let postgres = |semantics: &str, end_lsn: u64| {
+            SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                scope: PostgresLogScope {
+                    system_identifier: "7421938841407953395".to_owned(),
+                    database_oid: 16_384,
+                    slot: "orders".to_owned(),
+                    output_plugin: "pgoutput".to_owned(),
+                    semantics_sha256: semantics.to_owned(),
+                },
+                commit_lsn: end_lsn.saturating_sub(1).max(1),
+                end_lsn,
+                xid: 7,
+            }))
+        };
+        let hash_a = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let hash_b = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut partition = PartitionPlan {
+            partition_id: PartitionId::new("postgres-stream").unwrap(),
+            scope: ScopeKey::Stream {
+                name: "orders".to_owned(),
+            },
+            planned_position: None,
+            start_position: Some(postgres(hash_a, 100)),
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+            metadata: BTreeMap::new(),
+        };
+        assert!(partial_position_matches_partition_scope(
+            &postgres(hash_a, 120),
+            &partition
+        ));
+        assert!(!partial_position_matches_partition_scope(
+            &postgres(hash_b, 120),
+            &partition
+        ));
+
+        let mongo = |mode: MongoResumeMode, pipeline_sha256: &str| {
+            SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+                MongoChangeStreamResumeToken {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    scope: MongoChangeStreamScope {
+                        source_binding: "orders-stream".to_owned(),
+                        watch_level: MongoWatchLevel::Collection,
+                        database: Some("sales".to_owned()),
+                        collection: Some("orders".to_owned()),
+                        pipeline_sha256: pipeline_sha256.to_owned(),
+                        options_sha256: hash_b.to_owned(),
+                    },
+                    token_bson_base64: "FgAAAAJfZGF0YQAGAAAAdG9rZW4AAA==".to_owned(),
+                    token_sha256:
+                        "sha256:2861e1850c87f3c48b875671d9fc0ca97b9c268ad17ff0b713a116989f2a68a2"
+                            .to_owned(),
+                    resume_mode: mode,
+                    token_source: MongoResumeTokenSource::Event,
+                },
+            ))
+        };
+        partition.start_position = Some(mongo(MongoResumeMode::ResumeAfter, hash_a));
+        assert!(partial_position_matches_partition_scope(
+            &mongo(MongoResumeMode::ResumeAfter, hash_a),
+            &partition
+        ));
+        assert!(!partial_position_matches_partition_scope(
+            &mongo(MongoResumeMode::StartAfter, hash_a),
+            &partition
+        ));
+        assert!(!partial_position_matches_partition_scope(
+            &mongo(MongoResumeMode::ResumeAfter, hash_b),
+            &partition
+        ));
     }
 }

@@ -5,9 +5,9 @@ use super::{
     DestinationId, DuckDbDestination, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, EstimateSupport, Event, ExecutionExtent, ExecutionProfile, Field,
     FileManifest, FileManifestRunSummary, FilePosition, FilterCapabilities, Id, IncrementalShape,
-    Int64Array, LineageSummary, LogPosition, Metadata, Mutex, Ordering, PackageBuilder,
-    PackageHash, PackageReader, PackageStatus, PageToken, PartitionId, Path, PathBuf, PipelineId,
-    PlanId, ProcessedObservationOutcome, ProcessedObservationPosition, ProjectRunNoOpReason,
+    Int64Array, LineageSummary, Metadata, Mutex, Ordering, PackageBuilder, PackageHash,
+    PackageReader, PackageStatus, PageToken, PartitionId, Path, PathBuf, PipelineId, PlanId,
+    ProcessedObservationOutcome, ProcessedObservationPosition, ProjectRunNoOpReason,
     ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource, QueryableResource,
     Receipt, Record, RecordBatch, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
     ResourceId, ResourceStream, Result, RunEvent, RunEventDetails, RunEventKind, RunEventSink,
@@ -16,7 +16,7 @@ use super::{
     SegmentId, SourcePosition, SqliteCheckpointStore, SqliteRunLedger, StateDelta,
     StateDeltaTestRequest, Subscriber, TargetName, TracingField, TracingRunEventSink, TrustLevel,
     Visit, WriteDisposition, backfill_pipeline_id, fmt, fs, negotiate_scan_plan, plan_backfill,
-    state_delta_from_run,
+    postgres_log_position, state_delta_from_run,
     support::{
         BackfillMockResource, BoundTestResource, MULTI_FILE_RESOURCE_APPEND, OwnedTestResource,
         RecordingTransport, SCHEMA_HASH, StaticSecretProvider, build_package_with_carryover,
@@ -55,7 +55,7 @@ schema = { fields = [
 
 pub(super) fn cursor_position(field: &str, value: CursorValue) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: field.to_owned(),
         value,
     })
@@ -1127,7 +1127,7 @@ pub(super) fn file_position_with_identity(
     sha256: Option<String>,
 ) -> SourcePosition {
     SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: path.to_owned(),
             size_bytes,
@@ -3045,12 +3045,7 @@ fn state_delta_rejects_mixed_file_and_non_file_source_positions() {
         "pkg-state-delta-mixed-file-log",
         vec![
             file_position("/tmp/cdf/a.ndjson"),
-            SourcePosition::Log(LogPosition {
-                version: 1,
-                log: "orders".to_owned(),
-                offset: 11,
-                sequence: None,
-            }),
+            postgres_log_position("orders", 11),
         ],
     )
     .unwrap_err();
@@ -3215,7 +3210,7 @@ fn state_delta_rejects_page_token_only_and_mixed_cursor_positions() {
         temp.path(),
         "pkg-state-delta-page-token-only",
         vec![SourcePosition::PageToken(PageToken {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             token: "next-page".to_owned(),
         })],
     )
@@ -3223,7 +3218,7 @@ fn state_delta_rejects_page_token_only_and_mixed_cursor_positions() {
     assert!(page_token_error.to_string().contains("page-token-only"));
 
     let mixed_position = SourcePosition::Composite(CompositePosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         positions: BTreeMap::from([
             (
                 "cursor".to_owned(),
@@ -3232,7 +3227,7 @@ fn state_delta_rejects_page_token_only_and_mixed_cursor_positions() {
             (
                 "page".to_owned(),
                 SourcePosition::PageToken(PageToken {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     token: "next-page".to_owned(),
                 }),
             ),
@@ -3264,12 +3259,7 @@ fn state_delta_rejects_divergent_non_file_source_position_variants() {
         "pkg-state-delta-divergent-non-file-variants",
         vec![
             cursor_position("updated_at", CursorValue::I64(10)),
-            SourcePosition::Log(LogPosition {
-                version: 1,
-                log: "orders".to_owned(),
-                offset: 11,
-                sequence: None,
-            }),
+            postgres_log_position("orders", 11),
         ],
     )
     .unwrap_err();

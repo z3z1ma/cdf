@@ -1191,7 +1191,7 @@ fn materialize_batch_schema_evidence(
                         CompiledSchemaAdmissionOutcome::Admitted(plan) => plan,
                         CompiledSchemaAdmissionOutcome::Quarantined(quarantine) => {
                             return Ok(BatchSchemaDisposition::Quarantined {
-                                quarantine: *quarantine,
+                                quarantine,
                                 physical_observation: PhysicalObservationEvidence::arrow_schema(
                                     record_batch.schema().as_ref(),
                                 )?,
@@ -3740,7 +3740,7 @@ where
                 ProcessedObservationOutcome::Quarantined,
                 source_position.clone(),
             )?);
-            let mut quarantine = quarantine.clone();
+            let mut quarantine = quarantine.as_ref().clone();
             quarantine.bind_source_position(source_position)?;
             let physical_observation = effective_schema_evidence
                 .and_then(|evidence| {
@@ -4005,7 +4005,7 @@ where
                         }
                         partition_source_row_ordinal = partition_source_row_ordinal
                             .saturating_add(batch.header.row_count);
-                        dynamic_quarantine = Some((quarantine, physical_observation));
+                        dynamic_quarantine = Some((*quarantine, physical_observation));
 
                         // Schema quarantine is a whole-partition verdict. Drain the invocation to
                         // EOF so weak sources can finish their terminal content hash and the

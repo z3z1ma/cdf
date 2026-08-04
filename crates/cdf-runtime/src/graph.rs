@@ -1226,7 +1226,7 @@ mod tests {
             partition_id: PartitionId::new("p0").unwrap(),
             local_sequence: 0,
             source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 token: "p0:0".to_owned(),
             })),
             schema_authority: schema_authority(),
@@ -1280,7 +1280,7 @@ mod tests {
             partition_id: PartitionId::new("p0").unwrap(),
             local_sequence: sequence,
             source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 token: format!("p0:{sequence}"),
             })),
             schema_authority: schema_authority(),
@@ -1328,7 +1328,7 @@ mod tests {
             partition_id: PartitionId::new("p0").unwrap(),
             local_sequence: 0,
             source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 token: "p0:0".to_owned(),
             })),
             schema_authority: schema_authority(),

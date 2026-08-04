@@ -413,7 +413,7 @@ pub(super) fn build_zero_segment_processed_package(
         )
         .unwrap();
     let output_position = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,

@@ -422,7 +422,7 @@ fn batch_cursor_position(
     })?;
     let value = cursor_value(&field, batch.column(index).as_ref(), row)?;
     Ok(Some(SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: cursor.field.clone(),
         value,
     })))

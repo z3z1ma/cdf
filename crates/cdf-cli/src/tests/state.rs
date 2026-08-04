@@ -1,4 +1,5 @@
 use super::*;
+use cdf_kernel::{CommittedLogPosition, PostgresCommitPosition, PostgresLogScope};
 
 #[test]
 fn state_show_uses_sqlite_store_and_reports_missing_head() {
@@ -368,7 +369,7 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
 fn state_show_renders_typed_table_snapshot_authority() {
     let project = TestProject::new();
     let position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         protocol: "iceberg".to_owned(),
         catalog: "glue:us-east-1:123456789012".to_owned(),
         namespace: vec!["analytics".to_owned(), "curated".to_owned()],
@@ -458,6 +459,94 @@ fn state_show_renders_typed_table_snapshot_authority() {
 }
 
 #[test]
+fn state_show_renders_typed_postgres_commit_authority() {
+    let project = TestProject::new();
+    let position = SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        scope: PostgresLogScope {
+            system_identifier: "7421938841407953395".to_owned(),
+            database_oid: 16_384,
+            slot: "cdf_events".to_owned(),
+            output_plugin: "pgoutput".to_owned(),
+            semantics_sha256:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        },
+        commit_lsn: 4_241,
+        end_lsn: 4_242,
+        xid: 7,
+    }));
+    let package_hash = "package-postgres-commit";
+    let mut delta = status_delta("cdf-run", "checkpoint-postgres-commit", package_hash);
+    delta.output_position = position.clone();
+    delta.segments[0].output_position = position;
+    let checkpoint_id = delta.checkpoint_id.clone();
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    store.propose(delta).unwrap();
+    store
+        .commit(
+            &checkpoint_id,
+            status_receipt(package_hash, "receipt-postgres-commit", 1_700_000_000_000),
+        )
+        .unwrap();
+
+    let output = crate::state_command::state(
+        &test_cli(&project),
+        cdf_cli_core::args::StateCommand::Show(cdf_cli_core::args::StateScopeArgs {
+            pipeline_id: Some("cdf-run".to_owned()),
+            resource_id: "local.events".to_owned(),
+            scope_json: None,
+            scope: vec!["kind=resource".to_owned()],
+        }),
+        &test_execution_services(),
+        &test_destination_registry(),
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "source position",
+        "log",
+        "log protocol",
+        "postgresql",
+        "7421938841407953395",
+        "database OID",
+        "16384",
+        "cdf_events",
+        "pgoutput",
+        "commit LSN",
+        "4241",
+        "end LSN",
+        "4242",
+        "transaction ID",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+
+    let json_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--pipeline",
+        "cdf-run",
+    ]);
+    assert_eq!(json_result.exit_code, 0, "stderr: {}", json_result.stderr);
+    let json = stderr_or_stdout_json(&json_result.stdout);
+    let position = &json["result"]["head"]["delta"]["output_position"];
+    assert_eq!(position["kind"], "log");
+    assert_eq!(position["protocol"], "postgresql");
+    assert_eq!(position["end_lsn"], 4_242);
+}
+
+#[test]
 fn compiler_planning_frontier_comes_from_the_default_pipeline_head() {
     let project = TestProject::new();
     commit_status_head(
@@ -481,7 +570,7 @@ fn compiler_planning_frontier_comes_from_the_default_pipeline_head() {
     assert_eq!(
         frontier,
         Some(SourcePosition::Cursor(CursorPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "updated_at".to_owned(),
             value: CursorValue::I64(42),
         }))

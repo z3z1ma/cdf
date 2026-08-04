@@ -13,13 +13,13 @@ use crate::{
     BlockingLaneBinding, BlockingLaneSpec, ExecutionHostCapabilities, SourceDriverId, artifact_hash,
 };
 
-pub const PORTABLE_PARTITION_TASK_VERSION: u16 = 1;
-pub const PORTABLE_SEGMENT_TASK_VERSION: u16 = 1;
-pub const PARTITION_ATTEMPT_VERSION: u16 = 1;
-pub const PARTITION_WORKER_RESULT_VERSION: u16 = 1;
-pub const SEGMENT_WORKER_RESULT_VERSION: u16 = 1;
-pub const PORTABLE_SOURCE_POSITION_VERSION: u16 = 1;
-pub const PORTABLE_CHECKPOINT_STATE_VERSION: u16 = 1;
+pub const PORTABLE_PARTITION_TASK_VERSION: u16 = 2;
+pub const PORTABLE_SEGMENT_TASK_VERSION: u16 = 2;
+pub const PARTITION_ATTEMPT_VERSION: u16 = 2;
+pub const PARTITION_WORKER_RESULT_VERSION: u16 = 2;
+pub const SEGMENT_WORKER_RESULT_VERSION: u16 = 2;
+pub const PORTABLE_SOURCE_POSITION_VERSION: u16 = 2;
+pub const PORTABLE_CHECKPOINT_STATE_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3466,12 +3466,7 @@ fn validate_inline_source_position(position: Option<&SourcePosition>) -> Result<
                 validate_token("cursor timezone", value)?;
             }
         }
-        SourcePosition::Log(position) => {
-            validate_token("log position name", &position.log)?;
-            if let Some(sequence) = &position.sequence {
-                validate_token("log position sequence", sequence)?;
-            }
-        }
+        SourcePosition::Log(_) | SourcePosition::ResumeToken(_) => {}
         SourcePosition::FileManifest(manifest) => {
             for file in &manifest.files {
                 validate_no_absolute_coordinator_path(&file.path)?;

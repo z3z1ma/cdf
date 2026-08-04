@@ -1364,7 +1364,7 @@ fn rest_batch_cursor_position(
     }
     Ok(maximum.map(|value| {
         SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: cursor.field.clone(),
             value: value.into_cursor_value(),
         })

@@ -230,7 +230,7 @@ pub(super) fn open_file_resource_with_dependencies(
             }
             let attestation = Some(PartitionAttestation::new(
                 SourcePosition::FileManifest(cdf_kernel::FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![completed_position],
                 }),
                 observed_schema_hash.or_else(|| {

@@ -40,11 +40,8 @@ impl CheckpointStore for InMemoryCheckpointStore {
                 delta.checkpoint_id
             )));
         }
-        if let Some(head) =
-            in_memory_head(&state, &delta.pipeline_id, &delta.resource_id, &delta.scope)
-        {
-            delta.validate_watermark_transition_from(&head.delta)?;
-        }
+        let head = in_memory_head(&state, &delta.pipeline_id, &delta.resource_id, &delta.scope);
+        delta.validate_transition_from_head(head.as_ref().map(|checkpoint| &checkpoint.delta))?;
 
         let checkpoint = Checkpoint {
             delta,
@@ -75,16 +72,15 @@ impl CheckpointStore for InMemoryCheckpointStore {
             )));
         }
         verify_receipt(&receipt, &checkpoint.delta)?;
-        if let Some(head) = in_memory_head(
+        let head = in_memory_head(
             &state,
             &checkpoint.delta.pipeline_id,
             &checkpoint.delta.resource_id,
             &checkpoint.delta.scope,
-        ) {
-            checkpoint
-                .delta
-                .validate_watermark_transition_from(&head.delta)?;
-        }
+        );
+        checkpoint
+            .delta
+            .validate_transition_from_head(head.as_ref().map(|head| &head.delta))?;
 
         for existing in state.checkpoints.values_mut() {
             if same_tuple(

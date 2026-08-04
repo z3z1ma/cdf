@@ -18,7 +18,7 @@ use crate::support::{
 };
 
 pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
-pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 1;
+pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 2;
 const CHECKPOINT_SELECT: &str = "SELECT sequence, checkpoint_id, pipeline_id, resource_id, scope_json, state_version, parent_checkpoint_id, input_position_json, output_position_json, package_hash, schema_hash, receipt_id, status, is_head, created_at_ms, committed_at_ms, delta_json, receipt_json, rewind_target_checkpoint_id FROM cdf_checkpoints";
 pub struct SqliteCheckpointStore {
     conn: Mutex<Connection>,
@@ -227,16 +227,15 @@ impl CheckpointStore for SqliteCheckpointStore {
                 checkpoint.delta.checkpoint_id
             )));
         }
-        if let Some(head) = Self::head_tx(
+        let head = Self::head_tx(
             &tx,
             &checkpoint.delta.pipeline_id,
             &checkpoint.delta.resource_id,
             &checkpoint.delta.scope,
-        )? {
-            checkpoint
-                .delta
-                .validate_watermark_transition_from(&head.delta)?;
-        }
+        )?;
+        checkpoint
+            .delta
+            .validate_transition_from_head(head.as_ref().map(|head| &head.delta))?;
         insert_checkpoint(&tx, &checkpoint)?;
         tx.commit().map_err(sqlite_error)?;
         Ok(checkpoint)
@@ -443,16 +442,15 @@ pub(crate) fn commit_checkpoint_tx(
         )));
     }
     verify_receipt(receipt, &checkpoint.delta)?;
-    if let Some(head) = SqliteCheckpointStore::head_tx(
+    let head = SqliteCheckpointStore::head_tx(
         tx,
         &checkpoint.delta.pipeline_id,
         &checkpoint.delta.resource_id,
         &checkpoint.delta.scope,
-    )? {
-        checkpoint
-            .delta
-            .validate_watermark_transition_from(&head.delta)?;
-    }
+    )?;
+    checkpoint
+        .delta
+        .validate_transition_from_head(head.as_ref().map(|head| &head.delta))?;
     verify_current_published_schema_tx(tx, &checkpoint.delta)?;
 
     let scope_json = encode_json(&checkpoint.delta.scope)?;
@@ -563,7 +561,7 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
             delta_json TEXT NOT NULL,
             receipt_json TEXT,
             rewind_target_checkpoint_id TEXT,
-            CHECK (state_version = 1),
+            CHECK (state_version = 2),
             CHECK (is_head = 0 OR status = 'committed'),
             CHECK ((status = 'committed') = (receipt_id IS NOT NULL AND receipt_json IS NOT NULL AND committed_at_ms IS NOT NULL))
         );
@@ -611,7 +609,7 @@ fn validate_private_checkpoint_rows(conn: &Connection) -> Result<()> {
 
 fn unsupported_checkpoint_schema_version(version: i64) -> CdfError {
     CdfError::internal(format!(
-        "unsupported checkpoint store SQLite schema version {version}"
+        "unsupported checkpoint store SQLite schema version {version}; current schema version {CHECKPOINT_STORE_SCHEMA_VERSION} is required, so recreate this pre-production state store"
     ))
 }
 

@@ -436,7 +436,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         vec![true, true],
     );
     batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "/tmp/cdf/pii.ndjson".to_owned(),
             size_bytes: 64,
@@ -654,7 +654,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
         vec![true],
     );
     batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "/tmp/cdf/source-drift.ndjson".to_owned(),
             size_bytes: 96,

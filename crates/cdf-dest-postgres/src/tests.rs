@@ -34,7 +34,7 @@ fn segment(id: &str, rows: u64) -> StateSegment {
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "updated_at".to_owned(),
             value: CursorValue::I64(10),
         }),
@@ -52,11 +52,11 @@ fn input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
         },
-        state_version: 1,
+        state_version: cdf_kernel::CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "updated_at".to_owned(),
             value: CursorValue::I64(10),
         }),

@@ -30,20 +30,37 @@ use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     BackpressureSupport, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint,
     CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSession,
-    CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition, CursorSpec,
-    CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
-    DestinationSheet, EstimateSupport, FileManifest, FilePosition, FilterCapabilities,
-    IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape,
-    LATE_DATA_CARRYOVER_VERSION, LateDataCarryoverRef, LogPosition, MigrationRecord, PackageHash,
-    PageToken, PartitionId, PipelineId, PlanId, ProcessedObservationOutcome,
-    ProcessedObservationPosition, PushdownFidelity, QueryableResource, Receipt, ReceiptId,
-    ReceiptVerification, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RewindReport, RewindRequest, RunEvent, RunEventSink,
-    RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, TransactionSupport, TrustLevel, TypeMapping, TypeMappingFidelity, VerifyClause,
-    WriteDisposition,
+    CommittedLogPosition, CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition,
+    CursorSpec, CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
+    DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest, FilePosition,
+    FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape,
+    LATE_DATA_CARRYOVER_VERSION, LateDataCarryoverRef, MigrationRecord, PackageHash, PageToken,
+    PartitionId, PipelineId, PlanId, PostgresCommitPosition, PostgresLogScope,
+    ProcessedObservationOutcome, ProcessedObservationPosition, PushdownFidelity, QueryableResource,
+    Receipt, ReceiptId, ReceiptVerification, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunEvent,
+    RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest,
+    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName, TransactionSupport, TrustLevel, TypeMapping, TypeMappingFidelity,
+    VerifyClause, WriteDisposition,
 };
+
+fn postgres_log_position(slot: &str, end_lsn: u64) -> SourcePosition {
+    SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        scope: PostgresLogScope {
+            system_identifier: "7421938841407953395".to_owned(),
+            database_oid: 16_384,
+            slot: slot.to_owned(),
+            output_plugin: "pgoutput".to_owned(),
+            semantics_sha256:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        },
+        commit_lsn: end_lsn.saturating_sub(1).max(1),
+        end_lsn,
+        xid: 7,
+    }))
+}
 use cdf_object_access::FileTransportFacade;
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
 use cdf_package_contract::{

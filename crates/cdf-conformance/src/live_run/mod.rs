@@ -560,7 +560,7 @@ fn assert_source_position_matches_expected(delta: &StateDelta, expected: &LiveRu
     let SourcePosition::FileManifest(manifest) = &delta.output_position else {
         panic!("live run checkpoint output position must be a FileManifest");
     };
-    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.version, cdf_kernel::SOURCE_POSITION_VERSION);
     assert_eq!(manifest.files.len(), 1);
     let file = &manifest.files[0];
     assert!(

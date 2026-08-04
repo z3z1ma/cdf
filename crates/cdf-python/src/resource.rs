@@ -428,7 +428,7 @@ impl PythonResource {
                         .map(|record_batch| cursor_position(record_batch, cursor))
                         .transpose()?,
                     None => Some(SourcePosition::ForeignState(ForeignState {
-                        version: 1,
+                        version: cdf_kernel::SOURCE_POSITION_VERSION,
                         protocol: "python-resource-v1".to_owned(),
                         opaque_blob: opaque_blob.clone(),
                         blob_sha256: blob_sha256.clone(),
@@ -543,7 +543,7 @@ fn cursor_position(
         }
     };
     Ok(SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: cursor.field.clone(),
         value,
     }))

@@ -11,7 +11,7 @@ fn sql_mounts_checkpoint_package_and_receipt_tables_as_json_rows() {
         "--project",
         project.root_str(),
         "sql",
-        "select p.package_hash, p.status, s.segment_id, c.checkpoint_id, c.status as checkpoint_status, r.receipt_id from packages p join package_segments s using (package_hash) join checkpoints c using (package_hash) join package_receipts r using (package_hash) order by p.package_id",
+        "select p.package_hash, p.status, s.segment_id, c.checkpoint_id, c.status as checkpoint_status, r.receipt_id, c.output_position_json from packages p join package_segments s using (package_hash) join checkpoints c using (package_hash) join package_receipts r using (package_hash) order by p.package_id",
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -30,7 +30,8 @@ fn sql_mounts_checkpoint_package_and_receipt_tables_as_json_rows() {
             "segment_id",
             "checkpoint_id",
             "checkpoint_status",
-            "receipt_id"
+            "receipt_id",
+            "output_position_json"
         ])
     );
     assert_eq!(json["result"]["rows"].as_array().unwrap().len(), 1);
@@ -41,6 +42,9 @@ fn sql_mounts_checkpoint_package_and_receipt_tables_as_json_rows() {
     assert_eq!(row[3], "checkpoint-sql-1");
     assert_eq!(row[4], "committed");
     assert_eq!(row[5], "receipt-sql-1");
+    let position: serde_json::Value = serde_json::from_str(row[6].as_str().unwrap()).unwrap();
+    assert_eq!(position["kind"], "cursor");
+    assert_eq!(position["version"], cdf_kernel::SOURCE_POSITION_VERSION);
     assert!(
         json["result"]["tables"]
             .as_array()

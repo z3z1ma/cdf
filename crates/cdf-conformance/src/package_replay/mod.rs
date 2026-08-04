@@ -813,7 +813,7 @@ fn prepared_partition_id() -> Result<PartitionId> {
 
 fn prepared_output_position() -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(3),
     })

@@ -553,7 +553,7 @@ impl PlannedPartitionReader for NebulaPlannedPartitionReader {
             .max()
             .ok_or_else(|| cdf_kernel::CdfError::data("Nebula task omitted catalog rows"))?;
         let position = SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "updated_at".to_owned(),
             value: CursorValue::I64(updated_at),
         });
@@ -747,7 +747,7 @@ impl ResourceStream for NebulaResource {
             )?
             .with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
             batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(task_updated_at),
             }));

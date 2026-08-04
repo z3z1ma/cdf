@@ -33,7 +33,7 @@ pub(super) fn other_partition_scope() -> ScopeKey {
 
 pub(super) fn cursor_position(value: i64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(value),
     })
@@ -41,14 +41,14 @@ pub(super) fn cursor_position(value: i64) -> SourcePosition {
 
 pub(super) fn delta(
     checkpoint_id: &str,
-    parent_checkpoint_id: Option<&CheckpointId>,
+    parent: Option<&StateDelta>,
     scope: ScopeKey,
     output_position: SourcePosition,
     package_hash: &str,
 ) -> StateDelta {
     delta_for(
         checkpoint_id,
-        parent_checkpoint_id,
+        parent,
         pipeline_id(),
         resource_id(),
         scope,
@@ -59,7 +59,7 @@ pub(super) fn delta(
 
 pub(super) fn delta_for(
     checkpoint_id: &str,
-    parent_checkpoint_id: Option<&CheckpointId>,
+    parent: Option<&StateDelta>,
     pipeline_id: PipelineId,
     resource_id: ResourceId,
     scope: ScopeKey,
@@ -89,8 +89,8 @@ pub(super) fn delta_for(
         resource_id,
         scope,
         state_version: CHECKPOINT_STATE_VERSION,
-        parent_checkpoint_id: parent_checkpoint_id.cloned(),
-        input_position: None,
+        parent_checkpoint_id: parent.map(|delta| delta.checkpoint_id.clone()),
+        input_position: parent.map(|delta| delta.output_position.clone()),
         output_position,
         output_watermark: None,
         partition_watermarks: Vec::new(),

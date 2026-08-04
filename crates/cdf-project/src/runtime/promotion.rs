@@ -2119,7 +2119,7 @@ fn source_package_position(
         positions.insert(package.to_string(), delta.output_position);
     }
     Ok(SourcePosition::Composite(CompositePosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         positions,
     }))
 }

@@ -1316,7 +1316,7 @@ fn context_uses_http_secret_redaction_for_logs_and_traces() {
     }
 
     let mut ctx = PythonContext::new(Some(SourcePosition::PageToken(PageToken {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         token: "cursor-1".to_owned(),
     })));
     let uri = SecretUri::new("secret://env/GITHUB_TOKEN").unwrap();

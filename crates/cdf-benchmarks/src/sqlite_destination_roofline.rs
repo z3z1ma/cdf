@@ -842,7 +842,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
     let package_hash = PackageHash::new(format!("sha256:{}", "a".repeat(64)))?;
     let schema_hash = SchemaHash::new("schema-sqlite-destination-roofline")?;
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(i64::try_from(rows)?),
     });

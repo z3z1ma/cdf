@@ -3118,7 +3118,7 @@ mod tests {
         )
         .unwrap();
         let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             protocol: "iceberg".to_owned(),
             catalog: "file:/promotion-fixture".to_owned(),
             namespace: vec!["analytics".to_owned()],
@@ -3844,7 +3844,7 @@ mod tests {
             .write_segment(SegmentId::new("segment-1").unwrap(), 0, &batch)
             .unwrap();
         let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
-            version: CHECKPOINT_STATE_VERSION,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             protocol: "iceberg".to_owned(),
             catalog: "file:/promotion-fixture".to_owned(),
             namespace: vec!["analytics".to_owned()],

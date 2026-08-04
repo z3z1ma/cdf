@@ -1,4 +1,7 @@
-use cdf_kernel::{SourcePosition, TableSnapshotSelector};
+use cdf_kernel::{
+    CommittedLogPosition, MongoResumeMode, MongoResumeTokenSource, MongoWatchLevel,
+    ResumeTokenPosition, SourcePosition, TableSnapshotSelector,
+};
 use serde_json::Value;
 
 use super::*;
@@ -163,26 +166,97 @@ fn checkpoint_panel(title: &str, checkpoint: &cdf_kernel::Checkpoint) -> KeyValu
             "source position",
             checkpoint.delta.output_position.kind().as_str(),
         );
-    if let SourcePosition::TableSnapshot(position) = &checkpoint.delta.output_position {
-        panel = panel
-            .row("table protocol", position.protocol.clone())
-            .row("catalog", position.catalog.clone())
-            .row(
-                "table",
-                format!("{}.{}", position.namespace.join("."), position.table),
-            )
-            .row("selector", table_selector_summary(&position.selector))
-            .row("snapshot", position.snapshot_id.to_string())
-            .row("sequence", position.sequence_number.to_string())
-            .row(
-                "parent snapshot",
-                position
-                    .parent_snapshot_id
-                    .map_or_else(|| "none".to_owned(), |value| value.to_string()),
-            )
-            .row("metadata generation", position.metadata_generation.clone());
+    match &checkpoint.delta.output_position {
+        SourcePosition::TableSnapshot(position) => {
+            panel = panel
+                .row("table protocol", position.protocol.clone())
+                .row("catalog", position.catalog.clone())
+                .row(
+                    "table",
+                    format!("{}.{}", position.namespace.join("."), position.table),
+                )
+                .row("selector", table_selector_summary(&position.selector))
+                .row("snapshot", position.snapshot_id.to_string())
+                .row("sequence", position.sequence_number.to_string())
+                .row(
+                    "parent snapshot",
+                    position
+                        .parent_snapshot_id
+                        .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                )
+                .row("metadata generation", position.metadata_generation.clone());
+        }
+        SourcePosition::Log(CommittedLogPosition::PostgreSql(position)) => {
+            panel = panel
+                .row("log protocol", "postgresql")
+                .row(
+                    "system identifier",
+                    position.scope.system_identifier.clone(),
+                )
+                .row("database OID", position.scope.database_oid.to_string())
+                .row("slot", position.scope.slot.clone())
+                .row("output plugin", position.scope.output_plugin.clone())
+                .row("commit LSN", position.commit_lsn.to_string())
+                .row("end LSN", position.end_lsn.to_string())
+                .row("transaction ID", position.xid.to_string())
+                .row("capture semantics", position.scope.semantics_sha256.clone());
+        }
+        SourcePosition::Log(CommittedLogPosition::MySql(position)) => {
+            panel = panel
+                .row("log protocol", "mysql")
+                .row("source binding", position.scope.source_binding.clone())
+                .row("server UUID", position.scope.active_server_uuid.clone())
+                .row("binlog file", position.binlog_file.clone())
+                .row("binlog sequence", position.file_sequence.to_string())
+                .row("end log position", position.end_log_position.to_string())
+                .row("transaction GTID", position.transaction_gtid.clone())
+                .row("executed GTID set", position.executed_gtid_set.clone())
+                .row("capture semantics", position.scope.semantics_sha256.clone());
+        }
+        SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(position)) => {
+            panel = panel
+                .row("resume protocol", "mongodb_change_stream")
+                .row("source binding", position.scope.source_binding.clone())
+                .row("watch target", mongo_watch_target(position))
+                .row("resume mode", mongo_resume_mode(position.resume_mode))
+                .row("token source", mongo_token_source(position.token_source))
+                .row("token SHA-256", position.token_sha256.clone())
+                .row("pipeline", position.scope.pipeline_sha256.clone())
+                .row("capture semantics", position.scope.options_sha256.clone());
+        }
+        _ => {}
     }
     panel
+}
+
+fn mongo_resume_mode(mode: MongoResumeMode) -> &'static str {
+    match mode {
+        MongoResumeMode::ResumeAfter => "resume_after",
+        MongoResumeMode::StartAfter => "start_after",
+    }
+}
+
+fn mongo_token_source(source: MongoResumeTokenSource) -> &'static str {
+    match source {
+        MongoResumeTokenSource::Event => "event",
+        MongoResumeTokenSource::PostBatch => "post_batch",
+    }
+}
+
+fn mongo_watch_target(position: &cdf_kernel::MongoChangeStreamResumeToken) -> String {
+    match position.scope.watch_level {
+        MongoWatchLevel::Cluster => "cluster".to_owned(),
+        MongoWatchLevel::Database => position
+            .scope
+            .database
+            .clone()
+            .unwrap_or_else(|| "<invalid database target>".to_owned()),
+        MongoWatchLevel::Collection => format!(
+            "{}.{}",
+            position.scope.database.as_deref().unwrap_or("<invalid>"),
+            position.scope.collection.as_deref().unwrap_or("<invalid>")
+        ),
+    }
 }
 
 fn table_selector_summary(selector: &TableSnapshotSelector) -> String {

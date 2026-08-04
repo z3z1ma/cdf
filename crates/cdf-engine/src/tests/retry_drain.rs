@@ -52,7 +52,7 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
     let mut batches = sample_batches();
     for (ordinal, batch) in batches.iter_mut().enumerate() {
         batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![FilePosition {
                 path: format!("input-{ordinal}.arrow"),
                 size_bytes: batch.header.byte_count,
@@ -1829,13 +1829,13 @@ fn dynamic_schema_quarantine_drains_to_eof_and_commits_terminal_content_identity
         sha256: None,
     };
     let initial_position = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![initial_file.clone()],
     });
     let mut terminal_file = initial_file;
     terminal_file.sha256 = Some("sha256:terminal-content".to_owned());
     let terminal_position = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![terminal_file],
     });
     let mut batches = vec![

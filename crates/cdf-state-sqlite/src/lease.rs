@@ -6,8 +6,9 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, ExpiredScopeLeaseProof, FencingToken, LeaseAuthorityDomainId, LeaseOwnerId, Result,
-    ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
+    CHECKPOINT_STATE_VERSION, CdfError, ExpiredScopeLeaseProof, FencingToken,
+    LeaseAuthorityDomainId, LeaseOwnerId, Result, ScopeKey, ScopeLease, ScopeLeaseClock,
+    ScopeLeaseStore,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
@@ -508,7 +509,10 @@ fn row_to_lease_result(row: &Row<'_>) -> Result<ScopeLease> {
                 ));
             }
             Ok(ScopeLease {
-                scope: decode_json(&row.get::<_, String>(0).map_err(sqlite_error)?, 1)?,
+                scope: decode_json(
+                    &row.get::<_, String>(0).map_err(sqlite_error)?,
+                    CHECKPOINT_STATE_VERSION,
+                )?,
                 owner: LeaseOwnerId::new(row.get::<_, String>(1).map_err(sqlite_error)?)?,
                 fencing_token: FencingToken::new(token)?,
                 acquired_at_ms,

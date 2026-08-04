@@ -1,8 +1,8 @@
 {
-  "version": 1,
-  "task_sha256": "sha256:946e6343c69023e3a402c1448bb0d816940cf03b62c3e5742fb8922a8027dfda",
+  "version": 2,
+  "task_sha256": "sha256:b721a1e2ee3f0d29fef1617f860f93423190619445a15cabd8f1f52789d45407",
   "attempt_id": "attempt-4",
-  "write_permit_sha256": "sha256:ea1afbca593dcdefdc5c678a6623e549c96cbd179c3f5305a907a61eb1417005",
+  "write_permit_sha256": "sha256:2ba22ef6bbd9e2c387850cfed5d8364a321e315d110ffdab5905a106bcadcefd",
   "status": {
     "kind": "succeeded"
   },
@@ -11,7 +11,7 @@
       "kind": "inline",
       "position": {
         "kind": "cursor",
-        "version": 1,
+        "version": 2,
         "field": "offset",
         "value": {
           "kind": "u64",
@@ -53,5 +53,5 @@
     "peak_memory_bytes": 1024,
     "spill_bytes": 0
   },
-  "result_sha256": "sha256:a5b06c91b1a3948c25ce80d5cc6e05bc50666b88c3e9353730a667250405d718"
+  "result_sha256": "sha256:49fe230da176b4e53177bb7e6ea715ddfa15c3262e08babb9dcacc04fa89057c"
 }

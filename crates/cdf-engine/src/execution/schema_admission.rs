@@ -30,7 +30,7 @@ pub(super) enum ExtraFieldEvidence {
 pub(super) enum BatchSchemaDisposition {
     Admitted(AdmittedBatchSchema),
     Quarantined {
-        quarantine: cdf_kernel::TerminalSchemaObservationQuarantine,
+        quarantine: Box<cdf_kernel::TerminalSchemaObservationQuarantine>,
         physical_observation: PhysicalObservationEvidence,
     },
 }
@@ -44,7 +44,7 @@ pub(super) struct BatchSchemaAdmissionContext<'a> {
 
 pub(super) enum PartitionSchemaDisposition {
     Admitted(EffectiveSchemaObservationCoercion),
-    Quarantined(cdf_kernel::TerminalSchemaObservationQuarantine),
+    Quarantined(Box<cdf_kernel::TerminalSchemaObservationQuarantine>),
     Unobserved,
 }
 
@@ -186,7 +186,9 @@ pub(super) fn partition_schema_disposition(
                 quarantine.physical_schema_hash().as_str(),
             )?;
         }
-        return Ok(PartitionSchemaDisposition::Quarantined(quarantine.clone()));
+        return Ok(PartitionSchemaDisposition::Quarantined(Box::new(
+            quarantine.clone(),
+        )));
     }
     let observation = evidence
         .observations

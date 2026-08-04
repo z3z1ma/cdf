@@ -124,7 +124,7 @@ mod tests {
                 segment_id: SegmentId::new("seg-correction").unwrap(),
                 scope: ScopeKey::Resource,
                 output_position: SourcePosition::Cursor(CursorPosition {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     field: "correction".to_owned(),
                     value: CursorValue::U64(1),
                 }),

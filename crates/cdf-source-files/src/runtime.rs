@@ -625,7 +625,7 @@ impl FileResource {
                     .hash
                 };
                 let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
-                    version: 1,
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![cdf_kernel::FilePosition {
                         path: resolved.path_text,
                         size_bytes: resolved.size_bytes,

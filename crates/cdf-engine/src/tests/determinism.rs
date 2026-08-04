@@ -407,7 +407,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     );
     for (ordinal, batch) in batches.iter_mut().enumerate() {
         let source_position = SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             files: vec![FilePosition {
                 path: format!("input-{ordinal}.arrow"),
                 size_bytes: batch.header.byte_count,

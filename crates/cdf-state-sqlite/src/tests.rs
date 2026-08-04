@@ -12,20 +12,24 @@ use cdf_conformance::scope_lease::{
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
-    CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
-    ErrorKind, EventTimeDomain, FileManifest, FilePosition, ForeignState, IdempotencyToken,
-    LeaseOwnerId, LogPosition, MigrationRecord, PARTITION_WATERMARK_STATE_VERSION,
-    PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
-    PartitionWatermarkState, PipelineId, PlanId, PromotionId, PromotionPublicationEvent,
-    PromotionPublicationTarget, PromotionSettlementStore, Receipt, ReceiptId, ResourceId,
-    RewindRequest, RunId, STREAM_EPOCH_POLICY_VERSION, SchemaHash, ScopeKey, ScopeLeaseStore,
-    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
-    TableSnapshotSelector, TargetName, VerifyClause, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
-    WatermarkClaim, WatermarkObservationContext, WatermarkValue, WriteDisposition,
+    CommitCounts, CommittedLogPosition, CompositePosition, ContractRef, CursorPosition,
+    CursorValue, DestinationId, ErrorKind, EventTimeDomain, FileManifest, FilePosition,
+    ForeignState, IdempotencyToken, LeaseOwnerId, MigrationRecord, MongoChangeStreamResumeToken,
+    MongoChangeStreamScope, MongoResumeMode, MongoResumeTokenSource, MongoWatchLevel,
+    PARTITION_WATERMARK_STATE_VERSION, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken,
+    PartitionId, PartitionWatermarkState, PipelineId, PlanId, PostgresCommitPosition,
+    PostgresLogScope, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
+    PromotionSettlementStore, Receipt, ReceiptId, ResourceId, ResumeTokenPosition, RewindRequest,
+    RunId, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaHash, ScopeKey,
+    ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause,
+    WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim, WatermarkObservationContext,
+    WatermarkValue, WriteDisposition,
 };
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
 
+use crate::sqlite::CHECKPOINT_STORE_SCHEMA_VERSION;
 use crate::support::encode_json;
 
 use super::*;
@@ -56,7 +60,7 @@ fn other_partition_scope() -> ScopeKey {
 
 fn cursor_position(value: i64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(value),
     })
@@ -64,7 +68,7 @@ fn cursor_position(value: i64) -> SourcePosition {
 
 fn table_snapshot_position() -> SourcePosition {
     SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
-        version: CHECKPOINT_STATE_VERSION,
+        version: SOURCE_POSITION_VERSION,
         protocol: "iceberg".to_owned(),
         catalog: "glue:us-east-1:123456789012".to_owned(),
         namespace: vec!["analytics".to_owned()],
@@ -78,16 +82,57 @@ fn table_snapshot_position() -> SourcePosition {
     }))
 }
 
+fn postgres_log_position(end_lsn: u64) -> SourcePosition {
+    SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+        version: SOURCE_POSITION_VERSION,
+        scope: PostgresLogScope {
+            system_identifier: "7421938841407953395".to_owned(),
+            database_oid: 16_384,
+            slot: "orders".to_owned(),
+            output_plugin: "pgoutput".to_owned(),
+            semantics_sha256:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        },
+        commit_lsn: end_lsn.saturating_sub(1).max(1),
+        end_lsn,
+        xid: 7,
+    }))
+}
+
+fn mongo_resume_token(token_bson_base64: &str, token_sha256: &str) -> SourcePosition {
+    SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+        MongoChangeStreamResumeToken {
+            version: SOURCE_POSITION_VERSION,
+            scope: MongoChangeStreamScope {
+                source_binding: "orders-stream".to_owned(),
+                watch_level: MongoWatchLevel::Collection,
+                database: Some("sales".to_owned()),
+                collection: Some("orders".to_owned()),
+                pipeline_sha256:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+                options_sha256:
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_owned(),
+            },
+            token_bson_base64: token_bson_base64.to_owned(),
+            token_sha256: token_sha256.to_owned(),
+            resume_mode: MongoResumeMode::ResumeAfter,
+            token_source: MongoResumeTokenSource::Event,
+        },
+    ))
+}
+
 fn delta(
     checkpoint_id: &str,
-    parent_checkpoint_id: Option<&CheckpointId>,
+    parent: Option<&StateDelta>,
     scope: ScopeKey,
     output_position: SourcePosition,
     package_hash: &str,
 ) -> StateDelta {
     delta_for(
         checkpoint_id,
-        parent_checkpoint_id,
+        parent,
         pipeline_id(),
         resource_id(),
         scope,
@@ -98,7 +143,7 @@ fn delta(
 
 fn delta_for(
     checkpoint_id: &str,
-    parent_checkpoint_id: Option<&CheckpointId>,
+    parent: Option<&StateDelta>,
     pipeline_id: PipelineId,
     resource_id: ResourceId,
     scope: ScopeKey,
@@ -118,8 +163,8 @@ fn delta_for(
         resource_id,
         scope,
         state_version: CHECKPOINT_STATE_VERSION,
-        parent_checkpoint_id: parent_checkpoint_id.cloned(),
-        input_position: None,
+        parent_checkpoint_id: parent.map(|delta| delta.checkpoint_id.clone()),
+        input_position: parent.map(|delta| delta.output_position.clone()),
         output_position,
         output_watermark: None,
         partition_watermarks: Vec::new(),
@@ -215,7 +260,7 @@ fn in_memory_store_uses_ephemeral_sqlite_error_context() {
 fn committed_schema_streak_reads_only_the_bounded_newest_suffix() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let scope = partition_scope();
-    let mut parent = None;
+    let mut parent = None::<StateDelta>;
     for (ordinal, schema) in ["schema-a", "schema-a", "schema-b", "schema-b"]
         .into_iter()
         .enumerate()
@@ -231,7 +276,7 @@ fn committed_schema_streak_reads_only_the_bounded_newest_suffix() {
         let checkpoint_id = next.checkpoint_id.clone();
         store.propose(next.clone()).unwrap();
         store.commit(&checkpoint_id, receipt(&next)).unwrap();
-        parent = Some(checkpoint_id);
+        parent = Some(next);
     }
 
     assert_eq!(
@@ -364,7 +409,7 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
 
     let erased = delta(
         "checkpoint-watermark-erased",
-        Some(&first.delta.checkpoint_id),
+        Some(&first.delta),
         partition_scope(),
         cursor_position(2),
         "package-watermark-erased",
@@ -380,7 +425,7 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
     let mut partition_regression = with_watermark(
         delta(
             "checkpoint-partition-watermark-regression",
-            Some(&first.delta.checkpoint_id),
+            Some(&first.delta),
             partition_scope(),
             cursor_position(2),
             "package-partition-watermark-regression",
@@ -398,7 +443,7 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
     let stale = with_watermark(
         delta(
             "checkpoint-watermark-110",
-            Some(&first.delta.checkpoint_id),
+            Some(&first.delta),
             partition_scope(),
             cursor_position(3),
             "package-watermark-110",
@@ -409,7 +454,7 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
     let newer = with_watermark(
         delta(
             "checkpoint-watermark-120",
-            Some(&first.delta.checkpoint_id),
+            Some(&first.delta),
             partition_scope(),
             cursor_position(4),
             "package-watermark-120",
@@ -421,7 +466,7 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
     let error = store
         .commit(&stale.checkpoint_id, receipt(&stale))
         .unwrap_err();
-    assert!(error.message.contains("regressed"));
+    assert!(error.message.contains("current head"));
     assert_eq!(
         store
             .head(&stale.pipeline_id, &stale.resource_id, &stale.scope)
@@ -639,7 +684,7 @@ fn assert_rewind_appends_marker_and_reports_packages_ahead<S: CheckpointStore>(s
         store,
         delta(
             "checkpoint-2",
-            Some(&first.delta.checkpoint_id),
+            Some(&first.delta),
             scope.clone(),
             cursor_position(2),
             "package-2",
@@ -649,7 +694,7 @@ fn assert_rewind_appends_marker_and_reports_packages_ahead<S: CheckpointStore>(s
         store,
         delta(
             "checkpoint-3",
-            Some(&second.delta.checkpoint_id),
+            Some(&second.delta),
             scope.clone(),
             cursor_position(3),
             "package-3",
@@ -725,7 +770,7 @@ fn assert_rewind_validation<S: CheckpointStore>(store: &S) {
     );
     let proposed_delta = delta(
         "checkpoint-rewind-validation-proposed",
-        Some(&first.delta.checkpoint_id),
+        Some(&first.delta),
         scope.clone(),
         cursor_position(2),
         "package-rewind-validation-proposed",
@@ -773,17 +818,26 @@ fn assert_branch_rewind_reports_only_current_branch_ahead<S: CheckpointStore>(st
         store,
         delta(
             "checkpoint-branch-target",
-            Some(&base.delta.checkpoint_id),
+            Some(&base.delta),
             scope.clone(),
             cursor_position(2),
             "package-branch-target",
         ),
     );
+    store
+        .rewind(RewindRequest {
+            marker_checkpoint_id: CheckpointId::new("rewind-branch-to-base").unwrap(),
+            pipeline_id: pipeline_id(),
+            resource_id: resource_id(),
+            scope: scope.clone(),
+            target_checkpoint_id: base.delta.checkpoint_id.clone(),
+        })
+        .unwrap();
     let current_branch_parent = commit_delta(
         store,
         delta(
             "checkpoint-branch-current-parent",
-            Some(&base.delta.checkpoint_id),
+            Some(&base.delta),
             scope.clone(),
             cursor_position(3),
             "package-branch-current-parent",
@@ -793,7 +847,7 @@ fn assert_branch_rewind_reports_only_current_branch_ahead<S: CheckpointStore>(st
         store,
         delta(
             "checkpoint-branch-current-head",
-            Some(&current_branch_parent.delta.checkpoint_id),
+            Some(&current_branch_parent.delta),
             scope.clone(),
             cursor_position(4),
             "package-branch-current-head",
@@ -857,6 +911,85 @@ fn checkpoint_stores_preserve_committed_watermark_monotonicity() {
     );
 }
 
+fn assert_cdc_checkpoint_lineage<S: CheckpointStore>(store: &S) {
+    let mongo_scope = ScopeKey::Stream {
+        name: "orders-stream".to_owned(),
+    };
+    let first = commit_delta(
+        store,
+        delta(
+            "checkpoint-mongo-first",
+            None,
+            mongo_scope.clone(),
+            mongo_resume_token(
+                "FgAAAAJfZGF0YQAGAAAAdG9rZW4AAA==",
+                "sha256:2861e1850c87f3c48b875671d9fc0ca97b9c268ad17ff0b713a116989f2a68a2",
+            ),
+            "package-mongo-first",
+        ),
+    );
+    let second = commit_delta(
+        store,
+        delta(
+            "checkpoint-mongo-second",
+            Some(&first.delta),
+            mongo_scope,
+            mongo_resume_token(
+                "FgAAAAJfZGF0YQAGAAAAb3RoZXIAAA==",
+                "sha256:bdb91fa8b987e91d9dc90291f0ead9dcf82ee6ca717aaf692525d4493e6d0b21",
+            ),
+            "package-mongo-second",
+        ),
+    );
+    assert_eq!(
+        store
+            .head(
+                &second.delta.pipeline_id,
+                &second.delta.resource_id,
+                &second.delta.scope,
+            )
+            .unwrap()
+            .unwrap()
+            .delta
+            .checkpoint_id,
+        second.delta.checkpoint_id
+    );
+
+    let postgres_scope = ScopeKey::Stream {
+        name: "orders".to_owned(),
+    };
+    let first = commit_delta(
+        store,
+        delta(
+            "checkpoint-postgres-first",
+            None,
+            postgres_scope.clone(),
+            postgres_log_position(100),
+            "package-postgres-first",
+        ),
+    );
+    let regression = delta(
+        "checkpoint-postgres-regression",
+        Some(&first.delta),
+        postgres_scope,
+        postgres_log_position(99),
+        "package-postgres-regression",
+    );
+    assert!(
+        store
+            .propose(regression)
+            .unwrap_err()
+            .message
+            .contains("reach")
+    );
+}
+
+#[test]
+fn checkpoint_stores_enforce_cdc_lineage_and_advance_mongo_tokens() {
+    assert_cdc_checkpoint_lineage(&InMemoryCheckpointStore::new());
+    assert_cdc_checkpoint_lineage(&SqliteCheckpointStore::open_in_memory().unwrap());
+}
+
 #[test]
 fn commit_requires_receipt_covering_package_and_segments() {
     assert_store_rejects_bad_receipts(&InMemoryCheckpointStore::new());
@@ -880,7 +1013,7 @@ fn sqlite_committed_package_hashes_reports_only_committed_history() {
     );
     let proposed = delta(
         "checkpoint-gc-proposed",
-        Some(&committed.delta.checkpoint_id),
+        Some(&committed.delta),
         partition_scope(),
         cursor_position(2),
         "package-gc-proposed",
@@ -888,7 +1021,7 @@ fn sqlite_committed_package_hashes_reports_only_committed_history() {
     store.propose(proposed.clone()).unwrap();
     let abandoned = delta(
         "checkpoint-gc-abandoned",
-        Some(&committed.delta.checkpoint_id),
+        Some(&committed.delta),
         partition_scope(),
         cursor_position(3),
         "package-gc-abandoned",
@@ -904,7 +1037,7 @@ fn sqlite_committed_package_hashes_reports_only_committed_history() {
     let error = read_only
         .propose(delta(
             "checkpoint-read-only-write",
-            Some(&committed.delta.checkpoint_id),
+            Some(&committed.delta),
             partition_scope(),
             cursor_position(4),
             "package-read-only-write",
@@ -1061,9 +1194,12 @@ fn sqlite_state_components_reject_incomplete_current_schema() {
             version INTEGER NOT NULL,
             recorded_at_ms INTEGER NOT NULL
         );
-        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
-        VALUES ('checkpoint_store', 1, 1);
         ",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms) VALUES ('checkpoint_store', ?, 1)",
+        [CHECKPOINT_STORE_SCHEMA_VERSION],
     )
     .unwrap();
     drop(conn);
@@ -1084,6 +1220,32 @@ fn sqlite_state_components_reject_incomplete_current_schema() {
                 .contains("required table cdf_checkpoints is missing")
         );
     }
+}
+
+#[test]
+fn sqlite_checkpoint_store_rejects_version_one_without_migration() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE cdf_sqlite_schema_versions (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            recorded_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
+        VALUES ('checkpoint_store', 1, 1);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = match SqliteCheckpointStore::open(&path) {
+        Ok(_) => panic!("checkpoint store migrated obsolete version one"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("recreate"));
 }
 
 #[test]
@@ -1312,23 +1474,33 @@ fn sqlite_head_move_remains_transactionally_unique_across_connections() {
         cursor_position(1),
         "package-1",
     );
-    let first_id = first_delta.checkpoint_id.clone();
-    let second_delta = delta(
-        "checkpoint-2",
-        Some(&first_id),
-        scope.clone(),
-        cursor_position(2),
-        "package-2",
-    );
     first.propose(first_delta.clone()).unwrap();
-    second.propose(second_delta.clone()).unwrap();
-
     first
         .commit(&first_delta.checkpoint_id, receipt(&first_delta))
         .unwrap();
+    let first_successor = delta(
+        "checkpoint-successor-1",
+        Some(&first_delta),
+        scope.clone(),
+        cursor_position(2),
+        "package-successor-1",
+    );
+    let second_successor = delta(
+        "checkpoint-successor-2",
+        Some(&first_delta),
+        scope.clone(),
+        cursor_position(3),
+        "package-successor-2",
+    );
+    first.propose(first_successor.clone()).unwrap();
+    second.propose(second_successor.clone()).unwrap();
     second
-        .commit(&second_delta.checkpoint_id, receipt(&second_delta))
+        .commit(&second_successor.checkpoint_id, receipt(&second_successor))
         .unwrap();
+    let error = first
+        .commit(&first_successor.checkpoint_id, receipt(&first_successor))
+        .unwrap_err();
+    assert!(error.message.contains("current head"), "{error}");
 
     let head_count: i64 = second
         .query_row_for_test(
@@ -1349,7 +1521,7 @@ fn sqlite_head_move_remains_transactionally_unique_across_connections() {
             .unwrap()
             .delta
             .checkpoint_id,
-        second_delta.checkpoint_id
+        second_successor.checkpoint_id
     );
 }
 
@@ -2341,26 +2513,13 @@ fn sqlite_rejects_committed_rows_when_receipt_id_disagrees_with_receipt_json() {
 fn sqlite_round_trips_position_scope_and_state_json() {
     let mut composite_parts = BTreeMap::new();
     composite_parts.insert("cursor".to_owned(), cursor_position(1));
-    composite_parts.insert(
-        "log".to_owned(),
-        SourcePosition::Log(LogPosition {
-            version: 1,
-            log: "orders".to_owned(),
-            offset: 7,
-            sequence: Some("abc".to_owned()),
-        }),
-    );
+    composite_parts.insert("log".to_owned(), postgres_log_position(7));
 
     let positions = vec![
         cursor_position(1),
-        SourcePosition::Log(LogPosition {
-            version: 1,
-            log: "orders".to_owned(),
-            offset: 42,
-            sequence: Some("def".to_owned()),
-        }),
+        postgres_log_position(42),
         SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             files: vec![FilePosition {
                 path: "orders-1.jsonl".to_owned(),
                 size_bytes: 1024,
@@ -2372,15 +2531,15 @@ fn sqlite_round_trips_position_scope_and_state_json() {
         }),
         table_snapshot_position(),
         SourcePosition::PageToken(PageToken {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             token: "next-page".to_owned(),
         }),
         SourcePosition::Composite(CompositePosition {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             positions: composite_parts,
         }),
         SourcePosition::ForeignState(ForeignState {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             protocol: "singer".to_owned(),
             opaque_blob: b"{\"bookmarks\":{}}".to_vec(),
             blob_sha256: "sha256:d2c47dce50d89aa04b6e25293cb52db74657d5ec68ac614dd030a4a6595a7cd7"

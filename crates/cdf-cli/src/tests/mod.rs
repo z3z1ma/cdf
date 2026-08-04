@@ -1379,7 +1379,7 @@ fn write_current_replay_artifacts(
 
 fn schema_promote_fixture_position() -> SourcePosition {
     SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "events.parquet".to_owned(),
             size_bytes: 1,
@@ -1766,7 +1766,7 @@ fn commit_status_head(
 
 fn status_delta(pipeline_id: &str, checkpoint_id: &str, package_hash: &str) -> StateDelta {
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(42),
     });
@@ -2491,7 +2491,7 @@ fn sample_sql_batch() -> RecordBatch {
 
 fn doctor_output_position(value: i64) -> SourcePosition {
     SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(value),
     })
@@ -2543,7 +2543,7 @@ fn doctor_delta(
 
 fn sample_sql_delta(package_hash: &str) -> StateDelta {
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(42),
     });
@@ -2799,7 +2799,7 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
         .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "row".to_owned(),
         value: CursorValue::I64(2),
     });

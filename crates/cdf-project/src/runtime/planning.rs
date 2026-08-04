@@ -115,7 +115,7 @@ fn destination_planning_inputs(
 
 fn synthetic_segment(resource: &dyn ResourceStream) -> Result<StateSegment> {
     let position = SourcePosition::ForeignState(ForeignState {
-        version: CHECKPOINT_STATE_VERSION,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         protocol: "cdf-plan-preview".to_owned(),
         opaque_blob: Vec::new(),
         blob_sha256: EMPTY_SHA256.to_owned(),

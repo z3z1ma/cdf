@@ -238,7 +238,7 @@ pub(super) fn execute_sqlite_table(
             .mark_materialized_output(physical_schema.as_ref())?;
         batch.header.source_position = match (&input.descriptor.cursor, maximum_cursor) {
             (Some(cursor), Some(value)) => Some(SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
                 field: cursor.field.clone(),
                 value: value.into_cursor_value(),
             })),

@@ -1518,7 +1518,7 @@ mod tests {
                     },
                     planned_position: Some(cdf_kernel::SourcePosition::FileManifest(
                         cdf_kernel::FileManifest {
-                            version: 1,
+                            version: cdf_kernel::SOURCE_POSITION_VERSION,
                             files: vec![cdf_kernel::FilePosition {
                                 path: (*location).to_owned(),
                                 size_bytes: 42 + index as u64,

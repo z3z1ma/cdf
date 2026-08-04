@@ -172,7 +172,7 @@ fn planned_file_position_is_required_typed_authority() {
             path: file.path.clone(),
         },
         planned_position: Some(SourcePosition::FileManifest(FileManifest {
-            version: 1,
+            version: crate::SOURCE_POSITION_VERSION,
             files: vec![file.clone()],
         })),
         start_position: None,
@@ -273,7 +273,7 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         pipeline_id: PipelineId::new("pipeline-1").unwrap(),
         resource_id: ResourceId::new("orders").unwrap(),
         scope,
-        state_version: 1,
+        state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
@@ -853,7 +853,7 @@ fn correction_request_rejects_two_paths_for_one_output_field() {
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: crate::SOURCE_POSITION_VERSION,
                 field: "correction".to_owned(),
                 value: CursorValue::U64(2),
             }),
@@ -880,7 +880,7 @@ fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() 
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: crate::SOURCE_POSITION_VERSION,
                 field: "correction".to_owned(),
                 value: CursorValue::U64(1),
             }),
@@ -1169,7 +1169,7 @@ fn artifact_values_serde_round_trip() {
     );
 
     let output_position = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::TimestampMicros {
             micros: 1_700_000_000_000_000,
@@ -1188,7 +1188,7 @@ fn artifact_values_serde_round_trip() {
         pipeline_id: PipelineId::new("pipeline-1").unwrap(),
         resource_id: descriptor.resource_id.clone(),
         scope: descriptor.state_scope.clone(),
-        state_version: 1,
+        state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
@@ -1266,12 +1266,12 @@ fn closed_cursor_aggregation_validates_resource_schema_without_reapplying_lag() 
     };
     let schema = Schema::new(vec![Field::new("updated_at", DataType::Int64, false)]);
     let prior = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(90),
     });
     let observed = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
         value: CursorValue::I64(100),
     });
@@ -1377,7 +1377,7 @@ fn schema_source_modes_serde_round_trip() {
 #[test]
 fn checkpoint_contract_values_serde_round_trip() {
     let (delta, receipt) = sample_state_delta_and_receipt();
-    assert_eq!(CHECKPOINT_STATE_VERSION, 1);
+    assert_eq!(CHECKPOINT_STATE_VERSION, 2);
     assert_eq!(CheckpointStatus::Committed.as_str(), "committed");
     assert_eq!(
         CheckpointStatus::parse("rewound").unwrap(),
@@ -1505,12 +1505,19 @@ fn source_position_version_returns_embedded_variant_version() {
             2,
         ),
         (
-            SourcePosition::Log(LogPosition {
+            SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
                 version: 3,
-                log: "orders".to_owned(),
-                offset: 42,
-                sequence: Some("abc".to_owned()),
-            }),
+                scope: PostgresLogScope {
+                    system_identifier: "1".to_owned(),
+                    database_oid: 1,
+                    slot: "orders".to_owned(),
+                    output_plugin: "pgoutput".to_owned(),
+                    semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                commit_lsn: 41,
+                end_lsn: 42,
+                xid: 7,
+            })),
             3,
         ),
         (
@@ -1648,7 +1655,7 @@ fn segment_and_processed_observation_paths_share_file_manifest_aggregation_autho
         trust_level: TrustLevel::Governed,
     };
     let input = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "old.parquet".to_owned(),
             size_bytes: 10,
@@ -1659,7 +1666,7 @@ fn segment_and_processed_observation_paths_share_file_manifest_aggregation_autho
         }],
     });
     let current = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "new.parquet".to_owned(),
             size_bytes: 20,
@@ -2084,7 +2091,7 @@ fn partition_open_error_is_visible_before_its_explicit_termination_barrier() {
 #[test]
 fn terminal_file_attestation_may_only_add_a_content_hash() {
     let earlier_position = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: crate::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "https://example.invalid/data.parquet".to_owned(),
             size_bytes: 42,

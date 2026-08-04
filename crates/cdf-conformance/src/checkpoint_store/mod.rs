@@ -168,7 +168,7 @@ fn assert_committed_head_history_ordering_and_tuple_isolation<S: CheckpointStore
         store,
         delta(
             "checkpoint-history-2",
-            Some(&first.delta.checkpoint_id),
+            Some(&first.delta),
             scope.clone(),
             cursor_position(2),
             "package-history-2",
@@ -282,7 +282,7 @@ fn assert_rewind_rejects_invalid_targets<S: CheckpointStore>(store: &S) {
     );
     let proposed_delta = delta(
         "checkpoint-rewind-validation-proposed",
-        Some(&committed.delta.checkpoint_id),
+        Some(&committed.delta),
         scope.clone(),
         cursor_position(2),
         "package-rewind-validation-proposed",
@@ -399,17 +399,26 @@ fn assert_rewind_appends_marker_moves_head_and_reports_current_branch<S: Checkpo
         store,
         delta(
             "checkpoint-branch-target",
-            Some(&base.delta.checkpoint_id),
+            Some(&base.delta),
             scope.clone(),
             cursor_position(2),
             "package-branch-target",
         ),
     );
+    store
+        .rewind(RewindRequest {
+            marker_checkpoint_id: CheckpointId::new("rewind-branch-to-base").unwrap(),
+            pipeline_id: pipeline_id(),
+            resource_id: resource_id(),
+            scope: scope.clone(),
+            target_checkpoint_id: base.delta.checkpoint_id.clone(),
+        })
+        .unwrap();
     let current_branch_parent = commit_delta(
         store,
         delta(
             "checkpoint-branch-current-parent",
-            Some(&base.delta.checkpoint_id),
+            Some(&base.delta),
             scope.clone(),
             cursor_position(3),
             "package-branch-current-parent",
@@ -419,7 +428,7 @@ fn assert_rewind_appends_marker_moves_head_and_reports_current_branch<S: Checkpo
         store,
         delta(
             "checkpoint-branch-current-head",
-            Some(&current_branch_parent.delta.checkpoint_id),
+            Some(&current_branch_parent.delta),
             scope.clone(),
             cursor_position(4),
             "package-branch-current-head",
@@ -478,12 +487,13 @@ fn assert_rewind_appends_marker_moves_head_and_reports_current_branch<S: Checkpo
         vec![
             "checkpoint-branch-base",
             "checkpoint-branch-target",
+            "rewind-branch-to-base",
             "checkpoint-branch-current-parent",
             "checkpoint-branch-current-head",
             "rewind-branch-marker"
         ]
     );
-    assert_eq!(history.len(), 5);
+    assert_eq!(history.len(), 6);
     assert!(
         history
             .iter()

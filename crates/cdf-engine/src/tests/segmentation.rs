@@ -98,7 +98,7 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
 #[test]
 fn limited_cursor_batch_never_assigns_unsliced_position_to_output_segments() {
     let attempted = SourcePosition::Cursor(CursorPosition {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
         value: CursorValue::I64(3),
     });
@@ -394,13 +394,13 @@ fn terminal_attestation_enriches_segments_after_package_dedup() {
         sha256: None,
     };
     let initial_position = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![initial_file.clone()],
     });
     let mut terminal_file = initial_file;
     terminal_file.sha256 = Some("sha256:terminal-content".to_owned());
     let terminal_position = SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![terminal_file],
     });
     let mut batches = vec![
@@ -701,7 +701,7 @@ fn batch_with_file_position() -> Batch {
         vec![true, true],
     );
     batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
-        version: 1,
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
         files: vec![FilePosition {
             path: "/tmp/cdf/events.ndjson".to_owned(),
             size_bytes: 42,

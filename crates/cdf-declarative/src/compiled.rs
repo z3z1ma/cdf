@@ -7,15 +7,18 @@ use std::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_contract::{IdentifierPolicy, normalize_arrow_schema};
 use cdf_kernel::{
-    CanonicalArrowTimeUnit, CdfError, CompositePosition, ContractRef, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DeduplicationSpec, DrainTermination,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EpochClosureTrigger, EventTimeDomain,
-    ExecutionExtent, FileManifest, FilePosition, ForeignState, FreshnessSpec, LateDataAction,
-    LogPosition, PageToken, PartitionWatermarkAggregation, PushdownFidelity, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, Result, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
-    SchemaHash, SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TrustLevel,
-    TypePolicyAllowances, WatermarkAuthority, WatermarkPolicy, WriteDisposition,
-    parse_arrow_field_type, with_cdf_metadata,
+    CanonicalArrowTimeUnit, CdfError, CommittedLogPosition, CompositePosition, ContractRef,
+    CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue, DeduplicationSpec,
+    DrainTermination, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EpochClosureTrigger,
+    EventTimeDomain, ExecutionExtent, FileManifest, FilePosition, ForeignState, FreshnessSpec,
+    LateDataAction, MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
+    MongoResumeTokenSource, MongoWatchLevel, MySqlCommitPosition, MySqlLogScope, PageToken,
+    PartitionWatermarkAggregation, PostgresCommitPosition, PostgresLogScope, PushdownFidelity,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, ResumeTokenPosition,
+    SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, SchemaHash,
+    SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TrustLevel, TypePolicyAllowances,
+    WatermarkAuthority, WatermarkPolicy, WriteDisposition, parse_arrow_field_type,
+    with_cdf_metadata,
 };
 use cdf_runtime::{
     CompiledSourcePlan, SourceCompileContext, SourceCompileRequest, SourceCursorPushdown,
@@ -410,7 +413,7 @@ pub fn compile_execution_extent(
                     }
                 },
             },
-            termination: match termination {
+            termination: match termination.as_ref() {
                 DrainTerminationDeclaration::Quiescent => DrainTermination::Quiescent,
                 DrainTerminationDeclaration::Duration { milliseconds } => {
                     DrainTermination::Duration {
@@ -439,7 +442,7 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
     match position {
         SourcePositionDeclaration::Cursor { field, value } => {
             SourcePosition::Cursor(CursorPosition {
-                version: 1,
+                version: SOURCE_POSITION_VERSION,
                 field: field.clone(),
                 value: match value {
                     CursorValueDeclaration::String(value) => CursorValue::String(value.clone()),
@@ -457,19 +460,50 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
                 },
             })
         }
-        SourcePositionDeclaration::Log {
-            log,
-            offset,
-            sequence,
-        } => SourcePosition::Log(LogPosition {
-            version: 1,
-            log: log.clone(),
-            offset: *offset,
-            sequence: sequence.clone(),
+        SourcePositionDeclaration::Log { position } => SourcePosition::Log(match position {
+            CommittedLogPositionDeclaration::PostgreSql {
+                scope,
+                commit_lsn,
+                end_lsn,
+                xid,
+            } => CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+                version: SOURCE_POSITION_VERSION,
+                scope: PostgresLogScope {
+                    system_identifier: scope.system_identifier.clone(),
+                    database_oid: scope.database_oid,
+                    slot: scope.slot.clone(),
+                    output_plugin: scope.output_plugin.clone(),
+                    semantics_sha256: scope.semantics_sha256.clone(),
+                },
+                commit_lsn: *commit_lsn,
+                end_lsn: *end_lsn,
+                xid: *xid,
+            }),
+            CommittedLogPositionDeclaration::MySql {
+                scope,
+                binlog_file,
+                file_sequence,
+                end_log_position,
+                executed_gtid_set,
+                transaction_gtid,
+            } => CommittedLogPosition::MySql(MySqlCommitPosition {
+                version: SOURCE_POSITION_VERSION,
+                scope: MySqlLogScope {
+                    source_binding: scope.source_binding.clone(),
+                    active_server_uuid: scope.active_server_uuid.clone(),
+                    binlog_basename: scope.binlog_basename.clone(),
+                    semantics_sha256: scope.semantics_sha256.clone(),
+                },
+                binlog_file: binlog_file.clone(),
+                file_sequence: *file_sequence,
+                end_log_position: *end_log_position,
+                executed_gtid_set: executed_gtid_set.clone(),
+                transaction_gtid: transaction_gtid.clone(),
+            }),
         }),
         SourcePositionDeclaration::FileManifest { files } => {
             SourcePosition::FileManifest(FileManifest {
-                version: 1,
+                version: SOURCE_POSITION_VERSION,
                 files: files
                     .iter()
                     .map(|file| FilePosition {
@@ -484,12 +518,12 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
             })
         }
         SourcePositionDeclaration::PageToken { token } => SourcePosition::PageToken(PageToken {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             token: token.clone(),
         }),
         SourcePositionDeclaration::Composite { positions } => {
             SourcePosition::Composite(CompositePosition {
-                version: 1,
+                version: SOURCE_POSITION_VERSION,
                 positions: positions
                     .iter()
                     .map(|(key, position)| (key.clone(), compile_source_position(position)))
@@ -501,11 +535,48 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
             opaque_blob,
             blob_sha256,
         } => SourcePosition::ForeignState(ForeignState {
-            version: 1,
+            version: SOURCE_POSITION_VERSION,
             protocol: protocol.clone(),
             opaque_blob: opaque_blob.clone(),
             blob_sha256: blob_sha256.clone(),
         }),
+        SourcePositionDeclaration::ResumeToken { position } => {
+            SourcePosition::ResumeToken(match position {
+                ResumeTokenPositionDeclaration::MongoChangeStream {
+                    scope,
+                    token_bson_base64,
+                    token_sha256,
+                    resume_mode,
+                    token_source,
+                } => ResumeTokenPosition::MongoChangeStream(MongoChangeStreamResumeToken {
+                    version: SOURCE_POSITION_VERSION,
+                    scope: MongoChangeStreamScope {
+                        source_binding: scope.source_binding.clone(),
+                        watch_level: match scope.watch_level {
+                            MongoWatchLevelDeclaration::Cluster => MongoWatchLevel::Cluster,
+                            MongoWatchLevelDeclaration::Database => MongoWatchLevel::Database,
+                            MongoWatchLevelDeclaration::Collection => MongoWatchLevel::Collection,
+                        },
+                        database: scope.database.clone(),
+                        collection: scope.collection.clone(),
+                        pipeline_sha256: scope.pipeline_sha256.clone(),
+                        options_sha256: scope.options_sha256.clone(),
+                    },
+                    token_bson_base64: token_bson_base64.clone(),
+                    token_sha256: token_sha256.clone(),
+                    resume_mode: match resume_mode {
+                        MongoResumeModeDeclaration::ResumeAfter => MongoResumeMode::ResumeAfter,
+                        MongoResumeModeDeclaration::StartAfter => MongoResumeMode::StartAfter,
+                    },
+                    token_source: match token_source {
+                        MongoResumeTokenSourceDeclaration::Event => MongoResumeTokenSource::Event,
+                        MongoResumeTokenSourceDeclaration::PostBatch => {
+                            MongoResumeTokenSource::PostBatch
+                        }
+                    },
+                }),
+            })
+        }
     }
 }
 

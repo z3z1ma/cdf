@@ -672,7 +672,7 @@ fn live_request(
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: ScopeKey::Resource,
         output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
             value: CursorValue::I64(i64::try_from(rows).unwrap()),
         }),

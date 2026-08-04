@@ -172,7 +172,7 @@ Source-original names preserved verbatim in schema metadata, forever. A versione
 Arrow's, closed, plus three metadata annotations: semantic tags, source-name provenance, and nullability provenance. Destination type mappings are declared tables in capability sheets, joined at plan time and snapshotted in the lockfile; lossy mappings require the explicit contract allowance `allow_lossy_mapping`, and unsupported mappings fail the plan (§7.3).
 
 **D-16. Deletes and CDC semantics?**
-Write dispositions include `cdc_apply`; CDC-shaped batches carry a `_cdf_op` column (`insert | update | delete`) plus source positions. The first release covers deletion-aware merge for cursor sources that expose deletions; log-based CDC is a later source archetype whose state shapes — `LogPosition`, transaction boundaries — the ledger already models (§13.3).
+Write dispositions include `cdc_apply`; CDC-shaped batches carry a `_cdf_op` column (`insert | update | delete`) plus source positions. The first release covers deletion-aware merge for cursor sources that expose deletions; log-based CDC is a later source archetype whose restart authority uses protocol-specific PostgreSQL/MySQL committed positions and opaque MongoDB resume tokens (§13.3).
 
 **D-17. Retry, rate limit, and error taxonomy?**
 One taxonomy — `Transient`, `RateLimited`, `Auth`, `Contract`, `Data`, `Destination`, `Internal` — drives retry at the smallest safe unit (request → partition → run) under a run-level retry budget. A built-in HTTP toolkit gives every declarative and Python API resource correct pagination, rate limiting, backoff, and auth refresh by construction rather than by author diligence (Chapter 15).
@@ -850,12 +850,14 @@ CREATE UNIQUE INDEX one_committed_head
 ### 13.3 Positions are typed
 
 ```text
-CursorPosition  { field, value, window_close: Option<ts> }         # window-close per §8.3
-LogPosition     { stream, lsn | offset, tx_boundary }
-FileManifest    { prefix, files: [(path, etag | checksum, bytes)] } # object-store incrementals
-PageToken       { opaque, issued_at }                               # honest about opacity, still scoped & versioned
-Composite       { parts: BTreeMap<PartitionId, Position> }
-ForeignState    { protocol: singer | airbyte, blob, blob_hash }     # adapter tier, quarantined type
+CursorPosition          { field, value }                              # closed cursor per §8.3
+PostgresCommitPosition  { scope, commit_lsn, end_lsn, xid }           # committed transaction boundary
+MySqlCommitPosition     { scope, binlog_file, end_log_position, gtids } # committed transaction boundary
+MongoResumeToken        { scope, bson, hash, resume_mode, source }     # opaque ordered event-prefix authority
+FileManifest            { files: [(path, generation, checksum, bytes)] } # object-store incrementals
+PageToken               { token }                                     # opaque, scoped by its source plan
+Composite               { parts: BTreeMap<PartitionId, Position> }
+ForeignState            { protocol: singer | airbyte, blob, blob_hash } # adapter tier, quarantined type
 ```
 
 `state_version` gates deserialization. Before the first production compatibility promise, CDF reads exactly the current state schema: noncurrent, unversioned, or incomplete state fails closed and is rebuilt rather than migrated. Once production compatibility begins, supported source versions and explicit fixture-backed upgrade tooling require a ratified release-policy decision—silently reinterpreting old positions is never allowed because that is how backfills get skipped. `ForeignState` deserves a sentence of philosophy: when a foreign protocol's state is genuinely opaque, the honest design is to say so with a type, hash it, scope it, and commit it under the same gate, rather than to pretend structure the protocol never promised.
@@ -1181,7 +1183,7 @@ A scheduler assigning `(resource, partition)` leases to workers; a shared `Check
 
 ### 25.3 The streaming supervisor
 
-A resident process running `Unbounded` plans continuously. Checkpoint cadence, package rotation, and watermarks already exist (§6.5–6.6); the supervisor adds lifecycle — drain, pause, resume-from-head — and log-CDC sources whose `LogPosition` state the ledger already models. Streaming arrives as an executor mode over unchanged types, and the continuity doctrine of the Preface is the reason this ordering is safe: a stream that produces gated, replayable, evidence-bearing windows is just a very frequent batch, and CDF built the windows first.
+A resident process running `Unbounded` plans continuously. Checkpoint cadence, package rotation, and watermarks already exist (§6.5–6.6); the supervisor adds lifecycle — drain, pause, resume-from-head — over protocol-specific committed-log positions and MongoDB event-prefix tokens already modeled by the ledger. Streaming arrives as an executor mode over unchanged types, and the continuity doctrine of the Preface is the reason this ordering is safe: a stream that produces gated, replayable, evidence-bearing windows is just a very frequent batch, and CDF built the windows first.
 
 ### 25.4 WASM distribution and the registry
 
