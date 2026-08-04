@@ -7,7 +7,7 @@ Updated: 2026-08-04
 `cdf` is the CLI binary and crate prefix; CDF in prose is the project.
 
 Resource: the smallest stateful extraction unit. In a D3 project its canonical identity comes from
-`resources/<namespace>/<resource>.cdf.sql`; it declares schema, keys, cursor, state scope,
+`cdf/<namespace>/<resource>.cdf.sql`; it declares schema, keys, cursor, state scope,
 disposition, contract, trust, and capabilities, and produces Arrow record batches. Its namespace,
 configured source, and logical target are independent.
 
@@ -24,7 +24,7 @@ composition authority, not a project namespace or configured-source catalog.
 Upstream relation: the driver-owned table, collection, REST path, catalog table, file selector, or
 equivalent object selected by the remaining typed `upstream(...)` arguments.
 
-Resource namespace: the first path component below `resources/`. It organizes canonical CDF
+Resource namespace: the first path component below `cdf/`. It organizes canonical CDF
 resource identity and never infers a configured source.
 
 Logical target: the destination-side object name declared by `TARGET` or defaulted to the resource

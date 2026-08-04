@@ -140,7 +140,7 @@ silently serve the last compiled view of changed authored files.
 
 For each canonical resource id:
 
-- authoritative `resources/<namespace>/<resource>.cdf.sql` origin, derived namespace/resource/id,
+- authoritative `cdf/<namespace>/<resource>.cdf.sql` origin, derived namespace/resource/id,
   default logical target, and expansion origin when a future explicit generator is used;
 - exact authored SQL bytes/hash, bare/envelope form, normalized authored AST hash, and effective
   normalized definition/execution hash;
@@ -375,8 +375,9 @@ compiler or reinterpret identity.
 - The seven tables above are the complete D1 SQLite surface.
 - The final Foundation D project compiler uses
   `.10x/specs/project-source-resource-layout.md`: the sole resource root is
-  `resources/<namespace>/<resource>.cdf.sql`; each query explicitly binds its configured source;
-  there is no root wildcard resource map, retired declarative/project reader, path-inferred source,
+  `cdf/<namespace>/<resource>.cdf.sql`; each query explicitly binds its configured source;
+  the literal `cdf/` root is excluded from resource identity, and there is no root wildcard
+  resource map, retired declarative/project reader, path-inferred source,
   explicit SQL resource id, or compatibility mode in current authority.
 
 ## References

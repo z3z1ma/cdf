@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -11,8 +11,9 @@ Depends-On: `.10x/tickets/done/2026-08-03-d1-project-compilation-manifest-core.m
 Implement the complete ratified D3 authoring/compiler surface in one current-model cutover:
 
 1. Replace project resource discovery with path-fenced, stable enumeration of exactly
-   `resources/<namespace>/<resource>.cdf.sql`; derive canonical resource id/default logical target
-   from the path and reject the retired `sources/` resource root.
+   `cdf/<namespace>/<resource>.cdf.sql`; derive canonical resource id/default logical target
+   from the path; `cdf/` is an identity-excluded ownership marker, and all other resource roots are
+   rejected.
 2. Parse one bare admitted `SELECT` or optional ordered, no-identifier
    `RESOURCE ... AS SELECT` envelope with exact source spans and stable diagnostics.
 3. Require one `upstream(source => '<configured_source>', ...)` relation; resolve the typed project
@@ -31,7 +32,7 @@ Implement the complete ratified D3 authoring/compiler surface in one current-mod
    driver/config/structured-argument identities, semantic effects, native IR, output schema,
    lineage, pushdown/residual decisions, and rejected-construct diagnostics.
 8. Update `cdf init`, `cdf add`/generation, examples, fixtures, generated CLI artifacts, and docs to
-   emit only the query-first `resources/` layout.
+   emit only the query-first `cdf/` layout.
 9. Delete the spike-era wildcard/declarative resource authoring reader and the never-public
    path-bound-source prototype. Reject retired syntax/layout directly; add no legacy enum, shim,
    migration, fallback parser, feature flag, alias, or dual reader.
@@ -65,7 +66,7 @@ retired public authority rather than wrapping them.
 
 ### Project and identity
 
-- [ ] Only regular `resources/<namespace>/<resource>.cdf.sql` files are current resources;
+- [ ] Only regular `cdf/<namespace>/<resource>.cdf.sql` files are current resources;
   namespace/stem/source names use `[a-z][a-z0-9_]{0,127}` with no normalization, path fencing and
   stable-read guarantees remain intact, and deterministic enumeration ignores no malformed
   `.cdf.sql` near-match silently.
@@ -185,6 +186,15 @@ retired public authority rather than wrapping them.
 - 2026-08-04: Ticket opened after the user ratified the complete D3 handoff and authorized all
   supersession. Governing decisions/specs were replaced before execution; no product source or
   generated artifact was changed in this shaping turn.
+- 2026-08-04: Execution began on `main`. Re-read the complete ticket and the required
+  `audit-project-file-publication` skill before product changes. The worktree contains only the
+  user-owned untracked `.codex/config.toml`, which is outside scope and will remain untouched.
+- 2026-08-04: The user reopened only the resource-root noun, considered `sources/`, `cdf/`, and
+  `pipelines/`, supplied a full comparative analysis, and delegated the choice. Selected `cdf/` as
+  the tool-ownership marker: it avoids the configured-source collision of `sources/` and the
+  orchestration promise of `pipelines/`. The root is excluded from identity; namespace, resource,
+  explicit configured source, and logical target remain independent. Superseded the never-released
+  `resources/` decision directly; no compatibility root or reader was admitted.
 
 ## Blockers
 

@@ -152,7 +152,7 @@ built-in in the pinned DataFusion registry that fits CDF's canonical Arrow closu
 uncaptured ambient semantics. Joins, aggregation, scheduling, volatile/UDF expressions, and runtime
 templates remain excluded.
 
-The project shape is now ratified: `resources/<namespace>/<resource>.cdf.sql` supplies canonical
+The project shape is now ratified: `cdf/<namespace>/<resource>.cdf.sql` supplies canonical
 resource id and default logical target only. Root `[sources.<name>]` holds one shared typed
 configured-source definition, each query binds it explicitly through
 `upstream(source => '<name>', ...)`, and the selected environment may sparsely override admitted
@@ -169,9 +169,9 @@ execution clauses. Omitted values resolve through typed precedence and enter the
 origin. Target defaults to resource id, trust defaults to `EXPERIMENTAL`, and `REPLACE` defaults
 only for proven bounded replayable input. Joins, all set operations including `UNION ALL`,
 aggregates, windows, subqueries, multiple upstream relations, and runtime DataFusion plans remain
-excluded. Wildcard maps, declarative resources, the `sources/` resource root, path-inferred source,
-`CREATE RESOURCE`, explicit SQL ids, source sidecars, arbitrary interpolation, and compatibility
-readers are retired.
+excluded. Wildcard maps, declarative resources, non-current `sources/`, generic `resources/`, and
+`pipelines/` roots, path-inferred source, `CREATE RESOURCE`, explicit SQL ids, source sidecars,
+arbitrary interpolation, and compatibility readers are retired.
 
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`

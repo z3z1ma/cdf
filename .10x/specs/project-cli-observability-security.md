@@ -13,7 +13,7 @@ This specification governs the user-facing project format, lockfile, CLI command
 `cdf.toml` MUST define project metadata, default environment, normalizer, environments, Python
 interpreter, typed resource defaults, and one typed shared configuration for every configured
 source. It MUST NOT contain resource-to-file maps or wildcard resource mappings. Resources live at
-`resources/<namespace>/<resource>.cdf.sql`, derive canonical id and default logical target
+`cdf/<namespace>/<resource>.cdf.sql`, derive canonical id and default logical target
 `<namespace>.<resource>`, and explicitly bind one configured `[sources.<name>]` through
 `upstream(source => '<name>', ...)` as governed by
 `.10x/specs/project-source-resource-layout.md`. Resource namespace, configured source, and logical
@@ -27,8 +27,8 @@ least one valid resource; there is no inactive source state. Each resource file 
 `SELECT` or optional no-id `RESOURCE ... AS SELECT` envelope and binds exactly one explicitly
 selected, driver-typed `upstream(...)` relation as governed by
 `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. `CREATE RESOURCE`, the
-retired `sources/` resource root, path-inferred source identity, and compatibility readers are
-rejected.
+non-current `sources/`, generic `resources/`, and `pipelines/` resource roots, path-inferred source
+identity, and compatibility readers are rejected.
 
 Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
 

@@ -79,7 +79,7 @@ to the same native resource-definition IR after defaults are resolved.
 
 ## Independent identities and path authority
 
-For `resources/analytics/userdata.cdf.sql`:
+For `cdf/analytics/userdata.cdf.sql`:
 
 - canonical authored resource id is `analytics.userdata`;
 - `upstream(source => 'github', ...)` selects configured source `github`;
@@ -89,8 +89,9 @@ None is inferred from another. The path derives only namespace, resource name, c
 default logical target. The resource namespace need not equal the configured source name. SQL
 cannot declare the canonical id. Physical destination selection remains environment-owned.
 
-The only current root is `resources/`. The compiler rejects retired `sources/` resource trees,
-wildcard maps, declarative resource files, explicit SQL ids, and all compatibility forms.
+The only current root is `cdf/`; it is a tool-ownership marker excluded from resource identity. The
+compiler rejects `sources/`, generic `resources/`, `pipelines/`, wildcard maps, declarative
+resource files, explicit SQL ids, and all compatibility forms.
 
 ## Grammar
 
@@ -536,7 +537,7 @@ ratified contract. Runtime interpolation remains forbidden.
 
 ## Acceptance scenarios
 
-1. Given `resources/analytics/userdata.cdf.sql` contains one valid bare `SELECT`, compile derives
+1. Given `cdf/analytics/userdata.cdf.sql` contains one valid bare `SELECT`, compile derives
    resource id and default target `analytics.userdata`.
 2. Given a bare query, every omitted effective metadata value is resolved and recorded before
    native plan publication.
@@ -598,7 +599,7 @@ D3 is authorized to implement:
 1. bare `SELECT` resources;
 2. optional no-id `RESOURCE ... AS` envelope;
 3. removal/rejection of `CREATE RESOURCE`;
-4. `resources/<namespace>/<resource>.cdf.sql` path identity and default target;
+4. `cdf/<namespace>/<resource>.cdf.sql` path identity and default target;
 5. typed project/built-in defaults with origin;
 6. required `source => '<configured_source>'`;
 7. source resolution before driver resource-argument validation;

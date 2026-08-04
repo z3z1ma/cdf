@@ -23,7 +23,7 @@ compatibility policy.
 <project>/
 ├── cdf.toml
 ├── cdf.lock
-├── resources/
+├── cdf/
 │   ├── analytics/
 │   │   ├── userdata.cdf.sql
 │   │   └── sessions.cdf.sql
@@ -35,22 +35,23 @@ compatibility policy.
     └── manifest.json
 ```
 
-`cdf.toml`, `cdf.lock`, `resources/`, and compiler-required authored artifacts are the current
+`cdf.toml`, `cdf.lock`, `cdf/`, and compiler-required authored artifacts are the current
 project surface. `semantics/` exists when project-defined semantic types are authored.
 `.cdf/manifest.json` is generated local compiler state, not authored source authority.
 
-The `sources/` resource root is retired. D3 MUST reject it with focused current-layout guidance;
-it MUST NOT reinterpret, scan, merge, or prefer it.
+The `cdf/` root marks CDF ownership and contributes no component to resource identity. `sources/`,
+generic `resources/`, and `pipelines/` resource roots are rejected with focused current-layout
+guidance; D3 MUST NOT reinterpret, scan, merge, or prefer them.
 
 ## Identity model
 
 ### Resource identity
 
-A resource is one regular UTF-8 `resources/<namespace>/<resource>.cdf.sql` file. Namespace and
+A resource is one regular UTF-8 `cdf/<namespace>/<resource>.cdf.sql` file. Namespace and
 resource tokens match `[a-z][a-z0-9_]{0,127}` exactly. The canonical id and default logical target
 are `<namespace>.<resource>`.
 
-For `resources/analytics/userdata.cdf.sql`:
+For `cdf/analytics/userdata.cdf.sql`:
 
 - namespace: `analytics`;
 - name: `userdata`;
@@ -66,7 +67,7 @@ A configured source is one exact `[sources.<name>]` key in `cdf.toml`. Its name 
 grammar but is independent of resource namespace. Every admitted resource query names its source
 through `upstream(source => '<name>', ...)`.
 
-For example, `resources/finance/transactions.cdf.sql` may bind `source => 'flolake'`. Compilation
+For example, `cdf/finance/transactions.cdf.sql` may bind `source => 'flolake'`. Compilation
 MUST NOT require or prefer a configured source named `finance`.
 
 ### Logical target identity
@@ -133,12 +134,12 @@ matching directory names.
 
 ## Filesystem discovery
 
-The compiler enumerates only regular `*.cdf.sql` files exactly two components below `resources/`.
+The compiler enumerates only regular `*.cdf.sql` files exactly two components below `cdf/`.
 It applies the established project-root path fence and rejects:
 
 - traversal, symlink escape, or any resource outside the project root;
 - nested resource directories in D3;
-- files directly below `resources/`;
+- files directly below `cdf/`;
 - invalid namespace or resource-stem tokens;
 - duplicate or colliding canonical ids;
 - malformed `.cdf.sql` near-matches that would otherwise disappear silently;
@@ -227,10 +228,10 @@ Inspection never calls a resource namespace a source, a driver a configured sour
 
 ## Publication and tooling
 
-- `cdf init` creates `resources/`, never `sources/`, a wildcard resource map, or declarative
+- `cdf init` creates `cdf/`, never `sources/`, generic `resources/`, `pipelines/`, a wildcard resource map, or declarative
   resource file.
 - `cdf add`/generation plans one explicit source-config change when needed and one or more
-  `resources/<namespace>/<resource>.cdf.sql` files whose queries contain the source binding.
+  `cdf/<namespace>/<resource>.cdf.sql` files whose queries contain the source binding.
 - Config, SQL, lock, and manifest mutations use the existing crash-safe multi-file publication
   contract, with `cdf.lock` last when it changes.
 - Dry-run renders proposed paths, canonical ids, source binding/config changes, defaults,
@@ -256,7 +257,7 @@ Inspection never calls a resource namespace a source, a driver a configured sour
 
 ## Acceptance scenarios
 
-1. Given `resources/analytics/userdata.cdf.sql` containing a valid bare query, compile derives id
+1. Given `cdf/analytics/userdata.cdf.sql` containing a valid bare query, compile derives id
    and default target `analytics.userdata`.
 2. Given that file binds `source => 'github'`, compile resolves exactly `[sources.github]` even
    though the namespace is `analytics`.
@@ -273,12 +274,12 @@ Inspection never calls a resource namespace a source, a driver a configured sour
 8. Given filesystem enumeration order changes, manifest semantic bytes and hashes are unchanged.
 9. Given relation arguments are reordered, canonical typed argument identity is unchanged while
    authored SQL identity changes.
-10. Given a retired `sources/` SQL tree, wildcard project mapping, declarative resource file, or
+10. Given a retired `sources/`, generic `resources/`, or `pipelines/` SQL tree, wildcard project mapping, declarative resource file, or
     SQL-declared resource id, current validation rejects it with regeneration guidance and no
     compatibility reader.
 11. Given uppercase, hyphenated, Unicode, leading-digit, or overlength identity tokens, compile
     rejects rather than normalizes.
-12. Given `resources/finance/transactions.cdf.sql` binds `source => 'flolake'`, compile succeeds
+12. Given `cdf/finance/transactions.cdf.sql` binds `source => 'flolake'`, compile succeeds
     without requiring `[sources.finance]`.
 
 ## Explicit exclusions

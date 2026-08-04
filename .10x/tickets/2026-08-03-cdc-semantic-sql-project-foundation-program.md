@@ -236,7 +236,7 @@ Owners:
 - its then-ratified `sources/<source>/<resource>.cdf.sql` path-bound-source interpretation is
   superseded shaping authority, not a compatibility requirement or D3 grammar;
 - D3 reuses the typed configuration, stable-read, path-fence, and source-schema machinery while
-  changing the only current resource root to `resources/<namespace>/<resource>.cdf.sql`, deriving
+  changing the only current resource root to `cdf/<namespace>/<resource>.cdf.sql`, deriving
   logical resource identity/default target from the path, and resolving the explicit relation
   argument `source => '<configured_source>'` before driver-owned resource arguments;
 - D3 updates manifest/lock bindings, scaffold, add/generate, examples, validation, inspection, and
@@ -271,7 +271,7 @@ Status: complete. Closed at:
 - admit a bare `SELECT` as the normal resource form and an optional no-identifier
   `RESOURCE ... AS SELECT` metadata envelope;
 - derive canonical resource id/default logical target from
-  `resources/<namespace>/<resource>.cdf.sql` while keeping configured source and target independent;
+  `cdf/<namespace>/<resource>.cdf.sql` while keeping configured source and target independent;
 - require `upstream(source => '<configured_source>', ...)`, resolve typed source/driver authority
   first, and validate recursive data-only remaining arguments through the driver resource schema;
 - implement typed defaults with recorded origin, `DISPOSITION MERGE(key, ...)`, exact semantic
@@ -280,7 +280,7 @@ Status: complete. Closed at:
   source/operator/contract/semantic/destination artifacts and the complete D1 manifest;
 - continue rejecting joins, every set operation including `UNION ALL`, aggregation, windows,
   subqueries, multiple upstream relations, and runtime DataFusion planning;
-- delete/reject `CREATE RESOURCE`, path-bound source identity, the `sources/` resource root, retired
+- delete/reject `CREATE RESOURCE`, path-bound source identity, every non-`cdf/` resource root, retired
   project declarations/maps, and every compatibility/dual-reader shape.
 
 Depends-On: D1, D1.5a, D2, and C1 for first-class semantic syntax. D3 is also the current-only
@@ -434,7 +434,7 @@ deferred lanes are explicitly parked with owners. For a full close:
   project definitions use the same data-only registry after built-in migration;
 - the generated manifest lives at `.cdf/manifest.json`; offline and explicit refresh compilation
   use existing crash-safe project publication, and `cdf sql` mounts rather than recompiles it;
-- SQL resources live at exactly `resources/<namespace>/<resource>.cdf.sql`; the path supplies only
+- SQL resources live at exactly `cdf/<namespace>/<resource>.cdf.sql`; the path supplies only
   canonical resource id and default logical target, while each query explicitly names one
   configured source through `upstream(source => '<name>', ...)`;
 - canonical resource id, configured source, and logical target are independent; resource namespace
@@ -443,7 +443,7 @@ deferred lanes are explicitly parked with owners. For a full close:
   resolves a typed configured source, immutable source type resolves the driver, and only then does
   that driver validate the remaining structured relation arguments;
 - root wildcard resource maps, declarative `resources/<source>.toml`, explicit SQL resource ids,
-  the `sources/` resource root, `CREATE RESOURCE`, source sidecars, and arbitrary `${...}`
+  every non-`cdf/` resource root, `CREATE RESOURCE`, source sidecars, and arbitrary `${...}`
   interpolation are retired current-schema shapes with no compatibility path;
 - resource namespace/stem and configured-source tokens match `[a-z][a-z0-9_]{0,127}` exactly with
   no normalization;
@@ -575,7 +575,7 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
 - 2026-08-04: The user ratified the complete D3 handoff in full and explicitly authorized
   supersession. The prior mandatory `CREATE RESOURCE`, path-bound configured source, and
   `sources/<source>/<resource>.cdf.sql` authority is preserved under `superseded/` only. Current D3
-  uses `resources/<namespace>/<resource>.cdf.sql`, derives only resource id/default target from the
+  uses `cdf/<namespace>/<resource>.cdf.sql`, derives only resource id/default target from the
   path, requires `upstream(source => '<configured_source>', ...)`, and treats resource id, source,
   and target as independent. Bare `SELECT` is the normal form; optional ordered `RESOURCE ... AS`
   clauses own target, disposition with intrinsic merge keys, cursor, trust, semantic bindings, and
@@ -585,6 +585,12 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
   relational exclusion, identity, diagnostic, manifest, no-DataFusion-runtime, and no-compatibility
   laws are now active. D3 shaping is closed and the executable cutover ticket is
   `.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`.
+- 2026-08-04: During D3 execution, the user reopened only the resource-root noun, supplied a full
+  comparison of `sources/`, `cdf/`, and `pipelines/`, and delegated the final choice. `cdf/` is now
+  the sole root and an identity-excluded tool-ownership marker. It preserves the existing
+  `<namespace>.<resource>` identity while avoiding both `sources/` configured-source ambiguity and
+  `pipelines/` orchestration implications. The never-released `resources/` proposal is superseded
+  without a compatibility reader.
 
 ## Blockers
 
