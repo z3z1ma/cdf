@@ -144,10 +144,13 @@ protocol/snapshot/type research.
 First-class semantic types and SQL-like project authoring are active shaping directions. Semantic
 types remain versioned annotations over Arrow, not a second type lattice. The project compiler must
 publish a canonical secret-redacted manifest before `cdf sql` exposes it; `cdf.lock` remains pin
-authority. DataFusion may parse/analyze/lower SQL at compile time, but native CDF IR remains the
-serialized and runtime identity. The initial language is one explicit source resource with a
-bounded vectorized projection/filter/cast/scalar subset; joins, aggregation, scheduling, and
-runtime templates remain excluded.
+authority. DataFusion parses/resolves/types/coerces SQL at compile time, while native typed CDF IR
+remains serialized/runtime identity and the CDF operator envelope owns packages/replay. The initial
+relational language is one explicit source resource with projection and Boolean filtering; inside
+that narrow graph, scalar support is the rule-based closure over every fully typed `Immutable`
+built-in in the pinned DataFusion registry that fits CDF's canonical Arrow closure and has no
+uncaptured ambient semantics. Joins, aggregation, scheduling, volatile/UDF expressions, and runtime
+templates remain excluded.
 
 The project shape is now ratified: `sources/<source>/<resource>.cdf.sql` is the sole canonical
 source/resource identity, root `[sources.<source>]` holds one shared typed configuration, and the
@@ -163,15 +166,18 @@ and arbitrary environment interpolation are retired without compatibility reader
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
+- `.10x/specs/datafusion-scalar-relational-ir.md`
+- `.10x/decisions/datafusion-deterministic-scalar-closure.md`
+- `.10x/tickets/2026-08-04-d2-datafusion-scalar-relational-ir.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 
 Manifest path/publication, source/resource layout, configuration ownership, and semantic registry
-authority are ratified. Path-token, configured-source, `upstream(...)`, and envelope authority are
-also ratified. Remaining Foundation D shaping is the bounded D2 scalar/cast allowlist, semantic SQL
-annotation tokens, structured `upstream(...)` argument values, and detailed focused-policy values
-such as drain execution. The old declarative project surface is implementation drift to replace,
-not a coequal front-end or migration authority.
+authority are ratified. Path-token, configured-source, `upstream(...)`, envelope, and D2
+deterministic scalar/typed-IR authority are also ratified; D2 is executable. Remaining Foundation D
+shaping is limited to D3 semantic SQL annotation tokens, structured `upstream(...)` argument
+values, and detailed focused-policy values such as drain execution. The old declarative project
+surface is implementation drift to replace, not a coequal front-end or migration authority.
 
 ### Plan-declared hooks
 
@@ -233,12 +239,15 @@ Current Python and subprocess admission MUST close independently of these future
 
 CDF retains DataFusion as a standard analysis/scheduling currency under the identity boundary.
 J1 statistics pruning is complete as a verified-package segment-selection authority with shared
-memory admission, streamed decisions, and conservative absence. Object-store session registration, evidence
-catalog/ADBC, `ExecutionPlan` marshaling, Ballista groundwork, exotic `FileFormat` hosting, and
-selective kernel adoption are parked until a concrete consumer makes each bounded outcome
-valuable. Authority:
+memory admission, streamed decisions, and conservative absence. D2 now activates deterministic
+scalar-kernel reuse beneath a typed CDF projection/filter operator with differential and roofline
+gates; DataFusion plan serialization remains forbidden. Object-store session registration,
+evidence catalog/ADBC, `ExecutionPlan` marshaling, Ballista groundwork, and exotic `FileFormat`
+hosting remain parked until a concrete consumer makes each bounded outcome valuable. Authority:
 
 - `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
+- `.10x/decisions/datafusion-deterministic-scalar-closure.md`
+- `.10x/specs/datafusion-scalar-relational-ir.md`
 - `.10x/specs/datafusion-currency-bridges.md`
 - cancelled J2/J4/J5/J6 tickets under `.10x/tickets/cancelled/`
 

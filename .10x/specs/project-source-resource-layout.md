@@ -282,7 +282,7 @@ a `source`, call a driver a configured source, or describe `SourceRegistry` as a
 - preserving spike-era project/declarative authoring compatibility;
 - a disabled/inactive/preconfigured source state;
 - any relation form other than the single path-bound `upstream(...)` table function;
-- defining the D2 scalar/operator allowlist or semantic-annotation value grammar.
+- defining the separately governed D2 scalar/operator closure or semantic-annotation value grammar.
 
 ## References
 

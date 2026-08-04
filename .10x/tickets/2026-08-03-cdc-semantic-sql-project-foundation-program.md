@@ -250,12 +250,20 @@ Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md` and
 
 **D2. Native scalar/relational IR expansion**
 
-- extend only the expression/cast/projection subset ratified for SQL v1;
+- replace the Boolean-limited IR with the ratified rule-based closure over every qualifying
+  deterministic built-in scalar in the pinned DataFusion registry;
+- record exact coerced types/nullability, canonical function/signature identities, casts,
+  projection/filter graph, output schema, and lineage in durable CDF authority;
 - prove DataFusion analysis-to-native lowering and vectorized execution equivalence;
 - no joins/aggregations/windows or runtime DataFusion plans in v1.
 
 Depends-On: D0 and D1; coordinates with C1 for semantic annotations. It may land after D1.5a but
 does not depend on the final project-authoring cutover.
+
+Status: executable. Owner:
+`.10x/tickets/2026-08-04-d2-datafusion-scalar-relational-ir.md`, governed by
+`.10x/decisions/datafusion-deterministic-scalar-closure.md` and
+`.10x/specs/datafusion-scalar-relational-ir.md`.
 
 **D3. SQL project front-end**
 
@@ -383,6 +391,8 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
+- `.10x/specs/datafusion-scalar-relational-ir.md`
+- `.10x/decisions/datafusion-deterministic-scalar-closure.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/tickets/done/2026-08-04-d1-5a-project-source-resource-input-authority.md`
@@ -400,6 +410,10 @@ deferred lanes are explicitly parked with owners. For a full close:
 - MySQL and MongoDB are priority first-class connectors.
 - SQL-like explicit project definitions, semantic types, manifests, and inline hook capability are
   desired directions.
+- DataFusion parses/resolves/types/coerces the SQL query body, and the pinned deterministic
+  built-in scalar surface is admitted by a generic immutable/known-canonical-type/reproducible-
+  execution predicate rather than a manually curated name list; CDF retains durable plan and
+  runtime-envelope authority.
 - explicit path-derived resources are preferred over implicit templating;
 - semantic references use the exact active canonical grammar, unknown semantics fail closed, and
   project definitions use the same data-only registry after built-in migration;
@@ -450,7 +464,6 @@ deferred lanes are explicitly parked with owners. For a full close:
 ### Unratified blockers
 
 - PostgreSQL/MySQL maximum single-transaction resource behavior;
-- exact D2 native scalar/cast allowlist and IR version;
 - exact D3 semantic-annotation tokens, which must reuse the canonical semantic reference grammar;
 - exact D3 data-only structured-value grammar for complex `upstream(...)` resource arguments;
 - detailed D3 focused-policy value grammar, including drain execution, without changing the
@@ -522,13 +535,22 @@ deferred lanes are explicitly parked with owners. For a full close:
   also recorded. Implementation is sequenced as additive internal D1.5a input authority, then D2,
   then one D3/current-authoring cutover that deletes the old resource map/declarative reader. This
   avoids pushing either a half-runnable replacement or a compatibility/dual-reader surface.
+- 2026-08-04: After D1.5a closed, the user confirmed that DataFusion remains the SQL parser,
+  resolver, coercion/type analyzer, and scalar implementation authority beneath CDF's durable plan
+  envelope. D2 is no longer a hand-maintained function-name allowlist: it admits every pinned
+  DataFusion built-in scalar that is fully typed, `Immutable`, inside CDF's canonical Arrow closure,
+  free of uncaptured ambient semantics, canonically representable, and reproducibly executable in
+  vectorized batches. Known output type is required but does not admit aggregate/window/table/UDF,
+  `Stable`/`Volatile`, session-dependent, or opaque expressions. The accepted decision/spec and
+  executable child are `.10x/decisions/datafusion-deterministic-scalar-closure.md`,
+  `.10x/specs/datafusion-scalar-relational-ir.md`, and
+  `.10x/tickets/2026-08-04-d2-datafusion-scalar-relational-ir.md`.
 
 ## Blockers
 
-The exact unratified choices listed above still govern D2/D3/E1. D1.5a is executable; D2 requires
-its scalar/cast checkpoint; D3 then performs the single current-authoring cutover after D1.5a/D2.
-CDC A1 is closed; the large-transaction policy must be settled before A2 closes. F0 is closed at
-`3487de68`.
+The exact unratified choices listed above still govern D3/E1 and CDC A2. D1.5a is closed and D2 is
+executable; D3 then performs the single current-authoring cutover after D2. CDC A1 is closed; the
+large-transaction policy must be settled before A2 closes. F0 is closed at `3487de68`.
 
 ## Evidence
 

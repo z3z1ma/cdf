@@ -24,7 +24,7 @@ in-flight transformations in SQL-shaped files while preserving every existing CD
 - native Arrow schemas, contracts, semantics, and normalization;
 - compiled source/operator/destination identities;
 - deterministic packages, receipts, and checkpoints;
-- DataFusion's compile-time-only identity boundary.
+- DataFusion's compile-time analysis and non-authoritative scalar-implementation boundary.
 
 The SQL front-end is a compiler, not a runtime query engine and not a new scheduler.
 
@@ -40,9 +40,13 @@ authoritative source/resource path + authored SQL resource + typed effective sou
 → ordinary native CDF execution/package/receipt/checkpoint path
 ```
 
-DataFusion types/plans MAY exist inside the compiler/engine analysis layer. They MUST NOT appear in
-kernel/runtime/source public types, serialized execution identity, checkpoint/package formats, or
-destination protocols. Runtime MUST NOT reparse, reoptimize, or reinterpret authored SQL.
+DataFusion types/plans MAY exist ephemerally inside the compiler/engine implementation layer. They
+MUST NOT appear in kernel/runtime/source public types, serialized execution identity,
+checkpoint/package formats, or destination protocols. Runtime MUST NOT reparse, reoptimize,
+re-infer, or reinterpret authored SQL. A CDF-owned typed batch operator MAY invoke the exact pinned
+DataFusion/Arrow scalar implementation governed by
+`.10x/decisions/datafusion-deterministic-scalar-closure.md`; that implementation is never durable
+plan or replay identity.
 
 ## Authoring separation
 
@@ -149,7 +153,7 @@ native CDF operators:
 - exactly one `upstream(...)` base relation per resource, interpreted only by the path-bound source
   type;
 - explicit `SELECT` projection and aliases;
-- deterministic literals and scalar expressions from a versioned allowlist;
+- deterministic literals and the rule-based pinned-DataFusion scalar closure;
 - explicit Arrow-compatible casts;
 - Boolean `WHERE` predicates with three-valued semantics;
 - semantic annotations resolved by exact registry version;
@@ -167,11 +171,33 @@ The first language MUST reject rather than defer to runtime:
 - stored procedure/function calls;
 - arbitrary source-native SQL or aggregation pipelines;
 - runtime table discovery expansion;
-- unregistered user-defined functions or types;
+- non-built-in, non-immutable, ambient-session, user-defined, or unrepresentable functions/types;
 - row-level Python/WASM calls.
 
 This is not a permanent SQL feature ceiling. It is the smallest complete language consistent with
 the active in-flight-transform boundary.
+
+### Ratified DataFusion scalar closure
+
+The scalar surface is not a hand-maintained list of function names. Under the exact pinned
+DataFusion compiler/feature set, CDF MUST admit every fully resolved built-in scalar expression
+whose functions are `Immutable`, whose coerced inputs and output/nullability are exact members of
+CDF's canonical Arrow closure, whose behavior needs no uncaptured ambient/session authority, and
+whose canonical function/signature/cast graph can be recorded and rebound batch-vectorially from
+typed CDF IR. Known output type is necessary but not sufficient.
+
+Aggregates, windows, table functions other than the CDF-owned `upstream(...)` boundary, UDFs,
+extensions, `Stable`/`Volatile` functions, and opaque/unrepresentable outputs fail even when
+DataFusion can assign them a type. Function aliases canonicalize through DataFusion resolution;
+authored SQL hashes remain separate. Implicit casts, explicit `CAST`, and `TRY_CAST` are distinct
+durable nodes and preserve DataFusion's exact error/null semantics.
+
+DataFusion owns parsing, function/overload resolution, coercion, simplification, and output typing.
+CDF owns the closed typed scalar/relational IR, hashes, lineage, schema assertions, memory,
+cancellation, source residuals, control fields, package output, replay, and dependency/version
+verification. Runtime may bind and call the pinned vectorized scalar implementation but MUST NOT
+repeat semantic analysis. The full D2 contract is
+`.10x/specs/datafusion-scalar-relational-ir.md`.
 
 ## Native IR expansion
 
@@ -188,12 +214,18 @@ front-end can claim a construct, native CDF IR MUST represent and execute it wit
 - output-schema and field-lineage derivation;
 - golden equivalence against DataFusion analysis for the admitted subset.
 
+The current expression/compiled-plan artifact versions are replaced outright by D2. The new typed
+IR records canonical built-in/signature, resolved argument/result Arrow types and nullability,
+implicit/explicit/try casts, projection order/aliases, Boolean filter, and field lineage. It does
+not serialize a DataFusion plan or keep a prior-version reader.
+
 The compiler MAY use DataFusion to parse, resolve, type, simplify, and optimize. It MUST lower the
 result into a closed CDF scalar/relational IR and record both authored-input identity and native
 lowered identity. An unstable DataFusion debug string or physical plan is never identity authority.
 
-Unsupported DataFusion expression nodes/functions fail compilation with exact syntax location and
-supported alternatives. They do not remain opaque runtime expressions.
+DataFusion expression nodes/functions that fail the ratified admission predicate fail compilation
+with exact syntax location and the failed gate. They do not enter a manual name-list fallback or
+remain opaque runtime expressions.
 
 ## Source and destination binding
 
@@ -293,8 +325,9 @@ Runtime string templating is permanently excluded.
    agree on Arrow schema, null behavior, values, and errors over property-generated batches.
 3. Given an inexact source pushdown, the manifest records it and native residual evaluation
    preserves results.
-4. Given a join/window/unknown function, compilation fails at the exact source location and no
-   runtime plan or external I/O is produced.
+4. Given a join/window/aggregate or a non-built-in, non-immutable, session-dependent, unknown, or
+   unrepresentable scalar function, compilation fails at the exact source location and no runtime
+   plan or external I/O is produced.
 5. Given a path-bound named source configuration, the SQL/manifest contain no resolved secret
    value.
 6. Given `sources/warehouse/orders.cdf.sql`, compilation derives exactly `warehouse.orders`; SQL
@@ -317,15 +350,18 @@ Runtime string templating is permanently excluded.
 - SQL compilation performance is measured separately from execution throughput.
 - Native execution of the admitted SQL subset MUST stay on vectorized Arrow kernels and the
   existing fused operator/memory path.
-- No per-row parser, dynamic-language call, boxed expression dispatch in hot loops, or runtime
-  DataFusion re-planning is permitted without measured roofline evidence and a separate decision.
+- No per-row parser, dynamic-language call, per-cell/scalar materialization, per-row boxed dispatch,
+  or runtime DataFusion semantic re-planning is permitted. Batch-level dispatch into pinned
+  vectorized DataFusion/Arrow scalar kernels is admitted under D2's differential and 15% roofline
+  gates.
 - Source/destination direct-library roofline standards remain unchanged by authoring syntax.
 
 ## Staged implementation
 
 1. D1 publishes the active manifest before SQL parsing lands.
-2. D2 must activate a focused native scalar/cast allowlist and IR version before D3 accepts those
-   expressions. That exact allowlist remains a D2 shaping checkpoint, not parser discretion.
+2. D2 implements `.10x/specs/datafusion-scalar-relational-ir.md`: the ratified rule-based
+   deterministic DataFusion scalar closure and a new current-only typed scalar/relational IR. There
+   is no remaining hand-authored scalar-name checkpoint.
 3. D0 removed the current Postgres-special-cased merge-dedup policy. The path-derived source model,
    typed base configuration, and selected-environment overlays are governed by
    `.10x/specs/project-source-resource-layout.md`; driver options stay schema-validated.
@@ -343,6 +379,8 @@ Runtime string templating is permanently excluded.
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
+- `.10x/decisions/datafusion-deterministic-scalar-closure.md`
+- `.10x/specs/datafusion-scalar-relational-ir.md`
 - `.10x/decisions/compiled-fused-streaming-operator-graph.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/source-extension-runtime-contract.md`
