@@ -7,6 +7,7 @@ Generated from the CLI's clap definitions. Do not edit these pages by hand.
 - [`cdf version`](cdf-version.md)
 - [`cdf init`](cdf-init.md)
 - [`cdf add`](cdf-add.md)
+- [`cdf compile`](cdf-compile.md)
 - [`cdf validate`](cdf-validate.md)
 - [`cdf plan`](cdf-plan.md)
 - [`cdf explain`](cdf-explain.md)

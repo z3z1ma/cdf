@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Query cdf system metadata
+Query verified project and operational artifacts
 
 Usage: cdf sql [OPTIONS] [QUERY]...
 

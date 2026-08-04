@@ -40,8 +40,15 @@ Inspect what was pinned:
 
 ```bash
 "$CDF" schema show tlc.yellow
+"$CDF" compile
+"$CDF" sql "select resource_id, output_schema_hash from manifest_resources"
 "$CDF" plan tlc.yellow
 ```
+
+`cdf compile` is offline and publishes `.cdf/manifest.json` only from current
+locked authority. Use `cdf compile --refresh` when the compiler reports that a
+source observation or lock pin must be refreshed. Generated `.cdf/` state is
+ignored by the project scaffold; `cdf.lock` remains the committed expectation.
 
 The plan should report one file partition. Fields such as `VendorID` are planned as normalized destination identifiers while retaining `cdf:source_name = "VendorID"` evidence.
 

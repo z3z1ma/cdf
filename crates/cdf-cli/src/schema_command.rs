@@ -398,7 +398,7 @@ fn load_context(cli: &Cli, command: &str) -> Result<ProjectContext, CliError> {
     ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())
 }
 
-fn discover_artifacts_for_cli(
+pub(crate) fn discover_artifacts_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
     execution: &cdf_runtime::ExecutionServices,

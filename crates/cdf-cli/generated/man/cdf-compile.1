@@ -1,16 +1,19 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH cdf-sql 1  "cdf-sql "
+.TH cdf-compile 1  "cdf-compile "
 .SH NAME
-cdf\-sql \- Query verified project and operational artifacts
+cdf\-compile \- Compile the selected project into a verified local manifest
 .SH SYNOPSIS
-\fBcdf sql\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIQUERY\fR]
+\fBcdf compile\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-refresh\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
 .SH DESCRIPTION
-Query verified project and operational artifacts
+Compile the selected project into .cdf/manifest.json. The default mode is offline and requires current cdf.lock authority. \-\-refresh explicitly performs read\-only source observations and may update cdf.lock and schema artifacts.
 .SH OPTIONS
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
+.TP
+\fB\-\-refresh\fR
+Refresh read\-only source observations and publish updated project authority
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -67,7 +70,4 @@ Process memory budget, e.g. 4GiB or 512MiB
 Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
-.TP
-[\fIQUERY\fR]
-SQL query text
+Print help (see a summary with \*(Aq\-h\*(Aq)

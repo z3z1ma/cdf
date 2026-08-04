@@ -11,6 +11,7 @@ use crate::PROJECT_FILE_NAME;
 
 const RESOURCES_DIR: &str = "resources";
 const README_FILE: &str = "README.md";
+const GITIGNORE_FILE: &str = ".gitignore";
 const RESOURCE_FILE: &str = "resources/files.toml";
 const DATA_DIR: &str = "data";
 
@@ -25,8 +26,10 @@ From this project root, the supported first commands for the local
 
 ```bash
 cdf validate
+cdf compile --refresh
 cdf plan local.events
 cdf run local.events
+cdf sql "select * from manifest_resources"
 ```
 
 Add newline-delimited JSON files under `data/` before running the resource.
@@ -98,6 +101,13 @@ pub fn write_local_project_scaffold(
         options.force,
         &mut report,
     )?;
+    write_scaffold_file(
+        &options.root,
+        GITIGNORE_FILE,
+        ".cdf/\n",
+        options.force,
+        &mut report,
+    )?;
     ensure_scaffold_directory(&options.root, RESOURCES_DIR, options.force, &mut report)?;
     write_scaffold_file(
         &options.root,
@@ -144,7 +154,13 @@ fn ensure_no_unforced_overwrites(root: &Path, force: bool) -> Result<()> {
     }
 
     let mut conflicts = Vec::new();
-    for relative in [PROJECT_FILE_NAME, README_FILE, RESOURCE_FILE, DATA_DIR] {
+    for relative in [
+        PROJECT_FILE_NAME,
+        README_FILE,
+        GITIGNORE_FILE,
+        RESOURCE_FILE,
+        DATA_DIR,
+    ] {
         if symlink_metadata(root.join(relative))?.is_some() {
             conflicts.push(relative);
         }

@@ -125,10 +125,10 @@ pub use lockfile::{
     compile_project_declarative_resources, compile_project_declarative_resources_with_root,
     compile_project_declarative_resources_with_semantic_catalog, contract_snapshot_for_resource,
     contract_snapshot_for_resource_with_semantic_catalog, contract_snapshots_for_resources,
-    contract_snapshots_for_resources_with_semantic_catalog, diff_lockfiles,
-    freeze_contract_snapshots, generate_lockfile_with_destination_artifacts, lock_to_toml,
-    parse_cdf_toml, parse_lock, pin_schema_snapshot_in_project_lockfile, test_contract_snapshots,
-    test_contract_snapshots_with_semantic_catalog, validate_project,
+    contract_snapshots_for_resources_with_semantic_catalog, current_dependency_tuple,
+    diff_lockfiles, freeze_contract_snapshots, generate_lockfile_with_destination_artifacts,
+    lock_to_toml, parse_cdf_toml, parse_lock, pin_schema_snapshot_in_project_lockfile,
+    test_contract_snapshots, test_contract_snapshots_with_semantic_catalog, validate_project,
 };
 pub use manifest::{
     AuthoredInputSetHash, DependencyTupleHash, EnvironmentBindingHash, LineageHash,

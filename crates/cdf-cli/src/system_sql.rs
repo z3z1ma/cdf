@@ -11,9 +11,16 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params,
 use serde::Serialize;
 use serde_json::{Number, Value};
 
-use crate::{context::ProjectContext, error_catalog, output::CliError};
+use crate::{context::ProjectManifestContext, error_catalog, output::CliError};
 
 const TABLES: &[&str] = &[
+    "manifest_project",
+    "manifest_inputs",
+    "manifest_resources",
+    "manifest_fields",
+    "manifest_semantics",
+    "manifest_lineage",
+    "manifest_diagnostics",
     "checkpoints",
     "packages",
     "package_files",
@@ -65,10 +72,14 @@ impl SystemSqlReport {
     }
 }
 
-pub(crate) fn run(context: &ProjectContext, query: &str) -> Result<SystemSqlReport, CliError> {
+pub(crate) fn run(
+    context: &ProjectManifestContext,
+    query: &str,
+) -> Result<SystemSqlReport, CliError> {
     let query = read_only_query(query)?;
     let conn = Connection::open_in_memory().map_err(workspace_sqlite_error)?;
     create_schema(&conn)?;
+    mount_manifest(&conn, &context.manifest)?;
     mount_checkpoints(
         &conn,
         context.state_store_path()?,
@@ -158,9 +169,344 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
             row_count INTEGER NOT NULL,
             byte_count INTEGER NOT NULL
         );
+
+        CREATE TABLE manifest_project (
+            version INTEGER NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            project_name TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            environment_binding_hash TEXT NOT NULL,
+            compiler_version TEXT NOT NULL,
+            dependency_tuple_json TEXT NOT NULL,
+            dependency_tuple_hash TEXT NOT NULL,
+            normalizer TEXT NOT NULL,
+            lock_content_hash TEXT NOT NULL,
+            lock_semantic_hash TEXT NOT NULL,
+            compilation_mode TEXT NOT NULL,
+            compiler_policies_json TEXT NOT NULL,
+            features_json TEXT NOT NULL,
+            authored_inputs_hash TEXT NOT NULL,
+            lock_binding_hash TEXT NOT NULL,
+            semantics_hash TEXT NOT NULL,
+            lineage_hash TEXT NOT NULL,
+            generated_at_unix_ms INTEGER
+        );
+
+        CREATE TABLE manifest_inputs (
+            input_id TEXT NOT NULL,
+            input_kind TEXT NOT NULL,
+            location_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            parser TEXT NOT NULL,
+            parser_version INTEGER NOT NULL,
+            generation_json TEXT NOT NULL
+        );
+
+        CREATE TABLE manifest_resources (
+            resource_id TEXT NOT NULL,
+            compilation_hash TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            resource_name TEXT NOT NULL,
+            source_file TEXT,
+            mapping_pattern TEXT NOT NULL,
+            mapping_status TEXT NOT NULL,
+            authored_input_ids_json TEXT NOT NULL,
+            descriptor_json TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL,
+            execution_extent_json TEXT NOT NULL,
+            compiled_stream_policy_json TEXT,
+            source_plan_json TEXT NOT NULL,
+            source_binding_json TEXT NOT NULL,
+            output_schema_json TEXT NOT NULL,
+            output_schema_hash TEXT NOT NULL,
+            contract_json TEXT,
+            destination_json TEXT NOT NULL
+        );
+
+        CREATE TABLE manifest_fields (
+            resource_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            field_json TEXT NOT NULL,
+            semantic_reference TEXT,
+            semantic_definition_hash TEXT
+        );
+
+        CREATE TABLE manifest_semantics (
+            definition_id TEXT NOT NULL,
+            definition_hash TEXT NOT NULL,
+            source_json TEXT NOT NULL,
+            definition_json TEXT NOT NULL,
+            compatibility_profile_hash TEXT NOT NULL,
+            privacy_profile_hash TEXT NOT NULL,
+            destination_mapping_profile_hash TEXT NOT NULL,
+            references_json TEXT NOT NULL
+        );
+
+        CREATE TABLE manifest_lineage (
+            edge_id TEXT NOT NULL,
+            from_json TEXT NOT NULL,
+            to_json TEXT NOT NULL,
+            relation TEXT NOT NULL
+        );
+
+        CREATE TABLE manifest_diagnostics (
+            ordinal INTEGER NOT NULL,
+            severity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            resource_id TEXT,
+            input_id TEXT,
+            message TEXT NOT NULL,
+            remediation TEXT,
+            authority TEXT NOT NULL,
+            blocks_execution INTEGER NOT NULL
+        );
         ",
     )
     .map_err(workspace_sqlite_error)
+}
+
+fn mount_manifest(
+    conn: &Connection,
+    manifest: &cdf_project::ProjectManifest,
+) -> Result<(), CliError> {
+    conn.execute(
+        "
+        INSERT INTO manifest_project (
+            version,
+            manifest_hash,
+            project_name,
+            environment,
+            environment_binding_hash,
+            compiler_version,
+            dependency_tuple_json,
+            dependency_tuple_hash,
+            normalizer,
+            lock_content_hash,
+            lock_semantic_hash,
+            compilation_mode,
+            compiler_policies_json,
+            features_json,
+            authored_inputs_hash,
+            lock_binding_hash,
+            semantics_hash,
+            lineage_hash,
+            generated_at_unix_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ",
+        params![
+            i64::from(manifest.version),
+            manifest.manifest_hash.as_str(),
+            &manifest.header.project_name,
+            &manifest.header.environment,
+            manifest.header.environment_binding_hash.as_str(),
+            &manifest.header.compiler_version,
+            json_string(&manifest.header.dependency_tuple)?,
+            manifest.header.dependency_tuple_hash.as_str(),
+            &manifest.header.normalizer,
+            manifest.header.lock_content_hash.as_str(),
+            manifest.header.lock_semantic_hash.as_str(),
+            json_scalar_string(&manifest.header.compilation_mode)?,
+            json_string(&manifest.header.compiler_policies)?,
+            json_string(&manifest.header.features)?,
+            manifest.hashes.authored_inputs.as_str(),
+            manifest.hashes.lock_binding.as_str(),
+            manifest.hashes.semantics.as_str(),
+            manifest.hashes.lineage.as_str(),
+            manifest.generated_at_unix_ms,
+        ],
+    )
+    .map_err(workspace_sqlite_error)?;
+
+    let mut insert_input = conn
+        .prepare(
+            "
+            INSERT INTO manifest_inputs (
+                input_id,
+                input_kind,
+                location_json,
+                content_hash,
+                parser,
+                parser_version,
+                generation_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for input in &manifest.inputs {
+        insert_input
+            .execute(params![
+                &input.input_id,
+                json_scalar_string(&input.input_kind)?,
+                json_string(&input.location)?,
+                input.content_hash.as_str(),
+                &input.parser,
+                i64::from(input.parser_version),
+                json_string(&input.generation)?,
+            ])
+            .map_err(workspace_sqlite_error)?;
+    }
+
+    let mut insert_resource = conn
+        .prepare(
+            "
+            INSERT INTO manifest_resources (
+                resource_id,
+                compilation_hash,
+                source_name,
+                resource_name,
+                source_file,
+                mapping_pattern,
+                mapping_status,
+                authored_input_ids_json,
+                descriptor_json,
+                capabilities_json,
+                execution_extent_json,
+                compiled_stream_policy_json,
+                source_plan_json,
+                source_binding_json,
+                output_schema_json,
+                output_schema_hash,
+                contract_json,
+                destination_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    let mut insert_field = conn
+        .prepare(
+            "
+            INSERT INTO manifest_fields (
+                resource_id,
+                ordinal,
+                path,
+                field_json,
+                semantic_reference,
+                semantic_definition_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for resource in &manifest.resources {
+        insert_resource
+            .execute(params![
+                &resource.resource_id,
+                resource.compilation_hash.as_str(),
+                &resource.origin.source_name,
+                &resource.origin.resource_name,
+                resource.origin.source_file.as_deref(),
+                &resource.origin.mapping_pattern,
+                &resource.origin.mapping_status,
+                json_string(&resource.origin.authored_input_ids)?,
+                json_string(&resource.descriptor)?,
+                json_string(&resource.capabilities)?,
+                json_string(&resource.execution_extent)?,
+                optional_json_string(resource.compiled_stream_policy.as_ref())?,
+                json_string(&resource.source_plan)?,
+                json_string(&resource.source_binding)?,
+                json_string(&resource.output_schema)?,
+                resource.output_schema_hash.as_str(),
+                optional_json_string(resource.contract.as_ref())?,
+                json_string(&resource.destination)?,
+            ])
+            .map_err(workspace_sqlite_error)?;
+        for field in &resource.fields {
+            insert_field
+                .execute(params![
+                    &resource.resource_id,
+                    i64::from(field.ordinal),
+                    &field.path,
+                    json_string(&field.field)?,
+                    field.semantic_reference.as_deref(),
+                    field.semantic_definition_hash.as_deref(),
+                ])
+                .map_err(workspace_sqlite_error)?;
+        }
+    }
+
+    let mut insert_semantic = conn
+        .prepare(
+            "
+            INSERT INTO manifest_semantics (
+                definition_id,
+                definition_hash,
+                source_json,
+                definition_json,
+                compatibility_profile_hash,
+                privacy_profile_hash,
+                destination_mapping_profile_hash,
+                references_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for semantic in &manifest.semantics {
+        insert_semantic
+            .execute(params![
+                &semantic.definition_id,
+                &semantic.definition_hash,
+                json_string(&semantic.source)?,
+                json_string(&semantic.definition)?,
+                semantic.compatibility_profile_hash.as_str(),
+                semantic.privacy_profile_hash.as_str(),
+                semantic.destination_mapping_profile_hash.as_str(),
+                json_string(&semantic.references)?,
+            ])
+            .map_err(workspace_sqlite_error)?;
+    }
+
+    let mut insert_lineage = conn
+        .prepare(
+            "
+            INSERT INTO manifest_lineage (edge_id, from_json, to_json, relation)
+            VALUES (?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for edge in &manifest.lineage {
+        insert_lineage
+            .execute(params![
+                &edge.edge_id,
+                json_string(&edge.from)?,
+                json_string(&edge.to)?,
+                json_scalar_string(&edge.relation)?,
+            ])
+            .map_err(workspace_sqlite_error)?;
+    }
+
+    let mut insert_diagnostic = conn
+        .prepare(
+            "
+            INSERT INTO manifest_diagnostics (
+                ordinal,
+                severity,
+                code,
+                resource_id,
+                input_id,
+                message,
+                remediation,
+                authority,
+                blocks_execution
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for (ordinal, diagnostic) in manifest.diagnostics.iter().enumerate() {
+        insert_diagnostic
+            .execute(params![
+                manifest_ordinal_i64(ordinal)?,
+                json_scalar_string(&diagnostic.severity)?,
+                &diagnostic.code,
+                diagnostic.resource_id.as_deref(),
+                diagnostic.input_id.as_deref(),
+                &diagnostic.message,
+                diagnostic.remediation.as_deref(),
+                &diagnostic.authority,
+                diagnostic.blocks_execution,
+            ])
+            .map_err(workspace_sqlite_error)?;
+    }
+    Ok(())
 }
 
 fn mount_checkpoints(
@@ -933,6 +1279,10 @@ fn json_string<T: Serialize>(value: &T) -> Result<String, CliError> {
     serde_json::to_string(value).map_err(json_cli_error)
 }
 
+fn optional_json_string<T: Serialize>(value: Option<&T>) -> Result<Option<String>, CliError> {
+    value.map(json_string).transpose()
+}
+
 fn json_scalar_string<T: Serialize>(value: &T) -> Result<String, CliError> {
     let value = serde_json::to_value(value).map_err(json_cli_error)?;
     value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
@@ -957,6 +1307,15 @@ where
     T: TryInto<i64>,
 {
     value.map(to_i64).transpose()
+}
+
+fn manifest_ordinal_i64(value: usize) -> Result<i64, CliError> {
+    i64::try_from(value).map_err(|_| {
+        CliError::mapped(
+            CdfError::data("manifest ordinal does not fit in the SQLite i64 representation"),
+            error_catalog::SQL_RESULT,
+        )
+    })
 }
 
 fn workspace_sqlite_error(error: rusqlite::Error) -> CliError {

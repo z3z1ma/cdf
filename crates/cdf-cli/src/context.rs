@@ -10,9 +10,10 @@ use cdf_kernel::{CdfError, Result as CdfResult};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
-    PROJECT_FILE_NAME, ProjectConfig, ProjectResource, ProjectResourceOrigin, ResourceSourceKind,
-    SchemaSnapshotStore, parse_cdf_toml, parse_lock, project_file_transaction_generation,
-    read_lock_file_authority, recover_project_file_transaction,
+    PROJECT_FILE_NAME, ProjectConfig, ProjectManifest, ProjectResource, ProjectResourceOrigin,
+    ResourceSourceKind, SchemaSnapshotStore, parse_cdf_toml, parse_lock,
+    project_file_transaction_generation, read_lock_file_authority,
+    recover_project_file_transaction,
 };
 use cdf_semantic::SemanticCatalog;
 use cdf_state_sqlite::SqliteCheckpointStore;
@@ -30,6 +31,13 @@ pub struct ProjectContext {
     pub lock: Option<CdfLock>,
     pub lock_authority: Option<LockFileAuthority>,
     pub semantic_catalog: SemanticCatalog,
+}
+
+#[derive(Debug)]
+pub struct ProjectManifestContext {
+    pub root: PathBuf,
+    pub environment: EffectiveEnvironment,
+    pub manifest: ProjectManifest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -100,7 +108,7 @@ impl ProjectContext {
                 if hydrate_locked_snapshots
                     && matches!(
                         command,
-                        "plan" | "explain" | "preview" | "run" | "validate --deep"
+                        "compile" | "plan" | "explain" | "preview" | "run" | "validate --deep"
                     )
                 {
                     context.resources = hydrate_locked_schema_snapshots(
@@ -349,6 +357,40 @@ impl ProjectContext {
             error_catalog::RESOURCE_NOT_COMPILED,
         )
         .with_suggestions(self.resource_suggestions(id))
+    }
+}
+
+impl ProjectManifestContext {
+    pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> StdResult<Self, CliError> {
+        let (root, _) = project_location(project_arg)?;
+        let snapshot = cdf_project::load_project_manifest_snapshot(&root, env_arg).map_err(
+            |error| {
+                let mut error = CliError::from(error);
+                if !error.message.contains("cdf compile") {
+                    error.message.push_str(
+                        "; run `cdf compile` to publish current offline authority or `cdf compile --refresh` to refresh source observations",
+                    );
+                }
+                error
+            },
+        )?;
+        Ok(Self {
+            root,
+            environment: snapshot.environment,
+            manifest: snapshot.manifest,
+        })
+    }
+
+    pub fn package_root(&self) -> PathBuf {
+        absolute_under_root(&self.root, &self.environment.packages)
+    }
+
+    pub fn state_store_path(&self) -> CdfResult<PathBuf> {
+        sqlite_uri_path(&self.root, &self.environment.state)
+    }
+
+    pub fn state_store_path_ownership(&self) -> cdf_state_sqlite::StateStorePathOwnership {
+        state_store_path_ownership(&self.environment.state)
     }
 }
 

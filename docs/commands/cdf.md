@@ -12,12 +12,13 @@ Commands:
   version   Print the cdf version
   init      Create a new cdf project
   add       Add a source resource to the project
+  compile   Compile the selected project into a verified local manifest
   validate  Validate project configuration and contracts
   plan      Plan a resource run without executing it
   explain   Explain resolution, capabilities, and execution choices
   run       Execute a governed resource run
   preview   Read a bounded preview without committing data
-  sql       Query cdf system metadata
+  sql       Query verified project and operational artifacts
   inspect   Inspect durable project and run evidence
   diff      Compare durable schemas
   schema    Discover, pin, compare, and promote schemas

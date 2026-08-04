@@ -38,12 +38,13 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('version', 'version', [CompletionResultType]::ParameterValue, 'Print the cdf version')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Create a new cdf project')
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a source resource to the project')
+            [CompletionResult]::new('compile', 'compile', [CompletionResultType]::ParameterValue, 'Compile the selected project into a verified local manifest')
             [CompletionResult]::new('validate', 'validate', [CompletionResultType]::ParameterValue, 'Validate project configuration and contracts')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Plan a resource run without executing it')
             [CompletionResult]::new('explain', 'explain', [CompletionResultType]::ParameterValue, 'Explain resolution, capabilities, and execution choices')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Execute a governed resource run')
             [CompletionResult]::new('preview', 'preview', [CompletionResultType]::ParameterValue, 'Read a bounded preview without committing data')
-            [CompletionResult]::new('sql', 'sql', [CompletionResultType]::ParameterValue, 'Query cdf system metadata')
+            [CompletionResult]::new('sql', 'sql', [CompletionResultType]::ParameterValue, 'Query verified project and operational artifacts')
             [CompletionResult]::new('inspect', 'inspect', [CompletionResultType]::ParameterValue, 'Inspect durable project and run evidence')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Compare durable schemas')
             [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Discover, pin, compare, and promote schemas')
@@ -115,6 +116,21 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;compile' {
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
+            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
+            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
+            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
+            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
+            [CompletionResult]::new('--refresh', '--refresh', [CompletionResultType]::ParameterName, 'Refresh read-only source observations and publish updated project authority')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
         }
         'cdf;validate' {

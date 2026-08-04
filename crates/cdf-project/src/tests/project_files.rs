@@ -1268,6 +1268,7 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
         vec![
             "cdf.toml",
             "README.md",
+            ".gitignore",
             "resources",
             "resources/files.toml",
             "data"
@@ -1275,6 +1276,15 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     );
     assert!(root.join("cdf.toml").is_file());
     assert!(root.join("README.md").is_file());
+    assert_eq!(
+        fs::read_to_string(root.join(".gitignore")).unwrap(),
+        ".cdf/\n"
+    );
+    assert!(
+        !fs::read_to_string(root.join(".gitignore"))
+            .unwrap()
+            .contains("cdf.lock")
+    );
     assert!(root.join("resources/files.toml").is_file());
     assert!(root.join("data").is_dir());
     assert!(fs::read_dir(root.join("data")).unwrap().next().is_none());
@@ -1286,6 +1296,8 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     let resource = fs::read_to_string(root.join("resources/files.toml")).unwrap();
     assert!(readme.contains("docs/quickstart.md"));
     assert!(readme.contains("cdf validate"));
+    assert!(readme.contains("cdf compile --refresh"));
+    assert!(readme.contains("manifest_resources"));
     assert!(readme.contains("cdf plan local.events"));
     assert!(readme.contains("cdf run local.events"));
     assert!(!readme.contains("secret://"));

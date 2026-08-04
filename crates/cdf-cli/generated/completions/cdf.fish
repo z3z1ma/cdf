@@ -43,12 +43,13 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "help" -d 'Show help for a c
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "version" -d 'Print the cdf version'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "init" -d 'Create a new cdf project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "add" -d 'Add a source resource to the project'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Compile the selected project into a verified local manifest'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Validate project configuration and contracts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Plan a resource run without executing it'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "explain" -d 'Explain resolution, capabilities, and execution choices'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "run" -d 'Execute a governed resource run'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "preview" -d 'Read a bounded preview without committing data'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "sql" -d 'Query cdf system metadata'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "sql" -d 'Query verified project and operational artifacts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "inspect" -d 'Inspect durable project and run evidence'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "diff" -d 'Compare durable schemas'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "schema" -d 'Discover, pin, compare, and promote schemas'
@@ -120,6 +121,21 @@ complete -c cdf -n "__fish_cdf_using_subcommand add" -l dry-run -d 'Show the pro
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l refresh -d 'Refresh read-only source observations and publish updated project authority'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

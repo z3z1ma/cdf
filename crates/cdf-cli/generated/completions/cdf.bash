@@ -22,6 +22,9 @@ _cdf() {
             cdf,backfill)
                 cmd="cdf__subcmd__backfill"
                 ;;
+            cdf,compile)
+                cmd="cdf__subcmd__compile"
+                ;;
             cdf,contract)
                 cmd="cdf__subcmd__contract"
                 ;;
@@ -161,7 +164,7 @@ _cdf() {
 
     case "${cmd}" in
         cdf)
-            opts="-q -v -h -V --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help --version help version init add validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
+            opts="-q -v -h -V --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help --version help version init add compile validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -287,6 +290,40 @@ _cdf() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --unicode)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__compile)
+            opts="-q -v -h --refresh --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
                 --color)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0

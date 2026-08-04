@@ -24,16 +24,21 @@ The CLI/project/security surface is
 
 ## Artifact Flow
 
-1. `cdf plan` compiles the project resource into a plan and destination preview
+1. `cdf compile` lowers locked project authority into the verified
+   `.cdf/manifest.json`; `cdf compile --refresh` is the explicit source-observation
+   form that may also update `cdf.lock`.
+2. `cdf plan` compiles the project resource into a plan and destination preview
    before data movement.
-2. `cdf run` executes a resource through the run spine, writes a package,
+3. `cdf run` executes a resource through the run spine, writes a package,
    commits to a destination, verifies a receipt, then commits checkpoint state.
-3. `cdf resume` uses run-ledger events, package artifacts, destination receipts,
+4. `cdf resume` uses run-ledger events, package artifacts, destination receipts,
    and checkpoint rows to drain interrupted work.
-4. `cdf replay package` drives an existing package into a destination without
+5. `cdf replay package` drives an existing package into a destination without
    contacting the source.
-5. `cdf sql`, `cdf inspect`, `cdf state`, `cdf package`, `cdf doctor`, and
-   `cdf status` expose local operational evidence.
+6. `cdf sql` verifies that manifest against the selected environment and
+   `cdf.lock`, then queries its project/resource/field/semantic/lineage facts
+   alongside package and checkpoint evidence without recompiling or loading a
+   connector registry.
 
 The run/recovery behavior is governed by
 [`run-orchestration-ledger.md`](../.10x/specs/run-orchestration-ledger.md), and

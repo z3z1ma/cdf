@@ -15,9 +15,9 @@ use crate::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
-    "help", "version", "init", "add", "validate", "plan", "explain", "run", "preview", "sql",
-    "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill", "package",
-    "doctor", "status",
+    "help", "version", "init", "add", "compile", "validate", "plan", "explain", "run", "preview",
+    "sql", "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill",
+    "package", "doctor", "status",
 ];
 const INSPECT_NOUNS: &[&str] = &[
     "project",
@@ -52,6 +52,7 @@ pub enum Command {
     Version,
     Init(InitArgs),
     Add(AddArgs),
+    Compile(CompileArgs),
     Validate(ValidateArgs),
     Plan(ScanArgs),
     Explain(ScanArgs),
@@ -84,6 +85,11 @@ pub struct AddArgs {
     pub location: String,
     pub dry_run: bool,
     pub options: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileArgs {
+    pub refresh: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,6 +435,12 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         }
         Some(("init", subcommand)) => parse_init(subcommand).map(Command::Init),
         Some(("add", subcommand)) => parse_add(subcommand).map(Command::Add),
+        Some(("compile", subcommand)) => {
+            no_extra_values("compile", &values(subcommand, "extra"))?;
+            Ok(Command::Compile(CompileArgs {
+                refresh: subcommand.get_flag("refresh"),
+            }))
+        }
         Some(("validate", subcommand)) => {
             no_extra_values("validate", &values(subcommand, "extra"))?;
             Ok(Command::Validate(ValidateArgs {
@@ -942,6 +954,13 @@ pub fn cli_command() -> ClapCommand {
                 .arg(append_option("source_option", "option", "KEY=VALUE")),
         )
         .subcommand(
+            cmd("compile")
+                .about("Compile the selected project into a verified local manifest")
+                .long_about("Compile the selected project into .cdf/manifest.json. The default mode is offline and requires current cdf.lock authority. --refresh explicitly performs read-only source observations and may update cdf.lock and schema artifacts.")
+                .arg(flag("refresh", "refresh"))
+                .arg(values_arg("extra").hide(true)),
+        )
+        .subcommand(
             cmd("validate")
                 .arg(flag("deep", "deep"))
                 .arg(values_arg("extra").hide(true)),
@@ -1131,12 +1150,13 @@ fn cmd(name: &'static str) -> ClapCommand {
         "version" => "Print the cdf version",
         "init" => "Create a new cdf project",
         "add" => "Add a source resource to the project",
+        "compile" => "Compile a verified local project manifest",
         "validate" => "Validate project configuration and contracts",
         "plan" => "Plan a resource run without executing it",
         "explain" => "Explain resolution, capabilities, and execution choices",
         "run" => "Execute a governed resource run",
         "preview" => "Read a bounded preview without committing data",
-        "sql" => "Query cdf system metadata",
+        "sql" => "Query verified project and operational artifacts",
         "inspect" => "Inspect durable project and run evidence",
         "diff" => "Compare durable schemas",
         "schema" => "Discover, pin, compare, and promote schemas",
@@ -1232,6 +1252,7 @@ fn option_help(long: &str) -> &'static str {
         "loop" => "Continue polling for work",
         "deep" => "Run probes that may contact configured systems",
         "dry-run" => "Show the proposed change without writing it",
+        "refresh" => "Refresh read-only source observations and publish updated project authority",
         "execute" => "Apply the planned operation",
         "force" => "Replace an existing artifact when safe",
         "scope" => "Checkpoint scope entry as key=value; may be repeated",

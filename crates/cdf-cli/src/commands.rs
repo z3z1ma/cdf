@@ -33,6 +33,29 @@ pub fn execute(
     }
 }
 
+pub fn execute_without_destination_registry(cli: Cli) -> InvocationResult {
+    let json_mode = cli.json;
+    let stdout_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stdout);
+    let stderr_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stderr);
+    let result = match cli.command.clone() {
+        Command::Compile(args) => crate::compile_command::compile(&cli, args),
+        Command::Sql(args) => crate::sql_command::sql(&cli, args),
+        _ => Err(CdfError::internal(
+            "registry-free dispatch received a command that requires destination composition",
+        )
+        .into()),
+    };
+    match result {
+        Ok(output) => InvocationResult::from_output_with_configs(
+            json_mode,
+            &stdout_config,
+            &stderr_config,
+            output,
+        ),
+        Err(error) => InvocationResult::from_error_with_config(json_mode, &stderr_config, error),
+    }
+}
+
 fn dispatch(
     cli: Cli,
     destinations: &cdf_runtime::DestinationRegistry,
@@ -53,6 +76,10 @@ fn dispatch(
             let (_, services) = default_services(&cli)?;
             crate::add_command::add(&cli, args, &services, destinations)
         }
+        Command::Compile(_) | Command::Sql(_) => Err(CdfError::internal(
+            "compile and sql must use registry-free command dispatch",
+        )
+        .into()),
         Command::Validate(args) => {
             let (_, services) = default_services(&cli)?;
             crate::project_command::validate(&cli, args, &services, destinations)
@@ -80,7 +107,6 @@ fn dispatch(
             let (host, services) = default_services(&cli)?;
             crate::scan_command::preview(&cli, args, host.as_ref(), &services, destinations)
         }
-        Command::Sql(args) => crate::sql_command::sql(&cli, args),
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args, destinations),
         Command::DiffSchema => crate::project_command::diff_schema(&cli),
         Command::Schema(command) => {
@@ -137,7 +163,7 @@ struct VersionReport {
     version: &'static str,
 }
 
-fn default_services(
+pub(crate) fn default_services(
     cli: &Cli,
 ) -> Result<
     (

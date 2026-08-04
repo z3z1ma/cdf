@@ -13,7 +13,7 @@ pub(super) fn document(report: &SystemSqlReport) -> RenderDocument {
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
-                "sql returned {} row(s) from local system history",
+                "sql returned {} row(s) from verified project artifacts",
                 report.row_count()
             ),
         ))

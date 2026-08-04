@@ -943,7 +943,7 @@ fn render_diff_value(value: &serde_json::Value) -> String {
     }
 }
 
-fn current_dependency_tuple() -> DependencyTuple {
+pub fn current_dependency_tuple() -> DependencyTuple {
     DependencyTuple {
         cdf: env!("CARGO_PKG_VERSION").to_owned(),
         arrow_rs: "58.3.0".to_owned(),
