@@ -1259,6 +1259,12 @@ fn compiled_exact_source_materialization_is_required_and_adapter_only() {
         decision_for(&reconciliation.plan, "amount").decision,
         FieldCoercionDecision::SourceMaterializedExact
     );
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&reconciliation.schema)
+            .unwrap()
+            .unwrap(),
+        reconciliation.plan
+    );
 
     let physical_batch = RecordBatch::try_new(
         observed_schema,
@@ -1275,6 +1281,96 @@ fn compiled_exact_source_materialization_is_required_and_adapter_only() {
         decision_for(&denied.plan, "amount").decision,
         FieldCoercionDecision::LossyRejected
     );
+}
+
+#[test]
+fn exact_source_materialization_round_trips_non_mongodb_and_every_list_container() {
+    let observed_flag = Field::new("enabled", DataType::Utf8, false).with_metadata(HashMap::from(
+        [("wire:encoding".to_owned(), "flag-v1".to_owned())],
+    ));
+    let flag_constraint = Schema::new(vec![Field::new("enabled", DataType::Boolean, false)]);
+    let flag_rule = cdf_kernel::SourceMaterializationRule::new(
+        "example.flag_text_to_boolean.v1",
+        vec!["enabled".to_owned()],
+        cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Utf8).unwrap(),
+        BTreeMap::from([("wire:encoding".to_owned(), "flag-v1".to_owned())]),
+        cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Boolean).unwrap(),
+    )
+    .unwrap();
+    let flag = reconcile_schema_with_source_materializations(
+        &Schema::new(vec![observed_flag]),
+        &flag_constraint,
+        &ContractPolicy::default().types,
+        &[flag_rule],
+    )
+    .unwrap();
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&flag.schema)
+            .unwrap()
+            .unwrap(),
+        flag.plan
+    );
+
+    let containers = [
+        "list",
+        "large_list",
+        "list_view",
+        "large_list_view",
+        "fixed_size_list",
+    ];
+    for container in containers {
+        let observed_child = Arc::new(Field::new("item", DataType::Utf8, true).with_metadata(
+            HashMap::from([("wire:encoding".to_owned(), "number-v1".to_owned())]),
+        ));
+        let constraint_child = Arc::new(Field::new("item", DataType::Int64, true));
+        let wrap = |child: Arc<Field>| match container {
+            "list" => DataType::List(child),
+            "large_list" => DataType::LargeList(child),
+            "list_view" => DataType::ListView(child),
+            "large_list_view" => DataType::LargeListView(child),
+            "fixed_size_list" => DataType::FixedSizeList(child, 2),
+            _ => unreachable!(),
+        };
+        let observed = Schema::new(vec![Field::new(
+            "items",
+            wrap(Arc::clone(&observed_child)),
+            true,
+        )]);
+        let constraint = Schema::new(vec![Field::new(
+            "items",
+            wrap(Arc::clone(&constraint_child)),
+            true,
+        )]);
+        let rules = vec![
+            cdf_kernel::SourceMaterializationRule::new(
+                format!("example.{container}_text_to_int.v1"),
+                vec!["items".to_owned(), "item".to_owned()],
+                cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Utf8).unwrap(),
+                BTreeMap::from([("wire:encoding".to_owned(), "number-v1".to_owned())]),
+                cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Int64).unwrap(),
+            )
+            .unwrap(),
+        ];
+        let reconciliation = reconcile_schema_with_source_materializations(
+            &observed,
+            &constraint,
+            &ContractPolicy::default().types,
+            &rules,
+        )
+        .unwrap_or_else(|error| panic!("{container}: {error}"));
+        assert_eq!(
+            decision_for(&reconciliation.plan, "items").decision,
+            FieldCoercionDecision::SourceMaterializedExact,
+            "{container}"
+        );
+        assert_eq!(
+            schema_coercion_plan_from_reconciled_schema(&reconciliation.schema)
+                .unwrap()
+                .unwrap(),
+            reconciliation.plan,
+            "{container}"
+        );
+    }
 }
 
 #[test]

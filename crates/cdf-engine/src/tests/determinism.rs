@@ -286,7 +286,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:f7f8e75c1934fea9804ebdec1491a246585650bce37cf49a310f6628c70386fc"
+        "sha256:78e95070b783f6007e9290c62feebd1868d9efa5cef39d4fd94b4263baa7c05c"
     );
 }
 

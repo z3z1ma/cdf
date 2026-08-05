@@ -7,8 +7,8 @@ use arrow_array::{ArrayRef, RecordBatch, new_null_array};
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CdfError, Result, SourceMaterializationRule, physical_type, source_name, with_physical_type,
-    with_source_name,
+    CanonicalArrowField, CdfError, Result, SourceMaterializationRule, physical_type, source_name,
+    validate_source_materializations, with_physical_type, with_source_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +67,13 @@ pub struct FieldCoercion {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operator_fixes: Vec<String>,
+    pub source_materialization: Option<SourceMaterializationEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMaterializationEvidence {
+    pub observed_field: CanonicalArrowField,
+    pub rules: Vec<SourceMaterializationRule>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +386,7 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
             || decision.outcome != RuleOutcome::Coerced
             || decision.reason != "nullable constraint field is absent; materialize typed nulls"
             || !decision.operator_fixes.is_empty()
+            || decision.source_materialization.is_some()
         {
             return Err(invalid_coercion_evidence(format!(
                 "missing field {source:?} does not match nullable typed-null materialization"
@@ -422,11 +430,32 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
             format!("lossless widening from {observed} to {constraint}"),
             observed != constraint && is_lossless_widening_display(observed, constraint),
         ),
-        FieldCoercionDecision::SourceMaterializedExact => (
-            RuleOutcome::Coerced,
-            exact_source_materialization_reason(observed, constraint),
-            observed == "Utf8" && constraint.starts_with("Decimal128("),
-        ),
+        FieldCoercionDecision::SourceMaterializedExact => {
+            let evidence = decision.source_materialization.as_ref().ok_or_else(|| {
+                invalid_coercion_evidence(format!(
+                    "field {source:?} omits its exact source-materialization authority"
+                ))
+            })?;
+            validate_source_materializations(&evidence.rules, &Schema::new(vec![field.clone()]))?;
+            let observed_field = evidence.observed_field.to_arrow()?;
+            let matched = exact_source_materializations(
+                std::slice::from_ref(&source),
+                &observed_field,
+                field,
+                &TypePolicy::strict_fidelity(),
+                &evidence.rules,
+            )?;
+            let relation_valid = decision.observed_name.as_deref()
+                == Some(observed_field.name().as_str())
+                && field_source_name(&observed_field) == source
+                && observed_field.data_type().to_string() == observed
+                && matched.as_ref() == Some(&evidence.rules);
+            (
+                RuleOutcome::Coerced,
+                exact_source_materialization_reason(observed, constraint),
+                relation_valid,
+            )
+        }
         FieldCoercionDecision::CoercedByPolicy => (
             RuleOutcome::Coerced,
             format!("explicit coerce_types policy permits parsing from {observed} to {constraint}"),
@@ -448,6 +477,14 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
         }
     };
 
+    if decision.decision != FieldCoercionDecision::SourceMaterializedExact
+        && decision.source_materialization.is_some()
+    {
+        return Err(invalid_coercion_evidence(format!(
+            "field {source:?} carries source-materialization authority for a different decision"
+        )));
+    }
+
     if !relation_valid || decision.outcome != expected_outcome || decision.reason != expected_reason
     {
         return Err(invalid_coercion_evidence(format!(
@@ -465,6 +502,7 @@ fn validate_extra_field_decision(decision: &FieldCoercion) -> Result<()> {
         || decision.observed_type.is_none()
         || decision.constraint_type.is_some()
         || !decision.operator_fixes.is_empty()
+        || decision.source_materialization.is_some()
         || decision.reason != "observed field is outside the constraint projection"
     {
         return Err(invalid_coercion_evidence(format!(
@@ -565,9 +603,7 @@ pub fn plan_schema_reconciliation_with_source_materializations(
     type_policy: &TypePolicy,
     source_materializations: &[SourceMaterializationRule],
 ) -> Result<SchemaReconciliationReport> {
-    for rule in source_materializations {
-        rule.validate()?;
-    }
+    validate_source_materializations(source_materializations, constraint)?;
     let observed_by_source = fields_by_source_name(observed, "observed")?;
     let constraint_by_source = fields_by_source_name(constraint, "constraint")?;
     let mut matched_sources = BTreeSet::new();
@@ -596,6 +632,7 @@ pub fn plan_schema_reconciliation_with_source_materializations(
                     reason: "nullable constraint field is absent; materialize typed nulls"
                         .to_owned(),
                     operator_fixes: Vec::new(),
+                    source_materialization: None,
                 });
                 continue;
             }
@@ -607,7 +644,7 @@ pub fn plan_schema_reconciliation_with_source_materializations(
         matched_sources.insert(field_source_name.clone());
 
         let type_decision = reconcile_field_type(
-            &[field_source_name.clone()],
+            std::slice::from_ref(&field_source_name),
             observed_field,
             constraint_field,
             type_policy,
@@ -616,11 +653,11 @@ pub fn plan_schema_reconciliation_with_source_materializations(
         let field_decision =
             type_decision.field_decision(&field_source_name, observed_field, constraint_field);
 
-        match type_decision {
+        match &type_decision {
             TypeReconciliation::Preserved
             | TypeReconciliation::Rebound
             | TypeReconciliation::Widened
-            | TypeReconciliation::SourceMaterializedExact
+            | TypeReconciliation::SourceMaterializedExact { .. }
             | TypeReconciliation::CoercedByPolicy
             | TypeReconciliation::LossyAllowed => {
                 output_fields.push(reconciled_field(
@@ -709,25 +746,29 @@ fn field_identity_differs(observed_field: &Field, constraint_field: &Field) -> b
         || observed_field.is_nullable() != constraint_field.is_nullable()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TypeReconciliation {
     Preserved,
     Rebound,
     Widened,
-    SourceMaterializedExact,
+    SourceMaterializedExact {
+        evidence: SourceMaterializationEvidence,
+    },
     CoercedByPolicy,
     LossyAllowed,
-    LossyRejected { allowance: ExplicitAllowance },
+    LossyRejected {
+        allowance: ExplicitAllowance,
+    },
     Unsupported,
 }
 
 impl TypeReconciliation {
-    fn requires_physical_provenance(self) -> bool {
+    fn requires_physical_provenance(&self) -> bool {
         !matches!(self, Self::Preserved)
     }
 
     fn field_decision(
-        self,
+        &self,
         field_source_name: &str,
         observed_field: &Field,
         constraint_field: &Field,
@@ -754,7 +795,7 @@ impl TypeReconciliation {
                 format!("lossless widening from {observed_type} to {constraint_type}"),
                 Vec::new(),
             ),
-            Self::SourceMaterializedExact => (
+            Self::SourceMaterializedExact { .. } => (
                 FieldCoercionDecision::SourceMaterializedExact,
                 RuleOutcome::Coerced,
                 exact_source_materialization_reason(&observed_type, &constraint_type),
@@ -802,6 +843,10 @@ impl TypeReconciliation {
             outcome,
             reason,
             operator_fixes,
+            source_materialization: match self {
+                Self::SourceMaterializedExact { evidence } => Some(evidence.clone()),
+                _ => None,
+            },
         }
     }
 }
@@ -876,14 +921,19 @@ fn reconcile_field_type(
     if observed.data_type().equals_datatype(constraint.data_type()) {
         return Ok(TypeReconciliation::Rebound);
     }
-    if is_exact_source_materialization(
+    if let Some(rules) = exact_source_materializations(
         field_path,
         observed,
         constraint,
         type_policy,
         source_materializations,
     )? {
-        return Ok(TypeReconciliation::SourceMaterializedExact);
+        return Ok(TypeReconciliation::SourceMaterializedExact {
+            evidence: SourceMaterializationEvidence {
+                observed_field: CanonicalArrowField::from_arrow(observed)?,
+                rules,
+            },
+        });
     }
     Ok(reconcile_type(
         observed.data_type(),
@@ -892,69 +942,100 @@ fn reconcile_field_type(
     ))
 }
 
-fn is_exact_source_materialization(
+fn exact_source_materializations(
     field_path: &[String],
     observed: &Field,
     constraint: &Field,
     type_policy: &TypePolicy,
     source_materializations: &[SourceMaterializationRule],
-) -> Result<bool> {
+) -> Result<Option<Vec<SourceMaterializationRule>>> {
     for rule in source_materializations {
         if rule.matches(field_path, observed, constraint)? {
-            return Ok(true);
+            return Ok(Some(vec![rule.clone()]));
         }
     }
     match (observed.data_type(), constraint.data_type()) {
         (DataType::Struct(observed_fields), DataType::Struct(constraint_fields)) => {
-            let mut contains_exact_materialization = false;
+            let mut matched = Vec::new();
             for constraint_child in constraint_fields {
                 let source = field_source_name(constraint_child);
                 let Some(observed_child) = observed_fields
                     .iter()
                     .find(|field| field_source_name(field) == source)
                 else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 let mut child_path = field_path.to_vec();
                 child_path.push(source);
-                match reconcile_field_type(
+                if let Some(mut child_rules) = exact_source_materializations(
                     &child_path,
                     observed_child,
                     constraint_child,
                     type_policy,
                     source_materializations,
                 )? {
-                    TypeReconciliation::SourceMaterializedExact => {
-                        contains_exact_materialization = true;
-                    }
+                    matched.append(&mut child_rules);
+                } else if !matches!(
+                    reconcile_type(
+                        observed_child.data_type(),
+                        constraint_child.data_type(),
+                        type_policy,
+                    ),
                     TypeReconciliation::Preserved
-                    | TypeReconciliation::Rebound
-                    | TypeReconciliation::Widened => {}
-                    _ => return Ok(false),
+                        | TypeReconciliation::Rebound
+                        | TypeReconciliation::Widened
+                ) {
+                    return Ok(None);
                 }
             }
-            Ok(contains_exact_materialization)
+            Ok((!matched.is_empty()).then_some(matched))
         }
-        (DataType::List(observed_child), DataType::List(constraint_child)) => {
-            let source = field_source_name(constraint_child);
-            if field_source_name(observed_child) != source {
-                return Ok(false);
-            }
-            let mut child_path = field_path.to_vec();
-            child_path.push(source);
-            Ok(matches!(
-                reconcile_field_type(
-                    &child_path,
-                    observed_child,
-                    constraint_child,
-                    type_policy,
-                    source_materializations,
-                )?,
-                TypeReconciliation::SourceMaterializedExact
-            ))
+        (DataType::List(observed_child), DataType::List(constraint_child))
+        | (DataType::LargeList(observed_child), DataType::LargeList(constraint_child))
+        | (DataType::ListView(observed_child), DataType::ListView(constraint_child))
+        | (DataType::LargeListView(observed_child), DataType::LargeListView(constraint_child)) => {
+            exact_list_source_materializations(
+                field_path,
+                observed_child,
+                constraint_child,
+                type_policy,
+                source_materializations,
+            )
         }
-        _ => Ok(false),
+        (
+            DataType::FixedSizeList(observed_child, observed_length),
+            DataType::FixedSizeList(constraint_child, constraint_length),
+        ) if observed_length == constraint_length => exact_list_source_materializations(
+            field_path,
+            observed_child,
+            constraint_child,
+            type_policy,
+            source_materializations,
+        ),
+        _ => Ok(None),
     }
+}
+
+fn exact_list_source_materializations(
+    field_path: &[String],
+    observed_child: &Field,
+    constraint_child: &Field,
+    type_policy: &TypePolicy,
+    source_materializations: &[SourceMaterializationRule],
+) -> Result<Option<Vec<SourceMaterializationRule>>> {
+    let source = field_source_name(constraint_child);
+    if field_source_name(observed_child) != source {
+        return Ok(None);
+    }
+    let mut child_path = field_path.to_vec();
+    child_path.push(source);
+    exact_source_materializations(
+        &child_path,
+        observed_child,
+        constraint_child,
+        type_policy,
+        source_materializations,
+    )
 }
 
 fn exact_source_materialization_reason(observed: &str, constraint: &str) -> String {
@@ -1138,6 +1219,7 @@ impl SchemaReconciliationError {
             outcome: RuleOutcome::Fatal,
             reason: self.message.clone(),
             operator_fixes: self.operator_fixes.clone(),
+            source_materialization: None,
         }
     }
 }
@@ -1165,6 +1247,7 @@ fn extra_field_decision(source_name: &str, observed_field: &Field) -> FieldCoerc
         outcome: RuleOutcome::AdmittedAsVariant,
         reason: "observed field is outside the constraint projection".to_owned(),
         operator_fixes: Vec::new(),
+        source_materialization: None,
     }
 }
 

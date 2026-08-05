@@ -23,6 +23,7 @@ use crate::{
         validate_recorded_expressions,
     },
     output_schema::compile_output_schema,
+    types::source_materializations_for_constraint,
 };
 
 pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter";
@@ -987,26 +988,6 @@ where
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,
     }))
-}
-
-fn source_materializations_for_constraint(
-    rules: &[cdf_kernel::SourceMaterializationRule],
-    constraint: &arrow_schema::Schema,
-) -> Vec<cdf_kernel::SourceMaterializationRule> {
-    let fields = constraint
-        .fields()
-        .iter()
-        .map(|field| cdf_kernel::source_name(field).unwrap_or_else(|| field.name()))
-        .collect::<BTreeSet<_>>();
-    rules
-        .iter()
-        .filter(|rule| {
-            rule.field_path
-                .first()
-                .is_some_and(|field| fields.contains(field.as_str()))
-        })
-        .cloned()
-        .collect()
 }
 
 fn project_physical_observation(

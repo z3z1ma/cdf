@@ -682,6 +682,7 @@ pub(crate) fn decode_batch_with_evidence(
 ) -> Result<DecodedMongoBatch> {
     decode_batch_with_physical_schema(
         Arc::clone(&full_schema),
+        Arc::clone(&output_schema),
         output_schema,
         full_schema,
         documents,
@@ -691,34 +692,40 @@ pub(crate) fn decode_batch_with_evidence(
 
 pub(crate) fn decode_batch_with_physical_schema(
     full_schema: SchemaRef,
+    decoder_schema: SchemaRef,
     output_schema: SchemaRef,
     physical_schema: SchemaRef,
     documents: &[&RawDocument],
     source_row_offset: u64,
 ) -> Result<DecodedMongoBatch> {
     validate_mongodb_schema(full_schema.as_ref())?;
+    validate_mongodb_schema(decoder_schema.as_ref())?;
     validate_mongodb_schema(output_schema.as_ref())?;
     validate_mongodb_schema(physical_schema.as_ref())?;
-    if physical_schema.fields().len() != output_schema.fields().len()
+    if decoder_schema.fields().len() != output_schema.fields().len()
+        || physical_schema.fields().len() != output_schema.fields().len()
         || physical_schema
             .fields()
             .iter()
+            .zip(decoder_schema.fields())
             .zip(output_schema.fields())
-            .any(|(physical, output)| {
+            .any(|((physical, decoder), output)| {
                 let physical_source = source_name(physical).unwrap_or_else(|| physical.name());
+                let decoder_source = source_name(decoder).unwrap_or_else(|| decoder.name());
                 let output_source = source_name(output).unwrap_or_else(|| output.name());
-                physical_source != output_source
+                physical_source != output_source || decoder_source != output_source
             })
     {
         return Err(CdfError::internal(
             "MongoDB physical observation projection does not align with decoder output",
         ));
     }
-    preflight_column_accumulator_bytes(output_schema.as_ref(), documents)?;
-    let mut columns = output_schema
+    preflight_column_accumulator_bytes(decoder_schema.as_ref(), documents)?;
+    let mut columns = decoder_schema
         .fields()
         .iter()
-        .map(|field| ColumnAccumulator::new(field))
+        .zip(output_schema.fields())
+        .map(|(decoder, output)| ColumnAccumulator::new_for_output(decoder, output))
         .collect::<Result<Vec<_>>>()?;
     let known_sources = full_schema
         .fields()
@@ -733,7 +740,7 @@ pub(crate) fn decode_batch_with_physical_schema(
     let mut physical_reconciliation_accumulators = BTreeMap::new();
     let mut pre_contract_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
-        for (field, column) in output_schema.fields().iter().zip(&mut columns) {
+        for (field, column) in decoder_schema.fields().iter().zip(&mut columns) {
             let source = source_name(field).unwrap_or_else(|| field.name());
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
@@ -1698,6 +1705,7 @@ enum ColumnAccumulator {
     },
     Struct {
         fields: Fields,
+        output_fields: Fields,
         valid: Vec<bool>,
         children: Vec<ColumnAccumulator>,
     },
@@ -1706,42 +1714,67 @@ enum ColumnAccumulator {
 
 impl ColumnAccumulator {
     fn new(field: &Field) -> Result<Self> {
-        Ok(match field.data_type() {
-            DataType::Boolean => Self::Boolean(Vec::new()),
-            DataType::Int32 => Self::Int32(Vec::new()),
-            DataType::Int64 => Self::Int64(Vec::new()),
-            DataType::Float64 => Self::Float64(Vec::new()),
-            DataType::Utf8 => Self::Utf8 {
+        Self::new_for_output(field, field)
+    }
+
+    fn new_for_output(field: &Field, output: &Field) -> Result<Self> {
+        let field_source = source_name(field).unwrap_or_else(|| field.name());
+        let output_source = source_name(output).unwrap_or_else(|| output.name());
+        if field.name() != output.name() || field_source != output_source {
+            return Err(CdfError::internal(
+                "MongoDB decoder field does not align with its logical output field",
+            ));
+        }
+        Ok(match (field.data_type(), output.data_type()) {
+            (DataType::Boolean, DataType::Boolean) => Self::Boolean(Vec::new()),
+            (DataType::Int32, DataType::Int32) => Self::Int32(Vec::new()),
+            (DataType::Int64, DataType::Int64) => Self::Int64(Vec::new()),
+            (DataType::Float64, DataType::Float64) => Self::Float64(Vec::new()),
+            (DataType::Utf8, DataType::Utf8) => Self::Utf8 {
                 values: Vec::new(),
                 decimal_text: semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC),
             },
-            DataType::Binary => Self::Binary(Vec::new()),
-            DataType::FixedSizeBinary(12) => Self::ObjectId(Vec::new()),
-            DataType::Date32 => Self::Date32(Vec::new()),
-            DataType::Timestamp(TimeUnit::Millisecond, _) => Self::TimestampMillis(Vec::new()),
-            DataType::Decimal128(precision, scale) => Self::Decimal {
+            (DataType::Binary, DataType::Binary) => Self::Binary(Vec::new()),
+            (DataType::FixedSizeBinary(12), DataType::FixedSizeBinary(12)) => {
+                Self::ObjectId(Vec::new())
+            }
+            (DataType::Date32, DataType::Date32) => Self::Date32(Vec::new()),
+            (
+                DataType::Timestamp(TimeUnit::Millisecond, decoder_timezone),
+                DataType::Timestamp(TimeUnit::Millisecond, output_timezone),
+            ) if decoder_timezone == output_timezone => Self::TimestampMillis(Vec::new()),
+            (
+                DataType::Decimal128(precision, scale),
+                DataType::Decimal128(output_precision, output_scale),
+            ) if precision == output_precision && scale == output_scale => Self::Decimal {
                 values: Vec::new(),
                 precision: *precision,
                 scale: *scale,
             },
-            DataType::List(child) => Self::List {
-                field: Arc::clone(child),
+            (DataType::List(child), DataType::List(output_child)) => Self::List {
+                field: Arc::clone(output_child),
                 lengths: Vec::new(),
                 valid: Vec::new(),
-                child: Box::new(Self::new(child)?),
+                child: Box::new(Self::new_for_output(child, output_child)?),
             },
-            DataType::Struct(fields) => Self::Struct {
-                fields: fields.clone(),
-                valid: Vec::new(),
-                children: fields
-                    .iter()
-                    .map(|field| Self::new(field))
-                    .collect::<Result<Vec<_>>>()?,
-            },
-            DataType::Null => Self::Null(0),
-            other => {
-                return Err(CdfError::contract(format!(
-                    "MongoDB decoder does not support Arrow type {other:?}"
+            (DataType::Struct(fields), DataType::Struct(output_fields))
+                if fields.len() == output_fields.len() =>
+            {
+                Self::Struct {
+                    fields: fields.clone(),
+                    output_fields: output_fields.clone(),
+                    valid: Vec::new(),
+                    children: fields
+                        .iter()
+                        .zip(output_fields)
+                        .map(|(field, output)| Self::new_for_output(field, output))
+                        .collect::<Result<Vec<_>>>()?,
+                }
+            }
+            (DataType::Null, DataType::Null) => Self::Null(0),
+            (decoder, output) => {
+                return Err(CdfError::internal(format!(
+                    "MongoDB decoder Arrow type {decoder:?} does not align with logical output type {output:?}"
                 )));
             }
         })
@@ -1850,6 +1883,7 @@ impl ColumnAccumulator {
                 fields,
                 valid,
                 children,
+                ..
             } => match value {
                 None => {
                     valid.push(false);
@@ -1928,12 +1962,13 @@ impl ColumnAccumulator {
                 .map_err(|error| CdfError::data(format!("build MongoDB list array: {error}")))?,
             ),
             Self::Struct {
-                fields,
+                output_fields,
                 valid,
                 children,
+                ..
             } => Arc::new(
                 StructArray::try_new(
-                    fields,
+                    output_fields,
                     children
                         .into_iter()
                         .map(Self::finish)

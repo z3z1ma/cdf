@@ -79,10 +79,11 @@ pub use program::{
 pub use reconciliation::{
     FieldCoercion, FieldCoercionDecision, SCHEMA_COERCION_PLAN_METADATA_KEY, SchemaCoercionPlan,
     SchemaReconciliation, SchemaReconciliationError, SchemaReconciliationReport,
-    is_lossless_type_widening, materialize_schema_coercion, plan_schema_reconciliation,
-    plan_schema_reconciliation_with_source_materializations, reconcile_schema,
-    reconcile_schema_with_source_materializations, reject_untrusted_schema_coercion_metadata,
-    schema_coercion_plan_from_reconciled_schema, schema_coercion_plan_from_trusted_json,
+    SourceMaterializationEvidence, is_lossless_type_widening, materialize_schema_coercion,
+    plan_schema_reconciliation, plan_schema_reconciliation_with_source_materializations,
+    reconcile_schema, reconcile_schema_with_source_materializations,
+    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_reconciled_schema,
+    schema_coercion_plan_from_trusted_json,
 };
 pub use residual::{
     CanonicalArrowDateUnit, CanonicalArrowField, CanonicalArrowIntervalUnit,

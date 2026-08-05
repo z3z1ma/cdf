@@ -886,6 +886,14 @@ fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
             FieldCoercionDecision::SourceMaterializedExact
         );
     }
+    plan.validate_compiled_schema_admission(&resource).unwrap();
+    let mut tampered = plan.clone();
+    tampered.compiled_schema_admission.source_materializations[0].materializer_id =
+        "other.exact_decimal.v1".to_owned();
+    let error = tampered
+        .validate_compiled_schema_admission(&resource)
+        .unwrap_err();
+    assert!(error.message.contains("source materializations"), "{error}");
 
     let temp = TempDir::new().unwrap();
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();

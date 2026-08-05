@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use arrow_array::{
-    Array, FixedSizeBinaryArray, Int64Array, StringArray, TimestampMillisecondArray,
+    Array, Decimal128Array, FixedSizeBinaryArray, Int64Array, ListArray, StringArray, StructArray,
+    TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
@@ -505,20 +506,21 @@ fn governed_decoder_captures_nested_unknown_field_at_exact_path() {
 
 #[test]
 fn compatible_bson_integer_keeps_catalog_physical_observation_domain() {
-    let logical = Schema::new(vec![with_source_name(
+    let logical = Arc::new(Schema::new(vec![with_source_name(
         Field::new("sequence", DataType::Int64, false),
         "sequence",
-    )]);
+    )]));
     let physical = Arc::new(Schema::new(vec![with_physical_type(
         with_source_name(Field::new("sequence", DataType::Int32, false), "sequence"),
         "bson:int32",
     )]));
-    let decoder = attach_expected_physical_types(&logical, physical.as_ref()).unwrap();
+    let decoder = attach_expected_physical_types(logical.as_ref(), physical.as_ref()).unwrap();
     let document = RawDocumentBuf::try_from(&doc! {"sequence": 7_i32}).unwrap();
 
     let decoded = decode_batch_with_physical_schema(
         Arc::clone(&decoder),
         decoder,
+        logical,
         physical,
         &[document.as_ref()],
         0,
@@ -785,6 +787,116 @@ fn decimal_materialization_rules_cover_logical_semantics_structs_and_lists() {
             Some(MONGODB_DECIMAL_TEXT_SEMANTIC)
         );
     }
+}
+
+#[test]
+fn nested_decimal_decode_publishes_logical_schema_and_physical_evidence() {
+    let logical = Arc::new(Schema::new(vec![
+        semantic_field(
+            Field::new("amount", DataType::Decimal128(18, 2), false),
+            "cdf.pii@1(class=\"financial\")",
+        ),
+        Field::new_struct(
+            "profile",
+            vec![Field::new(
+                "nested_amount",
+                DataType::Decimal128(18, 2),
+                true,
+            )],
+            true,
+        ),
+        Field::new_list(
+            "amounts",
+            Field::new("item", DataType::Decimal128(18, 2), true),
+            true,
+        ),
+    ]));
+    let physical_decimal = |name: &str, nullable: bool| {
+        with_physical_type(
+            semantic_field(
+                Field::new(name, DataType::Utf8, nullable),
+                MONGODB_DECIMAL_TEXT_SEMANTIC,
+            ),
+            "bson:decimal128",
+        )
+    };
+    let physical = Arc::new(Schema::new(vec![
+        physical_decimal("amount", false),
+        with_physical_type(
+            Field::new_struct(
+                "profile",
+                vec![physical_decimal("nested_amount", true)],
+                true,
+            ),
+            "bson:document",
+        ),
+        with_physical_type(
+            Field::new_list("amounts", physical_decimal("item", true), true),
+            "bson:array",
+        ),
+    ]));
+    let decoder = attach_expected_physical_types(logical.as_ref(), physical.as_ref()).unwrap();
+    let document = RawDocumentBuf::try_from(&doc! {
+        "amount": Decimal128::from_str("12.34").unwrap(),
+        "profile": {"nested_amount": Decimal128::from_str("56.78").unwrap()},
+        "amounts": [
+            Decimal128::from_str("9.00").unwrap(),
+            Decimal128::from_str("10.01").unwrap(),
+        ],
+    })
+    .unwrap();
+
+    let decoded = decode_batch_with_physical_schema(
+        Arc::clone(&decoder),
+        decoder,
+        Arc::clone(&logical),
+        Arc::clone(&physical),
+        &[document.as_ref()],
+        0,
+    )
+    .unwrap();
+
+    for index in 0..logical.fields().len() {
+        assert_eq!(
+            decoded.record_batch.schema().field(index).data_type(),
+            logical.field(index).data_type()
+        );
+    }
+    assert_eq!(decoded.physical_schema, physical.as_ref().clone());
+    assert_eq!(
+        decoded
+            .record_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap()
+            .value(0),
+        1_234
+    );
+    let profile = decoded
+        .record_batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap();
+    assert_eq!(
+        profile
+            .column(0)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap()
+            .value(0),
+        5_678
+    );
+    let amounts = decoded
+        .record_batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .unwrap();
+    let values = amounts.values();
+    let values = values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+    assert_eq!([values.value(0), values.value(1)], [900, 1_001]);
 }
 
 #[test]

@@ -535,6 +535,26 @@ pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
     "contract_program",
 ];
 
+pub(crate) fn source_materializations_for_constraint(
+    rules: &[cdf_kernel::SourceMaterializationRule],
+    constraint: &Schema,
+) -> Vec<cdf_kernel::SourceMaterializationRule> {
+    let fields = constraint
+        .fields()
+        .iter()
+        .map(|field| source_name(field).unwrap_or_else(|| field.name()))
+        .collect::<BTreeSet<_>>();
+    rules
+        .iter()
+        .filter(|rule| {
+            rule.field_path
+                .first()
+                .is_some_and(|field| fields.contains(field.as_str()))
+        })
+        .cloned()
+        .collect()
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledSchemaAdmissionPlan {
@@ -660,21 +680,10 @@ impl CompiledSchemaAdmissionPlan {
             ));
         }
         let constraint = self.constraint_schema.to_arrow()?;
-        let constraint_sources = constraint
-            .fields()
-            .iter()
-            .map(|field| source_name(field).unwrap_or_else(|| field.name()))
-            .collect::<BTreeSet<_>>();
-        let relevant_source_materializations = source
-            .source_materializations
-            .iter()
-            .filter(|rule| {
-                rule.field_path
-                    .first()
-                    .is_some_and(|field| constraint_sources.contains(field.as_str()))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let relevant_source_materializations = source_materializations_for_constraint(
+            &source.source_materializations,
+            constraint.as_ref(),
+        );
         if relevant_source_materializations != self.source_materializations {
             return Err(CdfError::data(
                 "compiled source materializations do not match the schema-admission program",
@@ -1245,6 +1254,16 @@ impl CompiledSchemaAdmissionPlan {
         if self.type_policy != expected {
             return Err(CdfError::data(
                 "compiled schema-admission type policy does not match execution resource allowances",
+            ));
+        }
+        let constraint = self.constraint_schema.to_arrow()?;
+        let expected = source_materializations_for_constraint(
+            resource.source_materializations(),
+            constraint.as_ref(),
+        );
+        if self.source_materializations != expected {
+            return Err(CdfError::data(
+                "compiled schema-admission source materializations do not match the execution resource",
             ));
         }
         Ok(())

@@ -110,7 +110,8 @@ pub(crate) async fn execute_mongodb_collection(
         &input.partition,
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
-    let output_schema = projected_schema(&input.decoder_schema, &scan.projection)?;
+    let decoder_schema = projected_schema(&input.decoder_schema, &scan.projection)?;
+    let output_schema = projected_schema(&input.schema, &scan.projection)?;
     let physical_schema = projected_physical_schema(
         &input.physical_schema,
         &input.decoder_schema,
@@ -203,6 +204,7 @@ pub(crate) async fn execute_mongodb_collection(
             .await?;
         let decoded = decode_batch_with_physical_schema(
             Arc::clone(&input.decoder_schema),
+            Arc::clone(&decoder_schema),
             Arc::clone(&output_schema),
             Arc::clone(&physical_schema),
             &documents,
