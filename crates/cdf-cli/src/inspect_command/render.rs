@@ -115,6 +115,12 @@ pub(super) fn resource_document(resource: &ResourceSummary) -> RenderDocument {
 
 pub(super) fn lock_document(report: &InspectLockReport) -> RenderDocument {
     let lock = &report.0;
+    let destinations = lock
+        .resources
+        .values()
+        .flat_map(|resource| resource.destinations.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
@@ -130,7 +136,7 @@ pub(super) fn lock_document(report: &InspectLockReport) -> RenderDocument {
                 .row("project", lock.project.name.clone())
                 .row("default env", lock.project.default_environment.clone())
                 .row("resources", lock.resources.len().to_string())
-                .row("destinations", lock.destinations.len().to_string()),
+                .row("destinations", destinations.to_string()),
         )
         .blank_line()
         .push(NextCommand::new("cdf validate"))

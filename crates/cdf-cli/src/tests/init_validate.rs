@@ -406,7 +406,7 @@ fn validate_reports_current_then_stale_local_authority_without_repairing_it() {
         "--project",
         project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
     assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
     fs::remove_file(project.root.join("data/events.ndjson")).unwrap();

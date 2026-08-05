@@ -35,7 +35,7 @@ The project defaults to local SQLite state, local packages, and DuckDB. `cdf ini
 ```
 
 `cdf add` writes `cdf/tlc/yellow.cdf.sql` and the shared `[sources.tlc]`
-connection in `cdf.toml`. `cdf compile --refresh` then performs bounded
+connection in `cdf.toml`. `cdf compile tlc.yellow` then performs bounded
 Parquet-footer discovery, normalizes source field names, stores a hash-addressed
 snapshot under `.cdf/schemas/`, and references it from `cdf.lock`. Neither
 command downloads Parquet data pages or writes a package, destination, or
@@ -45,15 +45,17 @@ Inspect what was pinned:
 
 ```bash
 "$CDF" schema show tlc.yellow
-"$CDF" compile
+"$CDF" compile tlc.yellow --locked
 "$CDF" sql "select resource_id, output_schema_hash from manifest_resources"
 "$CDF" plan tlc.yellow
 ```
 
-`cdf compile` is offline and publishes `.cdf/manifest.json` only from current
-locked authority. Use `cdf compile --refresh` when the compiler reports that a
-source observation or lock pin must be refreshed. Generated `.cdf/` state is
-ignored by the project scaffold; `cdf.lock` remains the committed expectation.
+`cdf compile [selectors...]` prepares only the selected resources, publishing
+immutable artifacts under `.cdf/compiled/`, their status index in
+`.cdf/manifest.json`, and per-resource authority in `cdf.lock`. Add `--locked`
+to forbid discovery and assert that selected resources still match their pins.
+Generated `.cdf/` state is ignored by the project scaffold; `cdf.lock` remains
+the committed expectation.
 
 The plan should report one file partition. Fields such as `VendorID` are planned as normalized destination identifiers while retaining `cdf:source_name = "VendorID"` evidence.
 

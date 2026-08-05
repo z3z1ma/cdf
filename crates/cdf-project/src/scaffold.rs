@@ -27,10 +27,10 @@ From this project root, the supported first commands for the local
 
 ```bash
 cdf validate
-cdf compile --refresh
+cdf compile local.events
 cdf plan local.events
 cdf run local.events
-cdf sql "select * from manifest_resources"
+cdf sql "select * from compilation_resources"
 ```
 
 Add newline-delimited JSON files under `data/` before running the resource.

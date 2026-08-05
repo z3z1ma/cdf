@@ -58,9 +58,10 @@ use sha2::{Digest, Sha256};
 
 pub const PROJECT_FILE_NAME: &str = "cdf.toml";
 pub const LOCK_FILE_NAME: &str = "cdf.lock";
-pub const LOCKFILE_VERSION: u16 = 2;
+pub const LOCKFILE_VERSION: u16 = 3;
 
 mod backfill;
+mod compilation;
 mod discovery_manifest;
 mod internal;
 mod lock_cas;
@@ -92,6 +93,14 @@ pub use backfill::{
     BACKFILL_PIPELINE_ID, BackfillPlan, BackfillPlanRequest, BackfillSlice, backfill_pipeline_id,
     plan_backfill,
 };
+pub use compilation::{
+    COMPILATION_INDEX_RELATIVE_PATH, COMPILED_RESOURCE_ARTIFACT_VERSION,
+    COMPILED_RESOURCE_DIRECTORY, CompilationArtifactReference, CompilationDiagnostic,
+    CompilationIndex, CompilationIndexEntry, CompilationSnapshot, CompilationStatus,
+    CompiledResourceArtifact, CompiledResourceArtifactRequest, compile_resource_artifact,
+    compiled_resource_artifact_path, load_compilation_snapshot, parse_compilation_index,
+    parse_compiled_resource_artifact, validate_compilation_index_authority,
+};
 pub use discovery_manifest::{
     DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE, DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES,
     DEFAULT_DISCOVERY_MAX_RECORDS_PER_FILE, DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES,
@@ -113,28 +122,23 @@ pub use lock_cas::{
 pub use lockfile::{
     CdfLock, ContractFreezeReport, ContractSnapshot, ContractSnapshotComparison,
     ContractSnapshotCounts, ContractSnapshotDrift, ContractSnapshotVerdict, ContractTestReport,
-    DependencyTuple, LockDiff, LockDiffKind, LockedDestination, LockedResource, ProjectLock,
-    ProjectValidationReport, SecretCheck, SecretCheckStatus, contract_snapshot_for_resource,
+    DependencyTuple, LockDiff, LockDiffKind, LockedDestination, LockedResource,
+    LockedResourceCompilerBinding, ProjectLock, ProjectValidationReport, SecretCheck,
+    SecretCheckStatus, bind_compiled_resource_artifact, contract_snapshot_for_resource,
     contract_snapshot_for_resource_with_semantic_catalog, contract_snapshots_for_resources,
     contract_snapshots_for_resources_with_semantic_catalog, current_dependency_tuple,
     diff_lockfiles, freeze_contract_snapshots, generate_lockfile_with_destination_artifacts,
     lock_to_toml, parse_cdf_toml, parse_lock, pin_schema_snapshot_in_project_lockfile,
-    test_contract_snapshots, test_contract_snapshots_with_semantic_catalog, validate_project,
+    test_contract_snapshots, test_contract_snapshots_with_semantic_catalog,
+    upsert_compiled_resource_in_lockfile, validate_project,
 };
 pub use manifest::{
-    AuthoredInputSetHash, DependencyTupleHash, EnvironmentBindingHash, LineageHash,
-    ManifestDestinationBinding, ManifestDiagnostic, ManifestDiagnosticSeverity, ManifestField,
-    ManifestInputContentHash, ManifestInputGeneration, ManifestInputKind, ManifestInputLocation,
-    ManifestLineageEdge, ManifestLineageKind, ManifestLineageNode, ManifestResource,
-    ManifestResourceOrigin, ManifestSemanticDefinition, ManifestSemanticFieldUsage,
-    ManifestSemanticReferenceUsage, ManifestSemanticSource, PROJECT_MANIFEST_MAX_BYTES,
-    PROJECT_MANIFEST_RELATIVE_PATH, PROJECT_MANIFEST_VERSION, ProjectCompilationMode,
-    ProjectLockBindingHash, ProjectLockContentHash, ProjectLockSemanticHash, ProjectManifest,
-    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, ProjectManifestHash,
-    ProjectManifestHashes, ProjectManifestHeader, ProjectManifestSnapshot, ResourceCompilationHash,
-    SemanticProfileHash, SemanticSnapshotHash, compile_project_manifest,
-    load_project_manifest_snapshot, parse_project_manifest, publish_project_manifest,
-    publish_project_manifest_and_lock, validate_project_manifest_authority,
+    CompiledArtifactInput, ManifestDestinationBinding, ManifestDiagnostic,
+    ManifestDiagnosticSeverity, ManifestField, ManifestInputContentHash, ManifestInputGeneration,
+    ManifestInputKind, ManifestInputLocation, ManifestLineageEdge, ManifestLineageKind,
+    ManifestLineageNode, ManifestResource, ManifestResourceOrigin, ManifestSemanticDefinition,
+    ManifestSemanticFieldUsage, ManifestSemanticReferenceUsage, ManifestSemanticSource,
+    ResourceCompilationHash, SemanticProfileHash,
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
@@ -157,7 +161,7 @@ pub use project_files::{
 };
 pub use project_inputs::{
     ProjectResourceInput, ProjectResourceInventory, ProjectResourceName, ProjectResourceNamespace,
-    ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
+    ProjectResourcePath, ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
     inventory_project_resources,
 };
 pub use promotion::{
@@ -180,7 +184,8 @@ pub use promotion::{
 pub use query_compiler::{
     CompiledProjectResource, EffectiveResourceEnvelope, ProjectConfiguredSourceIdentity,
     ProjectInputSchemaAuthority, ProjectQueryCompilation, ResolutionOrigin, ResolvedResourceValue,
-    compile_query_project_resources, finalize_query_project_resource,
+    compile_query_project_resources, compile_selected_query_project_resources,
+    finalize_query_project_resource,
 };
 pub use resource_selector::{
     ProjectResourceSelection, ProjectResourceSelectionError, ProjectResourceSelectionResolution,

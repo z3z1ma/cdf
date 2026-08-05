@@ -31,7 +31,7 @@ fn add_local_parquet_writes_query_resource_and_shared_source_configuration() {
     assert_eq!(report["writes"]["resource_sql"], true);
     assert_eq!(report["writes"]["configured_source"], true);
     assert_eq!(report["writes"]["lockfile"], false);
-    assert_eq!(report["next_command"], "cdf compile --refresh");
+    assert_eq!(report["next_command"], "cdf compile tlc.yellow");
 
     let sql = fs::read_to_string(project.root.join("cdf/tlc/yellow.cdf.sql")).unwrap();
     assert!(sql.contains("DISPOSITION APPEND"));
@@ -51,7 +51,7 @@ fn add_local_parquet_writes_query_resource_and_shared_source_configuration() {
         "--project",
         project.root_str(),
         "compile",
-        "--refresh",
+        "tlc.yellow",
     ]);
     assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
 }

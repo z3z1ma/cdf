@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-05
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/2026-08-04-u1-resource-selectors-static-validate.md`
 
@@ -122,6 +122,39 @@ Replace the current exact-project compilation snapshot with one current-only res
 - 2026-08-04: The shared checkout is intentionally untouched and currently contains another
   executor's uncommitted connector/fixture work, including context/manifest/input fixes. Execution
   must consume only committed upstream state and preserve those changes.
+- 2026-08-05: Started from pushed `main` at `1bcf2ade` in the dedicated
+  `cdf-u2-independent-resource-compilation` worktree. The shared checkout remains untouched.
+- 2026-08-05: Replaced compile refresh/offline grammar with exact/glob/exclusion selection and
+  `--locked`; implemented canonical per-resource aggregation so failures are indexed safely and do
+  not discard independently published successes.
+- 2026-08-05: Lock version 3 now embeds each resource's canonical governed schema plus its
+  compiler/dependency, configured-source, semantic, contract, destination-sheet, and compiled
+  artifact bindings. The compiled artifact hash is bound only after hashing the artifact's
+  cycle-free lock entry.
+- 2026-08-05: Added canonical content-addressed `.cdf/compiled/<resource>@<hash>.json` artifacts and
+  made `.cdf/manifest.json` a per-resource status index. Selected publication reuses the existing
+  exact-guard transaction and commits immutable sidecars/artifact, index, and changed lock in that
+  order with `cdf.lock` last.
+- 2026-08-05: Replaced static validation and SQL consumption of the project-wide manifest with
+  independently verified artifact snapshots. SQL now exposes `compilation_resources`, downgrades a
+  stale/corrupt current artifact without serving its compiled facts, and still mounts package and
+  checkpoint tables when compilation authority is absent or corrupt.
+- 2026-08-05: Focused verification exposed and repaired two batch edges: unscoped reconciliation
+  now marks known resources absent after a complete path inventory, and an index-publication error
+  no longer replaces already-collected per-resource diagnostics. Strict Clippy also prompted
+  removal of an unused selected-schema parameter rather than an allowance. The uncompiled legacy
+  monolithic-manifest fixture was deleted outright.
+- 2026-08-05: The independent red-team review found four material closure gaps. The repair removes
+  whole-`cdf.toml` artifact inputs while retaining it as a publication guard, recomputes the
+  selected source configuration and normalizer during currentness checks, moves complete
+  destination capability bindings into each resource lock entry and deletes both global lock
+  indexes, carries a typed narrow source diagnostic instead of embedding a code in its message,
+  and bounds index/artifact reads before allocation.
+- 2026-08-05: Same-reviewer recheck closed three findings and narrowed the remaining one: selected
+  source and normalizer verification did not cover project defaults used by the effective resource
+  envelope. Currentness now reparses the exact unchanged resource input and recomputes the complete
+  effective target/disposition/keys/cursor/trust/semantics/execution envelope from current project
+  defaults before serving compiled facts.
 
 ## Blockers
 
@@ -129,12 +162,62 @@ None. The first execution step is a deliberate committed-upstream reconciliation
 
 ## Evidence
 
-Pending execution.
+- Criteria 1-6 and 9: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::sql --locked`
+  observed 11 passing tests before exposing two new edge failures; after the repairs, the two exact
+  failed tests each passed. The same run proves selector isolation, partial success, first-use
+  discovery, locked rebuild, independent stale isolation, corrupt-index SQL availability, and
+  status-table behavior through actual CLI/artifact bytes.
+- Criteria 1-4: the `cdf-project` library run observed 300 passing tests and two narrow assertion
+  failures caused by the new lock/scaffold model. After preserving an existing per-resource
+  compiler binding during contract freeze and updating the scaffold assertion, both exact tests
+  passed. Artifact/index unit tests in the 300-test observation exercised closed canonical parsing,
+  content-hash binding, bounded validation, and safe content-addressed paths.
+- Criteria 7-8: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::recovery --locked`
+  observed 18 passing publication/recovery tests. The broader 300-test `cdf-project` observation
+  also covered exact guards, transaction boundaries, failpoints, concurrent changes, and error
+  ownership; the two subsequent fixes did not touch the transaction implementation.
+- Criteria 5 and 9: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::init_validate
+  --locked` observed 12 passing tests; `tests::add` observed 5 passing tests. Validation remains
+  static and aggregate while add points directly at the selected compile flow.
+- Criterion 10: affected all-target `cargo check` passed with `DUCKDB_DOWNLOAD_LIB=1`; strict
+  affected-package Clippy passed with `-D warnings`; the explicit cognitive-complexity diagnostic
+  produced only pre-existing findings outside changed U2 functions; both generated CLI artifact
+  checks reported fresh output; `cargo machete --with-metadata` found no unused dependencies;
+  `cargo fmt --all` and `git diff --check` passed.
+- Review repairs: the complete `cdf-project` library suite passed 302/302 after the lock-authority
+  change. The complete focused SQL suite passed 15/15, including new behavioral coverage proving
+  unrelated source configuration does not change A's locked artifact, relevant selected-source
+  configuration makes only A stale, unknown sources retain `CDF-SOURCE-UNKNOWN` without a nested
+  code string, and oversized private index/artifact files are bounded while system SQL remains
+  available. Strict Clippy passed for every package changed by the repairs.
+- Final selected-config repair: the focused
+  `project_defaults_stale_only_resources_that_resolve_through_them` CLI test passed, proving a
+  project trust default change downgrades a resource that resolved through that default. Affected
+  all-target check, strict Clippy, formatter, and diff check passed afterward.
 
 ## Review
 
-Pending the combined U1+U2 authority-foundation review barrier.
+- Initial independent verdict: **fail**, with four significant findings: whole-project
+  over-binding plus selected-config under-verification; global duplicate lock authorities;
+  flattened unknown-source diagnostic identity; and post-allocation artifact/index size checks.
+- All four findings were repaired with focused behavioral tests. No second reviewer was
+  commissioned. The first same-reviewer recheck closed three findings and identified one incomplete
+  selected-default binding; the final recheck confirmed that exact gap was closed.
+- Final same-reviewer verdict: **pass**. The reviewer confirmed the complete effective-resource
+  envelope recomputation closes the remaining selected-configuration gap and reported no
+  actionable findings within the review scope. Residual risk is limited to unexercised literal
+  process termination between every new artifact/index/lock install boundary; the shared
+  transaction failpoint/recovery suite covers the same guarded publisher and passed.
 
 ## Retrospective
 
-Pending execution.
+- The expensive mistake was treating “selected configuration” as the selected source alone. A
+  resource artifact also inherits project defaults, selected environment destination policy, and
+  path-derived values. Currentness checks should be expressed as recomputation of the complete
+  effective resource envelope, not a hand-maintained list of likely fields.
+- Reusing the guarded project transaction and the mature compiled-section validators kept the
+  publication and artifact safety work bounded. The useful review pressure was at authority seams:
+  what exact bytes or typed values make A current, and can B alter that answer?
+- Running one full `cdf-project` certificate only after the lock model stabilized caught every
+  downstream consumer of the removed global destination authority without repeated workspace-wide
+  churn. Focused CLI tests remained the fastest oracle for the user-visible isolation laws.

@@ -9,12 +9,12 @@ use std::{
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, Result as CdfResult, TargetName};
 use cdf_project::{
-    CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider, FileSecretProvider,
-    LOCK_FILE_NAME, LockFileAuthority, PROJECT_FILE_NAME, ProjectConfig, ProjectManifest,
-    ProjectQueryCompilation, SchemaSnapshotStore, compile_query_project_resources,
-    finalize_query_project_resource, parse_cdf_toml, parse_lock,
-    project_file_transaction_generation, read_lock_file_authority,
-    recover_project_file_transaction,
+    CdfLock, CompilationSnapshot, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
+    FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority, PROJECT_FILE_NAME, ProjectConfig,
+    ProjectQueryCompilation, compile_query_project_resources,
+    compile_selected_query_project_resources, finalize_query_project_resource, parse_cdf_toml,
+    parse_lock, project_file_transaction_generation, read_lock_file_authority,
+    recover_project_file_transaction, resolve_project_resource_selection,
 };
 use cdf_semantic::SemanticCatalog;
 use cdf_state_sqlite::SqliteCheckpointStore;
@@ -37,10 +37,10 @@ pub struct ProjectContext {
 }
 
 #[derive(Debug)]
-pub struct ProjectManifestContext {
+pub struct ProjectCompilationContext {
     pub root: PathBuf,
     pub environment: EffectiveEnvironment,
-    pub manifest: ProjectManifest,
+    pub compilation: CompilationSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -62,6 +62,39 @@ enum ProjectPublicationRecovery {
 }
 
 impl ProjectContext {
+    pub fn load_selected_for_mutation(
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        resource_id: &str,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> StdResult<Self, CliError> {
+        let (root, project_file) = project_location(project_arg)?;
+        for attempt in 0..3 {
+            let generation_before = recover_project_file_transaction(&root)?;
+            let loaded = Self::load_selected_observed_project(
+                &root,
+                &project_file,
+                env_arg,
+                resource_id,
+                destinations,
+            );
+            let generation_after = recover_project_file_transaction(&root)?;
+            if generation_before == generation_after {
+                return loaded.map_err(CliError::from);
+            }
+            if attempt == 2 {
+                return Err(CdfError::contract(
+                    "project authority changed repeatedly while loading selected compilation input",
+                )
+                .into());
+            }
+        }
+        Err(
+            CdfError::internal("selected project load retry loop exited without stable authority")
+                .into(),
+        )
+    }
+
     pub fn load_for_command_with_destination_registry(
         command: &str,
         project_arg: Option<&PathBuf>,
@@ -245,6 +278,66 @@ impl ProjectContext {
         })
     }
 
+    fn load_selected_observed_project(
+        root: &Path,
+        project_file: &Path,
+        env_arg: Option<&str>,
+        resource_id: &str,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> CdfResult<Self> {
+        let project_text = fs::read_to_string(project_file).map_err(|error| {
+            project_authority_read_error("read project configuration", project_file, error)
+        })?;
+        let config = parse_cdf_toml(&project_text)?;
+        let project_bytes = project_text.into_bytes();
+        let env_name = env_arg.unwrap_or(&config.project.default_environment);
+        let environment = config.effective_environment(env_name)?;
+        let selection = resolve_project_resource_selection(root, &[resource_id.to_owned()], &[])
+            .map_err(|error| match error {
+                cdf_project::ProjectResourceSelectionError::Project(error) => error,
+                error => CdfError::contract(error.to_string()),
+            })?;
+        let source_registry = crate::source_registry::builtin_source_registry()?;
+        let semantic_catalog = SemanticCatalog::builtins()?;
+        let destination = destinations
+            .inspect(
+                &environment.destination,
+                &cdf_runtime::DestinationResolutionContext::for_project_inspection(root)
+                    .with_environment_name(&environment.name)
+                    .with_destination_policy(&environment.destination_policy),
+            )?
+            .sheet_artifact
+            .sheet;
+        let entries = compile_selected_query_project_resources(
+            source_registry,
+            &config,
+            root,
+            env_name,
+            &destination,
+            &semantic_catalog,
+            &selection,
+        )?;
+        let (lock, lock_authority) = load_lock(root)?;
+        let entries =
+            hydrate_and_finalize_query_resources(root, entries, lock.as_ref(), &semantic_catalog)?;
+        let (resources, resource_queries) = entries
+            .into_iter()
+            .map(|entry| (entry.resource, entry.query))
+            .unzip();
+        Ok(Self {
+            root: root.to_path_buf(),
+            project_bytes,
+            config,
+            environment,
+            resources,
+            resource_queries,
+            adhoc_resource_ids: BTreeSet::new(),
+            lock,
+            lock_authority,
+            semantic_catalog,
+        })
+    }
+
     pub fn resource(&self, id: &str) -> StdResult<&CompiledResource, CliError> {
         self.resources
             .iter()
@@ -380,24 +473,14 @@ impl ProjectContext {
     }
 }
 
-impl ProjectManifestContext {
+impl ProjectCompilationContext {
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> StdResult<Self, CliError> {
         let (root, _) = project_location(project_arg)?;
-        let snapshot = cdf_project::load_project_manifest_snapshot(&root, env_arg).map_err(
-            |error| {
-                let mut error = CliError::from(error);
-                if !error.message.contains("cdf compile") {
-                    error.message.push_str(
-                        "; run `cdf compile` to publish current offline authority or `cdf compile --refresh` to refresh source observations",
-                    );
-                }
-                error
-            },
-        )?;
+        let snapshot = cdf_project::load_compilation_snapshot(&root, env_arg)?;
         Ok(Self {
             root,
-            environment: snapshot.environment,
-            manifest: snapshot.manifest,
+            environment: snapshot.environment.clone(),
+            compilation: snapshot,
         })
     }
 
@@ -434,7 +517,7 @@ fn hydrate_and_finalize_query_resources(
 }
 
 pub(crate) fn hydrate_locked_schema_snapshot(
-    root: &Path,
+    _root: &Path,
     resource: CompiledResource,
     lock: Option<&CdfLock>,
 ) -> CdfResult<CompiledResource> {
@@ -456,18 +539,16 @@ pub(crate) fn hydrate_locked_schema_snapshot(
     let Some(reference) = locked.schema_snapshot.as_ref() else {
         return Ok(resource);
     };
-    if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
-        || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
-    {
+    if locked.descriptor.schema_source.pinned_snapshot() != Some(reference) {
         return Err(CdfError::data(format!(
             "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for resource `{resource_id}`"
         )));
     }
-    let artifact = SchemaSnapshotStore::new(root).read(reference)?;
-    if artifact.resource_id != resource_id {
+    let schema = locked.schema.to_arrow()?;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
+    if locked.schema_hash.as_deref() != Some(schema_hash.as_str()) {
         return Err(CdfError::data(format!(
-            "schema snapshot {} belongs to resource `{}` instead of locked resource `{resource_id}`",
-            reference.path, artifact.resource_id
+            "{LOCK_FILE_NAME} embedded schema does not match its snapshot pointer for resource `{resource_id}`"
         )));
     }
     let pinned_source = resource
@@ -477,10 +558,7 @@ pub(crate) fn hydrate_locked_schema_snapshot(
         .ok_or_else(|| {
             CdfError::internal("schema source lost pinning support during lock hydration")
         })?;
-    Ok(
-        resource
-            .with_schema_source_and_schema(pinned_source, Arc::new(artifact.schema.to_arrow()?)),
-    )
+    Ok(resource.with_schema_source_and_schema(pinned_source, Arc::new(schema)))
 }
 
 fn resource_not_compiled_message(

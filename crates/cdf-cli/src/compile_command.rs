@@ -1,28 +1,26 @@
 mod render;
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
-use cdf_kernel::CdfError;
+use cdf_kernel::{CdfError, ErrorKind};
 use cdf_project::{
-    CompiledProjectResource, LOCK_FILE_NAME, ManifestInputKind, ManifestSemanticSource,
-    PROJECT_FILE_NAME, PROJECT_MANIFEST_RELATIVE_PATH, ProjectCompilationMode,
-    ProjectFileExpectation, ProjectFileGuard, ProjectFileTransactionReport, ProjectFileWrite,
-    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, compile_project_manifest,
-    current_dependency_tuple, finalize_query_project_resource,
-    generate_lockfile_with_destination_artifacts, lock_to_toml,
-    publish_project_files_transactionally_guarded,
-    publish_project_files_transactionally_guarded_without_recovery,
+    COMPILATION_INDEX_RELATIVE_PATH, CompilationDiagnostic, CompilationIndex,
+    CompiledArtifactInput, CompiledProjectResource, CompiledResourceArtifactRequest,
+    LOCK_FILE_NAME, ManifestInputKind, ManifestSemanticSource, PROJECT_FILE_NAME,
+    ProjectFileExpectation, ProjectFileGuard, ProjectFileWrite, ProjectResourcePath,
+    ProjectResourceSelectionError, bind_compiled_resource_artifact, compile_resource_artifact,
+    compiled_resource_artifact_path, finalize_query_project_resource, lock_to_toml, parse_cdf_toml,
+    parse_compilation_index, publish_project_files_transactionally_guarded,
+    resolve_project_resource_selection, upsert_compiled_resource_in_lockfile,
+    validate_compilation_index_authority,
 };
 use serde::Serialize;
 
 use crate::{
     args::{Cli, CompileArgs},
-    context::ProjectContext,
+    context::{ProjectContext, project_authority_read_error, project_location},
     output::{CliError, CommandOutput},
+    suggestions,
 };
 
 pub(crate) fn compile(
@@ -30,118 +28,142 @@ pub(crate) fn compile(
     args: CompileArgs,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    if args.refresh {
-        compile_refresh(cli, destinations)
-    } else {
-        compile_offline(cli, destinations)
-    }
-}
+    let (root, project_file) = project_location(cli.project.as_ref())?;
+    let project_bytes = fs::read(&project_file).map_err(|error| {
+        project_authority_read_error("read project configuration", &project_file, error)
+    })?;
+    let config = parse_cdf_toml(std::str::from_utf8(&project_bytes).map_err(|error| {
+        CdfError::contract(format!("project configuration is not UTF-8: {error}"))
+    })?)?;
+    let environment_name = cli
+        .env
+        .as_deref()
+        .unwrap_or(&config.project.default_environment);
+    let environment = config.effective_environment(environment_name)?;
+    let selection = resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
+        .map_err(resource_selection_error)?;
+    let (_, execution) = crate::commands::default_services(cli)?;
+    let mut results = Vec::with_capacity(selection.resources.len());
 
-fn compile_offline(
-    cli: &Cli,
-    destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_destination_registry(
+    for selected in &selection.resources {
+        let result = compile_one(cli, selected, args.locked, destinations, &execution);
+        match result {
+            Ok(success) => results.push(success),
+            Err(error) => {
+                let _ = record_failed_index_entry(
+                    &root,
+                    &config,
+                    &environment,
+                    selected,
+                    &project_bytes,
+                    &error,
+                );
+                results.push(CompileResourceReport {
+                    resource_id: selected.resource_id.to_string(),
+                    path: selected.relative_path.clone(),
+                    status: CompileResourceStatus::Failed,
+                    artifact_path: None,
+                    artifact_hash: None,
+                    discovered_schema: false,
+                    error: Some(CompileResourceError {
+                        code: error.code,
+                        kind: error_kind_name(&error.kind).to_owned(),
+                        message: error.message,
+                    }),
+                });
+            }
+        }
+    }
+    if args.selectors.is_empty() {
+        let reconciliation = reconcile_absent_index_entries(
+            &root,
+            &config,
+            &environment,
+            &selection.selection.resolved,
+            &project_bytes,
+        );
+        if let Err(error) = reconciliation
+            && results
+                .iter()
+                .all(|result| result.status == CompileResourceStatus::Compiled)
+        {
+            return Err(error);
+        }
+    }
+
+    let succeeded = results
+        .iter()
+        .filter(|result| result.status == CompileResourceStatus::Compiled)
+        .count();
+    let failed = results.len() - succeeded;
+    let report = CompileReport {
+        project: config.project.name,
+        environment: environment.name,
+        locked: args.locked,
+        selection: selection.selection.resolved,
+        counts: CompileCounts {
+            selected: results.len(),
+            compiled: succeeded,
+            failed,
+        },
+        resources: results,
+        index_path: COMPILATION_INDEX_RELATIVE_PATH.to_owned(),
+        next_command: "cdf plan <selector>".to_owned(),
+    };
+    CommandOutput::rendered_with_exit_code(
         "compile",
-        cli.project.as_ref(),
-        cli.env.as_deref(),
-        true,
-        destinations,
-    )?;
-    let lock = context.lock.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "{LOCK_FILE_NAME} is missing under {}",
-            context.root.display()
-        ))
-    })?;
-    let lock_bytes = context
-        .lock_authority
-        .as_ref()
-        .ok_or_else(|| CdfError::internal("typed cdf.lock lost its byte authority"))?
-        .bytes
-        .clone();
-    let entries = compiled_project_entries(&context)?;
-    let authored = captured_authored_inputs(&context, &entries)?;
-    let (selected_destination_id, _) =
-        crate::destination_registry::inspect_destination_artifacts_and_id(
-            destinations,
-            &context,
-            &context.environment.destination,
-        )?;
-    let manifest = compile_project_manifest(ProjectManifestCompileRequest {
-        config: &context.config,
-        environment: &context.environment,
-        lock,
-        lock_bytes: &lock_bytes,
-        resources: &entries,
-        authored_inputs: manifest_inputs(&authored),
-        semantic_catalog: &context.semantic_catalog,
-        semantic_sources: BTreeMap::new(),
-        selected_destination_id: &selected_destination_id,
-        compilation_mode: ProjectCompilationMode::LockedOffline,
-        generated_at_unix_ms: None,
-        diagnostics: Vec::new(),
-    })?;
-    let prior_manifest = optional_public_file_bytes(
-        &context.root.join(PROJECT_MANIFEST_RELATIVE_PATH),
-        "project manifest",
-    )?;
-    let publication = publish_offline(
-        &context.root,
-        &manifest,
-        lock_bytes,
-        prior_manifest,
-        &authored,
-    )?;
-    finish_report(
-        &context,
-        &manifest,
-        ProjectCompilationMode::LockedOffline,
-        0,
-        &publication,
+        render::document(&report),
+        &report,
+        i32::from(failed != 0),
     )
 }
 
-fn compile_refresh(
+fn compile_one(
     cli: &Cli,
+    selected: &ProjectResourcePath,
+    locked_only: bool,
     destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_recovery_and_destination_registry(
-        "compile --refresh",
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CompileResourceReport, CliError> {
+    let context = ProjectContext::load_selected_for_mutation(
         cli.project.as_ref(),
         cli.env.as_deref(),
+        selected.resource_id.as_str(),
         destinations,
     )?;
-    let (_, execution) = crate::commands::default_services(cli)?;
-    let mut entries = compiled_project_entries(&context)?;
-    let authored = captured_authored_inputs(&context, &entries)?;
-    let mut artifact_files = BTreeMap::<String, Vec<u8>>::new();
-    let mut source_observations = 0_usize;
+    let mut entry = compiled_entry(&context, selected.resource_id.as_str())?;
+    let had_lock_binding = context
+        .lock
+        .as_ref()
+        .is_some_and(|lock| lock.resources.contains_key(selected.resource_id.as_str()));
+    if locked_only && !had_lock_binding {
+        return Err(CdfError::contract(format!(
+            "resource `{}` has no locked compilation authority; run `cdf compile {}` first",
+            selected.resource_id, selected.resource_id
+        ))
+        .into());
+    }
 
-    for entry in &mut entries {
-        if entry
-            .resource
-            .descriptor()
-            .schema_source
-            .without_pinned_snapshot()
-            .is_none()
-        {
-            continue;
+    let mut schema_files = BTreeMap::new();
+    let mut discovered_schema = false;
+    if entry.resource.schema().fields().is_empty() {
+        if locked_only {
+            return Err(CdfError::contract(format!(
+                "resource `{}` has no locked schema; run `cdf compile {}` first",
+                selected.resource_id, selected.resource_id
+            ))
+            .into());
         }
         let artifacts = crate::schema_command::discover_artifacts_for_cli(
             &context,
             &entry.resource,
-            &execution,
+            execution,
         )?;
-        source_observations = source_observations
-            .checked_add(1)
-            .ok_or_else(|| CdfError::internal("source observation count overflowed usize"))?;
+        discovered_schema = true;
         for (path, bytes) in artifacts.canonical_artifact_files()? {
-            if let Some(previous) = artifact_files.insert(path.clone(), bytes.clone())
-                && previous != bytes
-            {
+            if schema_files.insert(path.clone(), bytes.clone()).is_some() {
                 return Err(CdfError::internal(format!(
-                    "refresh produced conflicting bytes for schema artifact `{path}`"
+                    "schema discovery produced duplicate artifact path `{path}`"
                 ))
                 .into());
             }
@@ -152,188 +174,164 @@ fn compile_refresh(
             .schema_source
             .with_pinned_snapshot(artifacts.discovery.snapshot.reference.clone())
             .ok_or_else(|| {
-                CdfError::internal("refreshable schema source rejected its discovered snapshot")
+                CdfError::internal("discoverable schema source rejected its canonical snapshot")
             })?;
         entry.resource = entry
             .resource
             .with_schema_source_and_schema(schema_source, artifacts.discovery.normalized_schema);
-        *entry = finalize_query_project_resource(entry.clone(), &context.semantic_catalog)?;
+        entry = finalize_query_project_resource(entry, &context.semantic_catalog)?;
     }
 
-    let resources = entries
-        .iter()
-        .map(|entry| entry.resource.clone())
-        .collect::<Vec<_>>();
-    let (selected_destination_id, destination_artifacts) =
+    let (destination_id, destination_artifacts) =
         crate::destination_registry::inspect_destination_artifacts_and_id(
             destinations,
             &context,
             &context.environment.destination,
         )?;
-    let lock = generate_lockfile_with_destination_artifacts(
-        &context.config,
-        &resources,
-        current_dependency_tuple(),
-        &destination_artifacts,
-        BTreeMap::new(),
-        &context.semantic_catalog,
-    )?;
-    let lock_bytes = lock_to_toml(&lock)?.into_bytes();
-    let manifest = compile_project_manifest(ProjectManifestCompileRequest {
+    let mut new_lock = if locked_only {
+        let mut lock = context.lock.clone().expect("locked binding checked");
+        lock.resources
+            .get_mut(selected.resource_id.as_str())
+            .expect("locked binding checked")
+            .compiled_artifact_hash = None;
+        lock
+    } else {
+        upsert_compiled_resource_in_lockfile(
+            &context.config,
+            context.lock.as_ref(),
+            &destination_artifacts,
+            &entry.resource,
+            &context.semantic_catalog,
+        )?
+    };
+
+    let authored = captured_authored_inputs(&entry)?;
+    let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
-        lock: &lock,
-        lock_bytes: &lock_bytes,
-        resources: &entries,
-        authored_inputs: manifest_inputs(&authored),
+        lock: &new_lock,
+        resource: &entry,
+        authored_inputs: authored
+            .iter()
+            .map(|input| input.manifest.clone())
+            .collect(),
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
-        selected_destination_id: &selected_destination_id,
-        compilation_mode: ProjectCompilationMode::Refresh,
-        generated_at_unix_ms: None,
+        selected_destination_id: &destination_id,
         diagnostics: Vec::new(),
     })?;
-    let publication = publish_refresh(
-        &context.root,
-        &manifest,
-        lock_bytes,
-        context
-            .lock_authority
-            .as_ref()
-            .map(|authority| authority.bytes.clone()),
-        artifact_files,
-        &authored,
-    )?;
-    finish_report(
-        &context,
-        &manifest,
-        ProjectCompilationMode::Refresh,
-        source_observations,
-        &publication,
-    )
-}
-
-fn compiled_project_entries(
-    context: &ProjectContext,
-) -> Result<Vec<CompiledProjectResource>, CliError> {
-    let mut entries = context
-        .resources
-        .iter()
-        .cloned()
-        .zip(context.resource_queries.iter().cloned())
-        .map(|(resource, query)| CompiledProjectResource { resource, query })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        left.resource
-            .descriptor()
-            .resource_id
-            .cmp(&right.resource.descriptor().resource_id)
-    });
-    for pair in entries.windows(2) {
-        if pair[0].resource.descriptor().resource_id == pair[1].resource.descriptor().resource_id {
+    if locked_only {
+        let expected_hash = context.lock.as_ref().and_then(|lock| {
+            lock.resources
+                .get(selected.resource_id.as_str())
+                .and_then(|resource| resource.compiled_artifact_hash.as_deref())
+        });
+        if expected_hash != Some(artifact.artifact_hash.as_str()) {
             return Err(CdfError::contract(format!(
-                "project compiles resource `{}` more than once",
-                pair[0].resource.descriptor().resource_id
+                "resource `{}` no longer matches its locked compiled artifact; run `cdf compile {}`",
+                selected.resource_id, selected.resource_id
             ))
             .into());
         }
+        new_lock = context.lock.clone().expect("locked binding checked");
+    } else {
+        bind_compiled_resource_artifact(
+            &mut new_lock,
+            selected.resource_id.as_str(),
+            artifact.artifact_hash.clone(),
+        )?;
     }
-    Ok(entries)
+    let artifact_path =
+        compiled_resource_artifact_path(selected.resource_id.as_str(), &artifact.artifact_hash)?;
+    publish_success(
+        &context,
+        &new_lock,
+        &artifact,
+        &artifact_path,
+        schema_files,
+        &authored,
+        locked_only,
+    )?;
+    Ok(CompileResourceReport {
+        resource_id: selected.resource_id.to_string(),
+        path: selected.relative_path.clone(),
+        status: CompileResourceStatus::Compiled,
+        artifact_path: Some(artifact_path),
+        artifact_hash: Some(artifact.artifact_hash),
+        discovered_schema,
+        error: None,
+    })
 }
 
-struct CapturedAuthoredInput {
+fn compiled_entry(
+    context: &ProjectContext,
+    resource_id: &str,
+) -> Result<CompiledProjectResource, CliError> {
+    let resource = context.resource(resource_id)?.clone();
+    let query = context
+        .resource_query(resource_id)
+        .cloned()
+        .ok_or_else(|| {
+            CdfError::internal(format!(
+                "selected resource `{resource_id}` lost its query compilation"
+            ))
+        })?;
+    Ok(CompiledProjectResource { resource, query })
+}
+
+struct CapturedInput {
     path: String,
-    manifest: ProjectManifestAuthoredInput,
     bytes: Vec<u8>,
+    manifest: CompiledArtifactInput,
 }
 
 fn captured_authored_inputs(
-    context: &ProjectContext,
-    entries: &[CompiledProjectResource],
-) -> Result<Vec<CapturedAuthoredInput>, CliError> {
-    let mut inputs = vec![captured_authored_input(
-        PROJECT_FILE_NAME,
-        ManifestInputKind::Project,
-        context.project_bytes.clone(),
-        "cdf-project-toml",
-    )?];
-    for entry in entries {
-        inputs.push(captured_authored_input(
-            &entry.query.relative_path,
-            ManifestInputKind::ResourceSql,
-            entry.query.authored_sql.as_bytes().to_vec(),
-            "cdf-resource-sql",
-        )?);
-    }
-    Ok(inputs)
+    entry: &CompiledProjectResource,
+) -> Result<Vec<CapturedInput>, CliError> {
+    Ok(vec![captured_input(
+        &entry.query.relative_path,
+        ManifestInputKind::ResourceSql,
+        entry.query.authored_sql.as_bytes().to_vec(),
+        "cdf-resource-sql",
+    )?])
 }
 
-fn captured_authored_input(
+fn captured_input(
     path: &str,
     kind: ManifestInputKind,
     bytes: Vec<u8>,
     parser: &str,
-) -> Result<CapturedAuthoredInput, CliError> {
-    let path = path.to_owned();
-    Ok(CapturedAuthoredInput {
-        manifest: ProjectManifestAuthoredInput::explicit_file(&path, kind, &bytes, parser, 1)?,
-        path,
+) -> Result<CapturedInput, CliError> {
+    Ok(CapturedInput {
+        path: path.to_owned(),
+        manifest: CompiledArtifactInput::explicit_file(path, kind, &bytes, parser, 1)?,
         bytes,
     })
 }
 
-fn manifest_inputs(inputs: &[CapturedAuthoredInput]) -> Vec<ProjectManifestAuthoredInput> {
-    inputs.iter().map(|input| input.manifest.clone()).collect()
-}
-
-fn authored_input_guards(inputs: &[CapturedAuthoredInput]) -> Vec<ProjectFileGuard> {
-    inputs
-        .iter()
-        .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone()))
-        .collect()
-}
-
-fn publish_offline(
-    root: &Path,
-    manifest: &cdf_project::ProjectManifest,
-    lock_bytes: Vec<u8>,
-    prior_manifest: Option<Vec<u8>>,
-    authored: &[CapturedAuthoredInput],
-) -> Result<ProjectFileTransactionReport, CliError> {
-    let guards = authored_input_guards(authored);
-    let writes = vec![
-        ProjectFileWrite::new(
-            LOCK_FILE_NAME,
-            lock_bytes.clone(),
-            ProjectFileExpectation::Exact(lock_bytes),
-        ),
-        ProjectFileWrite::new(
-            PROJECT_MANIFEST_RELATIVE_PATH,
-            manifest.canonical_json_bytes()?,
-            expectation(prior_manifest),
-        )
-        .owner_only(),
-    ];
-    Ok(
-        publish_project_files_transactionally_guarded_without_recovery(
-            root,
-            PROJECT_MANIFEST_RELATIVE_PATH,
-            guards,
-            writes,
-        )?,
-    )
-}
-
-fn publish_refresh(
-    root: &Path,
-    manifest: &cdf_project::ProjectManifest,
-    lock_bytes: Vec<u8>,
-    prior_lock_bytes: Option<Vec<u8>>,
-    artifacts: BTreeMap<String, Vec<u8>>,
-    authored: &[CapturedAuthoredInput],
-) -> Result<ProjectFileTransactionReport, CliError> {
-    let guards = authored_input_guards(authored);
-    let mut writes = artifacts
+fn publish_success(
+    context: &ProjectContext,
+    new_lock: &cdf_project::CdfLock,
+    artifact: &cdf_project::CompiledResourceArtifact,
+    artifact_path: &str,
+    schema_files: BTreeMap<String, Vec<u8>>,
+    authored: &[CapturedInput],
+    locked_only: bool,
+) -> Result<(), CliError> {
+    let prior_index_bytes = optional_file_bytes(
+        &context.root.join(COMPILATION_INDEX_RELATIVE_PATH),
+        "compilation index",
+    )?;
+    let mut index = match prior_index_bytes.as_deref() {
+        Some(bytes) => {
+            let index = parse_compilation_index(bytes)?;
+            validate_compilation_index_authority(&index, &context.config, &context.environment)?;
+            index
+        }
+        None => CompilationIndex::empty(&context.config, &context.environment)?,
+    };
+    index.record_current(artifact)?;
+    let mut writes = schema_files
         .into_iter()
         .map(|(path, bytes)| {
             ProjectFileWrite::new(
@@ -344,29 +342,175 @@ fn publish_refresh(
             .owner_only()
         })
         .collect::<Vec<_>>();
-    let manifest_path = root.join(PROJECT_MANIFEST_RELATIVE_PATH);
+    let artifact_bytes = artifact.canonical_json_bytes()?;
     writes.push(
         ProjectFileWrite::new(
-            PROJECT_MANIFEST_RELATIVE_PATH,
-            manifest.canonical_json_bytes()?,
-            expectation(optional_public_file_bytes(
-                &manifest_path,
-                "project manifest",
-            )?),
+            artifact_path,
+            artifact_bytes.clone(),
+            ProjectFileExpectation::AbsentOrExact(artifact_bytes),
         )
         .owner_only(),
     );
-    writes.push(ProjectFileWrite::new(
-        LOCK_FILE_NAME,
-        lock_bytes,
-        expectation(prior_lock_bytes),
-    ));
-    Ok(publish_project_files_transactionally_guarded(
+    writes.push(
+        ProjectFileWrite::new(
+            COMPILATION_INDEX_RELATIVE_PATH,
+            index.canonical_json_bytes()?,
+            expectation(prior_index_bytes),
+        )
+        .owner_only(),
+    );
+    let final_target = if locked_only {
+        COMPILATION_INDEX_RELATIVE_PATH
+    } else {
+        let prior_lock = context
+            .lock_authority
+            .as_ref()
+            .map(|authority| authority.bytes.clone());
+        writes.push(ProjectFileWrite::new(
+            LOCK_FILE_NAME,
+            lock_to_toml(new_lock)?.into_bytes(),
+            expectation(prior_lock),
+        ));
+        LOCK_FILE_NAME
+    };
+    let mut guards = vec![ProjectFileGuard::exact(
+        PROJECT_FILE_NAME,
+        context.project_bytes.clone(),
+    )];
+    guards.extend(
+        authored
+            .iter()
+            .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone())),
+    );
+    publish_project_files_transactionally_guarded(&context.root, final_target, guards, writes)?;
+    Ok(())
+}
+
+fn record_failed_index_entry(
+    root: &Path,
+    config: &cdf_project::ProjectConfig,
+    environment: &cdf_project::EffectiveEnvironment,
+    selected: &ProjectResourcePath,
+    project_bytes: &[u8],
+    error: &CliError,
+) -> Result<(), CliError> {
+    let prior = optional_file_bytes(
+        &root.join(COMPILATION_INDEX_RELATIVE_PATH),
+        "compilation index",
+    )?;
+    let mut index = match prior.as_deref() {
+        Some(bytes) => {
+            let index = parse_compilation_index(bytes)?;
+            validate_compilation_index_authority(&index, config, environment)?;
+            index
+        }
+        None => CompilationIndex::empty(config, environment)?,
+    };
+    let authored = optional_file_bytes(&selected.absolute_path, "authored resource")?;
+    let authored_hash = authored.as_deref().map(sha256);
+    index.record_failure(
+        selected.resource_id.as_str(),
+        &selected.relative_path,
+        authored_hash,
+        CompilationDiagnostic {
+            code: error.code.clone(),
+            kind: error_kind_name(&error.kind).to_owned(),
+            message: "selected resource did not compile; rerun cdf compile for the resource to inspect the current diagnostic"
+                .to_owned(),
+        },
+    )?;
+    let mut guards = vec![ProjectFileGuard::exact(
+        PROJECT_FILE_NAME,
+        project_bytes.to_vec(),
+    )];
+    if let Some(bytes) = authored {
+        guards.push(ProjectFileGuard::exact(&selected.relative_path, bytes));
+    }
+    publish_project_files_transactionally_guarded(
         root,
-        LOCK_FILE_NAME,
+        COMPILATION_INDEX_RELATIVE_PATH,
         guards,
-        writes,
-    )?)
+        vec![
+            ProjectFileWrite::new(
+                COMPILATION_INDEX_RELATIVE_PATH,
+                index.canonical_json_bytes()?,
+                expectation(prior),
+            )
+            .owner_only(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn reconcile_absent_index_entries(
+    root: &Path,
+    config: &cdf_project::ProjectConfig,
+    environment: &cdf_project::EffectiveEnvironment,
+    selected: &[String],
+    project_bytes: &[u8],
+) -> Result<(), CliError> {
+    let prior = optional_file_bytes(
+        &root.join(COMPILATION_INDEX_RELATIVE_PATH),
+        "compilation index",
+    )?;
+    let Some(prior_bytes) = prior.as_deref() else {
+        return Ok(());
+    };
+    let mut index = parse_compilation_index(prior_bytes)?;
+    validate_compilation_index_authority(&index, config, environment)?;
+    let selected = selected
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let absent = index
+        .resources
+        .iter()
+        .filter(|(resource_id, entry)| {
+            !selected.contains(resource_id.as_str())
+                && entry.status != cdf_project::CompilationStatus::Absent
+        })
+        .map(|(resource_id, entry)| (resource_id.clone(), entry.path.clone()))
+        .collect::<Vec<_>>();
+    if absent.is_empty() {
+        return Ok(());
+    }
+    for (resource_id, path) in absent {
+        index.record_absent(&resource_id, &path)?;
+    }
+    publish_project_files_transactionally_guarded(
+        root,
+        COMPILATION_INDEX_RELATIVE_PATH,
+        vec![ProjectFileGuard::exact(
+            PROJECT_FILE_NAME,
+            project_bytes.to_vec(),
+        )],
+        vec![
+            ProjectFileWrite::new(
+                COMPILATION_INDEX_RELATIVE_PATH,
+                index.canonical_json_bytes()?,
+                expectation(prior),
+            )
+            .owner_only(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn optional_file_bytes(path: &Path, label: &str) -> Result<Option<Vec<u8>>, CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            Ok(Some(fs::read(path).map_err(|error| {
+                project_authority_read_error("read", path, error)
+            })?))
+        }
+        Ok(_) => Err(CdfError::data(format!(
+            "{label} {} must be a regular non-symlink file",
+            path.display()
+        ))
+        .into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(project_authority_read_error("inspect", path, error).into()),
+    }
 }
 
 fn expectation(previous: Option<Vec<u8>>) -> ProjectFileExpectation {
@@ -376,93 +520,83 @@ fn expectation(previous: Option<Vec<u8>>) -> ProjectFileExpectation {
     )
 }
 
-fn optional_public_file_bytes(path: &Path, label: &str) -> Result<Option<Vec<u8>>, CliError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-            Ok(Some(fs::read(path).map_err(|error| {
-                crate::context::project_authority_read_error("read", path, error)
-            })?))
-        }
-        Ok(_) => Err(CdfError::data(format!(
-            "{label} {} must be a regular non-symlink file",
-            path.display()
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn resource_selection_error(error: ProjectResourceSelectionError) -> CliError {
+    match error {
+        ProjectResourceSelectionError::Project(error) => error.into(),
+        ProjectResourceSelectionError::ExactNoMatch {
+            selector,
+            candidates,
+        } => CliError::usage(format!(
+            "resource selector {selector:?} matched no resource"
         ))
-        .into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(crate::context::project_authority_read_error(
-            &format!("inspect {label}"),
-            path,
-            error,
-        )
-        .into()),
+        .with_suggestions(
+            suggestions::nearest(&selector, candidates)
+                .into_iter()
+                .map(|candidate| format!("cdf compile {candidate}"))
+                .collect(),
+        ),
+        error => CliError::usage(error.to_string()),
     }
 }
 
-fn finish_report(
-    context: &ProjectContext,
-    manifest: &cdf_project::ProjectManifest,
-    mode: ProjectCompilationMode,
-    source_observations: usize,
-    publication: &ProjectFileTransactionReport,
-) -> Result<CommandOutput, CliError> {
-    let manifest_path = PathBuf::from(PROJECT_MANIFEST_RELATIVE_PATH);
-    let lock_path = PathBuf::from(LOCK_FILE_NAME);
-    let report = CompileReport {
-        project: context.config.project.name.clone(),
-        environment: context.environment.name.clone(),
-        mode,
-        manifest_path: PROJECT_MANIFEST_RELATIVE_PATH.to_owned(),
-        manifest_hash: manifest.manifest_hash.as_str().to_owned(),
-        resources: manifest.resources.len(),
-        semantic_definitions: manifest.semantics.len(),
-        semantic_references: manifest
-            .semantics
-            .iter()
-            .map(|definition| definition.references.len())
-            .sum(),
-        source_observations,
-        writes: CompileWrites {
-            manifest: publication.installed_paths.contains(&manifest_path),
-            lockfile: publication.installed_paths.contains(&lock_path),
-            schema_artifacts: publication
-                .installed_paths
-                .iter()
-                .filter(|path| **path != manifest_path && **path != lock_path)
-                .count(),
-            destination: false,
-            state: false,
-            package: false,
-            receipt: false,
-            checkpoint: false,
-        },
-        next_command: "cdf sql \"select * from manifest_resources\"".to_owned(),
-    };
-    CommandOutput::rendered("compile", render::document(&report), report)
+fn error_kind_name(kind: &ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::Transient => "transient",
+        ErrorKind::RateLimited => "rate_limited",
+        ErrorKind::Auth => "auth",
+        ErrorKind::Contract => "contract",
+        ErrorKind::Data => "data",
+        ErrorKind::Destination => "destination",
+        ErrorKind::Environment => "environment",
+        ErrorKind::Internal => "internal",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct CompileReport {
-    project: String,
-    environment: String,
-    mode: ProjectCompilationMode,
-    manifest_path: String,
-    manifest_hash: String,
-    resources: usize,
-    semantic_definitions: usize,
-    semantic_references: usize,
-    source_observations: usize,
-    writes: CompileWrites,
-    next_command: String,
+    pub project: String,
+    pub environment: String,
+    pub locked: bool,
+    pub selection: Vec<String>,
+    pub counts: CompileCounts,
+    pub resources: Vec<CompileResourceReport>,
+    pub index_path: String,
+    pub next_command: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct CompileWrites {
-    manifest: bool,
-    lockfile: bool,
-    schema_artifacts: usize,
-    destination: bool,
-    state: bool,
-    package: bool,
-    receipt: bool,
-    checkpoint: bool,
+pub(super) struct CompileCounts {
+    pub selected: usize,
+    pub compiled: usize,
+    pub failed: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CompileResourceStatus {
+    Compiled,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct CompileResourceReport {
+    pub resource_id: String,
+    pub path: String,
+    pub status: CompileResourceStatus,
+    pub artifact_path: Option<String>,
+    pub artifact_hash: Option<String>,
+    pub discovered_schema: bool,
+    pub error: Option<CompileResourceError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct CompileResourceError {
+    pub code: String,
+    pub kind: String,
+    pub message: String,
 }

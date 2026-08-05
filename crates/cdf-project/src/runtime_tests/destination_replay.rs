@@ -1674,10 +1674,7 @@ root = "data"
         &SemanticCatalog::builtins().unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        lock.destinations["mock"].sheet_artifact().unwrap(),
-        inspection.sheet_artifact
-    );
+    assert!(lock.destination_bindings().unwrap().is_empty());
     assert_eq!(
         destination.write_count(),
         0,

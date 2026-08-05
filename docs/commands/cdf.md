@@ -12,7 +12,7 @@ Commands:
   version   Print the cdf version
   init      Create a new cdf project
   add       Add a source resource to the project
-  compile   Compile the selected project into a verified local manifest
+  compile   Prepare independently verified compiled resource artifacts
   validate  Statically validate project configuration and selected resources
   plan      Plan a resource run without executing it
   explain   Explain resolution, capabilities, and execution choices

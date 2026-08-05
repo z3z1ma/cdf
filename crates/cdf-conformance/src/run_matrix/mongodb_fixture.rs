@@ -323,7 +323,7 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
     for command in [
         vec!["schema", "discover", "warehouse.events"],
         vec!["schema", "pin", "warehouse.events"],
-        vec!["compile", "--refresh"],
+        vec!["compile", "warehouse.events"],
         vec!["validate"],
         vec!["plan", "warehouse.events"],
     ] {

@@ -786,7 +786,7 @@ pub fn plan_schema_promotion(
                 schema,
                 &fresh_authority,
                 SnapshotCompilerLineage {
-                    normalizer_version: &lock.normalizer,
+                    normalizer_version: &locked_resource.compiler.normalizer,
                     contract_policy_hash: locked_policy_hash,
                     validation_program_hash: locked_contract.validation_program_hash.as_deref(),
                 },
@@ -1056,12 +1056,9 @@ pub fn validate_schema_promotion_plan_identity(
         let expected = expected_targets.remove(&key).ok_or_else(|| {
             CdfError::data("schema promotion dry plan contains an untyped destination target")
         })?;
-        let locked = old_lock
-            .destinations
-            .get(&target.destination)
-            .ok_or_else(|| {
-                CdfError::data("schema promotion target destination is absent from staged old lock")
-            })?;
+        let locked = old_lock.destination(&target.destination)?.ok_or_else(|| {
+            CdfError::data("schema promotion target destination is absent from staged old lock")
+        })?;
         let strategy = target.strategy.ok_or_else(|| {
             CdfError::data("executable schema promotion target has no correction strategy")
         })?;
@@ -2161,7 +2158,7 @@ fn plan_targets(
                 "restore the exact retained packages or provide verified destination readback for this target",
             ));
         }
-        let Some(locked) = lock.destinations.get(&key.destination) else {
+        let Some(locked) = lock.destination(&key.destination)? else {
             conflicts.push(conflict(
                 "destination_sheet_missing",
                 format!(
@@ -3242,25 +3239,21 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let lock = CdfLock {
-            version: crate::LOCKFILE_VERSION,
-            project: crate::ProjectLock {
-                name: "fixture".to_owned(),
-                default_environment: "test".to_owned(),
-            },
-            dependency_tuple: crate::DependencyTuple {
-                cdf: "fixture".to_owned(),
-                arrow_rs: "fixture".to_owned(),
-                datafusion: None,
-                object_store: None,
-                duckdb_rs: None,
-                rust: None,
-            },
-            normalizer: "namecase-v1".to_owned(),
-            semantics: BTreeMap::new(),
-            resources: BTreeMap::new(),
-            destinations: BTreeMap::from([("warehouse".to_owned(), locked_destination)]),
-        };
+        let config = crate::parse_cdf_toml(crate::tests::support::BOOK_PROJECT).unwrap();
+        let resources = crate::tests::support::compile_declarative_fixture(
+            &crate::tests::support::test_source_registry(),
+            crate::tests::support::GITHUB_RESOURCE,
+        )
+        .unwrap();
+        let lock = crate::generate_lockfile_with_destination_artifacts(
+            &config,
+            &resources,
+            crate::current_dependency_tuple(),
+            &[locked_destination.sheet_artifact().unwrap()],
+            BTreeMap::new(),
+            &cdf_semantic::SemanticCatalog::builtins().unwrap(),
+        )
+        .unwrap();
         let mut conflicts = Vec::new();
         let targets = plan_targets(
             &lock,

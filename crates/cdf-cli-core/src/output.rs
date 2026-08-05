@@ -186,13 +186,18 @@ impl CliError {
 impl From<CdfError> for CliError {
     fn from(error: CdfError) -> Self {
         let mapping = error_catalog::generic_lower_layer_mapping(&error.kind);
-        Self::from_mapping(error.kind, error.message, false, mapping)
+        let code = error.code;
+        let mut mapped = Self::from_mapping(error.kind, error.message, false, mapping);
+        if let Some(code) = code {
+            mapped.code = code;
+        }
+        mapped
     }
 }
 
 impl From<CliError> for CdfError {
     fn from(error: CliError) -> Self {
-        CdfError::new(error.kind, error.message)
+        CdfError::new(error.kind, error.message).with_code(error.code)
     }
 }
 

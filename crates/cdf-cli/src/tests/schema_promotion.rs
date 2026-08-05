@@ -909,7 +909,12 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
     let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
     let mut divergent_lock = context.lock.as_ref().unwrap().clone();
-    divergent_lock.normalizer = "divergent-caller-projection".to_owned();
+    divergent_lock
+        .resources
+        .get_mut("local.events")
+        .unwrap()
+        .compiler
+        .normalizer = "divergent-caller-projection".to_owned();
     let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
 
     let error = execute_schema_promotion(SchemaPromotionExecutionRequest {
@@ -1106,10 +1111,14 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     runtime.ensure_protocol_ready().unwrap();
     let mut lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     let artifact = runtime.protocol().sheet_artifact().unwrap();
-    lock.destinations.insert(
-        artifact.sheet.destination.to_string(),
-        cdf_project::LockedDestination::new(artifact).unwrap(),
-    );
+    lock.resources
+        .get_mut("local.events")
+        .unwrap()
+        .destinations
+        .insert(
+            artifact.sheet.destination.to_string(),
+            cdf_project::LockedDestination::new(artifact).unwrap(),
+        );
     fs::write(
         project.root.join("cdf.lock"),
         cdf_project::lock_to_toml(&lock).unwrap(),
