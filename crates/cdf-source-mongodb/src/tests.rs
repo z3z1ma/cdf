@@ -7,7 +7,8 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     CompiledScanIntent, CursorPosition, CursorSpec, CursorValue, PartitionId, PartitionPlan,
     PartitionRetrySafety, ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey,
-    SourcePosition, TrustLevel, WriteDisposition, with_semantic, with_source_name,
+    SourcePosition, TrustLevel, WriteDisposition, physical_type, with_physical_type, with_semantic,
+    with_source_name,
 };
 use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceExecutorClass};
 use mongodb::bson::{
@@ -356,6 +357,29 @@ fn governed_decoder_preserves_unknown_and_mismatched_values_as_residual_evidence
             .fields()
             .iter()
             .any(|field| field.name() == "new_field")
+    );
+}
+
+#[test]
+fn compatible_arrow_value_still_reports_changed_bson_physical_type() {
+    let pinned = Arc::new(Schema::new(vec![with_physical_type(
+        with_source_name(Field::new("sequence", DataType::Int64, false), "sequence"),
+        "bson:int64",
+    )]));
+    let document = RawDocumentBuf::try_from(&doc! {"sequence": 7_i32}).unwrap();
+
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&pinned), pinned, &[document.as_ref()], 0).unwrap();
+
+    assert!(decoded.residual_candidates.is_empty());
+    assert_eq!(decoded.record_batch.column(0).data_type(), &DataType::Int64);
+    assert_eq!(
+        decoded.physical_schema.field(0).data_type(),
+        &DataType::Int32
+    );
+    assert_eq!(
+        physical_type(decoded.physical_schema.field(0)),
+        Some("bson:int32")
     );
 }
 

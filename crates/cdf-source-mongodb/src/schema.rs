@@ -11,8 +11,8 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CdfError, PreContractResidualCandidate, Result, semantic, source_name, with_physical_type,
-    with_semantic, with_source_name,
+    CdfError, PreContractResidualCandidate, Result, physical_type, semantic, source_name,
+    with_physical_type, with_semantic, with_source_name,
 };
 use mongodb::bson::{RawBsonRef, RawDocument};
 
@@ -432,6 +432,7 @@ pub(crate) fn decode_batch_with_evidence(
                 .to_owned()
         })
         .collect::<BTreeSet<_>>();
+    let mut matches_pinned_physical = projected_sources == known_sources;
     let mut residual_candidates = Vec::new();
     for (row, document) in documents.iter().enumerate() {
         validate_unique_document(document)?;
@@ -439,6 +440,9 @@ pub(crate) fn decode_batch_with_evidence(
             let source = source_name(field).unwrap_or_else(|| field.name());
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
+                if !value_matches_pinned_physical(field, value)? {
+                    matches_pinned_physical = false;
+                }
                 column.append(value)?;
             } else {
                 column.append(None)?;
@@ -505,6 +509,7 @@ pub(crate) fn decode_batch_with_evidence(
         &projected_sources,
         &known_sources,
         &residual_candidates,
+        matches_pinned_physical,
     )?;
     Ok(DecodedMongoBatch {
         record_batch,
@@ -637,7 +642,11 @@ fn execution_physical_schema(
     projected_sources: &BTreeSet<String>,
     known_sources: &BTreeSet<String>,
     residual_candidates: &[PreContractResidualCandidate],
+    matches_pinned_physical: bool,
 ) -> Result<Schema> {
+    if matches_pinned_physical && residual_candidates.is_empty() {
+        return Ok(full_schema.clone());
+    }
     let inferred = (|| {
         let mut inference = SchemaInference::default();
         for document in documents {
@@ -694,6 +703,70 @@ fn execution_physical_schema(
         fields,
         full_schema.metadata().clone(),
     ))
+}
+
+fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -> Result<bool> {
+    let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
+        return Ok(field.is_nullable());
+    };
+    let Some(physical) = physical_type(field) else {
+        return Ok(false);
+    };
+    Ok(match (physical, value) {
+        ("bson:boolean", RawBsonRef::Boolean(_))
+        | ("bson:int32", RawBsonRef::Int32(_))
+        | ("bson:int64", RawBsonRef::Int64(_))
+        | ("bson:double", RawBsonRef::Double(_))
+        | ("bson:string", RawBsonRef::String(_))
+        | ("bson:binary", RawBsonRef::Binary(_))
+        | ("bson:object_id", RawBsonRef::ObjectId(_))
+        | ("bson:date_time", RawBsonRef::DateTime(_))
+        | ("bson:decimal128", RawBsonRef::Decimal128(_)) => true,
+        ("bson:array", RawBsonRef::Array(array)) => {
+            let DataType::List(child) = field.data_type() else {
+                return Ok(false);
+            };
+            for value in array {
+                let value = value.map_err(|error| {
+                    CdfError::data(format!("MongoDB array value is malformed: {error}"))
+                })?;
+                if !value_matches_pinned_physical(child, Some(value))? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        ("bson:document", RawBsonRef::Document(document)) => {
+            let DataType::Struct(fields) = field.data_type() else {
+                return Ok(false);
+            };
+            validate_unique_document(document)?;
+            let expected = fields
+                .iter()
+                .map(|field| {
+                    source_name(field)
+                        .unwrap_or_else(|| field.name())
+                        .to_owned()
+                })
+                .collect::<BTreeSet<_>>();
+            for element in document {
+                let (name, _) = element.map_err(|error| {
+                    CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+                })?;
+                if !expected.contains(name.as_str()) {
+                    return Ok(false);
+                }
+            }
+            for child in fields {
+                let source = source_name(child).unwrap_or_else(|| child.name());
+                if !value_matches_pinned_physical(child, raw_value_at_path(document, source)?)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        _ => false,
+    })
 }
 
 fn validate_unique_document(document: &RawDocument) -> Result<()> {
