@@ -70,7 +70,8 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     ]);
     assert_eq!(validate.exit_code, 0, "stderr: {}", validate.stderr);
     let validate_json = stderr_or_stdout_json(&validate.stdout);
-    assert_eq!(validate_json["result"]["resources"], 1);
+    assert_eq!(validate_json["result"]["counts"]["selected_resources"], 1);
+    assert_eq!(validate_json["result"]["counts"]["authority_missing"], 1);
 }
 
 #[test]
@@ -235,106 +236,95 @@ fn validate_json_reports_project_shape() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "validate");
-    assert_eq!(json["result"]["environment"]["name"], "dev");
-    assert_eq!(json["result"]["resources"], 1);
+    assert_eq!(json["result"]["environment"], "dev");
+    assert_eq!(json["result"]["counts"]["environments"], 1);
+    assert_eq!(json["result"]["counts"]["configured_sources"], 1);
+    assert_eq!(json["result"]["counts"]["selected_resources"], 1);
+    assert_eq!(json["result"]["counts"]["valid_resources"], 1);
+    assert_eq!(json["result"]["counts"]["errors"], 0);
+    assert_eq!(json["result"]["counts"]["authority_missing"], 1);
+    assert_eq!(json["result"]["effects"]["writes"], "none");
+    assert!(
+        json["result"]["effects"]["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check.as_str().unwrap().contains("secret resolution"))
+    );
 }
 
 #[test]
-fn validate_deep_reports_source_front_end_checks_without_writes() {
+fn validate_selectors_exclude_unselected_invalid_sql_and_resolve_canonically() {
     let project = TestProject::new();
-    write_parquet_discover_resource(&project, "*.parquet");
-    remove_resource_format(&project, "parquet");
-    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+    fs::create_dir_all(project.root.join("cdf/warehouse")).unwrap();
+    fs::write(
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        RESOURCE.replace("TARGET events", "TARGET orders"),
+    )
+    .unwrap();
+    fs::create_dir_all(project.root.join("cdf/broken")).unwrap();
+    fs::write(
+        project.root.join("cdf/broken/query.cdf.sql"),
+        "definitely not SQL",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("cdf/broken/second.cdf.sql"),
+        "also not SQL",
+    )
+    .unwrap();
 
-    let result = run([
+    let selected = run([
         "cdf",
         "--json",
         "--project",
         project.root_str(),
         "validate",
-        "--deep",
+        "warehouse.orders",
+        "local.*",
+        "--exclude",
+        "local.missing",
     ]);
-
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    assert!(!project.root.join(".cdf/schemas").exists());
-    assert!(!project.root.join("cdf.lock").exists());
-    assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join(".cdf/dev.duckdb").exists());
-
-    let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["command"], "validate");
-    assert_eq!(json["result"]["mode"], "deep");
-    assert_eq!(json["result"]["summary"]["resources"], 1);
-    assert_eq!(json["result"]["summary"]["failed"], 0);
-    assert_eq!(json["result"]["summary"]["partitions"], 1);
-    assert_eq!(json["result"]["summary"]["discovery_probes"], 1);
-    assert_eq!(json["result"]["writes"]["package"], false);
-    assert_eq!(json["result"]["writes"]["destination"], false);
-    assert_eq!(json["result"]["writes"]["checkpoint"], false);
-    assert_eq!(json["result"]["writes"]["schema_snapshot"], false);
-    assert_eq!(json["result"]["writes"]["lockfile"], false);
-
-    let resource = &json["result"]["resources"][0];
-    assert_eq!(resource["resource_id"], "local.events");
-    assert_eq!(resource["resource_file"], "cdf/local/events.cdf.sql");
-    assert_eq!(resource["configured_source"], "local");
-    assert_eq!(resource["namespace"], "local");
-    assert_eq!(resource["resource_name"], "events");
-    assert_eq!(resource["schema_source"], "discovered");
-    assert_eq!(resource["partitions"]["count"], 1);
-    assert_eq!(resource["partitions"]["files"][0], "vendors.parquet");
-    assert_eq!(resource["discovery"]["status"], "ok");
-    assert!(
-        resource["discovery"]["schema_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:")
+    assert_eq!(selected.exit_code, 0, "stderr: {}", selected.stderr);
+    let json = stderr_or_stdout_json(&selected.stdout);
+    assert_eq!(
+        json["result"]["selection"]["resolved"],
+        json!(["local.events", "warehouse.orders"])
     );
-    assert!(
-        resource["discovery"]["snapshot_path"]
-            .as_str()
-            .unwrap()
-            .starts_with(".cdf/schemas/local.events@sha256:")
+    assert_eq!(json["result"]["counts"]["selected_resources"], 2);
+    assert_eq!(json["result"]["counts"]["errors"], 0);
+
+    let all = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
+    assert_eq!(all.exit_code, 1, "stderr: {}", all.stderr);
+    let json = stderr_or_stdout_json(&all.stdout);
+    assert_eq!(json["result"]["counts"]["selected_resources"], 4);
+    assert_eq!(json["result"]["counts"]["valid_resources"], 2);
+    assert_eq!(json["result"]["counts"]["errors"], 2);
+    assert_eq!(
+        json["result"]["resources"][0]["resource_id"],
+        "broken.query"
     );
-    assert_eq!(resource["validation_program"]["status"], "ok");
-    assert_eq!(resource["identifier_normalization"]["status"], "ok");
-    assert_eq!(resource["execution_extent"], "bounded");
-    assert_eq!(resource["stream_policy"]["status"], "ok");
-    assert!(
-        resource["stream_policy"]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("sha256:")
+    assert_eq!(
+        json["result"]["resources"][0]["diagnostics"][0]["code"],
+        "CDF-VALIDATE-RESOURCE"
     );
-    assert_eq!(resource["destination"]["status"], "ok");
 }
 
 #[test]
-fn validate_deep_rejects_stale_pinned_source_authority_without_runtime_probe() {
+fn validate_is_static_when_data_and_secret_values_are_unavailable() {
     let project = TestProject::new();
-    write_minimal_lockfile(&project);
-    write_parquet_discover_resource(&project, "*.parquet");
-    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
-
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
-
-    fs::create_dir_all(project.root.join("other-data")).unwrap();
-    write_vendor_parquet(&project.root.join("other-data/vendors.parquet"));
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
     let project_path = project.root.join("cdf.toml");
     let project_text = fs::read_to_string(&project_path).unwrap();
     fs::write(
         &project_path,
-        project_text.replace("root = \"data\"", "root = \"other-data\""),
+        format!(
+            "{}\n[sources.unselected]\ntype = \"files\"\nroot = \"elsewhere\"\ncredentials = \"plaintext-must-not-block-selected-validation\"\n",
+            project_text.replace(
+                "root = \"data\"",
+                "root = \"missing-data\"\ncredentials = \"secret://env/CDF_VALIDATE_MUST_NOT_READ\"",
+            )
+        ),
     )
     .unwrap();
 
@@ -344,132 +334,153 @@ fn validate_deep_rejects_stale_pinned_source_authority_without_runtime_probe() {
         "--project",
         project.root_str(),
         "validate",
-        "--deep",
+        "local.events",
     ]);
 
-    assert_eq!(result.exit_code, 3, "stdout: {}", result.stdout);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["counts"]["valid_resources"], 1);
+    assert_eq!(json["result"]["effects"]["writes"], "none");
+    assert!(!result.stdout.contains("CDF_VALIDATE_MUST_NOT_READ"));
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "validate",
+        "local.events",
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(human.stdout.contains("validated 1 resource(s): 1 valid"));
+    assert!(human.stdout.contains("writes"));
+    assert!(human.stdout.contains("none"));
+    assert!(human.stdout.contains("secret resolution"));
+    assert!(!human.stdout.contains("CDF_VALIDATE_MUST_NOT_READ"));
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/schemas").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
 
-    let json = stderr_or_stdout_json(&result.stdout);
-    let resource = &json["result"]["resources"][0];
-    assert_eq!(resource["status"], "failed");
-    let diagnostics = resource["diagnostics"].as_array().unwrap();
-    let authority = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic["check"] == "source_schema_authority")
-        .expect("deep validation must report stale pinned source authority");
+#[test]
+fn validate_reports_current_then_stale_local_authority_without_repairing_it() {
+    let project = TestProject::new();
+    let compile = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "compile",
+        "--refresh",
+    ]);
+    assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+
+    let current = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "local.events",
+    ]);
+    assert_eq!(current.exit_code, 0, "stderr: {}", current.stderr);
+    let current_json = stderr_or_stdout_json(&current.stdout);
+    assert_eq!(current_json["result"]["counts"]["authority_current"], 1);
+    assert_eq!(current_json["result"]["counts"]["warnings"], 0);
+
+    let resource_path = project.root.join("cdf/local/events.cdf.sql");
+    let resource = fs::read_to_string(&resource_path).unwrap();
+    fs::write(&resource_path, format!("{resource}\n")).unwrap();
+    let stale = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "local.events",
+    ]);
+    assert_eq!(stale.exit_code, 0, "stderr: {}", stale.stderr);
+    let stale_json = stderr_or_stdout_json(&stale.stdout);
+    assert_eq!(stale_json["result"]["counts"]["authority_stale"], 1);
+    assert_eq!(stale_json["result"]["counts"]["warnings"], 1);
+    assert_eq!(
+        stale_json["result"]["resources"][0]["diagnostics"][0]["code"],
+        "CDF-VALIDATE-AUTHORITY-STALE"
+    );
+    assert!(!project.root.join("data/events.ndjson").exists());
+}
+
+#[test]
+fn validate_selector_misses_and_empty_exclusions_are_usage_errors() {
+    let project = TestProject::new();
+    let exact = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "local.eventz",
+    ]);
+    let exact_json = assert_json_error_code(&exact, "CDF-CLI-USAGE");
+    assert_eq!(
+        exact_json["error"]["suggestions"][0],
+        "cdf validate local.events"
+    );
+
+    let glob = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "missing.*",
+    ]);
+    let glob_json = assert_json_error_code(&glob, "CDF-CLI-USAGE");
     assert!(
-        authority["message"]
+        glob_json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("does not match compiled source authority")
+            .contains("missing.*")
     );
+
+    let empty = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "local.*",
+        "--exclude",
+        "local.*",
+    ]);
+    let empty_json = assert_json_error_code(&empty, "CDF-CLI-USAGE");
     assert!(
-        authority["remediation"]
+        empty_json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Repin the schema")
+            .contains("empty set")
     );
 }
 
 #[test]
-fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
+fn validate_reports_corrupt_local_authority_without_contact_or_repair() {
     let project = TestProject::new();
-    write_parquet_discover_resource(&project, "events.parquet");
-    remove_resource_format(&project, "parquet");
-    write_vendor_arrow_ipc(&project, "events.parquet");
+    fs::write(project.root.join("cdf.lock"), "not = [valid").unwrap();
 
-    let result = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
+    let result = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
 
-    assert_ne!(result.exit_code, 0);
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let diagnostics = json["result"]["resources"][0]["diagnostics"]
-        .as_array()
-        .unwrap();
-    let message = diagnostics
-        .iter()
-        .filter_map(|diagnostic| diagnostic["message"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(message.contains("file format confirmation failed for resource `local.events`"));
-    assert!(message.contains("file `events.parquet`"));
-    assert!(message.contains("declared format `<omitted>`"));
-    assert!(message.contains("inferred format `parquet`"));
-    assert!(message.contains("extension signal `parquet`"));
-    assert!(message.contains("magic bytes signal `arrow_ipc`"));
-    assert!(message.contains("format"));
-    assert_no_schema_discovery_writes(&project);
-}
-
-#[test]
-fn validate_deep_reports_json_row_mismatch_as_governed_warning() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("data/events.ndjson"),
-        b"{\"id\":1,\"updated_at\":1}\n{\"id\":\"bad\",\"updated_at\":2}\n",
-    )
-    .unwrap();
-
-    let result = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
-
-    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    let diagnostics = json["result"]["resources"][0]["diagnostics"]
-        .as_array()
-        .unwrap();
-    let mismatch = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic["check"] == "schema_quarantine")
-        .unwrap_or_else(|| panic!("expected typed row-local warning, got {diagnostics:#?}"));
-    assert_eq!(mismatch["severity"], "warning");
-    assert_eq!(mismatch["code"], "CDF-DEEP-SCHEMA-QUARANTINE");
-    assert!(mismatch["message"].as_str().unwrap().contains("id"));
-    assert!(mismatch["message"].as_str().unwrap().contains("Utf8"));
-    assert!(mismatch["message"].as_str().unwrap().contains("Int64"));
-    assert_no_schema_discovery_writes(&project);
-}
-
-#[test]
-fn validate_deep_rejects_malformed_json_probe_instead_of_downgrading_it() {
-    let project = TestProject::new();
-    fs::write(project.root.join("data/events.ndjson"), b"{not-json}\n").unwrap();
-
-    let result = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
-
-    assert_eq!(result.exit_code, 3, "{}{}", result.stdout, result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    let diagnostics = json["result"]["resources"][0]["diagnostics"]
-        .as_array()
-        .unwrap();
-    let probe = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic["check"] == "physical_schema_probe")
-        .unwrap_or_else(|| panic!("expected physical probe failure, got {diagnostics:#?}"));
-    assert_eq!(probe["severity"], "error");
-    assert_no_schema_discovery_writes(&project);
+    assert_eq!(json["result"]["counts"]["errors"], 1);
+    assert_eq!(
+        json["result"]["diagnostics"][0]["code"],
+        "CDF-VALIDATE-LOCK"
+    );
+    assert_eq!(json["result"]["effects"]["writes"], "none");
+    assert_eq!(
+        fs::read_to_string(project.root.join("cdf.lock")).unwrap(),
+        "not = [valid"
+    );
 }
 
 #[test]

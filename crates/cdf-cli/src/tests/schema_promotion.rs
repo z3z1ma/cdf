@@ -370,10 +370,11 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         .targets
         .iter()
         .map(|target| {
-            crate::destination_uri::resolve_environment_destination(
+            crate::destination_uri::resolve_selected_destination(
                 &test_destination_registry(),
                 &context,
                 &TargetName::new(target.target.clone()).unwrap(),
+                None,
             )
             .unwrap()
             .destination
@@ -506,10 +507,11 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination = crate::destination_uri::resolve_environment_destination(
+        let destination = crate::destination_uri::resolve_selected_destination(
             &test_destination_registry(),
             &context,
             &target,
+            None,
         )
         .unwrap()
         .destination;
@@ -740,10 +742,11 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination = crate::destination_uri::resolve_environment_destination(
+        let destination = crate::destination_uri::resolve_selected_destination(
             &test_destination_registry(),
             &context,
             &target,
+            None,
         )
         .unwrap()
         .destination;
@@ -871,10 +874,11 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
     let resource = context.resource("local.events").unwrap();
     let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-    let destination = crate::destination_uri::resolve_environment_destination(
+    let destination = crate::destination_uri::resolve_selected_destination(
         &test_destination_registry(),
         &context,
         &target,
+        None,
     )
     .unwrap()
     .destination;
@@ -963,10 +967,11 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination = crate::destination_uri::resolve_environment_destination(
+        let destination = crate::destination_uri::resolve_selected_destination(
             &test_destination_registry(),
             &context,
             &target,
+            None,
         )
         .unwrap()
         .destination;

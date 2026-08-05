@@ -109,10 +109,7 @@ impl ProjectContext {
         Self::load_with_policy(project_arg, env_arg, recovery)
             .and_then(|mut context| {
                 if hydrate_locked_snapshots
-                    && matches!(
-                        command,
-                        "compile" | "plan" | "explain" | "preview" | "run" | "validate --deep"
-                    )
+                    && matches!(command, "compile" | "plan" | "explain" | "preview" | "run")
                 {
                     let entries = context
                         .resources

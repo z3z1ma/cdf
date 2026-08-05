@@ -2048,12 +2048,16 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__validate)
-            opts="-q -v -h --deep --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --exclude --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --exclude)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --color)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0

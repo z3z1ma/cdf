@@ -169,26 +169,6 @@ pub(crate) fn compile_source_plan_for_cli(
     Ok(resource.source_plan().clone())
 }
 
-pub(crate) fn discover_source_schema_with_plan_for_cli(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    source_plan: &cdf_runtime::CompiledSourcePlan,
-    execution: &cdf_runtime::ExecutionServices,
-    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
-    options: cdf_project::SchemaDiscoveryExecutionOptions,
-) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
-    let artifact_root = context.root.clone();
-    discover_source_schema_with_plan_for_cli_at(
-        context,
-        resource,
-        source_plan,
-        execution,
-        prepared_payloads,
-        options,
-        &artifact_root,
-    )
-}
-
 pub(crate) fn discover_source_schema_with_plan_for_cli_at(
     context: &ProjectContext,
     resource: &CompiledResource,
@@ -211,33 +191,6 @@ pub(crate) fn discover_source_schema_with_plan_for_cli_at(
     .with_prepared_payloads(prepared_payloads)
     .with_driver_options(context.config.driver_options.clone());
     cdf_project::discover_resource_schema_with_source_registry(
-        resource,
-        registry,
-        source_plan,
-        &resolution,
-        options,
-    )
-}
-
-pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    source_plan: &cdf_runtime::CompiledSourcePlan,
-    execution: &cdf_runtime::ExecutionServices,
-    options: cdf_project::SchemaDiscoveryExecutionOptions,
-) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
-    let registry = crate::source_registry::builtin_source_registry()?;
-    let cancellation = options.cancellation();
-    let resolution = cdf_runtime::SourceResolutionContext::new(
-        &context.root,
-        Arc::new(context.secret_provider()),
-        execution,
-        Arc::new(cdf_http::EgressAllowlist::allow_any()),
-    )
-    .with_cancellation(cancellation)
-    .with_driver_options(context.config.driver_options.clone());
-    cdf_project::preflight_fixed_resource_schema_with_source_registry(
-        &context.root,
         resource,
         registry,
         source_plan,

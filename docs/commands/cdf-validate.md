@@ -3,18 +3,50 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Validate project configuration and contracts
+Validate project syntax, selected resource SQL, closed driver option schemas, secret-reference syntax, and local generated-authority integrity without resolving secrets or contacting configured systems.
 
-Usage: cdf validate [OPTIONS]
+Usage: cdf validate [OPTIONS] [RESOURCE_SELECTOR]...
+
+Arguments:
+  [RESOURCE_SELECTOR]...
+          Exact or glob resource selectors; quote shell-sensitive globs
 
 Options:
-      --deep                   Run probes that may contact configured systems
-  -q, --quiet                  Suppress progress and non-primary success narration
-  -v, --verbose...             Show evidence detail; repeat for diagnostics
-      --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
-      --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
-      --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
-      --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
-      --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB
-  -h, --help                   Print help
+      --exclude <RESOURCE_GLOB>
+          Exclude resources matching this glob; may be repeated
+
+  -q, --quiet
+          Suppress progress and non-primary success narration
+
+  -v, --verbose...
+          Show evidence detail; repeat for diagnostics
+
+      --color <WHEN>
+          Color policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
+      --progress <WHEN>
+          Progress policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
+      --unicode <WHEN>
+          Unicode policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
+      --memory-budget <BYTES>
+          Process memory budget, e.g. 4GiB or 512MiB
+
+      --spill-budget <BYTES>
+          Spill/disk budget, e.g. 64GiB or 512MiB
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  cdf validate
+  cdf validate local.events 'warehouse.*'
+  cdf validate 'warehouse.*' --exclude warehouse.experimental
 ```

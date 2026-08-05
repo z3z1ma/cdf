@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
@@ -96,6 +96,22 @@ pub struct ProjectResourceInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectResourcePath {
+    pub relative_path: String,
+    pub namespace: ProjectResourceNamespace,
+    pub resource_name: ProjectResourceName,
+    pub resource_id: ResourceId,
+    pub default_target: TargetName,
+    pub absolute_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectResourcePathCatalog {
+    pub root_present: bool,
+    pub resources: Vec<ProjectResourcePath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectResourceInventory {
     pub environment: String,
     pub sources: BTreeMap<ProjectSourceName, ProjectSourceBinding>,
@@ -127,159 +143,26 @@ pub fn inventory_project_resources(
         CdfError::contract(format!("environment `{environment}` is not declared"))
     })?;
     let configured_sources = validate_source_configuration_shape(config)?;
-    let canonical_root = canonical_project_root(project_root)?;
-    let cdf_path = canonical_root.join(CDF_DIRECTORY);
-
-    let Some(cdf_metadata) = optional_symlink_metadata(&cdf_path)? else {
-        if configured_sources.is_empty() {
-            return Ok(ProjectResourceInventory {
-                environment: environment.to_owned(),
-                sources: BTreeMap::new(),
-                resources: Vec::new(),
-                total_authored_bytes: 0,
-            });
-        }
+    let path_catalog = inventory_project_resource_paths(project_root)?;
+    if !path_catalog.root_present && !configured_sources.is_empty() {
         return Err(CdfError::contract(format!(
             "{} configures sources but {} is missing; create at least one cdf/<namespace>/<resource>.cdf.sql file that explicitly references each configured source",
             PROJECT_FILE_NAME,
-            cdf_path.display()
+            project_root.join(CDF_DIRECTORY).display()
         )));
-    };
-    require_real_directory(&cdf_path, &cdf_metadata, "CDF resource root")?;
-    ensure_inside_project_root(&canonical_root, &cdf_path)?;
-    let cdf_before = cdf_metadata;
-
-    let mut namespace_directories = BTreeMap::new();
-    for entry in read_directory(&cdf_path, "enumerate CDF resource namespaces")? {
-        let entry = entry.map_err(|error| {
-            project_input_io_error("enumerate CDF resource namespaces", &cdf_path, error)
-        })?;
-        let entry_path = entry.path();
-        let name = utf8_file_name(&entry_path, "resource namespace directory")?;
-        let namespace = ProjectResourceNamespace::new(&name, &entry_path.display().to_string())?;
-        let metadata = fs::symlink_metadata(&entry_path).map_err(|error| {
-            project_input_io_error("inspect CDF resource namespace", &entry_path, error)
-        })?;
-        require_real_directory(&entry_path, &metadata, "CDF resource namespace")?;
-        ensure_inside_project_root(&canonical_root, &entry_path)?;
-        if namespace_directories.len() == PROJECT_MANIFEST_MAX_INPUTS {
-            return Err(CdfError::contract(format!(
-                "CDF resource namespaces exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
-            )));
-        }
-        if namespace_directories
-            .insert(namespace, entry_path)
-            .is_some()
-        {
-            return Err(CdfError::contract(format!(
-                "duplicate CDF resource namespace `{name}` under {}",
-                cdf_path.display()
-            )));
-        }
     }
-    ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
-
     let mut total_authored_bytes = 0usize;
-    let mut resources = Vec::new();
-    let mut resource_ids = BTreeSet::new();
-    let mut discovered_resource_count = 0usize;
-    for (namespace, namespace_path) in namespace_directories {
-        let namespace_before = fs::symlink_metadata(&namespace_path).map_err(|error| {
-            project_input_io_error("inspect CDF resource namespace", &namespace_path, error)
-        })?;
-        let mut namespace_resources = Vec::new();
-        for entry in read_directory(&namespace_path, "enumerate CDF namespace resources")? {
-            let entry = entry.map_err(|error| {
-                project_input_io_error("enumerate CDF namespace resources", &namespace_path, error)
-            })?;
-            let resource_path = entry.path();
-            let metadata = fs::symlink_metadata(&resource_path).map_err(|error| {
-                project_input_io_error("inspect CDF resource", &resource_path, error)
-            })?;
-            if metadata.file_type().is_symlink() || metadata.is_dir() || !metadata.is_file() {
-                return Err(CdfError::contract(format!(
-                    "{} must contain only regular <resource>.cdf.sql inputs at its top level; {} has an unsupported filesystem shape",
-                    namespace_path.display(),
-                    resource_path.display()
-                )));
-            }
-            ensure_inside_project_root(&canonical_root, &resource_path)?;
-            let file_name = utf8_file_name(&resource_path, "resource file")?;
-            let Some(resource_token) = file_name.strip_suffix(RESOURCE_SUFFIX) else {
-                if is_resource_near_match(&file_name) {
-                    return Err(CdfError::contract(format!(
-                        "malformed resource input {}; rename it to an exact <resource>.cdf.sql file whose resource matches {}",
-                        resource_path.display(),
-                        PROJECT_TOKEN_GRAMMAR
-                    )));
-                }
-                continue;
-            };
-            let resource_name =
-                ProjectResourceName::new(resource_token, &resource_path.display().to_string())?;
-            if discovered_resource_count == PROJECT_MANIFEST_MAX_INPUTS {
-                return Err(CdfError::contract(format!(
-                    "CDF resources exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
-                )));
-            }
-            discovered_resource_count += 1;
-            namespace_resources.push((resource_name, resource_path));
-        }
-        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
-        namespace_resources.sort_by(|left, right| left.0.cmp(&right.0));
-        if namespace_resources.is_empty() {
-            return Err(CdfError::contract(format!(
-                "{} contains no valid regular <resource>.cdf.sql file",
-                namespace_path.display()
-            )));
-        }
-        for (resource_name, resource_path) in namespace_resources {
-            let bytes = read_stable_resource_file(
-                &resource_path,
-                PROJECT_MANIFEST_MAX_BYTES.saturating_sub(total_authored_bytes),
-            )?;
-            total_authored_bytes =
-                total_authored_bytes
-                    .checked_add(bytes.len())
-                    .ok_or_else(|| {
-                        CdfError::contract("project authored input byte count overflowed")
-                    })?;
-            let content_hash = ManifestInputContentHash::new(bytes_hash(&bytes))?;
-            let sql = String::from_utf8(bytes).map_err(|error| {
-                CdfError::data(format!(
-                    "CDF resource {} is not UTF-8: {error}",
-                    resource_path.display()
-                ))
-            })?;
-            let resource_id =
-                ResourceId::new(format!("{}.{}", namespace.as_str(), resource_name.as_str()))?;
-            if !resource_ids.insert(resource_id.as_str().to_owned()) {
-                return Err(CdfError::contract(format!(
-                    "duplicate project resource identity `{resource_id}` at {}",
-                    resource_path.display()
-                )));
-            }
-            let relative_path = format!(
-                "{}/{}/{}{}",
-                CDF_DIRECTORY,
-                namespace.as_str(),
-                resource_name.as_str(),
-                RESOURCE_SUFFIX
-            );
-            let default_target = TargetName::new(resource_id.as_str())?;
-            resources.push(ProjectResourceInput {
-                relative_path,
-                content_hash,
-                namespace: namespace.clone(),
-                resource_name,
-                resource_id,
-                default_target,
-                sql,
-            });
-        }
-        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
+    let mut resources = Vec::with_capacity(path_catalog.resources.len());
+    for path in &path_catalog.resources {
+        let input = read_project_resource_path_with_limit(
+            path,
+            PROJECT_MANIFEST_MAX_BYTES.saturating_sub(total_authored_bytes),
+        )?;
+        total_authored_bytes = total_authored_bytes
+            .checked_add(input.sql.len())
+            .ok_or_else(|| CdfError::contract("project authored input byte count overflowed"))?;
+        resources.push(input);
     }
-    ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
 
     let mut sources = BTreeMap::new();
     for (source_name, base) in &configured_sources {
@@ -356,6 +239,215 @@ pub fn inventory_project_resources(
         sources,
         resources,
         total_authored_bytes,
+    })
+}
+
+/// Inventories only path-derived resource identity. It never opens or parses a resource file.
+pub(crate) fn inventory_project_resource_paths(
+    project_root: &Path,
+) -> Result<ProjectResourcePathCatalog> {
+    let canonical_root = canonical_project_root(project_root)?;
+    let cdf_path = canonical_root.join(CDF_DIRECTORY);
+    let Some(cdf_metadata) = optional_symlink_metadata(&cdf_path)? else {
+        return Ok(ProjectResourcePathCatalog {
+            root_present: false,
+            resources: Vec::new(),
+        });
+    };
+    require_real_directory(&cdf_path, &cdf_metadata, "CDF resource root")?;
+    ensure_inside_project_root(&canonical_root, &cdf_path)?;
+
+    let mut namespace_directories = BTreeMap::new();
+    for entry in read_directory(&cdf_path, "enumerate CDF resource namespaces")? {
+        let entry = entry.map_err(|error| {
+            project_input_io_error("enumerate CDF resource namespaces", &cdf_path, error)
+        })?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path).map_err(|error| {
+            project_input_io_error("inspect CDF resource namespace", &entry_path, error)
+        })?;
+        require_real_directory(&entry_path, &metadata, "CDF resource namespace")?;
+        ensure_inside_project_root(&canonical_root, &entry_path)?;
+        let name = utf8_file_name(&entry_path, "resource namespace directory")?;
+        let namespace = ProjectResourceNamespace::new(&name, &entry_path.display().to_string())?;
+        if namespace_directories.len() == PROJECT_MANIFEST_MAX_INPUTS {
+            return Err(CdfError::contract(format!(
+                "CDF resource namespaces exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
+            )));
+        }
+        namespace_directories.insert(namespace, entry_path);
+    }
+    ensure_metadata_stable(&cdf_path, &cdf_metadata, "CDF resource root")?;
+
+    let mut resources = Vec::new();
+    for (namespace, namespace_path) in namespace_directories {
+        let namespace_before = fs::symlink_metadata(&namespace_path).map_err(|error| {
+            project_input_io_error("inspect CDF resource namespace", &namespace_path, error)
+        })?;
+        let mut namespace_resources = Vec::new();
+        for entry in read_directory(&namespace_path, "enumerate CDF namespace resources")? {
+            let entry = entry.map_err(|error| {
+                project_input_io_error("enumerate CDF namespace resources", &namespace_path, error)
+            })?;
+            let resource_path = entry.path();
+            let metadata = fs::symlink_metadata(&resource_path).map_err(|error| {
+                project_input_io_error("inspect CDF resource", &resource_path, error)
+            })?;
+            if metadata.file_type().is_symlink() || metadata.is_dir() || !metadata.is_file() {
+                return Err(CdfError::contract(format!(
+                    "{} must contain only regular <resource>.cdf.sql inputs at its top level; {} has an unsupported filesystem shape",
+                    namespace_path.display(),
+                    resource_path.display()
+                )));
+            }
+            ensure_inside_project_root(&canonical_root, &resource_path)?;
+            let file_name = utf8_file_name(&resource_path, "resource file")?;
+            let Some(resource_token) = file_name.strip_suffix(RESOURCE_SUFFIX) else {
+                if is_resource_near_match(&file_name) {
+                    return Err(CdfError::contract(format!(
+                        "malformed resource input {}; rename it to an exact <resource>.cdf.sql file whose resource matches {}",
+                        resource_path.display(),
+                        PROJECT_TOKEN_GRAMMAR
+                    )));
+                }
+                continue;
+            };
+            let resource_name =
+                ProjectResourceName::new(resource_token, &resource_path.display().to_string())?;
+            if resources.len() + namespace_resources.len() == PROJECT_MANIFEST_MAX_INPUTS {
+                return Err(CdfError::contract(format!(
+                    "CDF resources exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
+                )));
+            }
+            namespace_resources.push((resource_name, resource_path));
+        }
+        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
+        namespace_resources.sort_by(|left, right| left.0.cmp(&right.0));
+        if namespace_resources.is_empty() {
+            return Err(CdfError::contract(format!(
+                "{} contains no valid regular <resource>.cdf.sql file",
+                namespace_path.display()
+            )));
+        }
+        for (resource_name, absolute_path) in namespace_resources {
+            resources.push(project_resource_path(
+                namespace.clone(),
+                resource_name,
+                absolute_path,
+            )?);
+        }
+        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
+    }
+    ensure_metadata_stable(&cdf_path, &cdf_metadata, "CDF resource root")?;
+    resources.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+    Ok(ProjectResourcePathCatalog {
+        root_present: true,
+        resources,
+    })
+}
+
+/// Resolves one exact canonical id without enumerating sibling namespaces or resources.
+pub(crate) fn resolve_exact_project_resource_path(
+    project_root: &Path,
+    resource_id: &str,
+) -> Result<Option<ProjectResourcePath>> {
+    let Some((namespace_token, resource_token)) = resource_id.split_once('.') else {
+        return Err(CdfError::contract(format!(
+            "resource selector {resource_id:?} must be an exact <namespace>.<resource> id or a glob"
+        )));
+    };
+    if resource_token.contains('.') {
+        return Err(CdfError::contract(format!(
+            "resource selector {resource_id:?} must contain exactly one namespace separator"
+        )));
+    }
+    let namespace = ProjectResourceNamespace::new(namespace_token, "resource selector")?;
+    let resource_name = ProjectResourceName::new(resource_token, "resource selector")?;
+    let canonical_root = canonical_project_root(project_root)?;
+    let cdf_path = canonical_root.join(CDF_DIRECTORY);
+    let Some(cdf_metadata) = optional_symlink_metadata(&cdf_path)? else {
+        return Ok(None);
+    };
+    require_real_directory(&cdf_path, &cdf_metadata, "CDF resource root")?;
+    let namespace_path = cdf_path.join(namespace.as_str());
+    let Some(namespace_metadata) = optional_symlink_metadata(&namespace_path)? else {
+        return Ok(None);
+    };
+    require_real_directory(
+        &namespace_path,
+        &namespace_metadata,
+        "CDF resource namespace",
+    )?;
+    ensure_inside_project_root(&canonical_root, &namespace_path)?;
+    let absolute_path = namespace_path.join(format!("{}{RESOURCE_SUFFIX}", resource_name.as_str()));
+    let Some(metadata) = optional_symlink_metadata(&absolute_path)? else {
+        return Ok(None);
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CdfError::contract(format!(
+            "project resource {} must be a regular non-symlink file",
+            absolute_path.display()
+        )));
+    }
+    ensure_inside_project_root(&canonical_root, &absolute_path)?;
+    Ok(Some(project_resource_path(
+        namespace,
+        resource_name,
+        absolute_path,
+    )?))
+}
+
+pub(crate) fn read_project_resource_path(
+    path: &ProjectResourcePath,
+) -> Result<ProjectResourceInput> {
+    read_project_resource_path_with_limit(path, PROJECT_MANIFEST_MAX_BYTES)
+}
+
+fn read_project_resource_path_with_limit(
+    path: &ProjectResourcePath,
+    remaining_bytes: usize,
+) -> Result<ProjectResourceInput> {
+    let bytes = read_stable_resource_file(&path.absolute_path, remaining_bytes)?;
+    let content_hash = ManifestInputContentHash::new(bytes_hash(&bytes))?;
+    let sql = String::from_utf8(bytes).map_err(|error| {
+        CdfError::data(format!(
+            "CDF resource {} is not UTF-8: {error}",
+            path.absolute_path.display()
+        ))
+    })?;
+    Ok(ProjectResourceInput {
+        relative_path: path.relative_path.clone(),
+        content_hash,
+        namespace: path.namespace.clone(),
+        resource_name: path.resource_name.clone(),
+        resource_id: path.resource_id.clone(),
+        default_target: path.default_target.clone(),
+        sql,
+    })
+}
+
+fn project_resource_path(
+    namespace: ProjectResourceNamespace,
+    resource_name: ProjectResourceName,
+    absolute_path: PathBuf,
+) -> Result<ProjectResourcePath> {
+    let resource_id =
+        ResourceId::new(format!("{}.{}", namespace.as_str(), resource_name.as_str()))?;
+    let relative_path = format!(
+        "{}/{}/{}{}",
+        CDF_DIRECTORY,
+        namespace.as_str(),
+        resource_name.as_str(),
+        RESOURCE_SUFFIX
+    );
+    let default_target = TargetName::new(resource_id.as_str())?;
+    Ok(ProjectResourcePath {
+        relative_path,
+        namespace,
+        resource_name,
+        resource_id,
+        default_target,
+        absolute_path,
     })
 }
 

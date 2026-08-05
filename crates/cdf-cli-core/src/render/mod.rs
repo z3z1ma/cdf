@@ -320,7 +320,7 @@ mod tests {
                 )
                 .detail("offending-value", "a complete value that wraps")
                 .help("run a complete corrective command without truncation")
-                .suggestion("cdf validate --deep"),
+                .suggestion("cdf doctor"),
             )
             .render(&config);
 
@@ -353,7 +353,7 @@ mod tests {
             "error[CDF-CLI-DELIBERATELY-LONG]: the causal error message remains readable at narrow widths",
             "offending-value: a complete value that wraps",
             "help: run a complete corrective command without truncation",
-            "try: cdf validate --deep",
+            "try: cdf doctor",
         ] {
             assert!(
                 actionable.contains(expected),

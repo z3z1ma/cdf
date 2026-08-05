@@ -72,6 +72,7 @@ mod project_files;
 mod project_inputs;
 mod promotion;
 mod query_compiler;
+mod resource_selector;
 mod resource_sql;
 mod runtime;
 #[cfg(test)]
@@ -81,6 +82,7 @@ mod schema_discovery;
 mod schema_snapshot;
 mod secrets;
 mod semantic_uses;
+mod static_validation;
 #[cfg(test)]
 mod test_destinations;
 #[cfg(test)]
@@ -180,6 +182,10 @@ pub use query_compiler::{
     ProjectInputSchemaAuthority, ProjectQueryCompilation, ResolutionOrigin, ResolvedResourceValue,
     compile_query_project_resources, finalize_query_project_resource,
 };
+pub use resource_selector::{
+    ProjectResourceSelection, ProjectResourceSelectionError, ProjectResourceSelectionResolution,
+    resolve_project_resource_selection,
+};
 pub use resource_sql::{
     AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
     AuthoredSemanticBinding, SpannedResourceValue, parse_resource_file,
@@ -215,8 +221,8 @@ pub use schema_discovery::{
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions, SchemaDiscoveryWriteOutcome,
     VerifiedSchemaBaseline, apply_discovered_schema, apply_discovered_schema_constraints,
     compile_discovered_schema_artifacts, discover_resource_schema_with_source_registry,
-    preflight_fixed_resource_schema_with_source_registry, prepare_pinned_resource_schema,
-    prepare_pinned_resource_schema_artifacts, write_schema_discovery_artifacts,
+    prepare_pinned_resource_schema, prepare_pinned_resource_schema_artifacts,
+    write_schema_discovery_artifacts,
 };
 pub use schema_snapshot::{
     SCHEMA_SNAPSHOT_ARTIFACT_VERSION, SCHEMA_SNAPSHOT_DIR,
@@ -229,3 +235,8 @@ pub use schema_snapshot::{
     SchemaSnapshotUnionMode, schema_snapshot_relative_path,
 };
 pub use secrets::{DefaultSecretProvider, EnvSecretProvider, FileSecretProvider, SecretRef};
+pub use static_validation::{
+    LocalAuthorityStatus, ProjectStaticValidationCounts, ProjectStaticValidationDiagnostic,
+    ProjectStaticValidationEffects, ProjectStaticValidationReport, ProjectStaticValidationResource,
+    StaticValidationSeverity, validate_project_static,
+};

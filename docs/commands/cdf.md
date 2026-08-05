@@ -13,7 +13,7 @@ Commands:
   init      Create a new cdf project
   add       Add a source resource to the project
   compile   Compile the selected project into a verified local manifest
-  validate  Validate project configuration and contracts
+  validate  Statically validate project configuration and selected resources
   plan      Plan a resource run without executing it
   explain   Explain resolution, capabilities, and execution choices
   run       Execute a governed resource run

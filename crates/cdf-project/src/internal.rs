@@ -136,6 +136,11 @@ fn collect_secret_refs_from_json(
     Ok(())
 }
 
+pub(crate) fn validate_secret_references_in_json(value: &serde_json::Value) -> Result<()> {
+    let mut references = Vec::new();
+    collect_secret_refs_from_json(value, &mut references)
+}
+
 pub(crate) fn secret_refs_in_text(value: &str) -> Result<Vec<SecretRef>> {
     let mut refs = Vec::new();
     let mut remaining = value;

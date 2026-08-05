@@ -497,7 +497,7 @@ fn declarative_parse_error(message: String) -> CdfError {
         return CdfError::contract(message);
     };
     CdfError::contract(format!(
-        "{message}\nremediation: add required `{field}` to the enclosing declarative table and rerun `cdf validate --deep`"
+        "{message}\nremediation: add required `{field}` to the enclosing declarative table and rerun `cdf validate`"
     ))
 }
 

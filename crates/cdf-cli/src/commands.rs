@@ -80,10 +80,7 @@ fn dispatch(
             "compile and sql must use registry-free command dispatch",
         )
         .into()),
-        Command::Validate(args) => {
-            let (_, services) = default_services(&cli)?;
-            crate::project_command::validate(&cli, args, &services, destinations)
-        }
+        Command::Validate(args) => crate::project_command::validate(&cli, args),
         Command::Plan(args) => {
             let (_, services) = default_services(&cli)?;
             crate::scan_command::plan_or_explain(&cli, args, "plan", &services, destinations)
