@@ -9,15 +9,18 @@ Updated: 2026-08-04
 The finite MongoDB 8.0+ source uses the official asynchronous raw-BSON cursor, preserves the
 ratified BSON-to-Arrow meanings, carries current source-position authority, and remains bounded by
 the shared execution host. Its generic source matrix completes package, destination receipt,
-checkpoint, and replay laws. The previous clean release roofline cleared the required 0.90 ratio;
-a fresh report for the current repair remains pending until the participating source is committed.
+checkpoint, and replay laws. The final clean release roofline for revision `89786e35` clears the
+required 0.90 ratio. Connector closure remains blocked only on ratifying the endpoint/egress
+surface before the final connector certificate is meaningful.
 
 ## Procedure
 
-- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib` passed all 23 current
-  unit tests, including residual cardinality, duplicate/dotted/nested BSON shape, and exact
-  physical-reconciliation subtype evidence boundaries. `DUCKDB_DOWNLOAD_LIB=1 cargo test -p
-  cdf-engine --lib` passed 237 executable tests with six release/performance tests ignored.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --all-targets` passed all 32 current
+  unit tests, including residual cardinality, overlapping payload accounting,
+  duplicate/dotted/nested BSON shape, and exact physical-reconciliation subtype evidence
+  boundaries. The contract suite passed 99 tests with two ignored. The engine suite passed 238
+  executable tests plus the updated package-identity golden in a focused rerun, with six
+  release/performance tests ignored.
 - The digest-pinned MongoDB 8.0.13 live source matrix executed 15 supported destination/disposition
   cells and recorded three destination-sheet exclusions. Every executed cell verified its package,
   receipt-gated checkpoint, duplicate no-op replay, and fresh-artifact replay.
@@ -25,22 +28,25 @@ a fresh report for the current repair remains pending until the participating so
 
   ```sh
   error_test_line=$(rg -n '^#\[cfg\(test\)\]' crates/cdf-source-mongodb/src/error.rs | cut -d: -f1)
-  xargs -0 rg -n --no-heading -- 'CdfError::(new|transient|rate_limited|auth|contract|data|destination|environment|internal|from)|ErrorKind::(Transient|RateLimited|Auth|Contract|Data|Destination|Environment|Internal)|std::io::Error::(other|from)|std::io::ErrorKind::[A-Za-z]+|MongoErrorKind::[A-Za-z]+|mongodb::error::Error::custom|mongodb::error::ErrorKind::[A-Za-z]+' < .10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul | LC_ALL=C sort | awk -v error_test_line="$error_test_line" -f .10x/evidence/.storage/2026-08-04-mongodb-source-error-classify.awk > .10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv
+  xargs -0 rg -n --no-heading -- 'CdfError::(new|transient|rate_limited|auth|contract|data|destination|environment|internal|from)|ErrorKind::(Transient|RateLimited|Auth|Contract|Data|Destination|Environment|Internal)|std::io::Error::(other|from)|std::io::ErrorKind::[A-Za-z]+|Io::[A-Za-z]+|MongoErrorKind::[A-Za-z]+|mongodb::error::Error::custom|mongodb::error::ErrorKind::[A-Za-z]+' < .10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul | LC_ALL=C sort | awk -v error_test_line="$error_test_line" -f .10x/evidence/.storage/2026-08-04-mongodb-source-error-classify.awk > .10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv
   ```
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 256
-  construction/direct-kind lines: 219 production and 37 test rows. The 39 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 295
+  construction/direct-kind lines: 255 production and 40 test rows. The 47 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
-  `ac3a942b2ec33f15f1e67b37bcac671e09b53e2019b63347b37042f4d2f7b4cf`, and
-  `61a4b9125e3d51ff80c1b12bca224b1418898f03d9101df3da4e778e806ddec3`.
+  `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
+  `bdaf728d4fada57d089bc12115f80815fc00df83dc62ce62e96cbde703e2985f`.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
-  100,000 rows. The selected 65,536-row batch and one-client pool produced a 119,474,542 ns CDF
-  median versus 108,078,000 ns for the semantics-equivalent raw-driver baseline, ratio 0.904611.
-  All six sweep cells passed the ratio and dispersion gates.
+  100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
+  one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the
+  semantics-equivalent raw-driver baseline, ratio 0.922088. All six cells stayed below the 10%
+  dispersion bound; three cells cleared the ratio gate and selection followed the recorded
+  minimum-pool-then-fastest-passing policy. Rows, useful Arrow bytes, and content checksum matched
+  the direct driver in every sample.
 - `DUCKDB_DOWNLOAD_LIB=1 ... cargo nextest run -p cdf-conformance --locked --no-fail-fast`
   passed all 92 executed tests (eight governed skips) after repairing current query-first
   integration defects exposed by the source certificate.
@@ -63,13 +69,18 @@ a fresh report for the current repair remains pending until the participating so
 - First-party `jscpd` reported 10,376 duplicated lines out of 411,909 (2.52%), below the 10%
   threshold. `cargo machete --with-metadata` found no unused dependency. `graphify update .` was
   unavailable because the executable is not installed in this environment.
-- The final `tools/certify-connector.py --kind source --id mongodb --core-impact` result is added
-  below when the closure barrier completes.
+- Three independent final rereviews passed the neutral materialization authority, runtime
+  materialization/evidence path, and MongoDB decoder. The performance repair rereview found one
+  overlapping-source payload undercount; the repair routes every equality/prefix overlap and all
+  Lists to exact estimation, adds a 36 MiB duplicate-payload boundary test, and passed rereview.
+- The final `tools/certify-connector.py --kind source --id mongodb --core-impact` remains pending.
+  Running it before the endpoint/egress semantic blocker is resolved would certify a surface that
+  still changes under either valid decision.
 
 ## What this supports or challenges
 
 This supports the source ticket's mapping, boundedness, live conformance, error-ownership, and
-release-performance acceptance criteria. The live and certificate paths also challenged stale
+release-performance acceptance criteria. The live paths also challenged stale
 query-first integration assumptions: synchronous SQL analysis could be called from an async host,
 pinned contract commands needed schema hydration, manifest SQL security needed to admit SQL
 whitespace, and metadata comparison needed map-order independence. Those faults were repaired at
@@ -82,4 +93,6 @@ was not exercised because no authenticated/cost-authorized Atlas fixture was pro
 is finite collection reading only; change streams and resume tokens are explicit non-goals. The
 aggregate workspace run is not globally green because the explicitly separate ergonomics worker
 owns three failures and local ClickHouse integration credentials were unavailable; neither limit
-intersects the MongoDB source leaf or its executed generic source matrix.
+intersects the MongoDB source leaf or its executed generic source matrix. Closure nevertheless
+remains blocked because the current advertised topology-discovery surface exceeds the egress
+authority that can be enforced before connection.

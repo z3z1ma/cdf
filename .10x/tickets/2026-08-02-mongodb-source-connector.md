@@ -145,6 +145,30 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   and the live source matrix again passed 15 supported cells with three governed exclusions.
   Strict affected-package Clippy and `cargo machete --with-metadata` passed; the explicit cognitive
   complexity diagnostic reported only previously known functions outside this repair.
+- 2026-08-04: Closed the exact source-materialization authority gap without connector-specific
+  logic in neutral crates. Kernel plans now carry typed source materialization rules and canonical
+  source evidence; contract reconciliation, serialized-plan validation, project/runtime
+  propagation, and engine execution exact-compare the constraint-relevant rule set. MongoDB owns
+  recursive Decimal128 materialization and separates physical decoder schema from logical output
+  schema. Contract passed 99 tests with two ignored; MongoDB passed its then-current 31 tests;
+  engine passed 238 executable tests plus the updated package-identity golden in a focused rerun.
+  Strict affected-package Clippy passed. Independent materialization-authority and MongoDB runtime
+  rereviews passed with no critical or significant findings.
+- 2026-08-04: The clean closure roofline exposed a real decoder regression: correctness matched,
+  but duplicate preflight/value/name/path work reduced the selected ratio to 0.600252. Restored
+  bounded throughput by statically preflighting prefix-disjoint fixed-cardinality schemas,
+  compiling decoder source paths once, allocating residual names only for actual residuals, and
+  fusing shape validation with top-level unknown classification. Lists and overlapping source
+  paths use the exact estimator. A red-team finding showed that parent/child source paths could
+  duplicate retained payload; the final repair detects equality/prefix overlap recursively and a
+  two-document 36 MiB duplicate-payload test proves rejection at the 32 MiB progressive bound.
+  All 32 MongoDB tests and strict Clippy passed; both performance rereviews passed with no findings.
+- 2026-08-04: The final clean fat-LTO MongoDB 8.0.13 roofline at revision `89786e35` passed. The
+  selection policy chose 32,768 rows and pool size one: 111,340,625 ns CDF median versus
+  102,665,917 ns direct, ratio 0.922088. All samples matched rows, useful Arrow bytes, and checksum;
+  every cell met the dispersion bound. The mechanically reproducible error ledger contains 295
+  rows: 255 production and 40 test, with file-list/classifier/ledger SHA-256 values recorded in
+  `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
 
 ## Blockers
 
@@ -156,16 +180,17 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 
 ## Evidence
 
-- Twenty-three focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
-  injection, portability/redaction, cursor, and error-wrapper behavior.
+- Thirty-two focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+  injection, portability/redaction, cursor, payload-bound, and error-wrapper behavior.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.
 - Error inventory and classification are frozen at the paths recorded in the journal.
-- The release raw-BSON roofline passes at 0.904611 with the selected pool/batch settings recorded
+- The final release raw-BSON roofline passes at 0.922088 with the selected pool/batch settings recorded
   in `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json`.
 - Workspace integration, strict Clippy, duplication, and dependency-hygiene observations are
   recorded in the journal and `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
-- The final connector certificate and closure review remain pending.
+- All implementation and performance rereviews pass. The final connector certificate remains
+  pending the endpoint/egress semantic decision in Blockers.
 
 ## Review
 
@@ -175,9 +200,25 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   nested BSON evidence, lax collection metadata, stale error evidence, and benchmark/public-CLI
   paths that did not exercise the current surface. The reviewers also found shared Postgres
   projection admission and Int32 cursor-domain defects.
-- All non-semantic findings are repaired and await independent rereview on a stable pushed commit.
-  Residual risk remains the direct-host semantic decision recorded in Blockers.
+- All non-semantic findings are repaired. Independent shared-authority, evidence/runtime, and
+  decoder/performance rereviews pass on stable pushed commits with no critical or significant
+  findings. Residual risk remains the direct-host semantic decision recorded in Blockers; the
+  original topology/egress critical cannot be waived or certified.
 
 ## Retrospective
 
-Pending executor handback.
+- The largest throughput regression came from individually reasonable safety passes compounding
+  into repeated raw-BSON traversal and per-value allocation. Release profiling, rather than more
+  test-loop repetition, isolated the preflight, source-path, and known-name costs.
+- Conservative static memory accounting needs an explicit aliasing proof. Prefix-disjoint paths
+  make raw-document bytes a payload upper bound; overlapping paths must retain exact per-value
+  accounting. The reviewer-found parent/child alias is now a focused behavioral boundary test.
+- Compile stable decoder metadata once and allocate evidence only when evidence exists. This both
+  restored throughput and made the distinction between governed values and retained drift more
+  literal.
+- Final performance evidence must use the exact default release profile and a clean committed
+  participating snapshot. Faster non-LTO builds were useful iteration signals but never treated as
+  closure evidence.
+- The remaining blocker is semantic, not implementation toil: either narrow the current source to
+  one explicit direct authority or shape a transport that can authorize every topology-learned
+  host before connection.
