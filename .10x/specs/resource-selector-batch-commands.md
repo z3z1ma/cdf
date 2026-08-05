@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 
@@ -119,8 +119,6 @@ fields; per-resource report facts are not reconstructed in the renderer.
 - implicit all-resource plan/run;
 - fail-fast execution policy in the first implementation.
 
-## Ratification blocker
+## Ratification status
 
-Confirm the selector grammar and batch law: exact/glob union plus repeated excludes; all selected
-resources prepare before any execution; after execution begins independent resources continue and
-the aggregate exits nonzero on any failure.
+The user confirmed the selector grammar and batch law on 2026-08-04.

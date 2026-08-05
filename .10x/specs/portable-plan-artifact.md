@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 
@@ -176,8 +176,7 @@ Sensitive fields are redacted before both JSON and human paths.
 - plan archive/bundle format in the first implementation;
 - replacing terminal plan output with artifact JSON.
 
-## Ratification blocker
+## Ratification status
 
-Confirm `plan --out plan.json` plus `run --plan plan.json`, preservation of the existing terminal
-report, strict cross-machine portability at export, and whole-plan no-repair preflight before any
-selected resource executes.
+The user confirmed `plan --out`, `run --plan`, preservation of the existing terminal report,
+strict cross-machine portability, and whole-plan no-repair preflight on 2026-08-04.

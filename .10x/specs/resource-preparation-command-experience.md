@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 
@@ -10,8 +10,7 @@ The user ratified the three core choices in this specification on 2026-08-04: th
 loop and command removals, independent resource compilation authority, and aggregate whole-project
 behavior with useful partial compile success.
 
-The following focused draft specifications refine newly requested surfaces before this parent
-contract becomes active:
+The following active focused specifications refine the parent contract:
 
 - `.10x/specs/resource-selector-batch-commands.md` — exact/glob resource-set selection and
   multi-resource preparation/execution behavior;
@@ -183,14 +182,23 @@ is not a prerequisite for plan or run.
 `--refresh` MUST be deleted. Re-running compile already rebuilds stale generated compilation state;
 `schema diff/promote` owns governed external schema change. No compatibility parser remains.
 
-### `cdf validate [RESOURCE]`
+### `cdf validate [RESOURCE_SELECTOR...]`
 
-- With `RESOURCE`, validate MUST inspect only that resource's authored/configured contract and
-  report its readiness.
-- Without `RESOURCE`, validate MUST attempt every resource and return one aggregate report.
-- Validation MUST NOT publish compilation/schema/lock authority or mutate external state.
-- Deep/live validation remains explicit where current source/destination contact is required and
-  MUST retain per-resource isolation in its report.
+- With selectors, validate MUST inspect only the matching authored/configured project surface.
+- Without selectors, validate MUST inspect the complete authored project and return one aggregate
+  report.
+- Validation is strictly static and offline. It MUST NOT resolve a secret, read an environment
+  variable or secret file, enumerate or stat source data, contact a source/destination/state
+  service, or publish any authority.
+- It MUST validate project/config grammar, path and token shape, resource SQL syntax/envelope,
+  configured-source references and closed option schemas, secret-reference syntax, and locally
+  available lock/artifact integrity where applicable. Missing generated authority is status, not a
+  static project error.
+- It MUST report deterministic aggregate counts for environments, configured sources, authored and
+  selected resources, valid resources, warnings, errors, and locally current/stale/missing
+  authority.
+- `--deep` MUST be deleted. Scoped operational readiness belongs to `cdf doctor`; source
+  observation belongs to discover/plan/preview.
 
 ### `cdf schema`
 
@@ -412,6 +420,5 @@ round-trip with its exact authored hash.
 
 ## Ratification status
 
-The parent model is user-ratified. Activation remains blocked only on the execution-relevant
-choices named by the three focused draft specifications above. No product implementation begins
-until those refinements are confirmed.
+The user ratified this model and all three focused refinements on 2026-08-04. The same confirmation
+made `cdf validate` strictly static/offline and assigned scoped operational readiness to doctor.

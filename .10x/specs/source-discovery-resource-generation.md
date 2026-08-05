@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 
@@ -166,8 +166,7 @@ is evidence/proposal, never execution or lock authority.
 - compile/pin/promotion during discovery;
 - treating discovery artifacts as execution authority.
 
-## Ratification blocker
+## Ratification status
 
-Confirm explicit `discover source` and `discover resource` scopes, read-only introspection by
-default, `source ... --generate [--namespace]` for create-only thin resources, and useful partial
-generation success with aggregate conflict reporting.
+The user confirmed the two discovery scopes, read-only default, explicit thin-resource generation,
+namespace override, and useful partial generation success on 2026-08-04.
