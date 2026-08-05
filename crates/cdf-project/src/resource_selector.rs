@@ -18,7 +18,7 @@ pub struct ProjectResourceSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectResourceSelectionResolution {
     pub selection: ProjectResourceSelection,
-    pub(crate) resources: Vec<ProjectResourcePath>,
+    pub resources: Vec<ProjectResourcePath>,
     pub(crate) complete_resource_surface: bool,
 }
 

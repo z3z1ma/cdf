@@ -89,7 +89,9 @@ pub struct AddArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileArgs {
-    pub refresh: bool,
+    pub selectors: Vec<String>,
+    pub exclude: Vec<String>,
+    pub locked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -436,12 +438,11 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         }
         Some(("init", subcommand)) => parse_init(subcommand).map(Command::Init),
         Some(("add", subcommand)) => parse_add(subcommand).map(Command::Add),
-        Some(("compile", subcommand)) => {
-            no_extra_values("compile", &values(subcommand, "extra"))?;
-            Ok(Command::Compile(CompileArgs {
-                refresh: subcommand.get_flag("refresh"),
-            }))
-        }
+        Some(("compile", subcommand)) => Ok(Command::Compile(CompileArgs {
+            selectors: values(subcommand, "selectors"),
+            exclude: values(subcommand, "exclude"),
+            locked: subcommand.get_flag("locked"),
+        })),
         Some(("validate", subcommand)) => Ok(Command::Validate(ValidateArgs {
             selectors: values(subcommand, "selectors"),
             exclude: values(subcommand, "exclude"),
@@ -954,10 +955,12 @@ pub fn cli_command() -> ClapCommand {
         )
         .subcommand(
             cmd("compile")
-                .about("Compile the selected project into a verified local manifest")
-                .long_about("Compile the selected project into .cdf/manifest.json. The default mode is offline and requires current cdf.lock authority. --refresh explicitly performs read-only source observations and may update cdf.lock and schema artifacts.")
-                .arg(flag("refresh", "refresh"))
-                .arg(values_arg("extra").hide(true)),
+                .about("Prepare independently verified compiled resource artifacts")
+                .long_about("Compile selected resources independently. Ordinary compile may establish missing first-use schema authority; --locked requires sufficient unchanged cdf.lock authority. Successful resources are retained when another resource fails.")
+                .after_help("Examples:\n  cdf compile local.events\n  cdf compile 'warehouse.*' --exclude warehouse.experimental\n  cdf compile --locked")
+                .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+                .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+                .arg(flag("locked", "locked")),
         )
         .subcommand(
             cmd("validate")
@@ -1254,7 +1257,7 @@ fn option_help(long: &str) -> &'static str {
         "loop" => "Continue polling for work",
         "exclude" => "Exclude resources matching this glob; may be repeated",
         "dry-run" => "Show the proposed change without writing it",
-        "refresh" => "Refresh read-only source observations and publish updated project authority",
+        "locked" => "Require sufficient unchanged cdf.lock authority",
         "execute" => "Apply the planned operation",
         "force" => "Replace an existing artifact when safe",
         "scope" => "Checkpoint scope entry as key=value; may be repeated",

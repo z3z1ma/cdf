@@ -43,7 +43,7 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "help" -d 'Show help for a c
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "version" -d 'Print the cdf version'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "init" -d 'Create a new cdf project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "add" -d 'Add a source resource to the project'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Compile the selected project into a verified local manifest'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Prepare independently verified compiled resource artifacts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Statically validate project configuration and selected resources'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Plan a resource run without executing it'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "explain" -d 'Explain resolution, capabilities, and execution choices'
@@ -121,6 +121,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand add" -l dry-run -d 'Show the pro
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -132,7 +133,7 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand compile" -l refresh -d 'Refresh read-only source observations and publish updated project authority'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l locked -d 'Require sufficient unchanged cdf.lock authority'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s h -l help -d 'Print help (see more with \'--help\')'

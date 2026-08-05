@@ -120,7 +120,7 @@ pub(crate) fn diff_schema(
     let regenerated = generate_lockfile_with_destination_artifacts(
         &context.config,
         &context.resources,
-        lock.dependency_tuple.clone(),
+        cdf_project::current_dependency_tuple(),
         &destination_artifacts,
         BTreeMap::new(),
         &context.semantic_catalog,

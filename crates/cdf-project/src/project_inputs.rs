@@ -11,8 +11,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ManifestInputContentHash, PROJECT_FILE_NAME, PROJECT_MANIFEST_MAX_BYTES, ProjectConfig,
-    ProjectSourceConfig, manifest::PROJECT_MANIFEST_MAX_INPUTS,
+    ManifestInputContentHash, PROJECT_FILE_NAME, ProjectConfig, ProjectSourceConfig,
+    manifest::{PROJECT_MANIFEST_MAX_BYTES, PROJECT_MANIFEST_MAX_INPUTS},
 };
 
 const CDF_DIRECTORY: &str = "cdf";
@@ -96,7 +96,7 @@ pub struct ProjectResourceInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProjectResourcePath {
+pub struct ProjectResourcePath {
     pub relative_path: String,
     pub namespace: ProjectResourceNamespace,
     pub resource_name: ProjectResourceName,
@@ -117,6 +117,77 @@ pub struct ProjectResourceInventory {
     pub sources: BTreeMap<ProjectSourceName, ProjectSourceBinding>,
     pub resources: Vec<ProjectResourceInput>,
     pub total_authored_bytes: usize,
+}
+
+pub(crate) fn resolve_project_source_binding(
+    config: &ProjectConfig,
+    environment: &str,
+    registry: &SourceRegistry,
+    source_name: &ProjectSourceName,
+) -> Result<ProjectSourceBinding> {
+    let selected_environment = config.environments.get(environment).ok_or_else(|| {
+        CdfError::contract(format!("environment `{environment}` is not declared"))
+    })?;
+    let configured_sources = validate_source_configuration_shape(config)?;
+    let base = configured_sources.get(source_name).ok_or_else(|| {
+        CdfError::contract(format!(
+            "configured source {:?} is not declared in cdf.toml",
+            source_name.as_str()
+        ))
+    })?;
+    let overlay = selected_environment
+        .sources
+        .get(source_name.as_str())
+        .cloned()
+        .unwrap_or_default();
+    let mut effective_options = base.options.clone();
+    effective_options.extend(overlay.options.clone());
+    let driver = registry
+        .validate_source_configuration(&base.source_type, &effective_options)
+        .map_err(|error| {
+            CdfError::new(
+                error.kind,
+                format!(
+                    "[sources.{}] effective configuration for environment `{environment}`: {}",
+                    source_name.as_str(),
+                    error.message
+                ),
+            )
+        })?;
+    let base_hash = configuration_hash(SourceConfigurationHashInput {
+        phase: "base",
+        environment: None,
+        source: source_name.as_str(),
+        source_type: Some(&base.source_type),
+        options: &base.options,
+    })?;
+    let overlay_hash = configuration_hash(SourceConfigurationHashInput {
+        phase: "overlay",
+        environment: Some(environment),
+        source: source_name.as_str(),
+        source_type: None,
+        options: &overlay.options,
+    })?;
+    let effective_hash = configuration_hash(SourceConfigurationHashInput {
+        phase: "effective",
+        environment: Some(environment),
+        source: source_name.as_str(),
+        source_type: Some(&base.source_type),
+        options: &effective_options,
+    })?;
+    let driver_descriptor_hash = artifact_hash(&driver)?;
+    Ok(ProjectSourceBinding {
+        name: source_name.clone(),
+        source_type: base.source_type.clone(),
+        base_options: base.options.clone(),
+        overlay_options: overlay.options,
+        effective_options,
+        base_hash,
+        overlay_hash,
+        effective_hash,
+        driver,
+        driver_descriptor_hash,
+    })
 }
 
 #[derive(Serialize)]

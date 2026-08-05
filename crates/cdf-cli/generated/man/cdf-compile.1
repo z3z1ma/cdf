@@ -2,18 +2,21 @@
 .el .ds Aq '
 .TH cdf-compile 1  "cdf-compile "
 .SH NAME
-cdf\-compile \- Compile the selected project into a verified local manifest
+cdf\-compile \- Prepare independently verified compiled resource artifacts
 .SH SYNOPSIS
-\fBcdf compile\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-refresh\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
+\fBcdf compile\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-locked\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
-Compile the selected project into .cdf/manifest.json. The default mode is offline and requires current cdf.lock authority. \-\-refresh explicitly performs read\-only source observations and may update cdf.lock and schema artifacts.
+Compile selected resources independently. Ordinary compile may establish missing first\-use schema authority; \-\-locked requires sufficient unchanged cdf.lock authority. Successful resources are retained when another resource fails.
 .SH OPTIONS
+.TP
+\fB\-\-exclude\fR \fI<RESOURCE_GLOB>\fR
+Exclude resources matching this glob; may be repeated
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-refresh\fR
-Refresh read\-only source observations and publish updated project authority
+\fB\-\-locked\fR
+Require sufficient unchanged cdf.lock authority
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -71,3 +74,11 @@ Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fIRESOURCE_SELECTOR\fR]
+Exact or glob resource selectors; quote shell\-sensitive globs
+.SH EXTRA
+Examples:
+  cdf compile local.events
+  cdf compile \*(Aqwarehouse.*\*(Aq \-\-exclude warehouse.experimental
+  cdf compile \-\-locked

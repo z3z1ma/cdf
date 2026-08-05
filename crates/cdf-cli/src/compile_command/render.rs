@@ -3,15 +3,20 @@ use crate::render::{
     primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine},
 };
 
-use super::CompileReport;
+use super::{CompileReport, CompileResourceStatus};
 
 pub(super) fn document(report: &CompileReport) -> RenderDocument {
-    RenderDocument::new()
+    let status = if report.counts.failed == 0 {
+        StatusKind::Success
+    } else {
+        StatusKind::Error
+    };
+    let mut document = RenderDocument::new()
         .push(StatusLine::new(
-            StatusKind::Success,
+            status,
             format!(
-                "compiled {} resource(s) into {}",
-                report.resources, report.manifest_path
+                "compiled {}/{} selected resource(s)",
+                report.counts.compiled, report.counts.selected
             ),
         ))
         .blank_line()
@@ -19,27 +24,21 @@ pub(super) fn document(report: &CompileReport) -> RenderDocument {
             KeyValuePanel::new("Project compilation")
                 .row("project", &report.project)
                 .row("environment", &report.environment)
-                .row(
-                    "mode",
-                    match report.mode {
-                        cdf_project::ProjectCompilationMode::LockedOffline => "locked_offline",
-                        cdf_project::ProjectCompilationMode::Refresh => "refresh",
-                    },
-                )
-                .row("manifest hash", &report.manifest_hash)
-                .row(
-                    "semantic definitions",
-                    report.semantic_definitions.to_string(),
-                )
-                .row(
-                    "semantic references",
-                    report.semantic_references.to_string(),
-                )
-                .row(
-                    "source observations",
-                    report.source_observations.to_string(),
-                ),
-        )
+                .row("locked", report.locked.to_string())
+                .row("index", &report.index_path),
+        );
+    for resource in &report.resources {
+        let (kind, label) = match resource.status {
+            CompileResourceStatus::Compiled => (StatusKind::Success, "compiled"),
+            CompileResourceStatus::Failed => (StatusKind::Error, "failed"),
+        };
+        let mut message = format!("{label} {}", resource.resource_id);
+        if let Some(error) = &resource.error {
+            message.push_str(&format!(": {}", error.message));
+        }
+        document = document.push(StatusLine::new(kind, message));
+    }
+    document
         .blank_line()
         .push(NextCommand::new(&report.next_command))
 }

@@ -11,9 +11,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params,
 use serde::Serialize;
 use serde_json::{Number, Value};
 
-use crate::{context::ProjectManifestContext, error_catalog, output::CliError};
+use crate::{context::ProjectCompilationContext, error_catalog, output::CliError};
 
 const TABLES: &[&str] = &[
+    "compilation_resources",
     "manifest_project",
     "manifest_inputs",
     "manifest_resources",
@@ -73,13 +74,13 @@ impl SystemSqlReport {
 }
 
 pub(crate) fn run(
-    context: &ProjectManifestContext,
+    context: &ProjectCompilationContext,
     query: &str,
 ) -> Result<SystemSqlReport, CliError> {
     let query = read_only_query(query)?;
     let conn = Connection::open_in_memory().map_err(workspace_sqlite_error)?;
     create_schema(&conn)?;
-    mount_manifest(&conn, &context.manifest)?;
+    mount_compilation(&conn, &context.compilation)?;
     mount_checkpoints(
         &conn,
         context.state_store_path()?,
@@ -192,6 +193,18 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
             generated_at_unix_ms INTEGER
         );
 
+        CREATE TABLE compilation_resources (
+            resource_id TEXT NOT NULL,
+            resource_file TEXT NOT NULL,
+            status TEXT NOT NULL,
+            authored_content_hash TEXT,
+            artifact_path TEXT,
+            artifact_hash TEXT,
+            diagnostic_code TEXT,
+            diagnostic_kind TEXT,
+            diagnostic_message TEXT
+        );
+
         CREATE TABLE manifest_inputs (
             input_id TEXT NOT NULL,
             input_kind TEXT NOT NULL,
@@ -274,10 +287,57 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
     .map_err(workspace_sqlite_error)
 }
 
-fn mount_manifest(
+fn mount_compilation(
     conn: &Connection,
-    manifest: &cdf_project::ProjectManifest,
+    compilation: &cdf_project::CompilationSnapshot,
 ) -> Result<(), CliError> {
+    let index = &compilation.index;
+    let mut insert_index_resource = conn
+        .prepare(
+            "
+            INSERT INTO compilation_resources (
+                resource_id, resource_file, status, authored_content_hash,
+                artifact_path, artifact_hash, diagnostic_code, diagnostic_kind,
+                diagnostic_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .map_err(workspace_sqlite_error)?;
+    for entry in index.resources.values() {
+        insert_index_resource
+            .execute(params![
+                &entry.resource_id,
+                &entry.path,
+                json_scalar_string(&entry.status)?,
+                entry.authored_content_hash.as_deref(),
+                entry
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| artifact.path.as_str()),
+                entry
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| artifact.artifact_hash.as_str()),
+                entry
+                    .diagnostic
+                    .as_ref()
+                    .map(|diagnostic| diagnostic.code.as_str()),
+                entry
+                    .diagnostic
+                    .as_ref()
+                    .map(|diagnostic| diagnostic.kind.as_str()),
+                entry
+                    .diagnostic
+                    .as_ref()
+                    .map(|diagnostic| diagnostic.message.as_str()),
+            ])
+            .map_err(workspace_sqlite_error)?;
+    }
+    let normalizer = compilation
+        .lock
+        .as_ref()
+        .and_then(|lock| lock.resources.values().next())
+        .map_or("", |resource| resource.compiler.normalizer.as_str());
     conn.execute(
         "
         INSERT INTO manifest_project (
@@ -303,25 +363,25 @@ fn mount_manifest(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ",
         params![
-            i64::from(manifest.version),
-            manifest.manifest_hash.as_str(),
-            &manifest.header.project_name,
-            &manifest.header.environment,
-            manifest.header.environment_binding_hash.as_str(),
-            &manifest.header.compiler_version,
-            json_string(&manifest.header.dependency_tuple)?,
-            manifest.header.dependency_tuple_hash.as_str(),
-            &manifest.header.normalizer,
-            manifest.header.lock_content_hash.as_str(),
-            manifest.header.lock_semantic_hash.as_str(),
-            json_scalar_string(&manifest.header.compilation_mode)?,
-            json_string(&manifest.header.compiler_policies)?,
-            json_string(&manifest.header.features)?,
-            manifest.hashes.authored_inputs.as_str(),
-            manifest.hashes.lock_binding.as_str(),
-            manifest.hashes.semantics.as_str(),
-            manifest.hashes.lineage.as_str(),
-            manifest.generated_at_unix_ms,
+            i64::from(index.version),
+            &index.index_hash,
+            &index.project_name,
+            &index.environment,
+            &index.environment_binding_hash,
+            env!("CARGO_PKG_VERSION"),
+            "{}",
+            &index.index_hash,
+            normalizer,
+            "",
+            "",
+            "resource_index",
+            "{}",
+            "[]",
+            &index.index_hash,
+            &index.index_hash,
+            &index.index_hash,
+            &index.index_hash,
+            Option::<i64>::None,
         ],
     )
     .map_err(workspace_sqlite_error)?;
@@ -341,7 +401,13 @@ fn mount_manifest(
             ",
         )
         .map_err(workspace_sqlite_error)?;
-    for input in &manifest.inputs {
+    let inputs = compilation
+        .artifacts
+        .values()
+        .flat_map(|artifact| artifact.inputs.iter())
+        .map(|input| (input.input_id.as_str(), input))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for input in inputs.values() {
         insert_input
             .execute(params![
                 &input.input_id,
@@ -403,7 +469,11 @@ fn mount_manifest(
             ",
         )
         .map_err(workspace_sqlite_error)?;
-    for resource in &manifest.resources {
+    for resource in compilation
+        .artifacts
+        .values()
+        .map(|artifact| &artifact.resource)
+    {
         insert_resource
             .execute(params![
                 &resource.resource_id,
@@ -464,7 +534,13 @@ fn mount_manifest(
             ",
         )
         .map_err(workspace_sqlite_error)?;
-    for semantic in &manifest.semantics {
+    let semantics = compilation
+        .artifacts
+        .values()
+        .flat_map(|artifact| artifact.semantics.iter())
+        .map(|semantic| (semantic.definition_id.as_str(), semantic))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for semantic in semantics.values() {
         insert_semantic
             .execute(params![
                 &semantic.definition_id,
@@ -487,7 +563,11 @@ fn mount_manifest(
             ",
         )
         .map_err(workspace_sqlite_error)?;
-    for edge in &manifest.lineage {
+    for edge in compilation
+        .artifacts
+        .values()
+        .flat_map(|artifact| artifact.lineage.iter())
+    {
         insert_lineage
             .execute(params![
                 &edge.edge_id,
@@ -515,7 +595,12 @@ fn mount_manifest(
             ",
         )
         .map_err(workspace_sqlite_error)?;
-    for (ordinal, diagnostic) in manifest.diagnostics.iter().enumerate() {
+    for (ordinal, diagnostic) in compilation
+        .artifacts
+        .values()
+        .flat_map(|artifact| artifact.diagnostics.iter())
+        .enumerate()
+    {
         insert_diagnostic
             .execute(params![
                 manifest_ordinal_i64(ordinal)?,

@@ -220,7 +220,7 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         crate::destination_registry_test_support::registry_with_quasar_destination().unwrap();
 
     let mut read_only_commands = vec![
-        vec!["compile".to_owned(), "--refresh".to_owned()],
+        vec!["compile".to_owned(), "local.events".to_owned()],
         vec!["validate".to_owned()],
         vec!["contract".to_owned(), "freeze".to_owned()],
         vec!["diff".to_owned(), "schema".to_owned()],

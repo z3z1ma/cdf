@@ -247,11 +247,11 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let decoded = parse_lock(&encoded).unwrap();
     assert_eq!(decoded, lock);
     assert_eq!(lock_to_toml(&decoded).unwrap(), encoded);
-    let old_version = encoded.replacen("version = 2", "version = 1", 1);
+    let old_version = encoded.replacen("version = 3", "version = 2", 1);
     let error = parse_lock(&old_version).unwrap_err();
     assert!(error.message.contains("unsupported cdf.lock version"));
-    assert_eq!(lock.normalizer, NORMALIZER_NAMECASE_V1);
     let resource = lock.resources.get("github.issues").unwrap();
+    assert_eq!(resource.compiler.normalizer, NORMALIZER_NAMECASE_V1);
     assert!(resource.capability_sheet_hash.starts_with("sha256:"));
     assert_eq!(resource.execution_extent, ExecutionExtent::bounded());
     assert!(resource.execution_extent_hash.is_none());
@@ -479,8 +479,8 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     let resource = fs::read_to_string(root.join("cdf/local/events.cdf.sql")).unwrap();
     assert!(readme.contains("docs/quickstart.md"));
     assert!(readme.contains("cdf validate"));
-    assert!(readme.contains("cdf compile --refresh"));
-    assert!(readme.contains("manifest_resources"));
+    assert!(readme.contains("cdf compile local.events"));
+    assert!(readme.contains("compilation_resources"));
     assert!(readme.contains("cdf plan local.events"));
     assert!(readme.contains("cdf run local.events"));
     assert!(!readme.contains("secret://"));
