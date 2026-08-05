@@ -248,6 +248,7 @@ impl SourceDriver for IcebergSourceDriver {
                 descriptor: request.descriptor,
                 schema: request.schema,
                 type_policy_allowances: request.type_policy_allowances,
+                source_materializations: Vec::new(),
                 effective_schema_runtime: request.effective_schema_runtime,
                 baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
                 redacted_options: encoded.clone(),

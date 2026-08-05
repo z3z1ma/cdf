@@ -365,6 +365,7 @@ mod tests {
                     false,
                 )]),
                 type_policy_allowances: TypePolicyAllowances::default(),
+                source_materializations: Vec::new(),
                 effective_schema_runtime: None,
                 baseline_observation_schema_catalog: Vec::new(),
                 redacted_options: serde_json::json!({}),

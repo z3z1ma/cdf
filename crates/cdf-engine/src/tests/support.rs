@@ -245,6 +245,7 @@ pub(super) struct MockResource {
     pub(super) effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     pub(super) baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     pub(super) type_policy_allowances: cdf_kernel::TypePolicyAllowances,
+    pub(super) source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     pub(super) duplicate_observation_identity: bool,
     pub(super) misroute_batches: bool,
     pub(super) retry_safety: cdf_kernel::PartitionRetrySafety,
@@ -288,6 +289,7 @@ impl MockResource {
             effective_schema_runtime: None,
             baseline_observation_schema_catalog: Vec::new(),
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
+            source_materializations: Vec::new(),
             duplicate_observation_identity: false,
             misroute_batches: false,
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -344,6 +346,14 @@ impl MockResource {
     ) -> Self {
         catalog.sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
         self.baseline_observation_schema_catalog = catalog;
+        self
+    }
+
+    pub(super) fn with_source_materializations(
+        mut self,
+        source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
+    ) -> Self {
+        self.source_materializations = source_materializations;
         self
     }
 
@@ -441,6 +451,10 @@ impl ResourceStream for MockResource {
 
     fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.compiled_source_plan_hash.get()
+    }
+
+    fn source_materializations(&self) -> &[cdf_kernel::SourceMaterializationRule] {
+        &self.source_materializations
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
@@ -1037,6 +1051,7 @@ pub(super) fn mock_compiled_source_plan_with_speculation(
             descriptor: resource.descriptor().clone(),
             schema: resource.schema().as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances,
+            source_materializations: resource.source_materializations.clone(),
             effective_schema_runtime: resource.effective_schema_runtime.clone(),
             baseline_observation_schema_catalog: resource
                 .baseline_observation_schema_catalog

@@ -32,6 +32,7 @@ mod run_event;
 mod schema_fingerprint;
 mod scope;
 mod semantic;
+mod source_materialization;
 mod statistics;
 mod stratified_selection;
 
@@ -175,6 +176,7 @@ pub use semantic::{
     CDF_PACKAGE_ROW_ORDINAL_SEMANTIC, SemanticParameterValue, SemanticReference,
     SemanticReferenceError,
 };
+pub use source_materialization::{SourceMaterializationRule, validate_source_materializations};
 pub use statistics::{
     BatchStats, ColumnStats, IncompleteStatisticsReason, STATISTICS_MODEL_VERSION,
     StatisticsArrowField, StatisticsArrowType, StatisticsArrowUnionField, StatisticsCompleteness,

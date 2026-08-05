@@ -223,6 +223,10 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.type_policy_allowances()
     }
 
+    fn source_materializations(&self) -> &[cdf_kernel::SourceMaterializationRule] {
+        self.inner.source_materializations()
+    }
+
     fn replay_retention(&self) -> Option<&dyn cdf_kernel::SourceReplayRetention> {
         self.inner.replay_retention()
     }

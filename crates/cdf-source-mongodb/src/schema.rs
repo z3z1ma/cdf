@@ -11,7 +11,8 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CdfError, PreContractPhysicalReconciliation, PreContractResidualCandidate, Result,
+    CanonicalArrowType, CdfError, PHYSICAL_TYPE_METADATA_KEY, PreContractPhysicalReconciliation,
+    PreContractResidualCandidate, Result, SEMANTIC_METADATA_KEY, SourceMaterializationRule,
     physical_type, semantic, source_name, with_physical_type, with_semantic, with_source_name,
 };
 use mongodb::bson::{RawBsonRef, RawDocument};
@@ -19,6 +20,8 @@ use mongodb::bson::{RawBsonRef, RawDocument};
 pub(crate) const MONGODB_OBJECT_ID_SEMANTIC: &str = cdf_semantic::MONGODB_OBJECT_ID_SEMANTIC;
 pub(crate) const MONGODB_DECIMAL_TEXT_SEMANTIC: &str =
     cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC;
+pub(crate) const MONGODB_DECIMAL128_MATERIALIZER: &str =
+    "mongodb.bson_decimal128_to_arrow_decimal128.v1";
 const MAXIMUM_SCHEMA_FIELDS: usize = 4_096;
 const MAXIMUM_SCHEMA_DEPTH: usize = 32;
 const MAXIMUM_RESIDUAL_CANDIDATES: usize = 65_536;
@@ -30,6 +33,58 @@ const MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES: usize = 1_024;
 const MAXIMUM_RESIDUAL_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_COLUMN_ACCUMULATOR_BYTES: u64 = 32 * 1024 * 1024;
 const RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES: u64 = 512;
+
+pub(crate) fn compile_source_materializations(
+    schema: &Schema,
+) -> Result<Vec<SourceMaterializationRule>> {
+    let mut rules = Vec::new();
+    for field in schema.fields() {
+        collect_source_materializations(field, &mut Vec::new(), &mut rules)?;
+    }
+    rules.sort_by(|left, right| left.field_path.cmp(&right.field_path));
+    Ok(rules)
+}
+
+fn collect_source_materializations(
+    field: &Field,
+    parent_path: &mut Vec<String>,
+    rules: &mut Vec<SourceMaterializationRule>,
+) -> Result<()> {
+    parent_path.push(
+        source_name(field)
+            .unwrap_or_else(|| field.name())
+            .to_owned(),
+    );
+    match field.data_type() {
+        DataType::Decimal128(_, _) => rules.push(SourceMaterializationRule::new(
+            MONGODB_DECIMAL128_MATERIALIZER,
+            parent_path.clone(),
+            CanonicalArrowType::from_arrow(&DataType::Utf8)?,
+            BTreeMap::from([
+                (
+                    PHYSICAL_TYPE_METADATA_KEY.to_owned(),
+                    "bson:decimal128".to_owned(),
+                ),
+                (
+                    SEMANTIC_METADATA_KEY.to_owned(),
+                    MONGODB_DECIMAL_TEXT_SEMANTIC.to_owned(),
+                ),
+            ]),
+            CanonicalArrowType::from_arrow(field.data_type())?,
+        )?),
+        DataType::Struct(children) => {
+            for child in children {
+                collect_source_materializations(child, parent_path, rules)?;
+            }
+        }
+        DataType::List(child) => {
+            collect_source_materializations(child, parent_path, rules)?;
+        }
+        _ => {}
+    }
+    parent_path.pop();
+    Ok(())
+}
 
 pub(crate) fn attach_expected_physical_types(
     logical_schema: &Schema,

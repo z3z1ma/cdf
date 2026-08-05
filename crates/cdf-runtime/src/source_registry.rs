@@ -637,6 +637,10 @@ impl ResourceStream for RegistryValidatedResource {
         self.inner.type_policy_allowances()
     }
 
+    fn source_materializations(&self) -> &[cdf_kernel::SourceMaterializationRule] {
+        self.inner.source_materializations()
+    }
+
     fn replay_retention(&self) -> Option<&dyn cdf_kernel::SourceReplayRetention> {
         self.inner.replay_retention()
     }
@@ -658,6 +662,9 @@ fn verify_resolved_resource(
     }
     if resource.type_policy_allowances() != plan.type_policy_allowances {
         mismatches.push("type-policy allowances");
+    }
+    if resource.source_materializations() != plan.source_materializations {
+        mismatches.push("source materializations");
     }
     let identities = plan.identities()?;
     if resource.compiled_source_plan_hash() != Some(identities.compiled_plan()) {

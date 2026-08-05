@@ -1205,7 +1205,7 @@ fn schema_reconciliation_keeps_string_parse_coercions_opt_in() {
 }
 
 #[test]
-fn tagged_mongodb_decimal_requires_exact_source_materialization() {
+fn compiled_exact_source_materialization_is_required_and_adapter_only() {
     let observed_field = semantic_field(
         with_physical_type(
             Field::new("amount", DataType::Utf8, false),
@@ -1219,11 +1219,42 @@ fn tagged_mongodb_decimal_requires_exact_source_materialization() {
         DataType::Decimal128(18, 2),
         false,
     )]);
+    let source_materializations = vec![
+        cdf_kernel::SourceMaterializationRule::new(
+            "test.exact_text_to_decimal.v1",
+            vec!["amount".to_owned()],
+            cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Utf8).unwrap(),
+            BTreeMap::from([
+                (
+                    cdf_kernel::PHYSICAL_TYPE_METADATA_KEY.to_owned(),
+                    "bson:decimal128".to_owned(),
+                ),
+                (
+                    cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                    cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC.to_owned(),
+                ),
+            ]),
+            cdf_kernel::CanonicalArrowType::from_arrow(constraint.field(0).data_type()).unwrap(),
+        )
+        .unwrap(),
+    ];
     let mut type_policy = ContractPolicy::default().types;
     type_policy.coerce_types = false;
 
-    let reconciliation =
-        reconcile_schema(observed_schema.as_ref(), &constraint, &type_policy).unwrap();
+    let unbound =
+        plan_schema_reconciliation(observed_schema.as_ref(), &constraint, &type_policy).unwrap();
+    assert_eq!(
+        decision_for(&unbound.plan, "amount").decision,
+        FieldCoercionDecision::LossyRejected
+    );
+
+    let reconciliation = reconcile_schema_with_source_materializations(
+        observed_schema.as_ref(),
+        &constraint,
+        &type_policy,
+        &source_materializations,
+    )
+    .unwrap();
     assert_eq!(
         decision_for(&reconciliation.plan, "amount").decision,
         FieldCoercionDecision::SourceMaterializedExact

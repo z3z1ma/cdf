@@ -2505,6 +2505,10 @@ pub trait ResourceStream: Send + Sync {
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         TypePolicyAllowances::default()
     }
+    /// Exact physical-to-Arrow relations compiled by the source that owns the decoder.
+    fn source_materializations(&self) -> &[crate::SourceMaterializationRule] {
+        &[]
+    }
     /// Runtime retention authority required by non-pausable unbounded sources.
     ///
     /// The source owns replay-unit encoding. Generic orchestration owns the checkpoint ordering:

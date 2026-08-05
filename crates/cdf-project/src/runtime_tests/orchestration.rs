@@ -722,6 +722,7 @@ pub(super) fn compiled_backfill_source(
             descriptor: resource.descriptor.clone(),
             schema: resource.schema.as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances(),
+            source_materializations: Vec::new(),
             effective_schema_runtime: resource.effective_schema_runtime().cloned(),
             baseline_observation_schema_catalog: resource
                 .baseline_observation_schema_catalog()

@@ -28,7 +28,7 @@ use crate::{
         MongoDbCollectionResource, mongodb_collection_capabilities,
         validate_compiled_schema_evidence, validate_resource_shape,
     },
-    schema::SchemaInference,
+    schema::{SchemaInference, compile_source_materializations},
 };
 
 const DEFAULT_BATCH_ROWS: u32 = 65_536;
@@ -194,6 +194,7 @@ impl SourceDriver for MongoDbSourceDriver {
             &Arc::new(request.schema.clone()),
             &collection,
         )?;
+        let source_materializations = compile_source_materializations(&request.schema)?;
         CompiledSourcePlan::new(
             self.descriptor.clone(),
             mongodb_collection_capabilities(&request.descriptor),
@@ -202,6 +203,7 @@ impl SourceDriver for MongoDbSourceDriver {
                 descriptor: request.descriptor,
                 schema: request.schema,
                 type_policy_allowances: request.type_policy_allowances,
+                source_materializations,
                 effective_schema_runtime: request.effective_schema_runtime,
                 baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
                 redacted_options: serde_json::json!({

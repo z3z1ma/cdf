@@ -26,8 +26,8 @@ use crate::{
     query::{build_query, scan_from_partition},
     schema::{
         MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference,
-        attach_expected_physical_types, decode_batch, decode_batch_with_evidence,
-        decode_batch_with_physical_schema, parse_decimal128,
+        attach_expected_physical_types, compile_source_materializations, decode_batch,
+        decode_batch_with_evidence, decode_batch_with_physical_schema, parse_decimal128,
     },
 };
 
@@ -733,6 +733,58 @@ fn physical_catalog_attachment_enforces_decimal_semantics() {
     let plain_text = Schema::new(vec![Field::new("amount", DataType::Utf8, true)]);
     let error = attach_expected_physical_types(&plain_text, &observed).unwrap_err();
     assert!(error.message.contains("tagged-text semantic"), "{error}");
+}
+
+#[test]
+fn decimal_materialization_rules_cover_logical_semantics_structs_and_lists() {
+    let schema = Schema::new(vec![
+        semantic_field(
+            Field::new("amount", DataType::Decimal128(18, 2), false),
+            "cdf.pii@1(class=\"financial\")",
+        ),
+        Field::new_struct(
+            "profile",
+            vec![Field::new(
+                "nested_amount",
+                DataType::Decimal128(20, 4),
+                true,
+            )],
+            true,
+        ),
+        Field::new_list(
+            "amounts",
+            Field::new("item", DataType::Decimal128(12, 2), true),
+            true,
+        ),
+    ]);
+
+    let rules = compile_source_materializations(&schema).unwrap();
+    cdf_kernel::validate_source_materializations(&rules, &schema).unwrap();
+    assert_eq!(
+        rules
+            .iter()
+            .map(|rule| rule.field_path.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["amount".to_owned()],
+            vec!["amounts".to_owned(), "item".to_owned()],
+            vec!["profile".to_owned(), "nested_amount".to_owned()],
+        ]
+    );
+    for rule in &rules {
+        assert_eq!(
+            rule.required_observed_metadata
+                .get(cdf_kernel::PHYSICAL_TYPE_METADATA_KEY)
+                .map(String::as_str),
+            Some("bson:decimal128")
+        );
+        assert_eq!(
+            rule.required_observed_metadata
+                .get(cdf_kernel::SEMANTIC_METADATA_KEY)
+                .map(String::as_str),
+            Some(MONGODB_DECIMAL_TEXT_SEMANTIC)
+        );
+    }
 }
 
 #[test]

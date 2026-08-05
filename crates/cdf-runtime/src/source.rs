@@ -1516,6 +1516,8 @@ pub struct CompiledSourcePlan {
     #[serde(with = "canonical_schema_serde")]
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
+    /// Exact adapter-owned physical-to-Arrow relations available to generic schema admission.
+    pub source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     pub redacted_options: serde_json::Value,
@@ -1781,6 +1783,7 @@ pub struct CompiledSourcePlanInput {
     pub descriptor: ResourceDescriptor,
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
+    pub source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     pub redacted_options: serde_json::Value,
@@ -1820,6 +1823,7 @@ impl CompiledSourcePlan {
             stream_capabilities,
             schema: input.schema,
             type_policy_allowances: input.type_policy_allowances,
+            source_materializations: input.source_materializations,
             effective_schema_runtime: input.effective_schema_runtime,
             baseline_observation_schema_catalog: input.baseline_observation_schema_catalog,
             redacted_options: input.redacted_options,
@@ -1841,6 +1845,7 @@ impl CompiledSourcePlan {
             self.stream_capabilities.as_ref(),
         )?;
         validate_source_stream_schema(self.stream_capabilities.as_ref(), &self.schema)?;
+        cdf_kernel::validate_source_materializations(&self.source_materializations, &self.schema)?;
         if !self.redacted_options.is_object() || !self.physical_plan.is_object() {
             return Err(CdfError::contract(
                 "compiled source options and physical plan must be JSON objects",
@@ -1956,6 +1961,7 @@ impl CompiledSourcePlan {
             "resource_capabilities": self.resource_capabilities,
             "execution_capabilities": self.execution_capabilities,
             "type_policy_allowances": self.type_policy_allowances,
+            "source_materializations": self.source_materializations,
             "redacted_options": self.redacted_options,
             "redacted_options_hash": self.redacted_options_hash,
             "physical_plan": self.physical_plan,

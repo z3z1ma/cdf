@@ -753,22 +753,67 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
 
 #[test]
 fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
+    let pii_amount = semantic_field(
+        Field::new("amount", DataType::Decimal128(18, 2), false),
+        "cdf.pii@1(class=\"financial\")",
+    );
+    let nested_amount = Field::new("nested_amount", DataType::Decimal128(18, 2), true);
+    let list_item = Field::new("item", DataType::Decimal128(18, 2), true);
     let effective_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
-        Field::new("amount", DataType::Decimal128(18, 2), false),
+        pii_amount,
+        Field::new_struct("profile", vec![nested_amount], true),
+        Field::new_list("amounts", list_item, true),
         Field::new("active", DataType::Boolean, false),
     ]));
-    let physical_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
+    let physical_decimal = |name: &str, nullable: bool| {
         semantic_field(
             cdf_kernel::with_physical_type(
-                Field::new("amount", DataType::Utf8, false),
+                Field::new(name, DataType::Utf8, nullable),
                 "bson:decimal128",
             ),
             cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC,
+        )
+    };
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        physical_decimal("amount", false),
+        Field::new_struct(
+            "profile",
+            vec![physical_decimal("nested_amount", true)],
+            true,
         ),
+        Field::new_list("amounts", physical_decimal("item", true), true),
         Field::new("active", DataType::Boolean, false),
     ]));
+    let exact_materializer = |field_path: Vec<&str>, output: &DataType| {
+        cdf_kernel::SourceMaterializationRule::new(
+            "mongodb.bson_decimal128_to_arrow_decimal128.v1",
+            field_path.into_iter().map(str::to_owned).collect(),
+            cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Utf8).unwrap(),
+            BTreeMap::from([
+                (
+                    cdf_kernel::PHYSICAL_TYPE_METADATA_KEY.to_owned(),
+                    "bson:decimal128".to_owned(),
+                ),
+                (
+                    cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                    cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC.to_owned(),
+                ),
+            ]),
+            cdf_kernel::CanonicalArrowType::from_arrow(output).unwrap(),
+        )
+        .unwrap()
+    };
+    let mut source_materializations = vec![
+        exact_materializer(vec!["amount"], effective_schema.field(1).data_type()),
+        exact_materializer(
+            vec!["profile", "nested_amount"],
+            &DataType::Decimal128(18, 2),
+        ),
+        exact_materializer(vec!["amounts", "item"], &DataType::Decimal128(18, 2)),
+    ];
+    source_materializations.sort_by(|left, right| left.field_path.cmp(&right.field_path));
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let decimals = Decimal128Array::from(vec![1_234_i128])
         .with_precision_and_scale(18, 2)
@@ -778,6 +823,8 @@ fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
         vec![
             Arc::new(Int32Array::from(vec![1])) as ArrayRef,
             Arc::new(decimals) as ArrayRef,
+            arrow_array::new_null_array(effective_schema.field(2).data_type(), 1),
+            arrow_array::new_null_array(effective_schema.field(3).data_type(), 1),
             Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
         ],
     )
@@ -816,7 +863,8 @@ fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
     .unwrap();
     let resource = MockResource::tier_b(vec![batch])
         .with_partition_count(1)
-        .with_effective_schema_runtime(Arc::clone(&effective_schema), runtime);
+        .with_effective_schema_runtime(Arc::clone(&effective_schema), runtime)
+        .with_source_materializations(source_materializations);
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
@@ -829,13 +877,15 @@ fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
             ),
         )
         .unwrap();
-    assert_eq!(
-        plan.effective_schema_evidence().unwrap().observations[0]
-            .coercion_plan
-            .fields[1]
-            .decision,
-        FieldCoercionDecision::SourceMaterializedExact
-    );
+    let fields = &plan.effective_schema_evidence().unwrap().observations[0]
+        .coercion_plan
+        .fields;
+    for index in [1, 2, 3] {
+        assert_eq!(
+            fields[index].decision,
+            FieldCoercionDecision::SourceMaterializedExact
+        );
+    }
 
     let temp = TempDir::new().unwrap();
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();

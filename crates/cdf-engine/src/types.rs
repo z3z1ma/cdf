@@ -7,8 +7,9 @@ use arrow_schema::Schema;
 use cdf_contract::{
     CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, FieldCoercionDecision,
     IdentifierPolicy, ResidualProgram, RowDispositionRule, SchemaChangeKind, SchemaCoercionPlan,
-    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction, plan_schema_reconciliation,
-    reconcile_schema,
+    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction,
+    plan_schema_reconciliation_with_source_materializations,
+    reconcile_schema_with_source_materializations,
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
@@ -525,7 +526,7 @@ fn rebind_package_sink(operators: &mut [OperatorNode], package_id: &str) -> Resu
     Ok(())
 }
 
-pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 3;
+pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 4;
 pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
     "source_generation",
     "source_driver_and_codec",
@@ -547,6 +548,7 @@ pub struct CompiledSchemaAdmissionPlan {
     pub normalizer_version: String,
     pub identifier_policy: IdentifierPolicy,
     pub type_policy: TypePolicy,
+    pub source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub residual: Option<ResidualProgram>,
     pub row_dispositions: Vec<RowDispositionRule>,
@@ -564,6 +566,7 @@ impl CompiledSchemaAdmissionPlan {
         constraint_schema: &Schema,
         validation_program: &ValidationProgram,
         type_policy: TypePolicy,
+        source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     ) -> Result<Self> {
         let mut control_critical_fields = validation_program
             .residual
@@ -585,6 +588,7 @@ impl CompiledSchemaAdmissionPlan {
             normalizer_version: validation_program.normalizer_version.clone(),
             identifier_policy: validation_program.identifier_policy.clone(),
             type_policy,
+            source_materializations,
             schema_verdicts: validation_program.schema_verdicts.clone(),
             residual: validation_program.residual.clone(),
             row_dispositions: validation_program.row_dispositions.clone(),
@@ -596,6 +600,10 @@ impl CompiledSchemaAdmissionPlan {
             contract_program_hash: cdf_runtime::artifact_hash(validation_program)?,
             source: None,
         };
+        cdf_kernel::validate_source_materializations(
+            &plan.source_materializations,
+            constraint_schema,
+        )?;
         plan.validate_intrinsic(validation_program)?;
         Ok(plan)
     }
@@ -651,6 +659,27 @@ impl CompiledSchemaAdmissionPlan {
                 "compiled source type allowances do not match the schema-admission program",
             ));
         }
+        let constraint = self.constraint_schema.to_arrow()?;
+        let constraint_sources = constraint
+            .fields()
+            .iter()
+            .map(|field| source_name(field).unwrap_or_else(|| field.name()))
+            .collect::<BTreeSet<_>>();
+        let relevant_source_materializations = source
+            .source_materializations
+            .iter()
+            .filter(|rule| {
+                rule.field_path
+                    .first()
+                    .is_some_and(|field| constraint_sources.contains(field.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if relevant_source_materializations != self.source_materializations {
+            return Err(CdfError::data(
+                "compiled source materializations do not match the schema-admission program",
+            ));
+        }
         self.source = Some(cdf_runtime::CompiledSourceCompilerBinding::compile(source)?);
         Ok(())
     }
@@ -667,7 +696,13 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         let constraint = self.constraint_schema.to_arrow()?;
-        let plan = reconcile_schema(observed, constraint.as_ref(), &self.type_policy)?.plan;
+        let plan = reconcile_schema_with_source_materializations(
+            observed,
+            constraint.as_ref(),
+            &self.type_policy,
+            &self.source_materializations,
+        )?
+        .plan;
         self.validate_materialized(observed, &plan)?;
         Ok(plan)
     }
@@ -685,7 +720,12 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         let constraint = self.constraint_schema.to_arrow()?;
-        let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
+        let report = plan_schema_reconciliation_with_source_materializations(
+            observed,
+            constraint.as_ref(),
+            &self.type_policy,
+            &self.source_materializations,
+        )?;
         if let Some(quarantine) = self.control_critical_missing_quarantine(
             observation_id,
             observed_schema_hash,
@@ -790,7 +830,12 @@ impl CompiledSchemaAdmissionPlan {
             .baseline_projected_schema_hashes
             .binary_search(&observed_hash)
             .is_ok();
-        let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
+        let report = plan_schema_reconciliation_with_source_materializations(
+            observed,
+            constraint.as_ref(),
+            &self.type_policy,
+            &self.source_materializations,
+        )?;
         if !report.errors.is_empty() || report.plan != *plan {
             return Err(CdfError::data(
                 "materialized schema-admission evidence does not match the typed physical observation and compiled constraint",
@@ -1212,7 +1257,11 @@ impl CompiledSchemaAdmissionPlan {
                 self.version
             )));
         }
-        self.constraint_schema.to_arrow()?;
+        let constraint = self.constraint_schema.to_arrow()?;
+        cdf_kernel::validate_source_materializations(
+            &self.source_materializations,
+            constraint.as_ref(),
+        )?;
         if self
             .baseline_projection
             .as_ref()

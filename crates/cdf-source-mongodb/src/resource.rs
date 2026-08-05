@@ -36,6 +36,7 @@ pub(crate) struct MongoDbCollectionResource {
     execution: Option<ExecutionServices>,
     egress: SourceEgressScope,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
+    source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     compiled_source_plan_hash: Option<CompiledSourcePlanHash>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
@@ -80,6 +81,7 @@ impl MongoDbCollectionResource {
             execution: Some(execution),
             egress,
             type_policy_allowances: compiled.type_policy_allowances,
+            source_materializations: compiled.source_materializations.clone(),
             compiled_source_plan_hash: Some(compiled.compiled_source_plan_hash()?),
             effective_schema_runtime: compiled.effective_schema_runtime.clone(),
             baseline_observation_schema_catalog: compiled
@@ -218,6 +220,10 @@ impl ResourceStream for MongoDbCollectionResource {
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.type_policy_allowances
+    }
+
+    fn source_materializations(&self) -> &[cdf_kernel::SourceMaterializationRule] {
+        &self.source_materializations
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cdf_contract::{
     CompiledExpressionPlan, ContractPolicy, ExpressionUse, ObservedSchema, TransformDescription,
     ValidationProgram, assert_verdict_lattice_total, bind_validation_program_to_resource,
-    compile_validation_program, reconcile_schema,
+    compile_validation_program, reconcile_schema_with_source_materializations,
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, CompiledScanIntent, DeliveryGuarantee, EstimateSupport,
@@ -37,6 +37,7 @@ struct PlanFinishContext {
     resource_schema: arrow_schema::Schema,
     schema_admission_constraint: arrow_schema::Schema,
     type_policy: cdf_contract::TypePolicy,
+    source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     expression_schema: arrow_schema::Schema,
     schema_admission_program: ValidationProgram,
     cursor_field: Option<String>,
@@ -108,6 +109,7 @@ impl Planner {
                 resource_schema: resource_schema.clone(),
                 schema_admission_constraint: resource_schema.clone(),
                 type_policy,
+                source_materializations: resource.source_materializations().to_vec(),
                 expression_schema: logical_schema,
                 schema_admission_program,
                 cursor_field: resource
@@ -184,6 +186,10 @@ impl Planner {
                 .flatten(),
         )?;
         let type_policy = resource_type_policy(resource);
+        let source_materializations = source_materializations_for_constraint(
+            resource.source_materializations(),
+            &schema_admission_constraint,
+        );
         let mut plan = self.finish_plan(
             scan,
             input,
@@ -199,6 +205,7 @@ impl Planner {
                 resource_schema: resource_schema.clone(),
                 schema_admission_constraint,
                 type_policy,
+                source_materializations,
                 expression_schema: logical_schema,
                 schema_admission_program,
                 cursor_field: resource
@@ -310,6 +317,7 @@ impl Planner {
             &finish.schema_admission_constraint,
             &finish.schema_admission_program,
             finish.type_policy,
+            finish.source_materializations,
         )?;
         let final_projection = input.request.projection.clone();
         let final_limit = input
@@ -729,12 +737,17 @@ pub(crate) fn rebind_validation_program(
         .compiled_schema_admission
         .baseline_projected_schema_hashes
         .clone();
+    let source_materializations = candidate
+        .compiled_schema_admission
+        .source_materializations
+        .clone();
     let mut compiled_schema_admission = CompiledSchemaAdmissionPlan::compile(
         &candidate.schema_authority,
         expression_schema,
         &physical_expression_schema,
         &candidate.schema_admission_program,
         candidate.compiled_schema_admission.type_policy.clone(),
+        source_materializations,
     )?;
     compiled_schema_admission.baseline_projection = baseline_projection;
     compiled_schema_admission.baseline_projected_schema_hashes = baseline_projected_schema_hashes;
@@ -949,10 +962,11 @@ where
                         observation.observation_id
                     ))
                 })?;
-            let reconciliation = reconcile_schema(
+            let reconciliation = reconcile_schema_with_source_materializations(
                 physical_schema,
                 &admission_constraint,
                 &type_policy,
+                resource.source_materializations(),
             )?;
             validate_reconciliation_target(&reconciliation.schema, &admission_constraint)?;
             Ok(EffectiveSchemaObservationCoercion {
@@ -973,6 +987,26 @@ where
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,
     }))
+}
+
+fn source_materializations_for_constraint(
+    rules: &[cdf_kernel::SourceMaterializationRule],
+    constraint: &arrow_schema::Schema,
+) -> Vec<cdf_kernel::SourceMaterializationRule> {
+    let fields = constraint
+        .fields()
+        .iter()
+        .map(|field| cdf_kernel::source_name(field).unwrap_or_else(|| field.name()))
+        .collect::<BTreeSet<_>>();
+    rules
+        .iter()
+        .filter(|rule| {
+            rule.field_path
+                .first()
+                .is_some_and(|field| fields.contains(field.as_str()))
+        })
+        .cloned()
+        .collect()
 }
 
 fn project_physical_observation(

@@ -7,7 +7,8 @@ use arrow_array::{ArrayRef, RecordBatch, new_null_array};
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CdfError, Result, physical_type, semantic, source_name, with_physical_type, with_source_name,
+    CdfError, Result, SourceMaterializationRule, physical_type, source_name, with_physical_type,
+    with_source_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,7 +100,22 @@ pub fn reconcile_schema(
     constraint: &Schema,
     type_policy: &TypePolicy,
 ) -> Result<SchemaReconciliation> {
-    plan_schema_reconciliation(observed, constraint, type_policy)?.into_result()
+    reconcile_schema_with_source_materializations(observed, constraint, type_policy, &[])
+}
+
+pub fn reconcile_schema_with_source_materializations(
+    observed: &Schema,
+    constraint: &Schema,
+    type_policy: &TypePolicy,
+    source_materializations: &[SourceMaterializationRule],
+) -> Result<SchemaReconciliation> {
+    plan_schema_reconciliation_with_source_materializations(
+        observed,
+        constraint,
+        type_policy,
+        source_materializations,
+    )?
+    .into_result()
 }
 
 pub fn schema_coercion_plan_from_reconciled_schema(
@@ -540,6 +556,18 @@ pub fn plan_schema_reconciliation(
     constraint: &Schema,
     type_policy: &TypePolicy,
 ) -> Result<SchemaReconciliationReport> {
+    plan_schema_reconciliation_with_source_materializations(observed, constraint, type_policy, &[])
+}
+
+pub fn plan_schema_reconciliation_with_source_materializations(
+    observed: &Schema,
+    constraint: &Schema,
+    type_policy: &TypePolicy,
+    source_materializations: &[SourceMaterializationRule],
+) -> Result<SchemaReconciliationReport> {
+    for rule in source_materializations {
+        rule.validate()?;
+    }
     let observed_by_source = fields_by_source_name(observed, "observed")?;
     let constraint_by_source = fields_by_source_name(constraint, "constraint")?;
     let mut matched_sources = BTreeSet::new();
@@ -578,15 +606,13 @@ pub fn plan_schema_reconciliation(
         };
         matched_sources.insert(field_source_name.clone());
 
-        let type_decision = if is_exact_source_materialization(observed_field, constraint_field) {
-            TypeReconciliation::SourceMaterializedExact
-        } else {
-            reconcile_type(
-                observed_field.data_type(),
-                constraint_field.data_type(),
-                type_policy,
-            )
-        };
+        let type_decision = reconcile_field_type(
+            &[field_source_name.clone()],
+            observed_field,
+            constraint_field,
+            type_policy,
+            source_materializations,
+        )?;
         let field_decision =
             type_decision.field_decision(&field_source_name, observed_field, constraint_field);
 
@@ -837,19 +863,102 @@ fn reconcile_type(
     TypeReconciliation::Unsupported
 }
 
-fn is_exact_source_materialization(observed: &Field, constraint: &Field) -> bool {
-    matches!(observed.data_type(), DataType::Utf8)
-        && matches!(constraint.data_type(), DataType::Decimal128(_, _))
-        && semantic(observed) == Some(cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC)
-        && physical_type(observed) == Some("bson:decimal128")
-        && semantic(constraint).is_none()
+fn reconcile_field_type(
+    field_path: &[String],
+    observed: &Field,
+    constraint: &Field,
+    type_policy: &TypePolicy,
+    source_materializations: &[SourceMaterializationRule],
+) -> Result<TypeReconciliation> {
+    if observed.data_type() == constraint.data_type() {
+        return Ok(TypeReconciliation::Preserved);
+    }
+    if observed.data_type().equals_datatype(constraint.data_type()) {
+        return Ok(TypeReconciliation::Rebound);
+    }
+    if is_exact_source_materialization(
+        field_path,
+        observed,
+        constraint,
+        type_policy,
+        source_materializations,
+    )? {
+        return Ok(TypeReconciliation::SourceMaterializedExact);
+    }
+    Ok(reconcile_type(
+        observed.data_type(),
+        constraint.data_type(),
+        type_policy,
+    ))
+}
+
+fn is_exact_source_materialization(
+    field_path: &[String],
+    observed: &Field,
+    constraint: &Field,
+    type_policy: &TypePolicy,
+    source_materializations: &[SourceMaterializationRule],
+) -> Result<bool> {
+    for rule in source_materializations {
+        if rule.matches(field_path, observed, constraint)? {
+            return Ok(true);
+        }
+    }
+    match (observed.data_type(), constraint.data_type()) {
+        (DataType::Struct(observed_fields), DataType::Struct(constraint_fields)) => {
+            let mut contains_exact_materialization = false;
+            for constraint_child in constraint_fields {
+                let source = field_source_name(constraint_child);
+                let Some(observed_child) = observed_fields
+                    .iter()
+                    .find(|field| field_source_name(field) == source)
+                else {
+                    return Ok(false);
+                };
+                let mut child_path = field_path.to_vec();
+                child_path.push(source);
+                match reconcile_field_type(
+                    &child_path,
+                    observed_child,
+                    constraint_child,
+                    type_policy,
+                    source_materializations,
+                )? {
+                    TypeReconciliation::SourceMaterializedExact => {
+                        contains_exact_materialization = true;
+                    }
+                    TypeReconciliation::Preserved
+                    | TypeReconciliation::Rebound
+                    | TypeReconciliation::Widened => {}
+                    _ => return Ok(false),
+                }
+            }
+            Ok(contains_exact_materialization)
+        }
+        (DataType::List(observed_child), DataType::List(constraint_child)) => {
+            let source = field_source_name(constraint_child);
+            if field_source_name(observed_child) != source {
+                return Ok(false);
+            }
+            let mut child_path = field_path.to_vec();
+            child_path.push(source);
+            Ok(matches!(
+                reconcile_field_type(
+                    &child_path,
+                    observed_child,
+                    constraint_child,
+                    type_policy,
+                    source_materializations,
+                )?,
+                TypeReconciliation::SourceMaterializedExact
+            ))
+        }
+        _ => Ok(false),
+    }
 }
 
 fn exact_source_materialization_reason(observed: &str, constraint: &str) -> String {
-    format!(
-        "exact source materialization for semantic {} converts {observed} to {constraint}",
-        cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC
-    )
+    format!("compiled exact source materialization converts {observed} to {constraint}")
 }
 
 pub fn is_lossless_type_widening(observed: &DataType, constraint: &DataType) -> bool {

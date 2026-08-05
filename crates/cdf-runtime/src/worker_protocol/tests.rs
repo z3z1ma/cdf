@@ -278,6 +278,7 @@ fn source_plan() -> CompiledSourcePlan {
             },
             schema: Schema::empty(),
             type_policy_allowances: TypePolicyAllowances::default(),
+            source_materializations: Vec::new(),
             effective_schema_runtime: None,
             baseline_observation_schema_catalog: Vec::new(),
             redacted_options: serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
