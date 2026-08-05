@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::{Component, Path},
 };
 
@@ -18,6 +19,7 @@ use crate::{
         validate_compiled_artifact_sections, validate_compiled_artifact_security,
     },
     parse_cdf_toml, parse_lock, project_file_transaction_generation,
+    project_inputs::current_project_source_configuration,
 };
 
 pub const COMPILATION_INDEX_RELATIVE_PATH: &str = ".cdf/manifest.json";
@@ -90,7 +92,6 @@ pub fn compile_resource_artifact(
         )));
     }
     scoped_lock.resources.retain(|id, _| id == resource_id);
-    scoped_lock.semantics = locked.semantic_pins.clone();
     let lock_bytes = lock_to_toml(&scoped_lock)?.into_bytes();
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: request.config,
@@ -530,10 +531,16 @@ pub fn load_compilation_snapshot(
         let selected = environment_name.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(selected)?;
         let lock_bytes = read_optional_file(&root.join(LOCK_FILE_NAME), "project lockfile")?;
-        let index_bytes = read_optional_file(
+        let index_observation = read_optional_file_bounded(
             &root.join(COMPILATION_INDEX_RELATIVE_PATH),
             "compilation index",
-        )?;
+            MAX_INDEX_BYTES,
+        );
+        let (index_bytes, index_read_invalid) = match &index_observation {
+            Ok(bytes) => (bytes.clone(), false),
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => (None, true),
+            Err(error) => return Err(error.clone()),
+        };
         let (lock, mut authority_diagnostic) = match lock_bytes.as_deref() {
             Some(bytes) => match std::str::from_utf8(bytes)
                 .map_err(|error| CdfError::data(format!("cdf.lock is not UTF-8: {error}")))
@@ -551,22 +558,31 @@ pub fn load_compilation_snapshot(
             },
             None => (None, None),
         };
-        let mut index = match index_bytes.as_deref() {
-            Some(bytes) => match parse_compilation_index(bytes).and_then(|index| {
-                validate_compilation_index_authority(&index, &config, &environment)?;
-                Ok(index)
-            }) {
-                Ok(index) => index,
-                Err(_) => {
-                    authority_diagnostic = Some(CompilationDiagnostic {
-                        code: "CDF-COMPILE-INDEX".to_owned(),
-                        kind: "data".to_owned(),
-                        message: "the local compilation index is invalid or stale".to_owned(),
-                    });
-                    CompilationIndex::empty(&config, &environment)?
-                }
-            },
-            None => CompilationIndex::empty(&config, &environment)?,
+        let mut index = if index_read_invalid {
+            authority_diagnostic = Some(CompilationDiagnostic {
+                code: "CDF-COMPILE-INDEX".to_owned(),
+                kind: "data".to_owned(),
+                message: "the local compilation index is invalid or stale".to_owned(),
+            });
+            CompilationIndex::empty(&config, &environment)?
+        } else {
+            match index_bytes.as_deref() {
+                Some(bytes) => match parse_compilation_index(bytes).and_then(|index| {
+                    validate_compilation_index_authority(&index, &config, &environment)?;
+                    Ok(index)
+                }) {
+                    Ok(index) => index,
+                    Err(_) => {
+                        authority_diagnostic = Some(CompilationDiagnostic {
+                            code: "CDF-COMPILE-INDEX".to_owned(),
+                            kind: "data".to_owned(),
+                            message: "the local compilation index is invalid or stale".to_owned(),
+                        });
+                        CompilationIndex::empty(&config, &environment)?
+                    }
+                },
+                None => CompilationIndex::empty(&config, &environment)?,
+            }
         };
         let mut artifacts = BTreeMap::new();
         let current_ids = index
@@ -595,10 +611,11 @@ pub fn load_compilation_snapshot(
             && read_required_file(&root.join(PROJECT_FILE_NAME), "project configuration")?
                 == project_bytes
             && read_optional_file(&root.join(LOCK_FILE_NAME), "project lockfile")? == lock_bytes
-            && read_optional_file(
+            && read_optional_file_bounded(
                 &root.join(COMPILATION_INDEX_RELATIVE_PATH),
                 "compilation index",
-            )? == index_bytes;
+                MAX_INDEX_BYTES,
+            ) == index_observation;
         if stable {
             return Ok(CompilationSnapshot {
                 config,
@@ -631,7 +648,11 @@ fn load_current_artifact(
     let reference = entry.artifact.as_ref().ok_or_else(|| {
         CdfError::data("current compilation index entry has no artifact reference")
     })?;
-    let bytes = read_required_file(&root.join(&reference.path), "compiled resource artifact")?;
+    let bytes = read_required_file_bounded(
+        &root.join(&reference.path),
+        "compiled resource artifact",
+        MAX_ARTIFACT_BYTES,
+    )?;
     let artifact = parse_compiled_resource_artifact(&bytes)?;
     if artifact.artifact_hash != reference.artifact_hash
         || artifact.project_name != config.project.name
@@ -644,6 +665,23 @@ fn load_current_artifact(
     {
         return Err(CdfError::data(format!(
             "compiled artifact for `{}` does not match its index authority",
+            entry.resource_id
+        )));
+    }
+    let configured = &artifact.resource.configured_source;
+    let current = current_project_source_configuration(
+        config,
+        &environment.name,
+        &configured.configured_source,
+    )?;
+    if artifact.lock_binding.compiler.normalizer != config.project.normalizer
+        || configured.source_type != current.source_type
+        || configured.base_configuration_hash != current.base_hash
+        || configured.overlay_configuration_hash != current.overlay_hash
+        || configured.effective_configuration_hash != current.effective_hash
+    {
+        return Err(CdfError::data(format!(
+            "compiled artifact for `{}` is stale for its selected project configuration",
             entry.resource_id
         )));
     }
@@ -781,6 +819,56 @@ fn read_optional_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>> {
     fs::read(path)
         .map(Some)
         .map_err(|error| CdfError::environment(format!("read {label} {}: {error}", path.display())))
+}
+
+fn read_required_file_bounded(path: &Path, label: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    read_optional_file_bounded(path, label, max_bytes)?
+        .ok_or_else(|| CdfError::data(format!("{label} {} is missing", path.display())))
+}
+
+fn read_optional_file_bounded(
+    path: &Path,
+    label: &str,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CdfError::environment(format!(
+                "inspect {label} {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CdfError::data(format!(
+            "{label} {} must be a regular non-symlink file",
+            path.display()
+        )));
+    }
+    if metadata.len() > max_bytes as u64 {
+        return Err(CdfError::data(format!(
+            "{label} {} exceeds the {max_bytes}-byte read bound",
+            path.display()
+        )));
+    }
+    let file = fs::File::open(path).map_err(|error| {
+        CdfError::environment(format!("read {label} {}: {error}", path.display()))
+    })?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CdfError::environment(format!("read {label} {}: {error}", path.display()))
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(CdfError::data(format!(
+            "{label} {} exceeds the {max_bytes}-byte read bound",
+            path.display()
+        )));
+    }
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]

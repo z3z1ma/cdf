@@ -293,11 +293,11 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
             .starts_with("sha256:")
     );
     assert_eq!(
-        lock.destinations["duckdb"].sheet.type_mappings[0].fidelity,
+        resource.destinations["duckdb"].sheet.type_mappings[0].fidelity,
         TypeMappingFidelity::Lossless
     );
     assert_eq!(
-        lock.destinations["duckdb"].sheet_hash,
+        resource.destinations["duckdb"].sheet_hash,
         semantic_hash(&sheet_artifact).unwrap()
     );
 
@@ -354,13 +354,13 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     assert_eq!(typed_decoded, typed_lock);
     assert_eq!(lock_to_toml(&typed_decoded).unwrap(), typed_encoded);
     assert_eq!(
-        typed_lock.destinations["postgres"]
+        typed_lock.resources["github.issues"].destinations["postgres"]
             .sheet_artifact()
             .unwrap(),
         postgres_artifact
     );
     assert_eq!(
-        typed_lock.destinations["parquet_object_store"]
+        typed_lock.resources["github.issues"].destinations["parquet_object_store"]
             .sheet_artifact()
             .unwrap(),
         parquet_artifact

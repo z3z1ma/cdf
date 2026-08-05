@@ -412,19 +412,6 @@ pub fn compile_project_manifest(
     let mut inputs = request.authored_inputs;
     inputs.sort_by(|left, right| left.input_id.cmp(&right.input_id));
     validate_inputs(&inputs, ManifestErrorAuthority::Compiler)?;
-    let project_input_id = inputs
-        .iter()
-        .find(|input| input.input_kind == ManifestInputKind::Project)
-        .ok_or_else(|| {
-            CdfError::contract("project manifest compilation requires the authored project input")
-        })?
-        .input_id
-        .clone();
-    let selected_destination = selected_destination(
-        request.environment,
-        request.lock,
-        request.selected_destination_id,
-    )?;
     let bare_resources = request
         .resources
         .iter()
@@ -435,6 +422,13 @@ pub fn compile_project_manifest(
 
     let mut resources = Vec::with_capacity(request.resources.len());
     for entry in request.resources {
+        let resource_id = entry.resource.descriptor().resource_id.as_str();
+        let selected_destination = selected_destination(
+            request.environment,
+            request.lock,
+            resource_id,
+            request.selected_destination_id,
+        )?;
         let resource_fields = fields
             .iter()
             .filter(|field| field.resource_id == entry.resource.descriptor().resource_id.as_str())
@@ -456,7 +450,6 @@ pub fn compile_project_manifest(
             entry,
             resource_fields,
             &inputs,
-            &project_input_id,
             selected_destination,
             request.lock,
         )?);
@@ -683,12 +676,6 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
         .iter()
         .map(|entry| entry.resource.clone())
         .collect::<Vec<_>>();
-    let pins = semantic_pins_for_resources(&bare_resources, request.semantic_catalog)?;
-    if pins != request.lock.semantics {
-        return Err(CdfError::contract(
-            "cdf.lock semantic pins are stale for the compiled resource fields",
-        ));
-    }
     let compiled_ids = bare_resources
         .iter()
         .map(|resource| resource.descriptor().resource_id.to_string())
@@ -707,6 +694,8 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
     for resource in &bare_resources {
         let resource_id = resource.descriptor().resource_id.as_str();
         let locked = &request.lock.resources[resource_id];
+        let pins =
+            semantic_pins_for_resources(std::slice::from_ref(resource), request.semantic_catalog)?;
         let stream = (!resource.execution_extent().is_bounded())
             .then(|| {
                 cdf_runtime::CompiledStreamPolicy::compile(
@@ -719,18 +708,22 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
             || locked.capabilities != *resource.capabilities()
             || locked.execution_extent != *resource.execution_extent()
             || locked.compiled_stream_policy != stream
+            || locked.semantic_pins != pins
         {
             return Err(CdfError::contract(format!(
                 "cdf.lock resource `{resource_id}` is stale for the compiled plan"
             )));
         }
     }
-    selected_destination(
-        request.environment,
-        request.lock,
-        request.selected_destination_id,
-    )
-    .map(drop)
+    for resource in &bare_resources {
+        selected_destination(
+            request.environment,
+            request.lock,
+            resource.descriptor().resource_id.as_str(),
+            request.selected_destination_id,
+        )?;
+    }
+    Ok(())
 }
 
 fn common_locked_compiler(lock: &CdfLock) -> Result<&crate::LockedResourceCompilerBinding> {
@@ -753,10 +746,12 @@ fn common_locked_compiler(lock: &CdfLock) -> Result<&crate::LockedResourceCompil
 fn selected_destination<'a>(
     environment: &EffectiveEnvironment,
     lock: &'a CdfLock,
+    resource_id: &str,
     destination_id: &str,
 ) -> Result<(&'a str, &'a LockedDestination)> {
-    lock.destinations
-        .get_key_value(destination_id)
+    lock.resources
+        .get(resource_id)
+        .and_then(|resource| resource.destinations.get_key_value(destination_id))
         .filter(|(id, destination)| destination.sheet.destination.as_str() == id.as_str())
         .map(|(id, destination)| (id.as_str(), destination))
         .ok_or_else(|| {
@@ -771,7 +766,6 @@ fn compile_manifest_resource(
     entry: &CompiledProjectResource,
     fields: Vec<ManifestField>,
     inputs: &[CompiledArtifactInput],
-    project_input_id: &str,
     selected_destination: (&str, &LockedDestination),
     lock: &CdfLock,
 ) -> Result<ManifestResource> {
@@ -790,7 +784,7 @@ fn compile_manifest_resource(
         target: Some(entry.query.effective.target.value.to_string()),
         compiled_plan_hash: None,
     };
-    let origin = compile_origin(entry, inputs, project_input_id)?;
+    let origin = compile_origin(entry, inputs)?;
     let relational_plan = entry.query.relational_plan.clone().ok_or_else(|| {
         CdfError::contract(format!(
             "[CDF-SCHEMA-UNRESOLVED] resource {resource_id:?} has no finalized relational plan; run `cdf compile {resource_id}`"
@@ -837,7 +831,6 @@ fn compile_manifest_resource(
 fn compile_origin(
     entry: &CompiledProjectResource,
     inputs: &[CompiledArtifactInput],
-    project_input_id: &str,
 ) -> Result<ManifestResourceOrigin> {
     let query = &entry.query;
     validate_relative_manifest_path(&query.relative_path, ManifestErrorAuthority::Compiler)?;
@@ -855,9 +848,6 @@ fn compile_origin(
                 query.relative_path
             ))
         })?;
-    let mut input_ids = vec![project_input_id.to_owned(), input.input_id.clone()];
-    input_ids.sort();
-    input_ids.dedup();
     Ok(ManifestResourceOrigin {
         relative_path: query.relative_path.clone(),
         namespace: query.namespace.clone(),
@@ -867,7 +857,7 @@ fn compile_origin(
         authored_sql: query.authored_sql.clone(),
         authored_content_hash: query.authored_content_hash.clone(),
         authored_ast_hash: query.parsed_query.authored_ast_hash.clone(),
-        authored_input_ids: input_ids,
+        authored_input_ids: vec![input.input_id.clone()],
     })
 }
 
@@ -1508,14 +1498,13 @@ fn validate_inputs(
             }
         }
     }
-    let project_inputs = inputs
+    if inputs
         .iter()
-        .filter(|input| input.input_kind == ManifestInputKind::Project)
-        .count();
-    if project_inputs != 1 {
+        .any(|input| input.input_kind == ManifestInputKind::Project)
+    {
         return manifest_error(
             authority,
-            "project manifest requires exactly one project input",
+            "compiled resource artifacts must bind selected inputs, not the whole project file",
         );
     }
     Ok(())

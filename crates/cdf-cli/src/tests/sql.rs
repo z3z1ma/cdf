@@ -163,6 +163,67 @@ fn compile_publishes_independent_artifact_index_and_locked_rebuild() {
 }
 
 #[test]
+fn selected_config_bindings_ignore_unrelated_sources_and_stale_on_relevant_changes() {
+    let project = TestProject::new();
+    let prepared = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+    ]);
+    assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
+    let prepared = stderr_or_stdout_json(&prepared.stdout);
+    let artifact_hash = prepared["result"]["resources"][0]["artifact_hash"]
+        .as_str()
+        .unwrap();
+
+    let config_path = project.root.join("cdf.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        format!("{config}\n[sources.unrelated]\ntype = \"files\"\nroot = \"unrelated-data\"\n"),
+    )
+    .unwrap();
+    let locked = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+        "--locked",
+    ]);
+    assert_eq!(locked.exit_code, 0, "stderr: {}", locked.stderr);
+    let locked = stderr_or_stdout_json(&locked.stdout);
+    assert_eq!(
+        locked["result"]["resources"][0]["artifact_hash"],
+        artifact_hash
+    );
+
+    let config = fs::read_to_string(&config_path).unwrap().replacen(
+        "root = \"data\"",
+        "root = \"changed-data\"",
+        1,
+    );
+    fs::write(&config_path, config).unwrap();
+    let status = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "sql",
+        "select status from compilation_resources where resource_id = 'local.events'",
+    ]);
+    assert_eq!(status.exit_code, 0, "stderr: {}", status.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&status.stdout)["result"]["rows"],
+        json!([["stale"]])
+    );
+}
+
+#[test]
 fn compile_selectors_isolate_resources_and_aggregate_partial_success() {
     let project = TestProject::new();
     fs::create_dir_all(project.root.join("cdf/broken")).unwrap();
@@ -201,6 +262,16 @@ fn compile_selectors_isolate_resources_and_aggregate_partial_success() {
         "broken.unknown"
     );
     assert_eq!(aggregate["result"]["resources"][0]["status"], "failed");
+    assert_eq!(
+        aggregate["result"]["resources"][0]["error"]["code"],
+        "CDF-SOURCE-UNKNOWN"
+    );
+    assert!(
+        !aggregate["result"]["resources"][0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("[CDF-SOURCE-UNKNOWN]")
+    );
     assert_eq!(aggregate["result"]["resources"][1]["status"], "compiled");
 
     let index = cdf_project::parse_compilation_index(
@@ -473,6 +544,64 @@ fn sql_keeps_system_tables_available_when_compilation_index_is_tampered() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["rows"], json!([[0]]));
     assert_eq!(project_tree_snapshot(&project.root), before);
+}
+
+#[test]
+fn sql_bounds_oversized_private_compilation_files_before_serving_facts() {
+    let project = TestProject::new();
+    let prepared = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+    ]);
+    assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
+    let prepared = stderr_or_stdout_json(&prepared.stdout);
+    let artifact_path = prepared["result"]["resources"][0]["artifact_path"]
+        .as_str()
+        .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(project.root.join(artifact_path))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+
+    let stale = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "sql",
+        "select status from compilation_resources where resource_id = 'local.events'",
+    ]);
+    assert_eq!(stale.exit_code, 0, "stderr: {}", stale.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&stale.stdout)["result"]["rows"],
+        json!([["stale"]])
+    );
+
+    fs::OpenOptions::new()
+        .write(true)
+        .open(project.root.join(".cdf/manifest.json"))
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let system = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "sql",
+        "select count(*) from packages",
+    ]);
+    assert_eq!(system.exit_code, 0, "stderr: {}", system.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&system.stdout)["result"]["rows"],
+        json!([[0]])
+    );
 }
 
 fn compile_test_project(project: &TestProject) {

@@ -942,8 +942,7 @@ where
     })?;
     let locked_destination = request
         .lock
-        .destinations
-        .get(&target.destination)
+        .destination(&target.destination)?
         .ok_or_else(|| {
             cdf_kernel::CdfError::contract(format!(
                 "promotion destination {:?} is absent from cdf.lock",

@@ -144,6 +144,12 @@ Replace the current exact-project compilation snapshot with one current-only res
   no longer replaces already-collected per-resource diagnostics. Strict Clippy also prompted
   removal of an unused selected-schema parameter rather than an allowance. The uncompiled legacy
   monolithic-manifest fixture was deleted outright.
+- 2026-08-05: The independent red-team review found four material closure gaps. The repair removes
+  whole-`cdf.toml` artifact inputs while retaining it as a publication guard, recomputes the
+  selected source configuration and normalizer during currentness checks, moves complete
+  destination capability bindings into each resource lock entry and deletes both global lock
+  indexes, carries a typed narrow source diagnostic instead of embedding a code in its message,
+  and bounds index/artifact reads before allocation.
 
 ## Blockers
 
@@ -173,10 +179,20 @@ None. The first execution step is a deliberate committed-upstream reconciliation
   produced only pre-existing findings outside changed U2 functions; both generated CLI artifact
   checks reported fresh output; `cargo machete --with-metadata` found no unused dependencies;
   `cargo fmt --all` and `git diff --check` passed.
+- Review repairs: the complete `cdf-project` library suite passed 302/302 after the lock-authority
+  change. The complete focused SQL suite passed 15/15, including new behavioral coverage proving
+  unrelated source configuration does not change A's locked artifact, relevant selected-source
+  configuration makes only A stale, unknown sources retain `CDF-SOURCE-UNKNOWN` without a nested
+  code string, and oversized private index/artifact files are bounded while system SQL remains
+  available. Strict Clippy passed for every package changed by the repairs.
 
 ## Review
 
-Pending the combined U1+U2 authority-foundation review barrier.
+- Initial independent verdict: **fail**, with four significant findings: whole-project
+  over-binding plus selected-config under-verification; global duplicate lock authorities;
+  flattened unknown-source diagnostic identity; and post-allocation artifact/index size checks.
+- All four findings were repaired with focused behavioral tests. Same-reviewer recheck is pending;
+  no second reviewer was commissioned.
 
 ## Retrospective
 

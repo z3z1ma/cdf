@@ -4,8 +4,8 @@ use std::{collections::BTreeMap, env, fs};
 
 use cdf_kernel::CdfError;
 use cdf_project::{
-    LockDiff, LockedDestination, ProjectResourceSelectionError, ProjectScaffoldOptions,
-    ProjectScaffoldReport, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
+    LockDiff, ProjectResourceSelectionError, ProjectScaffoldOptions, ProjectScaffoldReport,
+    generate_lockfile_with_destination_artifacts, parse_cdf_toml,
     resolve_project_resource_selection, validate_project_static, write_local_project_scaffold,
 };
 use cdf_semantic::SemanticCatalog;
@@ -113,9 +113,9 @@ pub(crate) fn diff_schema(
     )?;
     let lock = require_lock(&context)?;
     let destination_artifacts = lock
-        .destinations
-        .values()
-        .map(LockedDestination::sheet_artifact)
+        .destination_bindings()?
+        .into_values()
+        .map(|destination| destination.sheet_artifact())
         .collect::<cdf_kernel::Result<Vec<_>>>()?;
     let regenerated = generate_lockfile_with_destination_artifacts(
         &context.config,

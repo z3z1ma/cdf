@@ -1111,10 +1111,14 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     runtime.ensure_protocol_ready().unwrap();
     let mut lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     let artifact = runtime.protocol().sheet_artifact().unwrap();
-    lock.destinations.insert(
-        artifact.sheet.destination.to_string(),
-        cdf_project::LockedDestination::new(artifact).unwrap(),
-    );
+    lock.resources
+        .get_mut("local.events")
+        .unwrap()
+        .destinations
+        .insert(
+            artifact.sheet.destination.to_string(),
+            cdf_project::LockedDestination::new(artifact).unwrap(),
+        );
     fs::write(
         project.root.join("cdf.lock"),
         cdf_project::lock_to_toml(&lock).unwrap(),

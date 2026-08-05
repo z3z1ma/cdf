@@ -63,4 +63,4 @@ mod promotion;
 mod publication_recovery;
 mod query_compiler;
 mod resource_sql;
-mod support;
+pub(crate) mod support;

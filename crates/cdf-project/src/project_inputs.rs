@@ -85,6 +85,14 @@ pub struct ProjectSourceBinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CurrentProjectSourceConfiguration {
+    pub source_type: String,
+    pub base_hash: String,
+    pub overlay_hash: String,
+    pub effective_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectResourceInput {
     pub relative_path: String,
     pub content_hash: ManifestInputContentHash,
@@ -187,6 +195,61 @@ pub(crate) fn resolve_project_source_binding(
         effective_hash,
         driver,
         driver_descriptor_hash,
+    })
+}
+
+pub(crate) fn current_project_source_configuration(
+    config: &ProjectConfig,
+    environment: &str,
+    source_name: &str,
+) -> Result<CurrentProjectSourceConfiguration> {
+    let source_name = ProjectSourceName::new(source_name, "compiled configured source")?;
+    let selected_environment = config.environments.get(environment).ok_or_else(|| {
+        CdfError::contract(format!("environment `{environment}` is not declared"))
+    })?;
+    let configured_sources = validate_source_configuration_shape(config)?;
+    let base = configured_sources.get(&source_name).ok_or_else(|| {
+        CdfError::contract(format!(
+            "configured source {:?} is not declared in cdf.toml",
+            source_name.as_str()
+        ))
+    })?;
+    let overlay = selected_environment
+        .sources
+        .get(source_name.as_str())
+        .cloned()
+        .unwrap_or_default();
+    let mut effective_options = base.options.clone();
+    effective_options.extend(overlay.options.clone());
+    Ok(CurrentProjectSourceConfiguration {
+        source_type: base.source_type.clone(),
+        base_hash: configuration_hash(SourceConfigurationHashInput {
+            phase: "base",
+            environment: None,
+            source: source_name.as_str(),
+            source_type: Some(&base.source_type),
+            options: &base.options,
+        })?
+        .as_str()
+        .to_owned(),
+        overlay_hash: configuration_hash(SourceConfigurationHashInput {
+            phase: "overlay",
+            environment: Some(environment),
+            source: source_name.as_str(),
+            source_type: None,
+            options: &overlay.options,
+        })?
+        .as_str()
+        .to_owned(),
+        effective_hash: configuration_hash(SourceConfigurationHashInput {
+            phase: "effective",
+            environment: Some(environment),
+            source: source_name.as_str(),
+            source_type: Some(&base.source_type),
+            options: &effective_options,
+        })?
+        .as_str()
+        .to_owned(),
     })
 }
 
