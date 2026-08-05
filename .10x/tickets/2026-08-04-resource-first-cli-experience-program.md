@@ -24,7 +24,8 @@ resources, and every adjacent command has one scope and effect ceiling.
    `.10x/tickets/2026-08-04-u1-resource-selectors-static-validate.md`.
 3. **U2 — independent compilation authority.** Replace monolithic exact-project lock/manifest
    execution authority with per-resource lock entries, immutable artifacts, and a bounded status
-   index; make selected and aggregate compile useful under partial failure.
+   index; make selected and aggregate compile useful under partial failure. Owner:
+   `.10x/tickets/2026-08-04-u2-independent-resource-compilation-authority.md`.
 4. **U3 — shared selected preparation and multi-resource plan/run.** Route plan/run/compile through
    one prepared-resource seam, remove refresh/pin/discover/no-pin legacy grammar, enforce the
    all-selected preparation barrier, and retain independent runtime outcomes.
@@ -41,10 +42,12 @@ resources, and every adjacent command has one scope and effect ceiling.
 8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
 
-Children U2-U7 open only when their immediate dependency and any remaining focused ratification
-blocker are closed. No child may introduce a compatibility parser, alias, fallback artifact reader,
-or dual authority; superseded existing surfaces are deleted in the child that replaces them and
-must all be absent at cutover.
+Children U2-U7 open only when their immediate dependency's implementation evidence is complete and
+pushed and any remaining focused ratification blocker is closed. A dependency may remain `active`
+solely when its review is intentionally deferred to the named combined barrier with the new child;
+both close only after that review passes. No child may introduce a compatibility parser, alias,
+fallback artifact reader, or dual authority; superseded existing surfaces are deleted in the child
+that replaces them and must all be absent at cutover.
 
 ## Integration boundaries
 
@@ -82,9 +85,10 @@ closure.
 
 ## Acceptance criteria
 
-1. Every executable child has active governing authority, complete evidence, and a bounded commit
-   pushed before the next dependent child begins; each named logical review barrier passes before
-   work proceeds beyond that barrier.
+1. Every executable child has active governing authority, complete implementation evidence, and a
+   bounded commit pushed before the next dependent child begins; review-deferred siblings remain
+   active and close together when their named logical review barrier passes, before work proceeds
+   beyond that barrier.
 2. All parent/focused-spec scenarios pass, including negative-I/O/mutation counters and aggregate
    partial outcomes.
 3. Existing plan terminal output remains the primary beautiful report while artifact effects are
