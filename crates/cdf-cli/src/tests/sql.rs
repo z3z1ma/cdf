@@ -124,7 +124,7 @@ fn compile_refresh_and_offline_compile_publish_one_typed_report() {
     assert_eq!(refresh["command"], "compile");
     assert_eq!(refresh["result"]["mode"], "refresh");
     assert_eq!(refresh["result"]["resources"], 1);
-    assert_eq!(refresh["result"]["source_observations"], 0);
+    assert_eq!(refresh["result"]["source_observations"], 1);
     assert_eq!(refresh["result"]["writes"]["manifest"], true);
     assert_eq!(refresh["result"]["writes"]["lockfile"], true);
     for external in ["destination", "state", "package", "receipt", "checkpoint"] {
@@ -154,18 +154,22 @@ fn compile_refresh_and_offline_compile_publish_one_typed_report() {
 }
 
 #[test]
-fn offline_compile_requires_lock_and_names_refresh_without_publishing() {
+fn offline_compile_preserves_missing_lock_diagnostic_without_publishing() {
     let project = TestProject::new();
     let result = run(["cdf", "--json", "--project", project.root_str(), "compile"]);
 
     assert_ne!(result.exit_code, 0);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("cdf compile --refresh")
-    );
+    assert_eq!(json["error"]["kind"], "contract");
+    assert_eq!(json["error"]["code"], "CDF-PROJECT-CONTRACT");
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(message.contains("cdf.lock is missing"));
+    assert!(!message.contains("cdf compile --refresh"));
+
+    let human = run(["cdf", "--project", project.root_str(), "compile"]);
+    assert_eq!(human.exit_code, result.exit_code);
+    assert!(human.stderr.contains(message));
+    assert!(!human.stderr.contains("cdf compile --refresh"));
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(!project.root.join("cdf.lock").exists());
 }
@@ -176,16 +180,12 @@ fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_author
     fs::write(
         project.root.join("cdf/local/events.cdf.sql"),
         r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
+SELECT *
+FROM upstream(
+  source => 'local',
+  glob => '*.ndjson',
+  format => 'ndjson'
+);
 "#,
     )
     .unwrap();

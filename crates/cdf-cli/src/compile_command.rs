@@ -26,12 +26,11 @@ use crate::{
 };
 
 pub(crate) fn compile(cli: &Cli, args: CompileArgs) -> Result<CommandOutput, CliError> {
-    let result = if args.refresh {
+    if args.refresh {
         compile_refresh(cli)
     } else {
         compile_offline(cli)
-    };
-    result.map_err(with_compile_remediation)
+    }
 }
 
 fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
@@ -421,19 +420,6 @@ fn finish_report(
         next_command: "cdf sql \"select * from manifest_resources\"".to_owned(),
     };
     CommandOutput::rendered("compile", render::document(&report), report)
-}
-
-fn with_compile_remediation(mut error: CliError) -> CliError {
-    if matches!(
-        error.kind,
-        cdf_kernel::ErrorKind::Contract | cdf_kernel::ErrorKind::Data
-    ) && !error.message.contains("cdf compile --refresh")
-    {
-        error
-            .message
-            .push_str("; run `cdf compile --refresh` to refresh locked source authority");
-    }
-    error
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

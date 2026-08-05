@@ -1,0 +1,2 @@
+crates/cdf-cli/src/compile_command.rs
+crates/cdf-project/src/manifest.rs

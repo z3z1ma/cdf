@@ -70,6 +70,24 @@ the project audit skill.
 - 2026-08-04: Execution began after the user confirmed the final command-intent contract. Re-read
   the governing manifest/error/report authorities and fixed the audit scope to manifest validation
   plus compile command error propagation before touching product code.
+- 2026-08-04: The first focused test invocation mistakenly combined a short-name filter with
+  `--exact` and selected zero tests. Re-running the non-exact short-name filter reproduced the
+  sandbox failure: the multiline manifest fixture failed Internal at
+  `manifest string exceeds bounds or contains control characters`.
+- 2026-08-04: Restricted the security exception to the typed `authored_sql` field and only HT/LF/CR;
+  all other strings remain control-free. Added exhaustive C0/C1 rejection under both compiler and
+  artifact authority, retained length/secret/host-path fences, and proved exact authored SQL/hash
+  round-trip. Compile now directly returns the selected offline/refresh result; the broad
+  Contract/Data message mutator is deleted.
+- 2026-08-04: The broader SQL command slice exposed two dormant query-first fixture drifts once
+  manifest compilation could proceed: a `.cdf.sql` test still contained the deleted declarative
+  envelope, and an unpinned file query expected zero discovery. Updated only those test inputs/
+  expectations to current D3 behavior; no product behavior changed.
+- 2026-08-04: The supplied sandbox's ordinary offline compile stopped earlier at existing missing
+  finalized authority for `fineweb_local.documents`. The same worktree binary then completed
+  `compile --refresh` for all seven resources and published manifest hash
+  `sha256:23547530b0fd91f04fa03c397dd3ac070e880aa1a2825aba8e1f23d7a53fd173`, proving the exact
+  previously failing multiline publication path no longer reaches Internal.
 
 ## Blockers
 
@@ -77,12 +95,58 @@ None. The ticket is executable from its active references.
 
 ## Evidence
 
-Pending execution.
+- AC 1-2: The original focused command
+  `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --lib
+  manifest_identity_is_stable_and_excludes_generation_time -- --nocapture` failed before the fix
+  with the reproduced Internal error. After the repair, `security_tests` passed 2/2,
+  `multiline_authored_sql_round_trips_with_exact_content_authority` passed 1/1, and the original
+  identity test passed 1/1. The security tests exhaust every C0/C1 code point except the three
+  admitted SQL whitespace characters and verify Compiler→Internal, Artifact→Data, non-SQL
+  whitespace rejection, size, secret, and absolute-path fences.
+- AC 1-4: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --lib manifest -- --nocapture`
+  passed 29/29 focused manifest/discovery/runtime tests. `DUCKDB_DOWNLOAD_LIB=1 cargo test -p
+  cdf-cli --lib tests::sql:: -- --nocapture` passed 10/10 after the two stale test fixtures were
+  made current. The missing-lock test proves the same original message/code/kind appears in JSON
+  and human output, no generic refresh suffix appears, and neither lock nor manifest is written.
+- AC 3-4: Compile has no command-layer error transformer after choosing offline versus refresh; the
+  originating `CdfError -> CliError` conversion owns code, kind, remediation, and redaction.
+  `cargo test -p cdf-cli-core --lib output::tests -- --nocapture` passed 2/2 for Internal mapping and
+  secret-bearing JSON/headless/TTY parity. A subsequent `error_catalog` filter selected zero tests
+  and is explicitly not evidence.
+- AC 5: The durable file manifest and classification ledger are
+  `.10x/evidence/.storage/2026-08-04-u0-error-construction-files.txt` and
+  `.10x/evidence/.storage/2026-08-04-u0-error-construction-ledger.tsv`. Reproduce with
+  `git ls-files -- crates/cdf-cli/src/compile_command.rs crates/cdf-project/src/manifest.rs | sort`
+  and `rg -n -- 'CdfError::internal|ManifestErrorAuthority::Compiler => CdfError::internal'
+  crates/cdf-cli/src/compile_command.rs crates/cdf-project/src/manifest.rs`. A supplemental
+  `rg -n -- 'ErrorKind::Internal'` over the same files finds three test assertions and no direct
+  constructor. The final production inventory has two files, two site-bearing files, fourteen
+  Internal construction sites (four CLI, ten manifest), zero unclassified Internal constructors,
+  plus the two compile-owned Contract endpoints affected by deletion of the decorator.
+- AC 5: `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-project -p cdf-cli --all-targets` and strict
+  affected-package Clippy with `-D warnings` passed. The explicit cognitive-complexity diagnostic
+  completed and reported only pre-existing dependent/test functions; no changed production
+  function crossed the threshold. `cargo fmt --all -- --check` and `git diff --check` passed.
+- Sandbox limit/evidence: offline compile did not reach manifest publication because its monolithic
+  current authority still blocks on `fineweb_local.documents`; this is parent U2/U3 scope, not a U0
+  regression. Refresh succeeded for seven resources in 4.5 seconds. It intentionally updated the
+  sandbox lock/schema/manifest authority under the command's existing contract.
+- Graph limit: `graphify-out/graph.json` exists but the `graphify` executable is unavailable in this
+  environment, so no graph freshness claim is made.
 
 ## Review
 
-Pending independent review.
+Implementation, tests, audit ledger, and ticket evidence are frozen for the requested independent
+read-only U0 review. Verdict pending.
 
 ## Retrospective
 
-Pending execution.
+- Artifact security cannot treat every string as a token. Free-form authored content needs a
+  field-owned character policy, while diagnostic/configuration strings keep the stricter fence.
+- A broad error-kind remediation mutator erases ownership even when it preserves the numeric kind.
+  Command dispatch should pass typed failures through; the originating boundary supplies the fix.
+- Removing an early Internal stop-line can reveal stale tests that never reached their assertions.
+  Running the complete affected command family once was useful; fixing current-only fixtures was
+  smaller and safer than weakening the new regression.
+- A filtered test command is evidence only when its output reports the expected nonzero selection.
+  The mistaken `--exact` invocation cost one short rerun and is recorded to prevent false evidence.

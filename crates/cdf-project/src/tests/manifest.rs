@@ -217,6 +217,27 @@ fn manifest_identity_is_stable_and_excludes_generation_time() {
 }
 
 #[test]
+fn multiline_authored_sql_round_trips_with_exact_content_authority() {
+    let (_, _, _, _, _, manifest) = manifest_fixture(None);
+    let resource = &manifest.resources[0];
+    assert_eq!(resource.origin.authored_sql, RESOURCE_SQL);
+    let input = manifest
+        .inputs
+        .iter()
+        .find(|input| input.input_id == RESOURCE_PATH)
+        .unwrap();
+    assert_eq!(
+        resource.origin.authored_content_hash,
+        input.content_hash.as_str()
+    );
+
+    let bytes = manifest.canonical_json_bytes().unwrap();
+    let parsed = parse_project_manifest(&bytes).unwrap();
+    assert_eq!(parsed.resources[0].origin.authored_sql, RESOURCE_SQL);
+    assert_eq!(parsed.manifest_hash, manifest.manifest_hash);
+}
+
+#[test]
 fn manifest_parser_rejects_unknown_fields_and_hash_tampering() {
     let (_, _, _, _, _, manifest) = manifest_fixture(None);
     let bytes = manifest.canonical_json_bytes().unwrap();
