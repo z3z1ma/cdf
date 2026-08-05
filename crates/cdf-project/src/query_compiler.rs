@@ -686,6 +686,16 @@ fn resolve_envelope(
     })
 }
 
+pub(crate) fn current_effective_resource_envelope(
+    config: &ProjectConfig,
+    authored_sql: &str,
+    relative_path: &str,
+    default_target: &TargetName,
+) -> Result<EffectiveResourceEnvelope> {
+    let authored = parse_resource_file(authored_sql, relative_path)?;
+    resolve_envelope(config, &authored.envelope, default_target)
+}
+
 fn validate_effective_applicability(
     effective: &EffectiveResourceEnvelope,
     source: &cdf_runtime::CompiledSourcePlan,

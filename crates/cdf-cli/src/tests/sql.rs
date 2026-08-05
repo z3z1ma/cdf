@@ -224,6 +224,46 @@ fn selected_config_bindings_ignore_unrelated_sources_and_stale_on_relevant_chang
 }
 
 #[test]
+fn project_defaults_stale_only_resources_that_resolve_through_them() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf/local/events.cdf.sql"),
+        RESOURCE.replace("TRUST GOVERNED\n", ""),
+    )
+    .unwrap();
+    let prepared = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+    ]);
+    assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
+
+    let config_path = project.root.join("cdf.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        format!("{config}\n[defaults]\ntrust = \"governed\"\n"),
+    )
+    .unwrap();
+    let status = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "sql",
+        "select status from compilation_resources where resource_id = 'local.events'",
+    ]);
+    assert_eq!(status.exit_code, 0, "stderr: {}", status.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&status.stdout)["result"]["rows"],
+        json!([["stale"]])
+    );
+}
+
+#[test]
 fn compile_selectors_isolate_resources_and_aggregate_partial_success() {
     let project = TestProject::new();
     fs::create_dir_all(project.root.join("cdf/broken")).unwrap();
