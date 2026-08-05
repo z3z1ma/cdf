@@ -16,6 +16,7 @@ use crate::expression_memory::expression_working_set_bytes;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
 };
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use arrow_select::take::take_record_batch;
@@ -31,12 +32,12 @@ use cdf_kernel::{
     Batch, CdfError, CompositePosition, ExecutablePartition, ExecutionExtent,
     OrderedStratifiedHashV1, PHYSICAL_TYPE_METADATA_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY,
     PartitionAttestation, PartitionPlan, PhysicalObservationRepresentation,
-    PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
-    ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
-    RunPhase, RunPhaseContext, SOURCE_NAME_METADATA_KEY, SOURCE_POSITION_VERSION, ScopeKey,
-    SourcePosition, StratifiedHashBoundedIdentity, StratifiedHashCandidate,
-    StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine, WatermarkClaim,
-    WatermarkPolicy, WriteDisposition, aggregate_resource_closed_output_position,
+    PreContractObservedValue, PreContractPhysicalReconciliation, PreContractQuarantineFact,
+    PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
+    ResourceStream, Result, RunId, RunPhase, RunPhaseContext, SOURCE_NAME_METADATA_KEY,
+    SOURCE_POSITION_VERSION, ScopeKey, SourcePosition, StratifiedHashBoundedIdentity,
+    StratifiedHashCandidate, StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine,
+    WatermarkClaim, WatermarkPolicy, WriteDisposition, aggregate_resource_closed_output_position,
     aggregate_resource_output_position, merge_terminal_position_evidence, semantic, source_name,
 };
 use cdf_memory::{
@@ -86,8 +87,9 @@ use crate::{
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
     variant_capture::{
-        ContractEvolutionArtifact, ResidualDecisionArtifact, ResidualRuntimeVerdict,
-        ResidualTypedProjection, contract_evolution_artifact_metadata, normalize_batch,
+        ContractEvolutionArtifact, FieldTypeEvidenceArtifact, ResidualDecisionArtifact,
+        ResidualRuntimeVerdict, ResidualTypedProjection, contract_evolution_artifact_metadata,
+        normalize_batch,
     },
 };
 
@@ -633,6 +635,13 @@ where
                             batch.header.extend_residual_candidates(candidates);
                         }
                         let record_batch = reconciled.record_batch;
+                        let physical_reconciliations = batch.header.take_physical_reconciliations();
+                        validate_physical_reconciliations(
+                            &record_batch,
+                            physical_reconciliations,
+                            &batch.header.batch_id,
+                            reconciled.observation_id.as_deref(),
+                        )?;
                         let pre_contract_quarantined_rows =
                             pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
                                 .quarantined_rows;
@@ -1502,6 +1511,70 @@ struct ContractExecOutput {
     summary: VerdictSummary,
     residual_decisions: Vec<ResidualDecisionArtifact>,
     memory_lease: Option<MemoryLease>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PhysicalReconciliationArtifact {
+    version: u16,
+    observation_id: Option<String>,
+    batch_id: cdf_kernel::BatchId,
+    source_path: Vec<String>,
+    observed_field: FieldTypeEvidenceArtifact,
+    expected_field: FieldTypeEvidenceArtifact,
+    row_count: u64,
+    row_ranges: Vec<PhysicalReconciliationRowRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PhysicalReconciliationRowRange {
+    start: u64,
+    end_exclusive: u64,
+}
+
+#[derive(Default)]
+struct PhysicalReconciliationEvidenceAccumulator {
+    artifact: Option<cdf_package::StreamingIdentityArtifact>,
+    count: u64,
+}
+
+impl PhysicalReconciliationEvidenceAccumulator {
+    fn push(
+        &mut self,
+        builder: &PackageBuilder,
+        reconciliations: Vec<PhysicalReconciliationArtifact>,
+    ) -> Result<()> {
+        if reconciliations.is_empty() {
+            return Ok(());
+        }
+        if self.artifact.is_none() {
+            let mut artifact = builder
+                .begin_streaming_identity_artifact("schema/physical-reconciliations.json")?;
+            artifact.write_all(b"{\"version\":1,\"reconciliations\":[")?;
+            self.artifact = Some(artifact);
+        }
+        let artifact = self.artifact.as_mut().ok_or_else(|| {
+            CdfError::internal("physical reconciliation evidence artifact is unavailable")
+        })?;
+        for reconciliation in reconciliations {
+            if self.count != 0 {
+                artifact.write_all(b",")?;
+            }
+            artifact.write_all(&cdf_package::canonical_json_bytes(&reconciliation)?)?;
+            self.count = self
+                .count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("physical reconciliation count overflow"))?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        let Some(mut artifact) = self.artifact.take() else {
+            return Ok(());
+        };
+        artifact.write_all(b"]}")?;
+        artifact.finish().map(|_| ())
+    }
 }
 
 #[derive(Default)]
@@ -3372,6 +3445,7 @@ where
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut late_data_evidence = LateDataEvidenceAccumulator::default();
+    let mut physical_reconciliation_evidence = PhysicalReconciliationEvidenceAccumulator::default();
     let mut late_data_payloads = LateDataPayloadCatalogAccumulator::default();
     let mut late_data_carryover = Vec::<cdf_kernel::LateDataCarryoverRef>::new();
     let mut remaining_limit = plan.final_limit.or(plan.scan.request.limit);
@@ -4258,6 +4332,7 @@ where
                 partition_source_row_ordinal = partition_source_row_ordinal
                     .saturating_add(batch.header.row_count);
                 let residual_candidates = batch.header.take_residual_candidates();
+                let physical_reconciliations = batch.header.take_physical_reconciliations();
                 let record_batch = reconciled.record_batch;
                 let batch_coercion = reconciled.coercion_plan;
                 if let Some(batch_coercion) = batch_coercion {
@@ -4289,6 +4364,16 @@ where
                         "effective-schema execution requires trusted per-observation coercion evidence on every batch",
                     ));
                 }
+                let physical_reconciliation_artifacts = validate_physical_reconciliations(
+                    &record_batch,
+                    physical_reconciliations,
+                    &batch.header.batch_id,
+                    partition_observation_id.as_deref(),
+                )?;
+                physical_reconciliation_evidence.push(
+                    &builder,
+                    physical_reconciliation_artifacts,
+                )?;
 
                 let track_source_rows = pre_contract_may_filter
                     || !residual_candidates.is_empty()
@@ -5032,6 +5117,7 @@ where
         output_schema,
         runtime_output_schema.as_ref(),
         residual_decisions,
+        physical_reconciliation_evidence,
         statistics_profile,
         &statistics_profile_schema_hash,
         &profile,
@@ -5452,6 +5538,7 @@ fn prepare_package_artifacts(
     output_schema: Option<SchemaArtifact>,
     runtime_output_schema: &Schema,
     residual_decisions: ResidualDecisionAccumulator,
+    physical_reconciliation_evidence: PhysicalReconciliationEvidenceAccumulator,
     statistics_profile: Option<cdf_package::StatisticsProfileWriter>,
     statistics_profile_schema_hash: &str,
     profile: &ExecutionProfile,
@@ -5591,6 +5678,7 @@ fn prepare_package_artifacts(
     builder.write_json_artifact("schema/output.json", &output_schema)?;
     builder.write_runtime_arrow_schema(runtime_output_schema)?;
     let mut residual_decision_output = residual_decisions.finish()?;
+    physical_reconciliation_evidence.finish()?;
     let schema_authority = plan.schema_authority();
     if let Some(evolution) = contract_evolution_artifact_metadata(
         validation_program,
@@ -7035,6 +7123,152 @@ struct ResidualExecOutput {
     residual_decisions: Vec<ResidualDecisionArtifact>,
 }
 
+fn validate_physical_reconciliations(
+    batch: &RecordBatch,
+    reconciliations: Vec<PreContractPhysicalReconciliation>,
+    batch_id: &cdf_kernel::BatchId,
+    observation_id: Option<&str>,
+) -> Result<Vec<PhysicalReconciliationArtifact>> {
+    reconciliations
+        .into_iter()
+        .map(|reconciliation| {
+            let source = reconciliation.source_path().join(".");
+            let field_index = batch
+                .schema()
+                .fields()
+                .iter()
+                .position(|field| {
+                    source_name(field.as_ref()).unwrap_or_else(|| field.name()) == source
+                })
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "physical reconciliation field {source:?} is absent from its materialized batch"
+                    ))
+                })?;
+            let materialized_schema = batch.schema();
+            let materialized_field = materialized_schema.field(field_index);
+            let expected_field = reconciliation.expected_field();
+            if materialized_field.data_type() != expected_field.data_type()
+                || materialized_field.name() != expected_field.name()
+                || materialized_field.metadata() != expected_field.metadata()
+            {
+                return Err(CdfError::data(format!(
+                    "physical reconciliation field {source:?} does not match its materialized typed field"
+                )));
+            }
+            if !lossless_physical_projection(
+                reconciliation.observed_field().data_type(),
+                expected_field.data_type(),
+            ) {
+                return Err(CdfError::data(format!(
+                    "physical reconciliation field {source:?} claims unsupported projection {} to {}",
+                    reconciliation.observed_field().data_type(),
+                    expected_field.data_type()
+                )));
+            }
+            let projected = cast(
+                reconciliation.observed_values().as_ref(),
+                expected_field.data_type(),
+            )
+            .map_err(|error| {
+                CdfError::data(format!(
+                    "physical reconciliation field {source:?} could not be losslessly projected: {error}"
+                ))
+            })?;
+            let materialized = batch.column(field_index);
+            for (value_index, row) in reconciliation
+                .batch_row_ordinals()
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                if row >= batch.num_rows() {
+                    return Err(CdfError::data(format!(
+                        "physical reconciliation field {source:?} names batch row {row} outside {} rows",
+                        batch.num_rows()
+                    )));
+                }
+                if projected.slice(value_index, 1).to_data()
+                    != materialized.slice(row, 1).to_data()
+                {
+                    return Err(CdfError::data(format!(
+                        "physical reconciliation field {source:?} does not equal its materialized typed value at batch row {row}"
+                    )));
+                }
+            }
+            Ok(PhysicalReconciliationArtifact {
+                version: 1,
+                observation_id: observation_id.map(str::to_owned),
+                batch_id: batch_id.clone(),
+                source_path: reconciliation.source_path().to_vec(),
+                observed_field: field_type_evidence(reconciliation.observed_field())?,
+                expected_field: field_type_evidence(expected_field)?,
+                row_count: u64::try_from(reconciliation.batch_row_ordinals().len()).map_err(
+                    |_| CdfError::data("physical reconciliation row count exceeds u64"),
+                )?,
+                row_ranges: physical_reconciliation_row_ranges(
+                    reconciliation.batch_row_ordinals(),
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn lossless_physical_projection(observed: &DataType, expected: &DataType) -> bool {
+    if observed == expected {
+        return true;
+    }
+    match (observed, expected) {
+        (DataType::Int32, DataType::Int64) => true,
+        (DataType::List(observed), DataType::List(expected)) => {
+            lossless_physical_projection(observed.data_type(), expected.data_type())
+        }
+        (DataType::Struct(observed), DataType::Struct(expected))
+            if observed.len() == expected.len() =>
+        {
+            observed.iter().zip(expected).all(|(observed, expected)| {
+                observed.name() == expected.name()
+                    && lossless_physical_projection(observed.data_type(), expected.data_type())
+            })
+        }
+        _ => false,
+    }
+}
+
+fn physical_reconciliation_row_ranges(
+    rows: &[usize],
+) -> Result<Vec<PhysicalReconciliationRowRange>> {
+    let mut ranges = Vec::<PhysicalReconciliationRowRange>::new();
+    for row in rows {
+        let row = u64::try_from(*row)
+            .map_err(|_| CdfError::data("physical reconciliation row ordinal exceeds u64"))?;
+        if let Some(last) = ranges.last_mut()
+            && last.end_exclusive == row
+        {
+            last.end_exclusive = row
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("physical reconciliation row range overflow"))?;
+        } else {
+            ranges.push(PhysicalReconciliationRowRange {
+                start: row,
+                end_exclusive: row
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("physical reconciliation row range overflow"))?,
+            });
+        }
+    }
+    Ok(ranges)
+}
+
+fn field_type_evidence(field: &Field) -> Result<FieldTypeEvidenceArtifact> {
+    Ok(FieldTypeEvidenceArtifact {
+        arrow_type: cdf_contract::CanonicalArrowType::from_arrow(field.data_type())?,
+        nullable: field.is_nullable(),
+        semantic: semantic(field).map(str::to_owned),
+        metadata: field.metadata().clone().into_iter().collect(),
+    })
+}
+
 fn apply_residual_verdicts(
     batch: RecordBatch,
     program: &ValidationProgram,
@@ -7081,9 +7315,6 @@ fn apply_residual_verdicts(
             .collect::<Result<Vec<_>>>()?;
         let mut quarantine_reason = None;
         for candidate in &row_candidates {
-            if candidate.preserves_typed_projection() {
-                continue;
-            }
             let field = candidate
                 .source_path()
                 .first()
@@ -7189,11 +7420,7 @@ fn apply_residual_verdicts(
                     context.batch_id,
                     context.observation_id,
                     ResidualRuntimeVerdict::Captured,
-                    if candidate.preserves_typed_projection() {
-                        "cdf.physical_reconciliation"
-                    } else {
-                        "cdf.residual_capture"
-                    },
+                    "cdf.residual_capture",
                     redaction,
                 )?);
             }
@@ -7290,12 +7517,10 @@ fn residual_decision_artifact(
         batch_id: batch_id.clone(),
         source_row_ordinal: candidate.source_row_ordinal(),
         source_path: candidate.source_path().to_vec(),
-        observed_physical_type: cdf_contract::CanonicalArrowType::from_arrow(
-            candidate.observed_field().data_type(),
-        )?,
-        expected_effective_type: candidate
+        observed_field: field_type_evidence(candidate.observed_field())?,
+        expected_field: candidate
             .expected_field()
-            .map(|field| cdf_contract::CanonicalArrowType::from_arrow(field.data_type()))
+            .map(field_type_evidence)
             .transpose()?,
         verdict,
         rule_id: rule_id.to_owned(),
@@ -7305,9 +7530,7 @@ fn residual_decision_artifact(
             .and_then(|residual| residual.capture.as_ref())
             .map(|capture| capture.encoding.clone())
             .unwrap_or_else(|| cdf_contract::RESIDUAL_ENCODING_NAME.to_owned()),
-        typed_projection: if candidate.preserves_typed_projection() {
-            ResidualTypedProjection::Preserved
-        } else if candidate.expected_field().is_some() {
+        typed_projection: if candidate.expected_field().is_some() {
             ResidualTypedProjection::Nulled
         } else {
             ResidualTypedProjection::Absent
@@ -7990,10 +8213,7 @@ fn validate_materialized_effective_batch_schema(
         let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
         let covered_rows = residual_candidates
             .iter()
-            .filter(|candidate| {
-                !candidate.preserves_typed_projection()
-                    && candidate.source_path().first().map(String::as_str) == Some(source)
-            })
+            .filter(|candidate| candidate.source_path().first().map(String::as_str) == Some(source))
             .map(PreContractResidualCandidate::batch_row_ordinal)
             .collect::<BTreeSet<_>>();
         for row in 0..observed.num_rows() {
@@ -8070,14 +8290,17 @@ fn current_observed_at_u64_ms() -> Result<u64> {
 mod transform_kernel_tests {
     use std::{collections::BTreeMap, hint::black_box, sync::Arc, time::Instant};
 
-    use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+    use arrow_array::{BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
         ContractEvaluationContext, ContractPolicy, DeclarativeExpression, ExpressionUse,
         ObservedSchema, SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
         compile_validation_program,
     };
-    use cdf_kernel::{BatchId, ErrorKind, PreContractResidualCandidate, TrustLevel, with_semantic};
+    use cdf_kernel::{
+        BatchId, ErrorKind, PreContractPhysicalReconciliation, PreContractResidualCandidate,
+        TrustLevel, with_physical_type, with_semantic,
+    };
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use cdf_package::PackageBuilder;
     use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
@@ -8086,7 +8309,7 @@ mod transform_kernel_tests {
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
         apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
         residual_redaction, source_row_tracking_schema,
-        validate_materialized_effective_batch_schema,
+        validate_materialized_effective_batch_schema, validate_physical_reconciliations,
     };
 
     #[test]
@@ -8121,6 +8344,79 @@ mod transform_kernel_tests {
         )
         .unwrap();
         validate_materialized_effective_batch_schema(&populated, &effective, &[]).unwrap();
+    }
+
+    #[test]
+    fn physical_reconciliation_requires_lossless_equality_with_materialized_cell() {
+        let expected = with_physical_type(Field::new("id", DataType::Int64, false), "bson:int64");
+        let materialized = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![expected.clone().with_nullable(true)])),
+            vec![Arc::new(Int64Array::from(vec![7_i64]))],
+        )
+        .unwrap();
+        let exact = PreContractPhysicalReconciliation::new(
+            vec!["id".to_owned()],
+            with_physical_type(Field::new("id", DataType::Int32, true), "bson:int32"),
+            expected.clone(),
+            Arc::new(Int32Array::from(vec![7_i32])),
+            vec![0],
+        )
+        .unwrap();
+        let artifacts = validate_physical_reconciliations(
+            &materialized,
+            vec![exact],
+            &BatchId::new("physical-exact").unwrap(),
+            Some("observation"),
+        )
+        .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].row_count, 1);
+        assert_eq!(
+            artifacts[0]
+                .observed_field
+                .metadata
+                .get(cdf_kernel::PHYSICAL_TYPE_METADATA_KEY)
+                .map(String::as_str),
+            Some("bson:int32")
+        );
+        assert_eq!(artifacts[0].row_ranges[0].start, 0);
+        assert_eq!(artifacts[0].row_ranges[0].end_exclusive, 1);
+
+        let incompatible = PreContractPhysicalReconciliation::new(
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Utf8, true),
+            expected.clone(),
+            Arc::new(StringArray::from(vec!["wrong"])),
+            vec![0],
+        )
+        .unwrap();
+        let error = validate_physical_reconciliations(
+            &materialized,
+            vec![incompatible],
+            &BatchId::new("physical-incompatible").unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("unsupported projection"));
+
+        let unequal = PreContractPhysicalReconciliation::new(
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Int32, true),
+            expected,
+            Arc::new(Int32Array::from(vec![8_i32])),
+            vec![0],
+        )
+        .unwrap();
+        let error = validate_physical_reconciliations(
+            &materialized,
+            vec![unequal],
+            &BatchId::new("physical-unequal").unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("does not equal"));
     }
 
     #[test]

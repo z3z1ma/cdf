@@ -397,7 +397,7 @@ fn governed_decoder_preserves_unknown_and_mismatched_values_as_residual_evidence
 }
 
 #[test]
-fn governed_decoder_rejects_residual_candidate_cardinality_over_bound() {
+fn governed_decoder_rejects_structural_cardinality_before_residual_allocation() {
     let mut document = RawDocumentBuf::new();
     document.append(cstr!("known"), 1_i64);
     for index in 0..=65_536 {
@@ -413,7 +413,10 @@ fn governed_decoder_rejects_residual_candidate_cardinality_over_bound() {
         .unwrap_err();
 
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
-    assert!(error.message.contains("65536-candidate"), "{error}");
+    assert!(
+        error.message.contains("65536-element structural"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -491,6 +494,7 @@ fn governed_decoder_captures_nested_unknown_field_at_exact_path() {
         decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0).unwrap();
 
     assert_eq!(decoded.residual_candidates.len(), 1);
+    assert!(decoded.physical_reconciliations.is_empty());
     assert_eq!(
         decoded.residual_candidates[0].source_path(),
         ["nested", "extra"]
@@ -506,32 +510,38 @@ fn compatible_bson_integer_uses_the_pinned_materialized_observation_domain() {
     )]));
     let document = RawDocumentBuf::try_from(&doc! {"sequence": 7_i32}).unwrap();
 
-    let decoded =
-        decode_batch_with_evidence(Arc::clone(&pinned), pinned, &[document.as_ref()], 0).unwrap();
+    let decoded = decode_batch_with_evidence(
+        Arc::clone(&pinned),
+        Arc::clone(&pinned),
+        &[document.as_ref()],
+        0,
+    )
+    .unwrap();
 
-    assert_eq!(decoded.residual_candidates.len(), 1);
-    let candidate = &decoded.residual_candidates[0];
-    assert_eq!(candidate.source_path(), ["sequence"]);
+    assert!(decoded.residual_candidates.is_empty());
+    assert_eq!(decoded.physical_reconciliations.len(), 1);
+    let reconciliation = &decoded.physical_reconciliations[0];
+    assert_eq!(reconciliation.source_path(), ["sequence"]);
     assert_eq!(
-        physical_type(candidate.observed_field()),
+        physical_type(reconciliation.observed_field()),
         Some("bson:int32")
     );
     assert_eq!(
-        physical_type(candidate.expected_field().unwrap()),
+        physical_type(reconciliation.expected_field()),
         Some("bson:int64")
     );
-    assert!(candidate.preserves_typed_projection());
     assert_eq!(
-        candidate
-            .value()
+        reconciliation
+            .observed_values()
             .as_any()
             .downcast_ref::<Int32Array>()
             .unwrap()
-            .value(candidate.value_index()),
+            .value(0),
         7
     );
+    assert_eq!(reconciliation.batch_row_ordinals(), [0]);
     assert_eq!(decoded.record_batch.column(0).data_type(), &DataType::Int64);
-    assert!(!decoded.record_batch.schema().field(0).is_nullable());
+    assert!(decoded.record_batch.schema().field(0).is_nullable());
     assert_eq!(
         decoded.physical_schema.field(0).data_type(),
         &DataType::Int64
@@ -540,6 +550,41 @@ fn compatible_bson_integer_uses_the_pinned_materialized_observation_domain() {
         physical_type(decoded.physical_schema.field(0)),
         Some("bson:int64")
     );
+
+    let clean = RawDocumentBuf::try_from(&doc! {"sequence": 9_i64}).unwrap();
+    let clean =
+        decode_batch_with_evidence(Arc::clone(&pinned), pinned, &[clean.as_ref()], 1).unwrap();
+    assert!(clean.physical_reconciliations.is_empty());
+    assert_eq!(decoded.record_batch.schema(), clean.record_batch.schema());
+}
+
+#[test]
+fn compatible_physical_reconciliation_is_vectorized_beyond_residual_cardinality() {
+    const ROWS: usize = 65_537;
+    let pinned = Arc::new(Schema::new(vec![with_physical_type(
+        with_source_name(Field::new("sequence", DataType::Int64, false), "sequence"),
+        "bson:int64",
+    )]));
+    let documents = (0..ROWS)
+        .map(|row| RawDocumentBuf::try_from(&doc! {"sequence": i32::try_from(row).unwrap()}))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let references = documents
+        .iter()
+        .map(RawDocumentBuf::as_ref)
+        .collect::<Vec<_>>();
+
+    let decoded = decode_batch_with_evidence(Arc::clone(&pinned), pinned, &references, 0).unwrap();
+
+    assert!(decoded.residual_candidates.is_empty());
+    assert_eq!(decoded.physical_reconciliations.len(), 1);
+    assert_eq!(
+        decoded.physical_reconciliations[0]
+            .batch_row_ordinals()
+            .len(),
+        ROWS
+    );
+    assert_eq!(decoded.record_batch.num_rows(), ROWS);
 }
 
 #[test]

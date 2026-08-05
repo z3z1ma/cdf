@@ -43,6 +43,7 @@ pub(crate) struct MongoDbExecutionInput {
     pub(crate) client: Arc<tokio::sync::OnceCell<MongoDbClientHandle>>,
     pub(crate) descriptor: ResourceDescriptor,
     pub(crate) schema: SchemaRef,
+    pub(crate) decoder_schema: SchemaRef,
     pub(crate) database: MongoDbIdentifier,
     pub(crate) collection: MongoDbIdentifier,
     pub(crate) batch_rows: u32,
@@ -108,7 +109,7 @@ pub(crate) async fn execute_mongodb_collection(
         &input.partition,
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
-    let output_schema = projected_schema(&input.schema, &scan.projection)?;
+    let output_schema = projected_schema(&input.decoder_schema, &scan.projection)?;
     let handle = input
         .client
         .get_or_try_init(|| {
@@ -200,7 +201,7 @@ pub(crate) async fn execute_mongodb_collection(
             &documents,
             source_row_offset,
         )?;
-        let evidence_bytes = decoded.residual_evidence_bytes;
+        let evidence_bytes = decoded.pre_contract_evidence_bytes;
         let record_batch = decoded.record_batch;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
         let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
@@ -235,6 +236,9 @@ pub(crate) async fn execute_mongodb_collection(
         batch
             .header
             .extend_residual_candidates(decoded.residual_candidates);
+        batch
+            .header
+            .extend_physical_reconciliations(decoded.physical_reconciliations);
         batch.header.mark_materialized_residuals_complete();
         batch.header.source_position = source_position;
         sender.send(batch).await?;

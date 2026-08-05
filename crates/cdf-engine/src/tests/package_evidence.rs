@@ -916,9 +916,12 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
             1,
             1,
             vec!["note".to_owned()],
-            semantic_field(
-                Field::new("note", DataType::Utf8, true),
-                r#"cdf.pii@1(class="note")"#,
+            cdf_kernel::with_physical_type(
+                semantic_field(
+                    Field::new("note", DataType::Utf8, true),
+                    r#"cdf.pii@1(class="note")"#,
+                ),
+                "bson:string",
             ),
             Some(note_field),
             note_values,
@@ -1009,6 +1012,16 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
     let evolution: serde_json::Value = serde_json::from_slice(&evolution_bytes).unwrap();
     assert_eq!(evolution["version"], 1);
     assert_eq!(evolution["residual_decisions"].as_array().unwrap().len(), 3);
+    let note_decision = evolution["residual_decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|decision| decision["source_path"] == serde_json::json!(["note"]))
+        .unwrap();
+    assert_eq!(
+        note_decision["observed_field"]["metadata"][cdf_kernel::PHYSICAL_TYPE_METADATA_KEY],
+        "bson:string"
+    );
     reader.verify().unwrap();
     assert_eq!(reader.runtime_arrow_schema().unwrap(), planned_schema);
 }
@@ -1070,7 +1083,7 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
     )
     .unwrap();
     assert_eq!(
-        evolution["residual_decisions"][0]["observed_physical_type"]["kind"],
+        evolution["residual_decisions"][0]["observed_field"]["arrow_type"]["kind"],
         "dictionary"
     );
 }

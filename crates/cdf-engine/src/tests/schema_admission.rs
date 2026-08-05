@@ -1085,6 +1085,16 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         )
         .unwrap(),
     );
+    captured_batch.header.extend_physical_reconciliations([
+        cdf_kernel::PreContractPhysicalReconciliation::new(
+            vec!["id".to_owned()],
+            cdf_kernel::with_physical_type(Field::new("id", DataType::Int32, true), "bson:int32"),
+            id_field.clone(),
+            Arc::new(Int32Array::from(vec![1_i32])) as ArrayRef,
+            vec![0],
+        )
+        .unwrap(),
+    ]);
 
     let quarantined_record = RecordBatch::try_new(
         schema.clone(),
@@ -1282,6 +1292,17 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         quarantined
             .iter()
             .all(|decision| decision["verdict"] == "quarantined")
+    );
+    let physical: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/physical-reconciliations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(physical["version"], 1);
+    assert_eq!(physical["reconciliations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        physical["reconciliations"][0]["observed_field"]["metadata"]
+            [cdf_kernel::PHYSICAL_TYPE_METADATA_KEY],
+        "bson:int32"
     );
     assert_package_tree_excludes(temp.path(), &[CAPTURE_SENTINEL, QUARANTINE_SENTINEL]);
 }

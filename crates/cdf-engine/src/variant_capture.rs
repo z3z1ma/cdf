@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
@@ -40,8 +40,8 @@ pub(crate) struct ResidualDecisionArtifact {
     pub batch_id: BatchId,
     pub source_row_ordinal: u64,
     pub source_path: Vec<String>,
-    pub observed_physical_type: CanonicalArrowType,
-    pub expected_effective_type: Option<CanonicalArrowType>,
+    pub observed_field: FieldTypeEvidenceArtifact,
+    pub expected_field: Option<FieldTypeEvidenceArtifact>,
     pub verdict: ResidualRuntimeVerdict,
     pub rule_id: String,
     pub residual_encoding: String,
@@ -63,7 +63,16 @@ pub(crate) enum ResidualRuntimeVerdict {
 pub(crate) enum ResidualTypedProjection {
     Nulled,
     Absent,
-    Preserved,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FieldTypeEvidenceArtifact {
+    pub arrow_type: CanonicalArrowType,
+    pub nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

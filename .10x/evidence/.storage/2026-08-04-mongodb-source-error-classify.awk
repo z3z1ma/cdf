@@ -14,7 +14,13 @@ BEGIN {
     test = file ~ /\/tests\.rs$/ \
         || (file ~ /\/error\.rs$/ && error_test_line > 0 && line >= error_test_line)
 
-    if (match(source, /mongodb::error::Error::custom/)) {
+    if (match(source, /std::io::Error::(other|from)/)) {
+        syntax = substr(source, RSTART, RLENGTH)
+        sub(/^std::io::/, "Io", syntax)
+    } else if (match(source, /std::io::ErrorKind::[A-Za-z]+/)) {
+        syntax = substr(source, RSTART, RLENGTH)
+        sub(/^std::io::/, "Io", syntax)
+    } else if (match(source, /mongodb::error::Error::custom/)) {
         syntax = "MongoError::custom"
     } else if (match(source, /mongodb::error::ErrorKind::[A-Za-z]+/)) {
         syntax = substr(source, RSTART, RLENGTH)

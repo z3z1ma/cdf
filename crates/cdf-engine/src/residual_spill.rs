@@ -301,7 +301,9 @@ fn embedded_cdf_source(error: &(dyn std::error::Error + 'static)) -> Option<CdfE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::variant_capture::{ResidualRuntimeVerdict, ResidualTypedProjection};
+    use crate::variant_capture::{
+        FieldTypeEvidenceArtifact, ResidualRuntimeVerdict, ResidualTypedProjection,
+    };
     use cdf_contract::{CanonicalArrowType, RedactionDecision};
     use cdf_kernel::BatchId;
 
@@ -312,8 +314,13 @@ mod tests {
             batch_id: BatchId::new("batch-1").unwrap(),
             source_row_ordinal: 0,
             source_path: vec!["value".to_owned()],
-            observed_physical_type: CanonicalArrowType::Boolean,
-            expected_effective_type: None,
+            observed_field: FieldTypeEvidenceArtifact {
+                arrow_type: CanonicalArrowType::Boolean,
+                nullable: false,
+                semantic: None,
+                metadata: Default::default(),
+            },
+            expected_field: None,
             verdict: ResidualRuntimeVerdict::Captured,
             rule_id: "residual".to_owned(),
             residual_encoding: "json-v1".to_owned(),
