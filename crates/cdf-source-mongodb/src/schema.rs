@@ -720,7 +720,8 @@ pub(crate) fn decode_batch_with_physical_schema(
             "MongoDB physical observation projection does not align with decoder output",
         ));
     }
-    preflight_column_accumulator_bytes(decoder_schema.as_ref(), documents)?;
+    let document_shapes_prevalidated =
+        preflight_column_accumulator_bytes(decoder_schema.as_ref(), documents)?;
     let mut columns = decoder_schema
         .fields()
         .iter()
@@ -745,6 +746,11 @@ pub(crate) fn decode_batch_with_physical_schema(
         .collect::<Vec<_>>();
     let mut pre_contract_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
+        let unknown_fields = if document_shapes_prevalidated {
+            collect_top_level_unknown_fields(document, &known_sources)?
+        } else {
+            validate_document_shape_and_collect_top_level_unknown_fields(document, &known_sources)?
+        };
         for ((field, column), decoder_field) in decoder_schema
             .fields()
             .iter()
@@ -794,18 +800,11 @@ pub(crate) fn decode_batch_with_physical_schema(
                 )?;
             }
         }
-        for element in document.iter() {
-            let (name, value) = element.map_err(|error| {
-                CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
-            })?;
-            if known_sources.contains(name.as_str()) {
-                continue;
-            }
-            let name = name.to_string();
+        for (name, value) in unknown_fields {
             let candidate = residual_candidate(
                 source_row_offset.saturating_add(row as u64),
                 row,
-                &name,
+                name,
                 Some(value),
                 None,
                 residual_candidates.len(),
@@ -853,7 +852,7 @@ pub(crate) fn decode_batch_with_physical_schema(
     })
 }
 
-fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument]) -> Result<()> {
+fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument]) -> Result<bool> {
     let mut budget = DecodeAllocationBudget::default();
     budget.charge(
         schema
@@ -868,9 +867,6 @@ fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument
         .any(|field| field_contains_list(field))
         && !schema_has_overlapping_source_paths(schema)
     {
-        for document in documents {
-            validate_document_shape(document, 0)?;
-        }
         let rows = documents.len();
         for field in schema.fields() {
             estimate_fixed_field_appends(field, rows, &mut budget)?;
@@ -893,7 +889,7 @@ fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument
                     .ok_or_else(|| CdfError::data("MongoDB decoder payload estimate overflow"))?,
             )?;
         }
-        return Ok(());
+        return Ok(false);
     }
     for document in documents {
         validate_document_shape(document, 0)?;
@@ -902,7 +898,7 @@ fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument
             estimate_field_append(field, raw_value_at_path(document, source)?, &mut budget)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Default)]
@@ -1744,6 +1740,41 @@ fn validate_unique_document(document: &RawDocument) -> Result<()> {
     Ok(())
 }
 
+fn collect_top_level_unknown_fields<'a>(
+    document: &'a RawDocument,
+    known_sources: &BTreeSet<String>,
+) -> Result<Vec<(&'a str, RawBsonRef<'a>)>> {
+    let mut unknown_fields = Vec::new();
+    for element in document {
+        let (name, value) = element.map_err(|error| {
+            CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+        })?;
+        if !known_sources.contains(name.as_str()) {
+            unknown_fields.push((name.as_str(), value));
+        }
+    }
+    Ok(unknown_fields)
+}
+
+fn validate_document_shape_and_collect_top_level_unknown_fields<'a>(
+    document: &'a RawDocument,
+    known_sources: &BTreeSet<String>,
+) -> Result<Vec<(&'a str, RawBsonRef<'a>)>> {
+    let mut budget = DocumentShapeBudget::default();
+    let mut names = BTreeSet::new();
+    let mut unknown_fields = Vec::new();
+    for element in document {
+        let (name, value) = element.map_err(|error| {
+            CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+        })?;
+        validate_document_element(name.as_str(), value, 0, &mut budget, &mut names)?;
+        if !known_sources.contains(name.as_str()) {
+            unknown_fields.push((name.as_str(), value));
+        }
+    }
+    Ok(unknown_fields)
+}
+
 fn validate_document_shape(document: &RawDocument, depth: usize) -> Result<()> {
     let mut budget = DocumentShapeBudget::default();
     validate_document_shape_with_budget(document, depth, &mut budget)
@@ -1793,25 +1824,35 @@ fn validate_document_shape_with_budget(
         let (name, value) = element.map_err(|error| {
             CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
         })?;
-        budget.admit(name.len())?;
-        if !names.insert(name.as_str()) {
-            return Err(CdfError::data(format!(
-                "MongoDB source document repeats field `{name}`"
-            )));
-        }
-        if name.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES {
-            return Err(CdfError::data(format!(
-                "MongoDB field name exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte residual path bound"
-            )));
-        }
-        if name.as_str().contains('.') {
-            return Err(CdfError::data(format!(
-                "MongoDB field `{name}` contains a literal dot and cannot be represented as an unambiguous CDF field path; rename the source field"
-            )));
-        }
-        validate_nested_value_shape(value, depth + 1, budget)?;
+        validate_document_element(name.as_str(), value, depth, budget, &mut names)?;
     }
     Ok(())
+}
+
+fn validate_document_element<'a>(
+    name: &'a str,
+    value: RawBsonRef<'a>,
+    depth: usize,
+    budget: &mut DocumentShapeBudget,
+    names: &mut BTreeSet<&'a str>,
+) -> Result<()> {
+    budget.admit(name.len())?;
+    if !names.insert(name) {
+        return Err(CdfError::data(format!(
+            "MongoDB source document repeats field `{name}`"
+        )));
+    }
+    if name.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES {
+        return Err(CdfError::data(format!(
+            "MongoDB field name exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte residual path bound"
+        )));
+    }
+    if name.contains('.') {
+        return Err(CdfError::data(format!(
+            "MongoDB field `{name}` contains a literal dot and cannot be represented as an unambiguous CDF field path; rename the source field"
+        )));
+    }
+    validate_nested_value_shape(value, depth + 1, budget)
 }
 
 fn validate_nested_value_shape(
