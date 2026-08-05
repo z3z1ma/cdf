@@ -1794,7 +1794,8 @@ fn build_path_reports(
                 match decision {
                     FieldCoercionDecision::Preserved
                     | FieldCoercionDecision::Rebound
-                    | FieldCoercionDecision::Widened => {}
+                    | FieldCoercionDecision::Widened
+                    | FieldCoercionDecision::SourceMaterializedExact => {}
                     FieldCoercionDecision::CoercedByPolicy
                     | FieldCoercionDecision::LossyAllowed
                         if explicit_type.is_some() => {}

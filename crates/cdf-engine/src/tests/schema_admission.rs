@@ -19,6 +19,7 @@ use super::support::{
     stream_admission_coercion, terminal_effective_schema_runtime, terminal_file_position,
 };
 use super::support::{ResourceStream, Result};
+use arrow_array::{BooleanArray, Decimal128Array};
 
 #[test]
 fn validation_program_rebind_atomically_rebuilds_compiled_output_schema() {
@@ -744,6 +745,96 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
             .metadata
             .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY),
         Some(&projected_hash.to_string())
+    );
+
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+}
+
+#[test]
+fn tagged_mongodb_decimal_catalog_plans_source_materialized_exact_output() {
+    let effective_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Decimal128(18, 2), false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        semantic_field(
+            cdf_kernel::with_physical_type(
+                Field::new("amount", DataType::Utf8, false),
+                "bson:decimal128",
+            ),
+            cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC,
+        ),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let decimals = Decimal128Array::from(vec![1_234_i128])
+        .with_precision_and_scale(18, 2)
+        .unwrap();
+    let record_batch = RecordBatch::try_new(
+        Arc::clone(&effective_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            Arc::new(decimals) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-mongodb-decimal").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        physical_hash.clone(),
+        record_batch,
+    )
+    .unwrap();
+    batch
+        .header
+        .mark_materialized_output(physical_schema.as_ref())
+        .unwrap();
+    batch.header.source_position = Some(terminal_file_position());
+
+    let evidence = bound_effective_schema_evidence(
+        cdf_kernel::canonical_arrow_schema_hash(effective_schema.as_ref()).unwrap(),
+        "manifest-mongodb-decimal-v1",
+        ".cdf/schemas/orders@manifest-mongodb-decimal-v1.discovery.json",
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+            schema_observation_binding("input-0"),
+        )],
+    );
+    let runtime = EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap();
+    let resource = MockResource::tier_b(vec![batch])
+        .with_partition_count(1)
+        .with_effective_schema_runtime(Arc::clone(&effective_schema), runtime);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input_for_schema(
+                effective_schema,
+                Vec::new(),
+                None,
+                None,
+                ExecutionExtent::bounded(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        plan.effective_schema_evidence().unwrap().observations[0]
+            .coercion_plan
+            .fields[1]
+            .decision,
+        FieldCoercionDecision::SourceMaterializedExact
     );
 
     let temp = TempDir::new().unwrap();

@@ -7,7 +7,7 @@ use arrow_array::{ArrayRef, RecordBatch, new_null_array};
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CdfError, Result, physical_type, source_name, with_physical_type, with_source_name,
+    CdfError, Result, physical_type, semantic, source_name, with_physical_type, with_source_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +74,7 @@ pub enum FieldCoercionDecision {
     Preserved,
     Rebound,
     Widened,
+    SourceMaterializedExact,
     CoercedByPolicy,
     LossyAllowed,
     LossyRejected,
@@ -233,6 +234,12 @@ pub fn materialize_schema_coercion(
                         with_physical_type(output_field, observed_field.data_type().to_string());
                 }
                 materialize_column(observed.column(index), &output_field, &decision.source_name)?
+            }
+            FieldCoercionDecision::SourceMaterializedExact => {
+                return Err(invalid_coercion_evidence(format!(
+                    "field {:?} requires exact materialization by its source adapter",
+                    decision.source_name
+                )));
             }
             FieldCoercionDecision::LossyRejected
             | FieldCoercionDecision::Unsupported
@@ -398,6 +405,11 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
             RuleOutcome::Coerced,
             format!("lossless widening from {observed} to {constraint}"),
             observed != constraint && is_lossless_widening_display(observed, constraint),
+        ),
+        FieldCoercionDecision::SourceMaterializedExact => (
+            RuleOutcome::Coerced,
+            exact_source_materialization_reason(observed, constraint),
+            observed == "Utf8" && constraint.starts_with("Decimal128("),
         ),
         FieldCoercionDecision::CoercedByPolicy => (
             RuleOutcome::Coerced,
@@ -566,11 +578,15 @@ pub fn plan_schema_reconciliation(
         };
         matched_sources.insert(field_source_name.clone());
 
-        let type_decision = reconcile_type(
-            observed_field.data_type(),
-            constraint_field.data_type(),
-            type_policy,
-        );
+        let type_decision = if is_exact_source_materialization(observed_field, constraint_field) {
+            TypeReconciliation::SourceMaterializedExact
+        } else {
+            reconcile_type(
+                observed_field.data_type(),
+                constraint_field.data_type(),
+                type_policy,
+            )
+        };
         let field_decision =
             type_decision.field_decision(&field_source_name, observed_field, constraint_field);
 
@@ -578,6 +594,7 @@ pub fn plan_schema_reconciliation(
             TypeReconciliation::Preserved
             | TypeReconciliation::Rebound
             | TypeReconciliation::Widened
+            | TypeReconciliation::SourceMaterializedExact
             | TypeReconciliation::CoercedByPolicy
             | TypeReconciliation::LossyAllowed => {
                 output_fields.push(reconciled_field(
@@ -671,6 +688,7 @@ enum TypeReconciliation {
     Preserved,
     Rebound,
     Widened,
+    SourceMaterializedExact,
     CoercedByPolicy,
     LossyAllowed,
     LossyRejected { allowance: ExplicitAllowance },
@@ -708,6 +726,12 @@ impl TypeReconciliation {
                 FieldCoercionDecision::Widened,
                 RuleOutcome::Coerced,
                 format!("lossless widening from {observed_type} to {constraint_type}"),
+                Vec::new(),
+            ),
+            Self::SourceMaterializedExact => (
+                FieldCoercionDecision::SourceMaterializedExact,
+                RuleOutcome::Coerced,
+                exact_source_materialization_reason(&observed_type, &constraint_type),
                 Vec::new(),
             ),
             Self::CoercedByPolicy => (
@@ -811,6 +835,21 @@ fn reconcile_type(
         };
     }
     TypeReconciliation::Unsupported
+}
+
+fn is_exact_source_materialization(observed: &Field, constraint: &Field) -> bool {
+    matches!(observed.data_type(), DataType::Utf8)
+        && matches!(constraint.data_type(), DataType::Decimal128(_, _))
+        && semantic(observed) == Some(cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC)
+        && physical_type(observed) == Some("bson:decimal128")
+        && semantic(constraint).is_none()
+}
+
+fn exact_source_materialization_reason(observed: &str, constraint: &str) -> String {
+    format!(
+        "exact source materialization for semantic {} converts {observed} to {constraint}",
+        cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC
+    )
 }
 
 pub fn is_lossless_type_widening(observed: &DataType, constraint: &DataType) -> bool {
