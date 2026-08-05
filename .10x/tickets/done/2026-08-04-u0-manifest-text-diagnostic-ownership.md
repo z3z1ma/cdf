@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -120,6 +120,10 @@ None. The ticket is executable from its active references.
   and human output, no generic refresh suffix appears, and neither lock nor manifest is written.
   A second CLI test proves an offline manifest-path failure remains Data and a denied refresh HTTP
   observation remains Auth, with neither message receiving generic refresh decoration.
+- 2026-08-04: The second frozen-diff review closed both substantive findings and reported one stale
+  evidence count. Corrected three to four test assertions, froze commit `1425c3b0`, and received a
+  final pass with no findings and no material U0 residual risk. All acceptance criteria are now
+  supported within their recorded limits.
 - AC 3-4: Compile has no command-layer error transformer after choosing offline versus refresh; the
   originating `CdfError -> CliError` conversion owns code, kind, remediation, and redaction.
   `cargo test -p cdf-cli-core --lib output::tests -- --nocapture` passed 2/2 for Internal mapping and
@@ -150,8 +154,9 @@ None. The ticket is executable from its active references.
 ## Review
 
 The first frozen-diff review verdict was `fail`: one significant structural security bypass and one
-minor diagnostic-evidence gap. Both findings are repaired and recorded above. A second independent
-frozen-diff verdict is pending.
+minor diagnostic-evidence gap. Both findings were repaired. The second verdict was `concerns` only
+for a stale three-versus-four assertion count; commit `1425c3b0` corrected it. Final read-only
+verdict: `pass`, no findings, no material U0 residual risk.
 
 ## Retrospective
 

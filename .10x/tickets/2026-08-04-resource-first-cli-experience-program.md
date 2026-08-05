@@ -17,7 +17,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 
 1. **U0 — manifest text and diagnostic ownership.** Repair the multiline-SQL manifest regression
    and remove blanket compile-refresh remediation without waiting for the authority redesign.
-   Owner: `.10x/tickets/2026-08-04-u0-manifest-text-diagnostic-ownership.md`.
+   Owner: `.10x/tickets/done/2026-08-04-u0-manifest-text-diagnostic-ownership.md`.
 2. **U1 — selectors and static validate.** Introduce deterministic resource selection, cut
    validate off from secrets/network/source/destination state, remove `--deep`, and publish one
    aggregate typed report. Owner:

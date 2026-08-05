@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
-Depends-On: `.10x/tickets/2026-08-04-u0-manifest-text-diagnostic-ownership.md`
+Depends-On: `.10x/tickets/done/2026-08-04-u0-manifest-text-diagnostic-ownership.md`
 
 # U1 resource selectors and static validate
 
@@ -78,7 +78,7 @@ Implement the first reusable resource-first boundary and cut validate down to it
 
 ## Blockers
 
-None after U0 closes.
+None. U0 closed with independent review pass.
 
 ## Evidence
 
