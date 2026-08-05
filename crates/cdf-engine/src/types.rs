@@ -798,7 +798,9 @@ impl CompiledSchemaAdmissionPlan {
         }
         for field in &plan.fields {
             match field.decision {
-                FieldCoercionDecision::Preserved | FieldCoercionDecision::Rebound => {}
+                FieldCoercionDecision::Preserved
+                | FieldCoercionDecision::Rebound
+                | FieldCoercionDecision::SourceMaterializedExact => {}
                 FieldCoercionDecision::Missing
                     if !self.control_critical_fields.contains(&field.source_name) => {}
                 FieldCoercionDecision::Missing => {

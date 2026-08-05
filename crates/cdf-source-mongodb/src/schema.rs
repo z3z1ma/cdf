@@ -655,7 +655,7 @@ pub(crate) fn decode_batch_with_physical_schema(
                 physical_source != output_source
             })
     {
-        return Err(CdfError::data(
+        return Err(CdfError::internal(
             "MongoDB physical observation projection does not align with decoder output",
         ));
     }

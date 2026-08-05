@@ -12,7 +12,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     IdentifierRules, TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name,
-    with_semantic, with_source_name,
+    with_physical_type, with_semantic, with_source_name,
 };
 
 fn semantic_field(field: Field, reference: &str) -> Field {
@@ -1201,6 +1201,48 @@ fn schema_reconciliation_keeps_string_parse_coercions_opt_in() {
     assert_eq!(
         physical_type(allowed.schema.field_with_name("created_at").unwrap()),
         Some("Utf8")
+    );
+}
+
+#[test]
+fn tagged_mongodb_decimal_requires_exact_source_materialization() {
+    let observed_field = semantic_field(
+        with_physical_type(
+            Field::new("amount", DataType::Utf8, false),
+            "bson:decimal128",
+        ),
+        cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC,
+    );
+    let observed_schema = Arc::new(Schema::new(vec![observed_field]));
+    let constraint = Schema::new(vec![Field::new(
+        "amount",
+        DataType::Decimal128(18, 2),
+        false,
+    )]);
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = false;
+
+    let reconciliation =
+        reconcile_schema(observed_schema.as_ref(), &constraint, &type_policy).unwrap();
+    assert_eq!(
+        decision_for(&reconciliation.plan, "amount").decision,
+        FieldCoercionDecision::SourceMaterializedExact
+    );
+
+    let physical_batch = RecordBatch::try_new(
+        observed_schema,
+        vec![Arc::new(StringArray::from(vec!["12.34"])) as ArrayRef],
+    )
+    .unwrap();
+    let error = materialize_schema_coercion(&physical_batch, &constraint, &reconciliation.plan)
+        .unwrap_err();
+    assert!(error.to_string().contains("source adapter"), "{error}");
+
+    let untagged = Schema::new(vec![Field::new("amount", DataType::Utf8, false)]);
+    let denied = plan_schema_reconciliation(&untagged, &constraint, &type_policy).unwrap();
+    assert_eq!(
+        decision_for(&denied.plan, "amount").decision,
+        FieldCoercionDecision::LossyRejected
     );
 }
 

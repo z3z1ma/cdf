@@ -284,7 +284,7 @@ fn projected_physical_schema(
         .iter()
         .map(|logical_name| {
             let decoder = field_by_name(decoder_schema, logical_name).ok_or_else(|| {
-                CdfError::contract(format!(
+                CdfError::internal(format!(
                     "MongoDB decoder projection field `{logical_name}` disappeared"
                 ))
             })?;
@@ -298,7 +298,7 @@ fn projected_physical_schema(
                 })
                 .cloned()
                 .ok_or_else(|| {
-                    CdfError::data(format!(
+                    CdfError::internal(format!(
                         "MongoDB physical observation omitted projected source field `{source}`"
                     ))
                 })
