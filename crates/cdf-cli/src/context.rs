@@ -114,7 +114,6 @@ impl ProjectContext {
                             | "preview"
                             | "run"
                             | "backfill"
-                            | "validate --deep"
                             | "contract freeze"
                             | "contract test"
                             | "diff schema"

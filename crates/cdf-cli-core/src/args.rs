@@ -94,7 +94,8 @@ pub struct CompileArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidateArgs {
-    pub deep: bool,
+    pub selectors: Vec<String>,
+    pub exclude: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,12 +442,10 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
                 refresh: subcommand.get_flag("refresh"),
             }))
         }
-        Some(("validate", subcommand)) => {
-            no_extra_values("validate", &values(subcommand, "extra"))?;
-            Ok(Command::Validate(ValidateArgs {
-                deep: subcommand.get_flag("deep"),
-            }))
-        }
+        Some(("validate", subcommand)) => Ok(Command::Validate(ValidateArgs {
+            selectors: values(subcommand, "selectors"),
+            exclude: values(subcommand, "exclude"),
+        })),
         Some(("plan", subcommand)) => parse_scan("plan", subcommand, true).map(Command::Plan),
         Some(("explain", subcommand)) => {
             parse_scan("explain", subcommand, true).map(Command::Explain)
@@ -962,8 +961,11 @@ pub fn cli_command() -> ClapCommand {
         )
         .subcommand(
             cmd("validate")
-                .arg(flag("deep", "deep"))
-                .arg(values_arg("extra").hide(true)),
+                .about("Statically validate project configuration and selected resources")
+                .long_about("Validate project syntax, selected resource SQL, closed driver option schemas, secret-reference syntax, and local generated-authority integrity without resolving secrets or contacting configured systems.")
+                .after_help("Examples:\n  cdf validate\n  cdf validate local.events 'warehouse.*'\n  cdf validate 'warehouse.*' --exclude warehouse.experimental")
+                .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+                .arg(append_option("exclude", "exclude", "RESOURCE_GLOB")),
         )
         .subcommand(scan_command("plan", true))
         .subcommand(scan_command("explain", true))
@@ -1151,7 +1153,7 @@ fn cmd(name: &'static str) -> ClapCommand {
         "init" => "Create a new cdf project",
         "add" => "Add a source resource to the project",
         "compile" => "Compile a verified local project manifest",
-        "validate" => "Validate project configuration and contracts",
+        "validate" => "Statically validate project configuration and resources",
         "plan" => "Plan a resource run without executing it",
         "explain" => "Explain resolution, capabilities, and execution choices",
         "run" => "Execute a governed resource run",
@@ -1250,7 +1252,7 @@ fn option_help(long: &str) -> &'static str {
         "stats-profile" => "Write the typed statistics profile artifact",
         "explain-memory" => "Include memory-ledger detail in the run report",
         "loop" => "Continue polling for work",
-        "deep" => "Run probes that may contact configured systems",
+        "exclude" => "Exclude resources matching this glob; may be repeated",
         "dry-run" => "Show the proposed change without writing it",
         "refresh" => "Refresh read-only source observations and publish updated project authority",
         "execute" => "Apply the planned operation",
@@ -1285,6 +1287,7 @@ fn positional_help(id: &str) -> &'static str {
         "directory" => "Directory to initialize",
         "query" => "SQL query text",
         "resource_arg" => "Resource identifier",
+        "selectors" => "Exact or glob resource selectors; quote shell-sensitive globs",
         "run_arg" => "Run identifier; omit to scan interrupted work",
         "package_dir" | "packages_dir" => "Package directory",
         "value" => "Contract or trust selector shown in usage",
@@ -1786,6 +1789,29 @@ mod run_jobs_tests {
         let error = Cli::parse(["cdf", "run", "local.events", "--jobs", "0"].map(OsString::from))
             .unwrap_err();
         assert!(error.message.contains("--jobs must be an integer from 1"));
+    }
+
+    #[test]
+    fn validate_accepts_ordered_selectors_and_repeated_exclusions() {
+        let cli = Cli::parse(
+            [
+                "cdf",
+                "validate",
+                "local.events",
+                "warehouse.*",
+                "--exclude",
+                "warehouse.experimental",
+                "--exclude",
+                "*.scratch",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Validate(args) = cli.command else {
+            panic!("expected validate command");
+        };
+        assert_eq!(args.selectors, ["local.events", "warehouse.*"]);
+        assert_eq!(args.exclude, ["warehouse.experimental", "*.scratch"]);
     }
 
     #[test]

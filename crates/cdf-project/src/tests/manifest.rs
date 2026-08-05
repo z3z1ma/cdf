@@ -7,6 +7,7 @@ use cdf_semantic::{
     ParameterKind, PrivacyClassification, SemanticCatalog, SemanticDefinition, SemanticNullability,
     ValidationPredicate,
 };
+use sha2::{Digest, Sha256};
 
 use super::{
     DependencyTuple, DestinationProtocolCapabilities, DestinationSheetArtifact, ManifestInputKind,
@@ -28,6 +29,7 @@ AS
 SELECT id, updated_at, amount
 FROM upstream(source => 'github', path => '/repos/acme/cdf/issues', records => '$');
 "#;
+const SAFE_WHITESPACE_RESOURCE_SQL: &str = "RESOURCE\r\nDISPOSITION MERGE(id)\r\nTRUST GOVERNED\r\nSEMANTICS (amount => 'finance.currency@1(code=\"USD\")')\r\nEXECUTION BOUNDED\r\nAS\r\n\tSELECT id, updated_at, amount\r\nFROM upstream(source => 'github', path => '/repos/acme/cdf/issues', records => '$');\r\n";
 
 fn currency_definition() -> SemanticDefinition {
     SemanticDefinition {
@@ -77,9 +79,23 @@ fn manifest_fixture(
     Vec<u8>,
     super::ProjectManifest,
 ) {
+    manifest_fixture_with_sql(generated_at_unix_ms, RESOURCE_SQL)
+}
+
+fn manifest_fixture_with_sql(
+    generated_at_unix_ms: Option<i64>,
+    resource_sql: &str,
+) -> (
+    tempfile::TempDir,
+    super::ProjectConfig,
+    SemanticCatalog,
+    super::CdfLock,
+    Vec<u8>,
+    super::ProjectManifest,
+) {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("cdf/github")).unwrap();
-    std::fs::write(root.path().join(RESOURCE_PATH), RESOURCE_SQL).unwrap();
+    std::fs::write(root.path().join(RESOURCE_PATH), resource_sql).unwrap();
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let catalog = SemanticCatalog::with_builtins(vec![currency_definition()]).unwrap();
     let input_schema = Schema::new(vec![
@@ -158,7 +174,7 @@ fn manifest_fixture(
             ProjectManifestAuthoredInput::explicit_file(
                 RESOURCE_PATH,
                 ManifestInputKind::ResourceSql,
-                RESOURCE_SQL.as_bytes(),
+                resource_sql.as_bytes(),
                 "cdf-resource-sql",
                 1,
             )
@@ -214,6 +230,32 @@ fn manifest_identity_is_stable_and_excludes_generation_time() {
         first.canonical_json_bytes().unwrap(),
         repeated.canonical_json_bytes().unwrap()
     );
+}
+
+#[test]
+fn multiline_authored_sql_round_trips_with_exact_content_authority() {
+    let (_, _, _, _, _, manifest) = manifest_fixture_with_sql(None, SAFE_WHITESPACE_RESOURCE_SQL);
+    let resource = &manifest.resources[0];
+    assert_eq!(resource.origin.authored_sql, SAFE_WHITESPACE_RESOURCE_SQL);
+    let input = manifest
+        .inputs
+        .iter()
+        .find(|input| input.input_id == RESOURCE_PATH)
+        .unwrap();
+    let expected_hash = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(SAFE_WHITESPACE_RESOURCE_SQL.as_bytes()))
+    );
+    assert_eq!(resource.origin.authored_content_hash, expected_hash);
+    assert_eq!(input.content_hash.as_str(), expected_hash);
+
+    let bytes = manifest.canonical_json_bytes().unwrap();
+    let parsed = parse_project_manifest(&bytes).unwrap();
+    assert_eq!(
+        parsed.resources[0].origin.authored_sql,
+        SAFE_WHITESPACE_RESOURCE_SQL
+    );
+    assert_eq!(parsed.manifest_hash, manifest.manifest_hash);
 }
 
 #[test]

@@ -2,15 +2,15 @@
 .el .ds Aq '
 .TH cdf-validate 1  "cdf-validate "
 .SH NAME
-cdf\-validate \- Validate project configuration and contracts
+cdf\-validate \- Statically validate project configuration and selected resources
 .SH SYNOPSIS
-\fBcdf validate\fR [\fB\-\-deep\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
+\fBcdf validate\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
-Validate project configuration and contracts
+Validate project syntax, selected resource SQL, closed driver option schemas, secret\-reference syntax, and local generated\-authority integrity without resolving secrets or contacting configured systems.
 .SH OPTIONS
 .TP
-\fB\-\-deep\fR
-Run probes that may contact configured systems
+\fB\-\-exclude\fR \fI<RESOURCE_GLOB>\fR
+Exclude resources matching this glob; may be repeated
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
@@ -70,4 +70,12 @@ Process memory budget, e.g. 4GiB or 512MiB
 Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fIRESOURCE_SELECTOR\fR]
+Exact or glob resource selectors; quote shell\-sensitive globs
+.SH EXTRA
+Examples:
+  cdf validate
+  cdf validate local.events \*(Aqwarehouse.*\*(Aq
+  cdf validate \*(Aqwarehouse.*\*(Aq \-\-exclude warehouse.experimental

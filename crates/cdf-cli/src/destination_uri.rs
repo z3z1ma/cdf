@@ -20,14 +20,6 @@ pub(crate) struct EnvironmentDestination {
     pub secret_redaction: Option<String>,
 }
 
-pub(crate) fn resolve_environment_destination(
-    registry: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
-    target: &TargetName,
-) -> Result<EnvironmentDestination, CdfError> {
-    resolve_selected_destination_with_services(registry, context, target, None, None)
-}
-
 pub(crate) fn resolve_selected_destination(
     registry: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,

@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
     ProjectConfig, ProjectResourceInput, ProjectResourceInventory, ProjectSourceBinding,
-    TrustPreset, WriteDispositionPreset, inventory_project_resources, parse_resource_file,
+    TrustPreset, WriteDispositionPreset, internal::validate_secret_references_in_json,
+    inventory_project_resources, parse_resource_file,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +119,127 @@ pub struct CompiledProjectResource {
 pub struct ProjectInputSchemaAuthority {
     pub schema_source: SchemaSource,
     pub schema: Schema,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StaticProjectResourceValidation {
+    pub configured_source: String,
+}
+
+pub(crate) fn validate_static_configured_source(
+    registry: &SourceRegistry,
+    config: &ProjectConfig,
+    environment: &str,
+    source_name: &str,
+) -> Result<()> {
+    let source_name = crate::ProjectSourceName::new(source_name, "cdf.toml configured source")?;
+    let source = config.sources.get(source_name.as_str()).ok_or_else(|| {
+        CdfError::contract(format!(
+            "configured source {:?} is not declared in cdf.toml",
+            source_name.as_str()
+        ))
+    })?;
+    if source.source_type.trim().is_empty() {
+        return Err(CdfError::contract(format!(
+            "[sources.{}] requires one non-empty `type`",
+            source_name.as_str()
+        )));
+    }
+    let overlay = config
+        .environments
+        .get(environment)
+        .and_then(|environment| environment.sources.get(source_name.as_str()));
+    if overlay
+        .and_then(|overlay| overlay.source_type.as_ref())
+        .is_some()
+    {
+        return Err(CdfError::contract(format!(
+            "[environments.{environment}.sources.{}] may not override immutable source `type`; remove `type` from the environment overlay",
+            source_name.as_str()
+        )));
+    }
+    let mut effective_options = source.options.clone();
+    if let Some(overlay) = overlay {
+        effective_options.extend(overlay.options.clone());
+    }
+    registry
+        .validate_source_configuration(&source.source_type, &effective_options)
+        .map_err(|error| {
+            CdfError::new(
+                error.kind,
+                format!(
+                    "[sources.{}] effective configuration for environment `{environment}`: {}",
+                    source_name.as_str(),
+                    error.message
+                ),
+            )
+        })?;
+    validate_secret_references_in_json(&serde_json::to_value(&effective_options).map_err(
+        |error| CdfError::internal(format!("serialize source options for validation: {error}")),
+    )?)
+}
+
+pub(crate) fn validate_static_query_project_resource(
+    registry: &SourceRegistry,
+    config: &ProjectConfig,
+    environment: &str,
+    input: &ProjectResourceInput,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<StaticProjectResourceValidation> {
+    let authored = parse_resource_file(&input.sql, &input.relative_path)?;
+    let parsed = parse_project_query_at(
+        &authored.query_sql,
+        &input.relative_path,
+        authored.query_span.start_line,
+        authored.query_span.start_column,
+    )?;
+    let source_name =
+        crate::ProjectSourceName::new(&parsed.upstream.configured_source, &input.relative_path)?;
+    let source = config.sources.get(source_name.as_str()).ok_or_else(|| {
+        CdfError::contract(format!(
+            "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+            input.relative_path,
+            parsed.upstream.span.start_line,
+            parsed.upstream.span.start_column,
+            parsed.upstream.configured_source,
+            parsed.upstream.configured_source,
+        ))
+    })?;
+    validate_static_configured_source(registry, config, environment, source_name.as_str())?;
+    registry
+        .validate_resource_configuration(&source.source_type, &parsed.upstream.resource_options)
+        .map_err(|error| {
+            CdfError::new(
+                error.kind,
+                format!(
+                    "[CDF-SOURCE-RESOURCE-OPTIONS] {}:{}:{}: {}",
+                    input.relative_path,
+                    parsed.upstream.span.start_line,
+                    parsed.upstream.span.start_column,
+                    error.message
+                ),
+            )
+        })?;
+    validate_secret_references_in_json(
+        &serde_json::to_value(&parsed.upstream.resource_options).map_err(|error| {
+            CdfError::internal(format!(
+                "serialize resource options for validation: {error}"
+            ))
+        })?,
+    )?;
+    let effective = resolve_envelope(config, &authored.envelope, &input.default_target)?;
+    for (field, reference) in &effective.semantics.value {
+        if field.starts_with("_cdf_") {
+            return Err(CdfError::contract(format!(
+                "[CDF-SEMANTIC-CONTROL] protected CDF field {field:?} cannot receive an authored semantic annotation"
+            )));
+        }
+        let reference = semantic_catalog.parse_reference(reference, SemanticAuthority::Authored)?;
+        semantic_catalog.resolve_reference(&reference, SemanticAuthority::Authored)?;
+    }
+    Ok(StaticProjectResourceValidation {
+        configured_source: source_name.as_str().to_owned(),
+    })
 }
 
 impl ProjectInputSchemaAuthority {

@@ -1,0 +1,17 @@
+site	construction	owner	classification	disposition
+crates/cdf-cli/src/compile_command.rs:40	CdfError::contract missing cdf.lock	project caller	Contract	retain exact originating diagnostic; remove outer refresh decoration
+crates/cdf-cli/src/compile_command.rs:48	CdfError::internal lost typed lock byte authority	CDF typed project context	Internal	retain
+crates/cdf-cli/src/compile_command.rs:118	CdfError::internal source observation counter overflow	CDF bounded accounting	Internal	retain
+crates/cdf-cli/src/compile_command.rs:123	CdfError::internal conflicting schema artifact bytes	CDF refresh assembly	Internal	retain
+crates/cdf-cli/src/compile_command.rs:135	CdfError::internal rejected typed refreshed snapshot	CDF schema-source transition	Internal	retain
+crates/cdf-cli/src/compile_command.rs:216	CdfError::contract duplicate compiled resource id	project caller	Contract	retain exact originating diagnostic; remove outer refresh decoration
+crates/cdf-project/src/manifest.rs:549	CdfError::internal typed manifest serialization failure	CDF serializer	Internal	retain
+crates/cdf-project/src/manifest.rs:761	CdfError::internal manifest/lock publication mismatch	CDF publication caller	Internal	retain
+crates/cdf-project/src/manifest.rs:798	CdfError::internal manifest/new-lock publication mismatch	CDF publication caller	Internal	retain
+crates/cdf-project/src/manifest.rs:871	CdfError::internal stable-read loop impossible exit	CDF control flow	Internal	retain
+crates/cdf-project/src/manifest.rs:1129	CdfError::internal missing just-inserted semantic definition	CDF manifest assembly	Internal	retain
+crates/cdf-project/src/manifest.rs:1146	CdfError::internal missing just-pushed semantic reference	CDF manifest assembly	Internal	retain
+crates/cdf-project/src/manifest.rs:1219	CdfError::internal invalid already-compiled semantic reference	CDF compiled authority	Internal	retain
+crates/cdf-project/src/manifest.rs:1755	CdfError::internal typed manifest security serialization failure	CDF serializer	Internal	retain
+crates/cdf-project/src/manifest.rs:1971	CdfError::internal canonical identity serialization failure	CDF serializer	Internal	retain
+crates/cdf-project/src/manifest.rs:2078	ManifestErrorAuthority::Compiler to CdfError::internal	CDF compiler-produced manifest	Internal	retain; Artifact arm remains Data

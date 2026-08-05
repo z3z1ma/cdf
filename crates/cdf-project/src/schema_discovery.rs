@@ -181,55 +181,33 @@ impl VerifiedSchemaBaseline {
 }
 
 #[derive(Clone, Debug)]
-enum RuntimeSchemaBaseline {
-    Pinned(VerifiedSchemaBaseline),
-    Declared {
-        resource_id: cdf_kernel::ResourceId,
-        reference: SchemaBaselineReference,
-        schema: arrow_schema::SchemaRef,
-    },
-}
+struct RuntimeSchemaBaseline(VerifiedSchemaBaseline);
 
 impl RuntimeSchemaBaseline {
     fn resource_id(&self) -> &cdf_kernel::ResourceId {
-        match self {
-            Self::Pinned(baseline) => baseline.resource_id(),
-            Self::Declared { resource_id, .. } => resource_id,
-        }
+        self.0.resource_id()
     }
 
     fn reference(&self) -> SchemaBaselineReference {
-        match self {
-            Self::Pinned(baseline) => SchemaBaselineReference::Pinned {
-                snapshot: baseline.snapshot().clone(),
-            },
-            Self::Declared { reference, .. } => reference.clone(),
+        SchemaBaselineReference::Pinned {
+            snapshot: self.0.snapshot().clone(),
         }
     }
 
     fn schema(&self) -> &arrow_schema::SchemaRef {
-        match self {
-            Self::Pinned(baseline) => baseline.schema(),
-            Self::Declared { schema, .. } => schema,
-        }
+        self.0.schema()
     }
 
     fn contains_baseline_observation_schema(&self, schema_hash: &SchemaHash) -> bool {
-        match self {
-            Self::Pinned(baseline) => baseline.contains_baseline_observation_schema(schema_hash),
-            Self::Declared { .. } => false,
-        }
+        self.0.contains_baseline_observation_schema(schema_hash)
     }
 
     fn admits_evolution(&self) -> bool {
-        matches!(self, Self::Pinned(_))
+        true
     }
 
     fn effective_schema_identity(&self, observed: &SchemaHash) -> SchemaHash {
-        match self {
-            Self::Pinned(_) => observed.clone(),
-            Self::Declared { reference, .. } => reference.schema_hash().clone(),
-        }
+        observed.clone()
     }
 }
 
@@ -269,7 +247,7 @@ impl SchemaDiscoveryExecutionOptions {
     /// Binds discovery to a baseline previously hydrated and verified by the
     /// snapshot store. Arbitrary hashes are intentionally not accepted.
     pub fn with_verified_baseline(mut self, baseline: VerifiedSchemaBaseline) -> Self {
-        self.runtime_baseline = Some(RuntimeSchemaBaseline::Pinned(baseline));
+        self.runtime_baseline = Some(RuntimeSchemaBaseline(baseline));
         self
     }
 
@@ -294,29 +272,6 @@ impl SchemaDiscoveryExecutionOptions {
 
     pub fn budget(&self) -> &DiscoveryExecutorBudget {
         &self.budget
-    }
-
-    fn with_declared_baseline(mut self, resource: &CompiledResource) -> Result<Self> {
-        let reference = resource
-            .descriptor()
-            .schema_source
-            .baseline_reference()
-            .ok_or_else(|| {
-                CdfError::contract(
-                    "declared runtime schema observation requires a declared schema baseline",
-                )
-            })?;
-        if !matches!(&reference, SchemaBaselineReference::Declared { .. }) {
-            return Err(CdfError::contract(
-                "declared runtime schema observation received a non-declared baseline",
-            ));
-        }
-        self.runtime_baseline = Some(RuntimeSchemaBaseline::Declared {
-            resource_id: resource.descriptor().resource_id.clone(),
-            reference,
-            schema: resource.schema(),
-        });
-        Ok(self)
     }
 
     fn runtime_baseline(&self) -> Option<&RuntimeSchemaBaseline> {
@@ -379,62 +334,6 @@ pub fn discover_resource_schema_with_source_registry(
         .map(DiscoveryCandidate::from_registered)
         .collect::<Result<Vec<_>>>()?;
     discover_registered_resource_schema(resource, options, plan, session.as_ref(), candidates)
-}
-
-/// Explicitly observes a fixed-schema resource through its registered source.
-///
-/// This is a compiler-front-end preflight for commands such as `validate
-/// --deep`; ordinary plan/run preparation must not call it. The returned
-/// observations are classified against the fixed baseline and never change
-/// the resource's schema epoch.
-pub fn preflight_fixed_resource_schema_with_source_registry(
-    project_root: &Path,
-    resource: &CompiledResource,
-    registry: &SourceRegistry,
-    plan: &CompiledSourcePlan,
-    context: &SourceResolutionContext<'_>,
-    options: SchemaDiscoveryExecutionOptions,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    let (probe, options) = match &resource.descriptor().schema_source {
-        SchemaSource::Declared { .. } => (
-            resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema()),
-            options.with_declared_baseline(resource)?,
-        ),
-        source if source.pinned_snapshot().is_some() => {
-            let snapshot = source
-                .pinned_snapshot()
-                .expect("pinned snapshot checked above");
-            let (_, baseline) =
-                SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
-            if baseline.resource_id() != &resource.descriptor().resource_id {
-                return Err(CdfError::data(format!(
-                    "pinned schema snapshot belongs to resource `{}` but preflight requested `{}`",
-                    baseline.resource_id(),
-                    resource.descriptor().resource_id
-                )));
-            }
-            (
-                resource.with_schema_source_and_schema(
-                    SchemaSource::Discover,
-                    Arc::clone(baseline.schema()),
-                ),
-                options.with_verified_baseline(baseline),
-            )
-        }
-        _ => {
-            return Err(CdfError::contract(format!(
-                "fixed-schema preflight requires a declared or pinned schema for resource `{}`",
-                resource.descriptor().resource_id
-            )));
-        }
-    };
-    let probe_plan = plan.clone().bind_schema_authority(
-        probe.descriptor(),
-        probe.schema().as_ref(),
-        None,
-        probe.baseline_observation_schema_catalog().to_vec(),
-    )?;
-    discover_resource_schema_with_source_registry(&probe, registry, &probe_plan, context, options)
 }
 
 /// Hydrates and verifies the fixed schema artifacts for a pinned resource.

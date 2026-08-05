@@ -67,7 +67,45 @@ pub(crate) fn validate_environment_uri_fields(environment: &EffectiveEnvironment
     ] {
         reject_plaintext_uri_credentials(field, value)?;
     }
+    validate_state_uri_syntax(&environment.state)?;
+    validate_destination_uri_syntax(&environment.destination)?;
     Ok(())
+}
+
+fn validate_state_uri_syntax(value: &str) -> Result<()> {
+    let valid = value.strip_prefix("sqlite://").is_some_and(|path| {
+        !path.trim().is_empty() && !path.contains("://") && !path.chars().any(char::is_control)
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(CdfError::contract(
+            "state URI is invalid; expected sqlite://path",
+        ))
+    }
+}
+
+fn validate_destination_uri_syntax(value: &str) -> Result<()> {
+    if value.starts_with("secret://") {
+        SecretRef::new(value.to_owned())?;
+        return Ok(());
+    }
+    let scheme = cdf_runtime::destination_uri_scheme(value).map_err(|_| {
+        CdfError::contract(
+            "destination URI is invalid; expected <scheme>://location or secret://provider/key",
+        )
+    })?;
+    let prefix = format!("{scheme}://");
+    let valid = value.strip_prefix(&prefix).is_some_and(|location| {
+        !location.trim().is_empty() && !location.chars().any(char::is_control)
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(CdfError::contract(
+            "destination URI is invalid; expected <scheme>://location or secret://provider/key",
+        ))
+    }
 }
 
 pub(crate) fn reject_plaintext_uri_credentials(field: &str, value: &str) -> Result<()> {
@@ -134,6 +172,11 @@ fn collect_secret_refs_from_json(
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
     Ok(())
+}
+
+pub(crate) fn validate_secret_references_in_json(value: &serde_json::Value) -> Result<()> {
+    let mut references = Vec::new();
+    collect_secret_refs_from_json(value, &mut references)
 }
 
 pub(crate) fn secret_refs_in_text(value: &str) -> Result<Vec<SecretRef>> {

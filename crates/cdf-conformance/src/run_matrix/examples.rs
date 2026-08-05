@@ -28,7 +28,7 @@ fn rest_fixture_example_executes_as_a_project() {
     fs::write(config_path, config).unwrap();
 
     for args in [
-        vec!["validate", "--deep"],
+        vec!["validate"],
         vec!["plan", "api.events"],
         vec!["run", "api.events"],
     ] {
@@ -52,7 +52,7 @@ fn postgres_example_executes_as_a_project() {
     fs::write(project.path().join("postgres-dsn"), postgres.url()).unwrap();
 
     for args in [
-        vec!["validate", "--deep"],
+        vec!["validate"],
         vec!["plan", "warehouse.orders"],
         vec!["run", "warehouse.orders"],
     ] {

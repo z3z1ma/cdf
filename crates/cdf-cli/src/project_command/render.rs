@@ -24,40 +24,109 @@ pub(super) fn init_document(report: &ProjectScaffoldReport) -> RenderDocument {
         .push(NextCommand::new("cdf validate"))
 }
 
-pub(super) fn validate_document(report: &ProjectValidationCliReport) -> RenderDocument {
-    let validation = &report.validation;
-    let secret_table = validation.checked_secrets.iter().fold(
-        Table::new(["secret reference", "status"]),
-        |table, secret| {
-            table.row([
-                secret.uri.as_str().to_owned(),
-                format!("{:?}", secret.status).to_lowercase(),
-            ])
-        },
-    );
-
+pub(super) fn validate_document(
+    report: &cdf_project::ProjectStaticValidationReport,
+) -> RenderDocument {
+    let counts = &report.counts;
+    let status = if counts.errors != 0 {
+        StatusKind::Error
+    } else if counts.warnings != 0 {
+        StatusKind::Warning
+    } else {
+        StatusKind::Success
+    };
+    let selected = if report.selection.positive.is_empty() {
+        "all authored resources".to_owned()
+    } else {
+        report.selection.positive.join(", ")
+    };
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
-            StatusKind::Success,
-            format!("validated project {}", report.project_name),
+            status,
+            format!(
+                "validated {} resource(s): {} valid, {} error(s), {} warning(s)",
+                counts.selected_resources, counts.valid_resources, counts.errors, counts.warnings
+            ),
         ))
         .blank_line()
         .push(
-            KeyValuePanel::new("Project")
-                .row("name", report.project_name.clone())
-                .row("environment", validation.environment.name.clone())
-                .row("query resources", validation.resources.to_string())
-                .row(
-                    "secret references",
-                    validation.checked_secrets.len().to_string(),
-                ),
+            KeyValuePanel::summary()
+                .row("project", report.project.clone())
+                .row("environment", report.environment.clone())
+                .row("selection", selected)
+                .row("environments", counts.environments.to_string())
+                .row("configured sources", counts.configured_sources.to_string())
+                .row("selected resources", counts.selected_resources.to_string())
+                .row("valid resources", counts.valid_resources.to_string())
+                .row("warnings", counts.warnings.to_string())
+                .row("errors", counts.errors.to_string())
+                .row("authority current", counts.authority_current.to_string())
+                .row("authority stale", counts.authority_stale.to_string())
+                .row("authority missing", counts.authority_missing.to_string()),
         );
 
-    if !validation.checked_secrets.is_empty() {
-        document = document.blank_line().push(secret_table);
+    if !report.resources.is_empty() {
+        let resources = report.resources.iter().fold(
+            Table::new(["resource", "source", "valid", "authority", "diagnostics"]),
+            |table, resource| {
+                table.row([
+                    resource.resource_id.clone(),
+                    resource
+                        .configured_source
+                        .clone()
+                        .unwrap_or_else(|| "unresolved".to_owned()),
+                    yes_no(resource.valid).to_owned(),
+                    format!("{:?}", resource.authority).to_lowercase(),
+                    resource.diagnostics.len().to_string(),
+                ])
+            },
+        );
+        document = document.blank_line().push(resources);
     }
 
-    document.blank_line().push(NextCommand::new("cdf plan"))
+    let all_diagnostics = report
+        .diagnostics
+        .iter()
+        .chain(
+            report
+                .resources
+                .iter()
+                .flat_map(|resource| &resource.diagnostics),
+        )
+        .collect::<Vec<_>>();
+    if !all_diagnostics.is_empty() {
+        let diagnostics = all_diagnostics.iter().fold(
+            Table::new(["scope", "severity", "code", "message"]),
+            |table, diagnostic| {
+                table.row([
+                    diagnostic
+                        .resource_id
+                        .clone()
+                        .or_else(|| diagnostic.path.clone())
+                        .unwrap_or_else(|| "project".to_owned()),
+                    format!("{:?}", diagnostic.severity).to_lowercase(),
+                    diagnostic.code.clone(),
+                    diagnostic.message.clone(),
+                ])
+            },
+        );
+        document = document.blank_line().push(diagnostics);
+    }
+
+    document = document.blank_line().push(
+        KeyValuePanel::effects()
+            .row("writes", report.effects.writes.clone())
+            .row("checked", report.effects.checked.join("; "))
+            .row("not checked", report.effects.skipped.join("; ")),
+    );
+    if counts.errors == 0
+        && let Some(resource_id) = report.selection.resolved.first()
+    {
+        document = document
+            .blank_line()
+            .push(NextCommand::new(format!("cdf plan {resource_id}")));
+    }
+    document
 }
 
 pub(super) fn diff_schema_document(report: &DiffSchemaCliReport) -> RenderDocument {

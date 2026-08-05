@@ -57,7 +57,7 @@ fn cx1_short_and_long_help_are_distinct_complete_and_placeholder_free() {
     for required in [
         "Package directory",
         "Receipt identifier",
-        "Merge deduplication policy",
+        "Destination target or table",
     ] {
         assert!(recover.stdout.contains(required), "missing {required}");
     }
@@ -71,7 +71,9 @@ fn parser_provides_subcommand_help_at_nested_layers() {
 
     assert_eq!(validate.exit_code, 0);
     assert!(validate.stdout.contains("Usage: cdf validate"));
-    assert!(validate.stdout.contains("--deep"));
+    assert!(validate.stdout.contains("RESOURCE_SELECTOR"));
+    assert!(validate.stdout.contains("--exclude <RESOURCE_GLOB>"));
+    assert!(!validate.stdout.contains("--deep"));
 
     let add = run(["cdf", "add", "--help"]);
 

@@ -44,7 +44,7 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "version" -d 'Print the cdf 
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "init" -d 'Create a new cdf project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "add" -d 'Add a source resource to the project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Compile the selected project into a verified local manifest'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Validate project configuration and contracts'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Statically validate project configuration and selected resources'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Plan a resource run without executing it'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "explain" -d 'Explain resolution, capabilities, and execution choices'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "run" -d 'Execute a governed resource run'
@@ -136,6 +136,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand compile" -l refresh -d 'Refresh 
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c cdf -n "__fish_cdf_using_subcommand validate" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -147,10 +148,9 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand validate" -l deep -d 'Run probes that may contact configured systems'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l select -d 'Comma-separated projected fields' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l filter -d 'Filter expression; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l limit -d 'Maximum rows to read' -r
