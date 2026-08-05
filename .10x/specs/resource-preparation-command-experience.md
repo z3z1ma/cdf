@@ -4,6 +4,26 @@ Updated: 2026-08-04
 
 # Resource-first command experience
 
+## Focused refinements
+
+The user ratified the three core choices in this specification on 2026-08-04: the plan/run author
+loop and command removals, independent resource compilation authority, and aggregate whole-project
+behavior with useful partial compile success.
+
+The following focused draft specifications refine newly requested surfaces before this parent
+contract becomes active:
+
+- `.10x/specs/resource-selector-batch-commands.md` — exact/glob resource-set selection and
+  multi-resource preparation/execution behavior;
+- `.10x/specs/portable-plan-artifact.md` — `plan --out` and `run --plan` authority;
+- `.10x/specs/source-discovery-resource-generation.md` — adapter-owned source/resource discovery
+  and explicit thin-resource generation.
+
+Where this parent uses singular `RESOURCE`, the selector specification expands that operation into
+an ordered set of independently authoritative resources. The existing human plan renderer remains
+the primary terminal experience; a portable plan artifact is a separate output, not a replacement
+for the command report.
+
 ## Purpose
 
 CDF commands MUST match user intent, not expose compiler phases. The current author loop is:
@@ -43,6 +63,13 @@ loading. Unselected resources cannot block or slow selected work.
 Missing/stale generated compilation artifacts are rebuilt by a writing intent. First-use schema
 observation may establish a baseline. A later change to governed output schema is never silently
 accepted; `schema promote` owns that change.
+
+### The lock is the output-schema fence
+
+The primary product purpose of each resource entry in `cdf.lock` is to freeze the governed output
+schema and the semantic/compiler bindings that make it executable. Discovery is evidence against
+that authority, not a replacement for it. No ordinary plan, compile, or run may add a discovered
+column to locked output or destination DDL.
 
 ### One failure, one owner, one fix
 
@@ -269,12 +296,24 @@ failures do not erase completed work. Reports identify exactly which resources w
 First-use observation freezes a baseline before execution and may commit it during run/compile.
 After a baseline exists:
 
-- ordinary compile reuses it and rebuilds derived plan artifacts;
-- ordinary run observes physical schemas in-stream under the fixed admission program;
+- ordinary plan/compile use the locked output schema and rebuild only derived plan artifacts;
+- source contact MAY observe current physical schema for inventory/planning evidence, but that
+  observation is reconciled against the lock and cannot widen output or destination DDL;
+- ordinary run observes physical schemas in-stream under the same fixed admission program;
+- an observed extra field is explicit drift/residual evidence and never a typed output field;
+- an absent locked field remains in locked output and follows its compiled nullable, required,
+  control, residual, or quarantine verdict rather than disappearing through set intersection;
+- a changed type follows only an already compiled coercion/admission verdict or fails/quarantines;
 - compatible/widen/residual/quarantine outcomes do not rewrite the baseline;
-- a change requiring a new governed output schema is reported, not accepted;
+- a change requiring a new governed output schema is reported, not accepted or migrated;
 - `schema diff` observes and explains the candidate change;
-- `schema promote` is the only authority-changing schema-evolution command.
+- `schema promote` is the only authority-changing schema-evolution command and the only path that
+  can authorize destination migration for a new output schema.
+
+A no-write first-use plan MAY propose and freeze a candidate baseline in memory. A portable plan
+MAY carry that exact candidate as proposed first-use authority. Direct run or run-from-plan MUST
+atomically commit the exact candidate lock entry before package/destination mutation; if another
+authority appeared or changed meanwhile, preflight fails and nothing executes.
 
 This removes “refresh” as an overloaded synonym for compile, discovery, pinning, drift acceptance,
 and retry.
@@ -371,12 +410,8 @@ round-trip with its exact authored hash.
   exact-set semantics;
 - weakening fixed-schema admission, secret redaction, path fencing, or publication recovery.
 
-## Ratification blockers
+## Ratification status
 
-1. Confirm the author loop and removals: plan is always no-write; run prepares first use; compile is
-   optional; delete `compile --refresh`, `schema pin`, `schema discover`, and `plan --no-pin`.
-2. Confirm independent authority: replace the monolithic compiled manifest with immutable per-
-   resource artifacts plus a status index, and make lock entries independently validatable.
-3. Confirm whole-project behavior: unscoped compile/validate attempt every resource, report all
-   failures, and compile may retain/publish successful resources even when the overall command
-   exits nonzero.
+The parent model is user-ratified. Activation remains blocked only on the execution-relevant
+choices named by the three focused draft specifications above. No product implementation begins
+until those refinements are confirmed.
