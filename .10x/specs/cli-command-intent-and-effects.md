@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 
@@ -182,9 +182,8 @@ their named authority. None may hide an effectful repair behind a read-only comm
 - a generic selector language spanning resources, configured sources, packages, runs, and
   destinations.
 
-## Ratification blocker
+## Ratification status
 
-The user's conditional confirmation accepts the proposed doctor and add surfaces if the surprising
-top-level replay/resume split is removed. Confirm or correct the exact single-verb `run --package`
-and `run --resume` surface above before this specification activates. The static validate boundary
-is already independently ratified and active.
+The user confirmed the proposed doctor/add surfaces and the single-verb `run --package` /
+`run --resume` replacement on 2026-08-04. The static validate boundary was independently ratified
+and active first.

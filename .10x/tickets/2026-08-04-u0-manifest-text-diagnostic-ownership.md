@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -67,6 +67,9 @@ the project audit skill.
 - 2026-08-04: Opened from the exact sandbox reproduction and source inspection. The current
   validator rejects every Unicode control, including SQL line feeds, while compile command wraps
   all errors in a broad-kind remediation helper. No product code changed in this shaping turn.
+- 2026-08-04: Execution began after the user confirmed the final command-intent contract. Re-read
+  the governing manifest/error/report authorities and fixed the audit scope to manifest validation
+  plus compile command error propagation before touching product code.
 
 ## Blockers
 

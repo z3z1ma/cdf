@@ -107,12 +107,12 @@ closure.
 - 2026-08-04: The user conditionally confirmed doctor/add but rejected separate replay/resume verbs
   as surprising. The focused draft now recommends one `run` verb with mutually exclusive resource,
   portable-plan, package, and interrupted-run authority; exact confirmation remains U6-only.
+- 2026-08-04: The user confirmed the revised one-run-verb model. The command-intent/effects spec is
+  active and no behavioral ratification blocker remains for U5/U6.
 
 ## Blockers
 
-- U5/U6 only: exact choices in the ratification blocker of
-  `.10x/specs/cli-command-intent-and-effects.md`.
-- U0/U1: none.
+None at the program-model level. Children remain dependency-gated by the sequence above.
 
 ## Evidence
 
