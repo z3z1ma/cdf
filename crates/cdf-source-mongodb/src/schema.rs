@@ -738,43 +738,44 @@ pub(crate) fn decode_batch_with_physical_schema(
         .collect::<BTreeSet<_>>();
     let mut residual_candidates = Vec::new();
     let mut physical_reconciliation_accumulators = BTreeMap::new();
-    let physical_reconciliation_fields = decoder_schema
+    let mut decoder_fields = decoder_schema
         .fields()
         .iter()
-        .map(|field| field_can_produce_physical_reconciliation(field))
+        .map(|field| DecoderFieldPlan::new(field))
         .collect::<Vec<_>>();
     let mut pre_contract_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
-        for ((field, column), reconcile_physical) in decoder_schema
+        for ((field, column), decoder_field) in decoder_schema
             .fields()
             .iter()
             .zip(&mut columns)
-            .zip(&physical_reconciliation_fields)
+            .zip(&mut decoder_fields)
         {
-            let source = source_name(field).unwrap_or_else(|| field.name());
+            let source = decoder_field.source.as_str();
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
-                let mut source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
-                if *reconcile_physical {
+                if decoder_field.reconcile_physical {
                     collect_physical_reconciliations(
                         &mut physical_reconciliation_accumulators,
                         row,
-                        &mut source_path,
+                        &mut decoder_field.source_path,
                         value,
                         field,
                         &mut pre_contract_evidence_bytes,
                     )?;
                 }
                 column.append(value)?;
-                collect_nested_unknown_fields(
-                    field,
-                    value,
-                    source_row_offset.saturating_add(row as u64),
-                    row,
-                    &mut source_path,
-                    &mut residual_candidates,
-                    &mut pre_contract_evidence_bytes,
-                )?;
+                if decoder_field.inspect_nested_unknowns {
+                    collect_nested_unknown_fields(
+                        field,
+                        value,
+                        source_row_offset.saturating_add(row as u64),
+                        row,
+                        &mut decoder_field.source_path,
+                        &mut residual_candidates,
+                        &mut pre_contract_evidence_bytes,
+                    )?;
+                }
             } else {
                 column.append(None)?;
                 let candidate = residual_candidate(
@@ -797,10 +798,10 @@ pub(crate) fn decode_batch_with_physical_schema(
             let (name, value) = element.map_err(|error| {
                 CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
             })?;
-            let name = name.to_string();
-            if known_sources.contains(&name) {
+            if known_sources.contains(name.as_str()) {
                 continue;
             }
+            let name = name.to_string();
             let candidate = residual_candidate(
                 source_row_offset.saturating_add(row as u64),
                 row,
@@ -1193,6 +1194,27 @@ impl PhysicalReconciliationAccumulator {
     }
 }
 
+struct DecoderFieldPlan {
+    source: String,
+    source_path: Vec<String>,
+    reconcile_physical: bool,
+    inspect_nested_unknowns: bool,
+}
+
+impl DecoderFieldPlan {
+    fn new(field: &Field) -> Self {
+        let source = source_name(field)
+            .unwrap_or_else(|| field.name())
+            .to_owned();
+        Self {
+            source_path: source.split('.').map(str::to_owned).collect(),
+            source,
+            reconcile_physical: field_can_produce_physical_reconciliation(field),
+            inspect_nested_unknowns: field_can_contain_unknowns(field),
+        }
+    }
+}
+
 fn field_can_produce_physical_reconciliation(field: &Field) -> bool {
     match field.data_type() {
         DataType::Int64 => matches!(physical_type(field), Some("bson:int32" | "bson:int64")),
@@ -1200,6 +1222,14 @@ fn field_can_produce_physical_reconciliation(field: &Field) -> bool {
             .iter()
             .any(|field| field_can_produce_physical_reconciliation(field)),
         DataType::List(child) => field_can_produce_physical_reconciliation(child),
+        _ => false,
+    }
+}
+
+fn field_can_contain_unknowns(field: &Field) -> bool {
+    match field.data_type() {
+        DataType::Struct(_) => true,
+        DataType::List(child) => field_can_contain_unknowns(child),
         _ => false,
     }
 }
