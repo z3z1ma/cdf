@@ -118,3 +118,37 @@ fn project_query_rejects_multiple_statements_and_non_query_statements() {
         assert!(error.message.contains("CDF-SQL"), "{error:?}");
     }
 }
+
+#[test]
+fn upstream_argument_errors_report_envelope_adjusted_locations() {
+    let error = parse_project_query_at(
+        "SELECT id\nFROM upstream(\n  table => 'orders'\n)",
+        "cdf/analytics/orders.cdf.sql",
+        8,
+        4,
+    )
+    .unwrap_err();
+
+    assert!(
+        error.message.contains("cdf/analytics/orders.cdf.sql:9:6:"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn upstream_resource_arguments_reject_secret_references_without_echoing_them() {
+    let error = parse_project_query_at(
+        "SELECT id\nFROM upstream(\n  source => 'warehouse',\n  options => OBJECT(token => 'secret://env/TOP_SECRET')\n)",
+        "cdf/analytics/orders.cdf.sql",
+        8,
+        4,
+    )
+    .unwrap_err();
+
+    assert!(error.message.contains("CDF-SQL-UPSTREAM-SECRET"));
+    assert!(
+        error.message.contains("cdf/analytics/orders.cdf.sql:11:"),
+        "{error:?}"
+    );
+    assert!(!error.message.contains("TOP_SECRET"));
+}

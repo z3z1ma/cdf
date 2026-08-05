@@ -255,7 +255,15 @@ fn sql_value(value: &serde_json::Value) -> Result<String, CliError> {
         serde_json::Value::Null => "NULL".to_owned(),
         serde_json::Value::Bool(value) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
         serde_json::Value::Number(value) => value.to_string(),
-        serde_json::Value::String(value) => format!("'{}'", sql_string(value)),
+        serde_json::Value::String(value) => {
+            if value.starts_with("secret://") {
+                return Err(CdfError::contract(
+                    "resource arguments cannot contain secret references; put credentials in the configured source",
+                )
+                .into());
+            }
+            format!("'{}'", sql_string(value))
+        }
         serde_json::Value::Array(values) => format!(
             "ARRAY [{}]",
             values

@@ -27,6 +27,26 @@ use crate::{
 
 const UPSTREAM_TABLE: &str = "__cdf_upstream";
 
+#[derive(Clone, Copy)]
+struct QueryOrigin {
+    start_line: u32,
+    start_column: u32,
+}
+
+impl QueryOrigin {
+    fn new(start_line: u32, start_column: u32) -> Result<Self> {
+        if start_line == 0 || start_column == 0 {
+            return Err(CdfError::internal(
+                "project query offset must use one-based line and column",
+            ));
+        }
+        Ok(Self {
+            start_line,
+            start_column,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectSqlSpan {
@@ -73,8 +93,8 @@ pub fn parse_project_query_at(
     start_line: u32,
     start_column: u32,
 ) -> Result<ParsedProjectQuery> {
-    let (_, upstream, normalized_query) = parse_and_rewrite(sql, file)?;
-    let upstream = offset_upstream(upstream, start_line, start_column)?;
+    let origin = QueryOrigin::new(start_line, start_column)?;
+    let (_, upstream, normalized_query) = parse_and_rewrite(sql, file, origin)?;
     let authored_ast_hash = cdf_runtime::artifact_hash(&normalized_query)?;
     Ok(ParsedProjectQuery {
         upstream,
@@ -100,8 +120,8 @@ pub fn analyze_project_query_at(
     input_schema: &Schema,
     control_fields: Vec<String>,
 ) -> Result<AnalyzedProjectQuery> {
-    let (query, upstream, normalized_query) = parse_and_rewrite(sql, file)?;
-    let upstream = offset_upstream(upstream, start_line, start_column)?;
+    let origin = QueryOrigin::new(start_line, start_column)?;
+    let (query, upstream, normalized_query) = parse_and_rewrite(sql, file, origin)?;
     let authored_ast_hash = cdf_runtime::artifact_hash(&normalized_query)?;
     let context = SessionContext::new();
     let table = MemTable::try_new(Arc::new(input_schema.clone()), vec![Vec::new()])
@@ -145,20 +165,6 @@ pub fn analyze_project_query_at(
     })
 }
 
-fn offset_upstream(
-    mut upstream: ParsedUpstreamRelation,
-    start_line: u32,
-    start_column: u32,
-) -> Result<ParsedUpstreamRelation> {
-    if start_line == 0 || start_column == 0 {
-        return Err(CdfError::internal(
-            "project query offset must use one-based line and column",
-        ));
-    }
-    upstream.span = offset_span(&upstream.span, start_line, start_column)?;
-    Ok(upstream)
-}
-
 fn offset_span(
     span: &ProjectSqlSpan,
     start_line: u32,
@@ -186,7 +192,11 @@ fn offset_span(
     })
 }
 
-fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRelation, String)> {
+fn parse_and_rewrite(
+    sql: &str,
+    file: &str,
+    origin: QueryOrigin,
+) -> Result<(Query, ParsedUpstreamRelation, String)> {
     if sql.trim().is_empty() {
         return Err(sql_error(
             "CDF-SQL-EMPTY",
@@ -267,7 +277,7 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
             "joins and multiple upstream relations are not admitted",
         ));
     }
-    let upstream = parse_upstream_relation(&mut from.relation, file)?;
+    let upstream = parse_upstream_relation(&mut from.relation, file, origin)?;
     Ok((query, upstream, normalized_query))
 }
 
@@ -336,7 +346,9 @@ fn validate_query_shape(query: &Query, file: &str) -> Result<()> {
 fn parse_upstream_relation(
     relation: &mut TableFactor,
     file: &str,
+    origin: QueryOrigin,
 ) -> Result<ParsedUpstreamRelation> {
+    let relation_span = located_span(relation.span(), file, origin)?;
     let TableFactor::Table {
         name,
         args,
@@ -350,16 +362,18 @@ fn parse_upstream_relation(
         ..
     } = relation
     else {
-        return Err(sql_error(
+        return Err(sql_error_at(
             "CDF-SQL-UPSTREAM-RELATION",
             file,
+            &relation_span,
             "FROM must contain exactly upstream(source => 'name', ...)",
         ));
     };
     if !is_unquoted_name(name, "upstream") || args.is_none() {
-        return Err(sql_error(
+        return Err(sql_error_at(
             "CDF-SQL-UPSTREAM-RELATION",
             file,
+            &relation_span,
             "FROM must contain exactly upstream(source => 'name', ...)",
         ));
     }
@@ -371,96 +385,117 @@ fn parse_upstream_relation(
         || sample.is_some()
         || !index_hints.is_empty()
     {
-        return Err(sql_error(
+        return Err(sql_error_at(
             "CDF-SQL-UPSTREAM-MODIFIER",
             file,
+            &relation_span,
             "upstream(...) does not admit table hints, versions, partitions, ordinality, paths, samples, or index hints",
         ));
     }
-    let relation_span = sql_span(name.span(), file)?;
     let table_args = args.take().ok_or_else(|| {
-        sql_error(
+        sql_error_at(
             "CDF-SQL-UPSTREAM-RELATION",
             file,
+            &relation_span,
             "upstream requires named arguments",
         )
     })?;
     if table_args.settings.is_some() {
-        return Err(sql_error(
+        return Err(sql_error_at(
             "CDF-SQL-UPSTREAM-MODIFIER",
             file,
+            &relation_span,
             "upstream arguments do not admit SETTINGS",
         ));
     }
     let mut configured_source = None;
     let mut resource_options = BTreeMap::new();
     for argument in table_args.args {
+        let argument_span = located_span(argument.span(), file, origin)?;
         let FunctionArg::Named {
             name,
             arg,
             operator,
         } = argument
         else {
-            return Err(sql_error(
+            return Err(sql_error_at(
                 "CDF-SQL-UPSTREAM-ARGUMENT",
                 file,
+                &argument_span,
                 "upstream arguments must use unquoted name => value form",
             ));
         };
         if name.quote_style.is_some() || operator != FunctionArgOperator::RightArrow {
-            return Err(sql_error(
+            return Err(sql_error_at(
                 "CDF-SQL-UPSTREAM-ARGUMENT",
                 file,
+                &argument_span,
                 "upstream arguments must use unquoted name => value form",
             ));
         }
-        validate_token("upstream argument", &name.value, file)?;
+        let name_span = located_span(name.span, file, origin)?;
+        validate_token_at("upstream argument", &name.value, file, &name_span)?;
         let FunctionArgExpr::Expr(expression) = arg else {
-            return Err(sql_error(
+            return Err(sql_error_at(
                 "CDF-SQL-UPSTREAM-VALUE",
                 file,
+                &argument_span,
                 "upstream arguments must be recursive data-only values",
             ));
         };
+        let expression_span = located_span(expression.span(), file, origin)?;
         if name.value == "source" {
             if configured_source.is_some() {
-                return Err(sql_error(
+                return Err(sql_error_at(
                     "CDF-SQL-SOURCE-DUPLICATE",
                     file,
+                    &name_span,
                     "upstream source must appear exactly once",
                 ));
             }
             let Expr::Value(value) = expression else {
-                return Err(sql_error(
+                return Err(sql_error_at(
                     "CDF-SQL-SOURCE-VALUE",
                     file,
+                    &expression_span,
                     "upstream source must be a single-quoted configured-source name",
                 ));
             };
             let Value::SingleQuotedString(source) = value.value else {
-                return Err(sql_error(
+                return Err(sql_error_at(
                     "CDF-SQL-SOURCE-VALUE",
                     file,
+                    &expression_span,
                     "upstream source must be a single-quoted configured-source name",
                 ));
             };
-            validate_token("configured source", &source, file)?;
+            if source.starts_with("secret://") {
+                return Err(sql_error_at(
+                    "CDF-SQL-UPSTREAM-SECRET",
+                    file,
+                    &expression_span,
+                    "the configured source name cannot be a secret reference; declare the source in cdf.toml",
+                ));
+            }
+            validate_token_at("configured source", &source, file, &expression_span)?;
             configured_source = Some(source);
         } else {
-            let value = lower_data_value(expression, file)?;
+            let value = lower_data_value(expression, file, origin)?;
             if resource_options.insert(name.value.clone(), value).is_some() {
-                return Err(sql_error(
+                return Err(sql_error_at(
                     "CDF-SQL-UPSTREAM-DUPLICATE",
                     file,
+                    &name_span,
                     format!("upstream argument {:?} appears more than once", name.value),
                 ));
             }
         }
     }
     let configured_source = configured_source.ok_or_else(|| {
-        sql_error(
+        sql_error_at(
             "CDF-SQL-SOURCE-MISSING",
             file,
+            &relation_span,
             "upstream requires source => '<configured_source>' exactly once",
         )
     })?;
@@ -474,33 +509,48 @@ fn parse_upstream_relation(
     })
 }
 
-fn lower_data_value(expression: Expr, file: &str) -> Result<serde_json::Value> {
+fn lower_data_value(
+    expression: Expr,
+    file: &str,
+    origin: QueryOrigin,
+) -> Result<serde_json::Value> {
+    let expression_span = located_span(expression.span(), file, origin)?;
     match expression {
         Expr::Value(value) => match value.value {
+            Value::SingleQuotedString(value) if value.starts_with("secret://") => {
+                Err(sql_error_at(
+                    "CDF-SQL-UPSTREAM-SECRET",
+                    file,
+                    &expression_span,
+                    "resource arguments cannot contain secret references; put credentials in the configured source",
+                ))
+            }
             Value::SingleQuotedString(value) => Ok(serde_json::Value::String(value)),
-            Value::Number(value, _) => parse_number(&value, file).map(serde_json::Value::Number),
+            Value::Number(value, _) => {
+                parse_number(&value, file, &expression_span).map(serde_json::Value::Number)
+            }
             Value::Boolean(value) => Ok(serde_json::Value::Bool(value)),
             Value::Null => Ok(serde_json::Value::Null),
-            _ => Err(data_value_error(file)),
+            _ => Err(data_value_error(file, &expression_span)),
         },
         Expr::UnaryOp { op, expr } if matches!(op, UnaryOperator::Plus | UnaryOperator::Minus) => {
             let Expr::Value(value) = *expr else {
-                return Err(data_value_error(file));
+                return Err(data_value_error(file, &expression_span));
             };
             let Value::Number(value, _) = value.value else {
-                return Err(data_value_error(file));
+                return Err(data_value_error(file, &expression_span));
             };
             let signed = if op == UnaryOperator::Minus {
                 format!("-{value}")
             } else {
                 value
             };
-            parse_number(&signed, file).map(serde_json::Value::Number)
+            parse_number(&signed, file, &expression_span).map(serde_json::Value::Number)
         }
         Expr::Array(array) if array.named => array
             .elem
             .into_iter()
-            .map(|value| lower_data_value(value, file))
+            .map(|value| lower_data_value(value, file, origin))
             .collect::<Result<Vec<_>>>()
             .map(serde_json::Value::Array),
         Expr::Function(function)
@@ -512,41 +562,49 @@ fn lower_data_value(expression: Expr, file: &str) -> Result<serde_json::Value> {
                 && function.over.is_none()
                 && function.within_group.is_empty() =>
         {
-            lower_object(function.args, file)
+            lower_object(function.args, file, origin, &expression_span)
         }
-        _ => Err(data_value_error(file)),
+        _ => Err(data_value_error(file, &expression_span)),
     }
 }
 
-fn lower_object(arguments: FunctionArguments, file: &str) -> Result<serde_json::Value> {
+fn lower_object(
+    arguments: FunctionArguments,
+    file: &str,
+    origin: QueryOrigin,
+    object_span: &ProjectSqlSpan,
+) -> Result<serde_json::Value> {
     let FunctionArguments::List(arguments) = arguments else {
-        return Err(data_value_error(file));
+        return Err(data_value_error(file, object_span));
     };
     if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
-        return Err(data_value_error(file));
+        return Err(data_value_error(file, object_span));
     }
     let mut object = Map::new();
     for argument in arguments.args {
+        let argument_span = located_span(argument.span(), file, origin)?;
         let FunctionArg::Named {
             name,
             arg,
             operator: FunctionArgOperator::RightArrow,
         } = argument
         else {
-            return Err(data_value_error(file));
+            return Err(data_value_error(file, &argument_span));
         };
         if name.quote_style.is_some() {
-            return Err(data_value_error(file));
+            return Err(data_value_error(file, &argument_span));
         }
-        validate_token("OBJECT key", &name.value, file)?;
+        let name_span = located_span(name.span, file, origin)?;
+        validate_token_at("OBJECT key", &name.value, file, &name_span)?;
         let FunctionArgExpr::Expr(expression) = arg else {
-            return Err(data_value_error(file));
+            return Err(data_value_error(file, &argument_span));
         };
-        let value = lower_data_value(expression, file)?;
+        let value = lower_data_value(expression, file, origin)?;
         if object.insert(name.value.clone(), value).is_some() {
-            return Err(sql_error(
+            return Err(sql_error_at(
                 "CDF-SQL-OBJECT-DUPLICATE",
                 file,
+                &name_span,
                 format!("OBJECT key {:?} appears more than once", name.value),
             ));
         }
@@ -608,14 +666,15 @@ fn relational_plan_error(plan: &LogicalPlan, file: &str) -> CdfError {
     )
 }
 
-fn parse_number(value: &str, file: &str) -> Result<Number> {
+fn parse_number(value: &str, file: &str, span: &ProjectSqlSpan) -> Result<Number> {
     serde_json::from_str::<serde_json::Value>(value)
         .ok()
         .and_then(|value| value.as_number().cloned())
         .ok_or_else(|| {
-            sql_error(
+            sql_error_at(
                 "CDF-SQL-NUMBER",
                 file,
+                span,
                 format!("numeric resource argument {value:?} is outside the canonical JSON number domain"),
             )
         })
@@ -629,16 +688,17 @@ fn is_unquoted_name(name: &ObjectName, expected: &str) -> bool {
     )
 }
 
-fn validate_token(kind: &str, value: &str, file: &str) -> Result<()> {
+fn validate_token_at(kind: &str, value: &str, file: &str, span: &ProjectSqlSpan) -> Result<()> {
     let mut bytes = value.bytes();
     let starts_lowercase = bytes.next().is_some_and(|byte| byte.is_ascii_lowercase());
     if value.len() > 128
         || !starts_lowercase
         || bytes.any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
     {
-        return Err(sql_error(
+        return Err(sql_error_at(
             "CDF-SQL-NAME",
             file,
+            span,
             format!("{kind} {value:?} must match [a-z][a-z0-9_]{{0,127}}"),
         ));
     }
@@ -657,6 +717,18 @@ fn sql_span(
     })
 }
 
+fn located_span(
+    span: datafusion::sql::sqlparser::tokenizer::Span,
+    file: &str,
+    origin: QueryOrigin,
+) -> Result<ProjectSqlSpan> {
+    offset_span(
+        &sql_span(span, file)?,
+        origin.start_line,
+        origin.start_column,
+    )
+}
+
 fn span_error(file: &str) -> CdfError {
     sql_error(
         "CDF-SQL-SPAN",
@@ -665,10 +737,11 @@ fn span_error(file: &str) -> CdfError {
     )
 }
 
-fn data_value_error(file: &str) -> CdfError {
-    sql_error(
+fn data_value_error(file: &str, span: &ProjectSqlSpan) -> CdfError {
+    sql_error_at(
         "CDF-SQL-UPSTREAM-VALUE",
         file,
+        span,
         "resource arguments admit only single-quoted strings, numbers, Boolean, NULL, ARRAY [...], and OBJECT(name => value, ...)",
     )
 }
@@ -679,4 +752,16 @@ fn datafusion_error(error: datafusion::error::DataFusionError) -> CdfError {
 
 fn sql_error(code: &str, file: &str, message: impl std::fmt::Display) -> CdfError {
     CdfError::contract(format!("[{code}] {file}: {message}"))
+}
+
+fn sql_error_at(
+    code: &str,
+    file: &str,
+    span: &ProjectSqlSpan,
+    message: impl std::fmt::Display,
+) -> CdfError {
+    CdfError::contract(format!(
+        "[{code}] {file}:{}:{}: {message}",
+        span.start_line, span.start_column
+    ))
 }

@@ -15,7 +15,7 @@ use crate::acquire_lock_file_mutation_guard;
 
 static TRANSACTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PROJECT_FILE_TRANSACTION_MARKER: &str = ".cdf/project-files.transaction.json";
-const PROJECT_FILE_TRANSACTION_MARKER_VERSION: u16 = 1;
+const PROJECT_FILE_TRANSACTION_MARKER_VERSION: u16 = 2;
 const MAX_PROJECT_FILE_TRANSACTION_MARKER_BYTES: u64 = 16 * 1024 * 1024;
 
 pub enum ProjectFileExpectation {
@@ -29,6 +29,20 @@ pub struct ProjectFileWrite {
     bytes: Vec<u8>,
     expectation: ProjectFileExpectation,
     owner_only: bool,
+}
+
+pub struct ProjectFileGuard {
+    relative_path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl ProjectFileGuard {
+    pub fn exact(relative_path: impl Into<PathBuf>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            relative_path: relative_path.into(),
+            bytes: bytes.into(),
+        }
+    }
 }
 
 impl ProjectFileWrite {
@@ -71,8 +85,16 @@ enum ProjectFileTransactionState {
     Committed,
     Pending {
         commit_relative_path: PathBuf,
+        guards: Vec<ProjectFileTransactionGuard>,
         entries: Vec<ProjectFileTransactionEntry>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ProjectFileTransactionGuard {
+    relative_path: PathBuf,
+    len: u64,
+    sha256: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +123,7 @@ struct ProjectFileTransactionHooks<'a> {
     before_install: &'a mut dyn FnMut(&Path) -> Result<()>,
     after_absent_install: &'a mut dyn FnMut(&Path, &Path) -> Result<()>,
     after_install: &'a mut dyn FnMut(&Path) -> Result<()>,
+    fail_after_install_count: Option<usize>,
 }
 
 pub fn recover_project_file_transaction(project_root: impl AsRef<Path>) -> Result<u64> {
@@ -143,6 +166,21 @@ pub fn publish_project_files_transactionally(
     )
 }
 
+pub fn publish_project_files_transactionally_guarded(
+    project_root: impl AsRef<Path>,
+    commit_relative_path: impl AsRef<Path>,
+    guards: Vec<ProjectFileGuard>,
+    writes: Vec<ProjectFileWrite>,
+) -> Result<ProjectFileTransactionReport> {
+    publish_project_files_inner_with_guards(
+        project_root.as_ref(),
+        commit_relative_path.as_ref(),
+        guards,
+        writes,
+        None,
+    )
+}
+
 pub fn publish_project_files_transactionally_without_recovery(
     project_root: impl AsRef<Path>,
     commit_relative_path: impl AsRef<Path>,
@@ -151,6 +189,23 @@ pub fn publish_project_files_transactionally_without_recovery(
     publish_project_files_inner_with_policy(
         project_root.as_ref(),
         commit_relative_path.as_ref(),
+        Vec::new(),
+        writes,
+        None,
+        PendingTransactionPolicy::FailClosed,
+    )
+}
+
+pub fn publish_project_files_transactionally_guarded_without_recovery(
+    project_root: impl AsRef<Path>,
+    commit_relative_path: impl AsRef<Path>,
+    guards: Vec<ProjectFileGuard>,
+    writes: Vec<ProjectFileWrite>,
+) -> Result<ProjectFileTransactionReport> {
+    publish_project_files_inner_with_policy(
+        project_root.as_ref(),
+        commit_relative_path.as_ref(),
+        guards,
         writes,
         None,
         PendingTransactionPolicy::FailClosed,
@@ -169,9 +224,26 @@ fn publish_project_files_inner(
     writes: Vec<ProjectFileWrite>,
     fail_after_install_count: Option<usize>,
 ) -> Result<ProjectFileTransactionReport> {
+    publish_project_files_inner_with_guards(
+        project_root,
+        commit_relative_path,
+        Vec::new(),
+        writes,
+        fail_after_install_count,
+    )
+}
+
+fn publish_project_files_inner_with_guards(
+    project_root: &Path,
+    commit_relative_path: &Path,
+    guards: Vec<ProjectFileGuard>,
+    writes: Vec<ProjectFileWrite>,
+    fail_after_install_count: Option<usize>,
+) -> Result<ProjectFileTransactionReport> {
     publish_project_files_inner_with_policy(
         project_root,
         commit_relative_path,
+        guards,
         writes,
         fail_after_install_count,
         PendingTransactionPolicy::Recover,
@@ -181,6 +253,7 @@ fn publish_project_files_inner(
 fn publish_project_files_inner_with_policy(
     project_root: &Path,
     commit_relative_path: &Path,
+    guards: Vec<ProjectFileGuard>,
     writes: Vec<ProjectFileWrite>,
     fail_after_install_count: Option<usize>,
     pending_policy: PendingTransactionPolicy,
@@ -189,12 +262,13 @@ fn publish_project_files_inner_with_policy(
         before_install: &mut |_| Ok(()),
         after_absent_install: &mut |_, _| Ok(()),
         after_install: &mut |_| Ok(()),
+        fail_after_install_count,
     };
     publish_project_files_inner_with_hook_and_policy(
         project_root,
         commit_relative_path,
+        guards,
         writes,
-        fail_after_install_count,
         pending_policy,
         &mut hooks,
     )
@@ -214,12 +288,37 @@ fn publish_project_files_inner_with_hook(
         before_install,
         after_absent_install,
         after_install,
+        fail_after_install_count,
     };
     publish_project_files_inner_with_hook_and_policy(
         project_root,
         commit_relative_path,
+        Vec::new(),
         writes,
-        fail_after_install_count,
+        PendingTransactionPolicy::Recover,
+        &mut hooks,
+    )
+}
+
+#[cfg(test)]
+fn publish_project_files_inner_with_guards_and_hook(
+    project_root: &Path,
+    commit_relative_path: &Path,
+    guards: Vec<ProjectFileGuard>,
+    writes: Vec<ProjectFileWrite>,
+    after_install: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<ProjectFileTransactionReport> {
+    let mut hooks = ProjectFileTransactionHooks {
+        before_install: &mut |_| Ok(()),
+        after_absent_install: &mut |_, _| Ok(()),
+        after_install,
+        fail_after_install_count: None,
+    };
+    publish_project_files_inner_with_hook_and_policy(
+        project_root,
+        commit_relative_path,
+        guards,
+        writes,
         PendingTransactionPolicy::Recover,
         &mut hooks,
     )
@@ -228,8 +327,8 @@ fn publish_project_files_inner_with_hook(
 fn publish_project_files_inner_with_hook_and_policy(
     project_root: &Path,
     commit_relative_path: &Path,
+    guards: Vec<ProjectFileGuard>,
     writes: Vec<ProjectFileWrite>,
-    fail_after_install_count: Option<usize>,
     pending_policy: PendingTransactionPolicy,
     hooks: &mut ProjectFileTransactionHooks<'_>,
 ) -> Result<ProjectFileTransactionReport> {
@@ -247,6 +346,15 @@ fn publish_project_files_inner_with_hook_and_policy(
     }
 
     let mut unique = BTreeSet::new();
+    for guard in &guards {
+        validate_relative_path(&guard.relative_path)?;
+        if !unique.insert(guard.relative_path.clone()) {
+            return Err(CdfError::contract(format!(
+                "project file transaction repeats path {}",
+                guard.relative_path.display()
+            )));
+        }
+    }
     for write in &writes {
         validate_relative_path(&write.relative_path)?;
         if !unique.insert(write.relative_path.clone()) {
@@ -275,8 +383,8 @@ fn publish_project_files_inner_with_hook_and_policy(
     let result = publish_under_guard(
         project_root,
         commit_relative_path,
+        guards,
         writes,
-        fail_after_install_count,
         &marker_authority,
         &mut created_directories,
         hooks,
@@ -290,12 +398,16 @@ fn publish_project_files_inner_with_hook_and_policy(
 fn publish_under_guard(
     project_root: &Path,
     commit_relative_path: &Path,
+    guards: Vec<ProjectFileGuard>,
     writes: Vec<ProjectFileWrite>,
-    fail_after_install_count: Option<usize>,
     marker_authority: &ProjectFileTransactionMarkerAuthority,
     created_directories: &mut Vec<PathBuf>,
     hooks: &mut ProjectFileTransactionHooks<'_>,
 ) -> Result<ProjectFileTransactionReport> {
+    let guards = guards
+        .iter()
+        .map(|guard| read_and_validate_guard(project_root, guard))
+        .collect::<Result<Vec<_>>>()?;
     let states = writes
         .iter()
         .map(|write| {
@@ -325,7 +437,10 @@ fn publish_under_guard(
                 ensure_safe_parent(project_root, parent, created_directories)?;
                 revalidate_prior(&target, &state)?;
                 unchanged_paths.push(write.relative_path);
-                prepared.push(PreparedWrite::Unchanged);
+                prepared.push(PreparedWrite::Unchanged {
+                    target,
+                    prior: state,
+                });
                 continue;
             }
             let parent = target.parent().ok_or_else(|| {
@@ -362,7 +477,7 @@ fn publish_under_guard(
     let prepared_paths = prepared
         .iter()
         .filter_map(|entry| match entry {
-            PreparedWrite::Unchanged => None,
+            PreparedWrite::Unchanged { .. } => None,
             PreparedWrite::Install { relative_path, .. } => Some(relative_path.clone()),
         })
         .collect::<Vec<_>>();
@@ -381,9 +496,17 @@ fn publish_under_guard(
         return Err(error);
     }
 
+    validate_transaction_guards(project_root, &guards)?;
+    for entry in &prepared {
+        match entry {
+            PreparedWrite::Unchanged { target, prior }
+            | PreparedWrite::Install { target, prior, .. } => revalidate_prior(target, prior)?,
+        }
+    }
     let pending_marker = match begin_project_file_transaction(
         project_root,
         commit_relative_path,
+        &guards,
         &prepared,
         marker_authority,
     ) {
@@ -407,6 +530,7 @@ fn publish_under_guard(
             else {
                 continue;
             };
+            validate_transaction_guards(project_root, &guards)?;
             revalidate_prior(target, prior)?;
             (hooks.before_install)(target)?;
             revalidate_prior(target, prior)?;
@@ -445,8 +569,9 @@ fn publish_under_guard(
                 }
             }
             (hooks.after_install)(target)?;
+            validate_transaction_guards(project_root, &guards)?;
             install_count = install_count.saturating_add(1);
-            if fail_after_install_count == Some(install_count) {
+            if hooks.fail_after_install_count == Some(install_count) {
                 return Err(CdfError::internal(format!(
                     "injected project file transaction failure after {install_count} install(s)"
                 )));
@@ -467,6 +592,7 @@ fn publish_under_guard(
     // editor, leaving the durable journal unable to converge after another process loss.
     install_result?;
     if let Some(pending_marker) = pending_marker.as_ref() {
+        validate_transaction_guards(project_root, &guards)?;
         commit_project_file_transaction_marker(project_root, pending_marker)?;
     }
     cleanup_temporaries(&prepared);
@@ -477,7 +603,10 @@ fn publish_under_guard(
 }
 
 enum PreparedWrite {
-    Unchanged,
+    Unchanged {
+        target: PathBuf,
+        prior: PriorFile,
+    },
     Install {
         relative_path: PathBuf,
         target: PathBuf,
@@ -524,13 +653,14 @@ impl ProjectFileTransactionMarkerAuthority {
 fn begin_project_file_transaction(
     project_root: &Path,
     commit_relative_path: &Path,
+    guards: &[ProjectFileTransactionGuard],
     prepared: &[PreparedWrite],
     previous: &ProjectFileTransactionMarkerAuthority,
 ) -> Result<Option<ProjectFileTransactionMarkerAuthority>> {
     let entries = prepared
         .iter()
         .filter_map(|entry| match entry {
-            PreparedWrite::Unchanged => None,
+            PreparedWrite::Unchanged { .. } => None,
             PreparedWrite::Install {
                 relative_path,
                 temporary,
@@ -580,6 +710,7 @@ fn begin_project_file_transaction(
         generation,
         state: ProjectFileTransactionState::Pending {
             commit_relative_path: commit_relative_path.to_path_buf(),
+            guards: guards.to_vec(),
             entries,
         },
     };
@@ -616,18 +747,25 @@ fn recover_project_file_transaction_under_guard(
     let Some(marker) = authority.marker.as_ref() else {
         return Ok(authority);
     };
-    let ProjectFileTransactionState::Pending { entries, .. } = &marker.state else {
+    let ProjectFileTransactionState::Pending {
+        guards, entries, ..
+    } = &marker.state
+    else {
         return Ok(authority);
     };
 
+    validate_transaction_guards(project_root, guards)?;
     for entry in entries {
+        validate_transaction_guards(project_root, guards)?;
         recover_project_file_transaction_entry(project_root, entry)?;
+        validate_transaction_guards(project_root, guards)?;
     }
     let paths = entries
         .iter()
         .map(|entry| entry.relative_path.clone())
         .collect::<Vec<_>>();
     sync_installed_parent_directories(project_root, &paths)?;
+    validate_transaction_guards(project_root, guards)?;
     let committed = ProjectFileTransactionMarker {
         version: PROJECT_FILE_TRANSACTION_MARKER_VERSION,
         generation: marker.generation,
@@ -876,6 +1014,7 @@ fn validate_project_file_transaction_marker_inner(
     }
     let ProjectFileTransactionState::Pending {
         commit_relative_path,
+        guards,
         entries,
     } = &marker.state
     else {
@@ -889,6 +1028,15 @@ fn validate_project_file_transaction_marker_inner(
     }
     let mut targets = BTreeSet::new();
     let mut temporaries = BTreeSet::new();
+    for guard in guards {
+        validate_relative_path(&guard.relative_path)?;
+        validate_project_file_hash(&guard.sha256)?;
+        if !targets.insert(guard.relative_path.clone()) {
+            return Err(CdfError::data(
+                "project transaction marker repeats a guarded or target path",
+            ));
+        }
+    }
     for entry in entries {
         validate_relative_path(&entry.relative_path)?;
         validate_relative_path(&entry.temporary_relative_path)?;
@@ -896,7 +1044,7 @@ fn validate_project_file_transaction_marker_inner(
             || !temporaries.insert(entry.temporary_relative_path.clone())
         {
             return Err(CdfError::data(
-                "project transaction marker repeats a target or temporary path",
+                "project transaction marker repeats a guarded, target, or temporary path",
             ));
         }
         validate_project_transaction_temporary_path(entry)?;
@@ -1164,6 +1312,68 @@ fn read_and_validate_prior(project_root: &Path, write: &ProjectFileWrite) -> Res
             write.relative_path.display()
         ))),
     }
+}
+
+fn read_and_validate_guard(
+    project_root: &Path,
+    guard: &ProjectFileGuard,
+) -> Result<ProjectFileTransactionGuard> {
+    let path = project_root.join(&guard.relative_path);
+    verify_existing_safe_parent(
+        project_root,
+        path.parent().ok_or_else(|| {
+            CdfError::contract(format!(
+                "project transaction guard {} has no parent",
+                path.display()
+            ))
+        })?,
+        false,
+    )?;
+    let observed = read_recovery_file(&path, false)?.ok_or_else(|| {
+        CdfError::contract(format!(
+            "project file transaction guard is missing {}",
+            guard.relative_path.display()
+        ))
+    })?;
+    if observed != guard.bytes {
+        return Err(CdfError::contract(format!(
+            "project file transaction refused because guarded authority changed for {}",
+            guard.relative_path.display()
+        )));
+    }
+    Ok(ProjectFileTransactionGuard {
+        relative_path: guard.relative_path.clone(),
+        len: u64::try_from(observed.len())
+            .map_err(|_| CdfError::internal("project transaction guard length exceeds u64"))?,
+        sha256: project_file_bytes_hash(&observed),
+    })
+}
+
+fn validate_transaction_guards(
+    project_root: &Path,
+    guards: &[ProjectFileTransactionGuard],
+) -> Result<()> {
+    for guard in guards {
+        let path = project_root.join(&guard.relative_path);
+        verify_existing_safe_parent(
+            project_root,
+            path.parent().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "project transaction guard {} has no parent",
+                    path.display()
+                ))
+            })?,
+            false,
+        )?;
+        let observed = read_recovery_file(&path, false)?;
+        if !file_bytes_match(observed.as_deref(), guard.len, &guard.sha256) {
+            return Err(CdfError::contract(format!(
+                "project file transaction refused a concurrent change to guarded authority {}",
+                guard.relative_path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn revalidate_prior(path: &Path, prior: &PriorFile) -> Result<()> {
@@ -1879,6 +2089,65 @@ mod tests {
         let recovery_error = recover_project_file_transaction(root.path()).unwrap_err();
         assert_eq!(recovery_error.kind, cdf_kernel::ErrorKind::Contract);
         assert_eq!(fs::read(&target).unwrap(), b"racer");
+    }
+
+    #[test]
+    fn guarded_input_change_after_an_output_install_blocks_commit_and_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let authored = root.path().join("cdf.toml");
+        let manifest = root.path().join("manifest.json");
+        let lock = root.path().join("cdf.lock");
+        fs::write(&authored, b"authored\n").unwrap();
+        let guards = vec![ProjectFileGuard::exact("cdf.toml", b"authored\n".to_vec())];
+        let writes = vec![
+            ProjectFileWrite::new(
+                "manifest.json",
+                b"manifest\n".to_vec(),
+                ProjectFileExpectation::Absent,
+            ),
+            ProjectFileWrite::new(
+                "cdf.lock",
+                b"lock\n".to_vec(),
+                ProjectFileExpectation::Absent,
+            ),
+        ];
+        let mut changed = false;
+
+        let error = publish_project_files_inner_with_guards_and_hook(
+            root.path(),
+            Path::new("cdf.lock"),
+            guards,
+            writes,
+            &mut |path| {
+                if !changed && path == manifest {
+                    fs::write(&authored, b"edited\n").unwrap();
+                    changed = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(fs::read(&authored).unwrap(), b"edited\n");
+        assert_eq!(fs::read(&manifest).unwrap(), b"manifest\n");
+        assert!(!lock.exists());
+        assert!(
+            read_project_file_transaction_marker(root.path())
+                .unwrap()
+                .is_pending()
+        );
+
+        let recovery_error = recover_project_file_transaction(root.path()).unwrap_err();
+
+        assert_eq!(recovery_error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(fs::read(&authored).unwrap(), b"edited\n");
+        assert!(!lock.exists());
+        assert!(
+            read_project_file_transaction_marker(root.path())
+                .unwrap()
+                .is_pending()
+        );
     }
 
     #[test]

@@ -229,7 +229,6 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
         .blank_line()
         .push(NextCommand::new(next_run_command(
             &report.resource_id,
-            &report.destination.target,
             report.human_destination_uri.as_deref(),
         )))
 }
@@ -281,16 +280,8 @@ fn safe_display_value(value: &str) -> String {
     redact_uri_userinfo(value)
 }
 
-pub(super) fn next_run_command(
-    resource_id: &str,
-    target: &str,
-    destination_uri: Option<&str>,
-) -> String {
+pub(super) fn next_run_command(resource_id: &str, destination_uri: Option<&str>) -> String {
     let mut command = format!("cdf run {resource_id}");
-    if target != default_target_for_resource(resource_id) {
-        command.push_str(" --target ");
-        command.push_str(target);
-    }
     if let Some(destination_uri) = destination_uri {
         command.push_str(" --to ");
         command.push_str(&safe_display_value(destination_uri));

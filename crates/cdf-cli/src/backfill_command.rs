@@ -16,7 +16,7 @@ use crate::{
     project_run_resource::build_project_run_resource,
     render::redaction::redact_uri_userinfo,
     reports::{RunDestinationReport, WriteEffects},
-    scan_command::{default_target_for_resource, segmentation_policy_from_tuning},
+    scan_command::segmentation_policy_from_tuning,
 };
 
 pub(crate) fn backfill(
@@ -31,11 +31,10 @@ pub(crate) fn backfill(
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
-    let target = TargetName::new(
-        args.target
-            .clone()
-            .unwrap_or_else(|| default_target_for_resource(&args.resource_id)),
-    )?;
+    let target = match args.target.clone() {
+        Some(target) => TargetName::new(target).map_err(CliError::from)?,
+        None => context.resource_target(&args.resource_id)?.clone(),
+    };
     let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
     let (host, services) = execution;
     let run_resource = build_project_run_resource(

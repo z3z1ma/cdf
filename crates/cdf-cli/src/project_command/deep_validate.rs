@@ -17,7 +17,7 @@ use crate::{
         preflight_fixed_source_schema_with_plan_for_cli,
     },
     render::redaction::redact_uri_userinfo,
-    scan_command::{default_target_for_resource, validate_resource_source_authority},
+    scan_command::validate_resource_source_authority,
 };
 
 pub(super) fn run(
@@ -576,18 +576,17 @@ fn destination_check(
         return DeepValidateDestinationReport::failed("source runtime resolution failed");
     };
     let resource = runtime_resource.as_queryable();
-    let target = match cdf_kernel::TargetName::new(default_target_for_resource(
-        compiled_resource.descriptor().resource_id.as_str(),
-    )) {
-        Ok(target) => target,
+    let target = match context.resource_target(compiled_resource.descriptor().resource_id.as_str())
+    {
+        Ok(target) => target.clone(),
         Err(error) => {
             diagnostics.push(diagnostic(
                 "error",
                 "destination_target",
                 error.message,
-                "Declare a valid destination target or use a resource id with a valid final segment.",
+                "Recompile the project resource before validating its destination.",
             ));
-            return DeepValidateDestinationReport::failed("target derivation failed");
+            return DeepValidateDestinationReport::failed("target authority is missing");
         }
     };
     let mut resolved = match resolve_environment_destination(destinations, context, &target) {

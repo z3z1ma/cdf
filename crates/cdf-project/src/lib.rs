@@ -82,8 +82,6 @@ mod schema_snapshot;
 mod secrets;
 mod semantic_uses;
 #[cfg(test)]
-mod sources;
-#[cfg(test)]
 mod test_destinations;
 #[cfg(test)]
 mod tests;
@@ -149,8 +147,10 @@ pub use observation_cache::{
     StrongObservationSourceIdentity,
 };
 pub use project_files::{
-    ProjectFileExpectation, ProjectFileTransactionReport, ProjectFileWrite,
+    ProjectFileExpectation, ProjectFileGuard, ProjectFileTransactionReport, ProjectFileWrite,
     project_file_transaction_generation, publish_project_files_transactionally,
+    publish_project_files_transactionally_guarded,
+    publish_project_files_transactionally_guarded_without_recovery,
     publish_project_files_transactionally_without_recovery, recover_project_file_transaction,
 };
 pub use project_inputs::{
@@ -229,8 +229,3 @@ pub use schema_snapshot::{
     SchemaSnapshotUnionMode, schema_snapshot_relative_path,
 };
 pub use secrets::{DefaultSecretProvider, EnvSecretProvider, FileSecretProvider, SecretRef};
-#[cfg(test)]
-pub use sources::{
-    FileResourceSourceResolver, InMemoryResourceSourceResolver, ResolvedResourceSource,
-    ResourceSourceResolver,
-};

@@ -282,24 +282,12 @@ pub fn inventory_project_resources(
     ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
 
     let mut sources = BTreeMap::new();
-    let default_environment = config
-        .environments
-        .get(&config.project.default_environment)
-        .ok_or_else(|| CdfError::internal("validated project lost its default environment"))?;
     for (source_name, base) in &configured_sources {
-        let mut overlay = default_environment
+        let overlay = selected_environment
             .sources
             .get(source_name.as_str())
             .cloned()
             .unwrap_or_default();
-        if environment != config.project.default_environment {
-            let selected_overlay = selected_environment
-                .sources
-                .get(source_name.as_str())
-                .cloned()
-                .unwrap_or_default();
-            overlay.options.extend(selected_overlay.options);
-        }
         let mut effective_options = base.options.clone();
         effective_options.extend(overlay.options.clone());
         add_serialized_size(

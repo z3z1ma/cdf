@@ -7,7 +7,7 @@ use std::{
 };
 
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result as CdfResult};
+use cdf_kernel::{CdfError, Result as CdfResult, TargetName};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider, FileSecretProvider,
     LOCK_FILE_NAME, LockFileAuthority, PROJECT_FILE_NAME, ProjectConfig, ProjectManifest,
@@ -25,6 +25,7 @@ use crate::{error_catalog, output::CliError, suggestions};
 #[derive(Debug)]
 pub struct ProjectContext {
     pub root: PathBuf,
+    pub(crate) project_bytes: Vec<u8>,
     pub config: ProjectConfig,
     pub environment: EffectiveEnvironment,
     pub resources: Vec<CompiledResource>,
@@ -186,6 +187,7 @@ impl ProjectContext {
             project_authority_read_error("read project configuration", project_file, error)
         })?;
         let config = parse_cdf_toml(&project_text)?;
+        let project_bytes = project_text.into_bytes();
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
         let source_registry = crate::source_registry::builtin_source_registry()?;
@@ -216,6 +218,7 @@ impl ProjectContext {
         let (lock, lock_authority) = load_lock(root)?;
         Ok(Self {
             root: root.to_path_buf(),
+            project_bytes,
             config,
             environment,
             resources,
@@ -240,6 +243,16 @@ impl ProjectContext {
             .zip(&self.resource_queries)
             .find(|(resource, _)| resource.descriptor().resource_id.as_str() == id)
             .map(|(_, query)| query)
+    }
+
+    pub fn resource_target(&self, id: &str) -> StdResult<&TargetName, CliError> {
+        self.resource(id)?;
+        self.resource_query(id)
+            .map(|query| &query.effective.target.value)
+            .ok_or_else(|| {
+                CdfError::internal("compiled project resource lost its query target authority")
+                    .into()
+            })
     }
 
     pub fn register_adhoc_resource(&mut self, id: String) {

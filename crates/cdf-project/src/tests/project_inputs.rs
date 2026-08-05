@@ -105,6 +105,37 @@ connection = "secret://vault/prod/warehouse"
 }
 
 #[test]
+fn selected_environment_does_not_inherit_the_default_source_overlay() {
+    let root = tempfile::tempdir().unwrap();
+    write_resource(root.path(), "analytics", "orders", "SELECT 1\n");
+    let config = project_config(
+        r#"
+[sources.warehouse]
+type = "postgres"
+connection = "secret://env/BASE_DSN"
+
+[environments.dev.sources.warehouse]
+connection = "secret://env/DEV_DSN"
+
+[environments.prod]
+"#,
+    );
+
+    let inventory =
+        inventory_project_resources(root.path(), &config, "prod", &test_source_registry()).unwrap();
+    let source = inventory
+        .sources
+        .get(&ProjectSourceName::new("warehouse", "test").unwrap())
+        .unwrap();
+
+    assert_eq!(
+        source.effective_options["connection"],
+        "secret://env/BASE_DSN"
+    );
+    assert!(source.overlay_options.is_empty());
+}
+
+#[test]
 fn project_input_inventory_validates_only_source_options_before_relation_parsing() {
     let root = tempfile::tempdir().unwrap();
     write_resource(

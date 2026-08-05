@@ -125,7 +125,6 @@ pub struct ProjectManifestHashes {
 #[serde(rename_all = "snake_case")]
 pub enum ManifestInputKind {
     Project,
-    Declarative,
     ResourceSql,
     SemanticDefinition,
     GeneratedExpansion,
@@ -629,7 +628,7 @@ impl ProjectManifest {
             authority,
         )?;
         for resource in &self.resources {
-            validate_resource(resource, authority)?;
+            validate_resource(resource, &self.inputs, authority)?;
         }
         validate_semantics(&self.semantics, &self.resources, authority)?;
         validate_lineage(
@@ -1277,7 +1276,11 @@ fn push_lineage(
     Ok(())
 }
 
-fn validate_resource(resource: &ManifestResource, authority: ManifestErrorAuthority) -> Result<()> {
+fn validate_resource(
+    resource: &ManifestResource,
+    inputs: &[ProjectManifestAuthoredInput],
+    authority: ManifestErrorAuthority,
+) -> Result<()> {
     let expected_path = format!(
         "cdf/{}/{}.cdf.sql",
         resource.origin.namespace, resource.origin.resource_name
@@ -1296,6 +1299,33 @@ fn validate_resource(resource: &ManifestResource, authority: ManifestErrorAuthor
             authority,
             format!(
                 "manifest resource `{}` contains inconsistent path-derived or authored identity",
+                resource.resource_id
+            ),
+        );
+    }
+    let authored_input = inputs
+        .iter()
+        .find(|input| input.input_id == resource.origin.relative_path)
+        .ok_or_else(|| {
+            remap(
+                CdfError::contract(format!(
+                    "manifest resource `{}` has no authored SQL input",
+                    resource.resource_id
+                )),
+                authority,
+            )
+        })?;
+    if authored_input.input_kind != ManifestInputKind::ResourceSql
+        || authored_input.content_hash.as_str() != resource.origin.authored_content_hash
+        || !resource
+            .origin
+            .authored_input_ids
+            .contains(&authored_input.input_id)
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` origin does not match its authored SQL input",
                 resource.resource_id
             ),
         );

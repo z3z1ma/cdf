@@ -38,9 +38,7 @@ use crate::{
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
     },
-    scan_command::{
-        build_engine_plan_for_resource, default_target_for_resource, planning_frontier,
-    },
+    scan_command::{build_engine_plan_for_resource, planning_frontier},
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
@@ -84,7 +82,7 @@ pub(crate) fn run(
     } else {
         None
     };
-    let explicit = resolved_run_args(args)?;
+    let explicit = resolved_run_args(&context, args)?;
     let host_jobs = services.capabilities().logical_cpu_slots;
     let provisional_jobs = explicit.jobs.unwrap_or(host_jobs).min(host_jobs);
     let run_services = services
@@ -895,24 +893,38 @@ fn shell_argument(value: &str) -> String {
     }
 }
 
-fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
+fn resolved_run_args(context: &ProjectContext, args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
     let resource_id = args.resource_id.ok_or_else(|| {
         CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
     })?;
     let suffix = minted_run_suffix(&resource_id)?;
     let package_id = format!("pkg-{suffix}");
     let checkpoint_id = format!("checkpoint-{suffix}");
+    let target = if context.is_adhoc_resource(&resource_id) {
+        TargetName::new(adhoc_target_for_resource(&resource_id))?
+    } else {
+        context.resource_target(&resource_id)?.clone()
+    };
     Ok(ResolvedRunArgs {
         resource_id: resource_id.clone(),
         pipeline_id: PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
         destination_uri: args.destination_uri,
-        target: TargetName::new(default_target_for_resource(&resource_id))?,
+        target,
         package_id,
         checkpoint_id: CheckpointId::new(checkpoint_id)?,
         jobs: args.jobs,
         stats_profile: args.stats_profile,
         segmentation: args.segmentation,
     })
+}
+
+fn adhoc_target_for_resource(resource_id: &str) -> String {
+    resource_id
+        .rsplit('.')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(resource_id)
+        .to_owned()
 }
 
 fn minted_run_suffix(resource_id: &str) -> Result<String, CliError> {

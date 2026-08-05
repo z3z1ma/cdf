@@ -252,6 +252,62 @@ retired public authority rather than wrapping them.
   periodic first-party `jscpd`/`cargo machete`/complexity procedure to `QUALITY.md`; narrowed the
   scheduled duplication scan to first-party `crates`, `examples`, and `tools`; and removed every
   dependency exposed as unused by `cargo machete`.
+- 2026-08-04: Published the coherent current-only cutover as `e0cb1b48` (`Cut over project
+  authoring to query-first SQL`) to `origin/main`. GitHub Actions run `30966145273` passed both the
+  Core Rust smoke and tracked-source secret checks.
+- 2026-08-04: The one independent red-team review falsified closure with six concrete findings:
+  runtime commands reconstructed destination targets instead of consuming compiled target
+  authority; non-default source configuration inherited the default environment overlay; manifest
+  inputs were reread after compilation and could diverge from the compiled bytes; recursive
+  resource arguments admitted secret references; malformed `upstream(...)` diagnostics lacked
+  envelope-adjusted AST locations; and an orphaned test-only TOML/YAML path resolver remained.
+  Limited closure repair to those findings rather than starting another open-ended review loop.
+- 2026-08-04: Centralized compiled resource target access in `ProjectContext` and threaded it
+  through run, plan, explain, preview, backfill, deep validation, destination resolution, and
+  reports. Ad-hoc run synthesis alone retains its explicitly named last-segment target rule.
+  Removed next-command rendering of a nonexistent `cdf run --target` flag. Added destination-plan
+  behavior coverage for an explicitly qualified target while making the shared CLI fixture target
+  explicit so unrelated behavior retains its intended table identity.
+- 2026-08-04: Corrected source environment composition to base configuration plus exactly the
+  selected environment's overlay. Added behavior coverage proving a production environment with no
+  source overlay receives the base connection and not the development-only connection.
+- 2026-08-04: Made project compilation retain the exact `cdf.toml` bytes observed alongside the
+  typed config and construct resource manifest inputs from each compiled query's captured authored
+  SQL. Manifest validation now requires each resource origin hash and input id to match its
+  `ResourceSql` input. The first repair represented those captured inputs as unchanged writes and
+  revalidated them before the durable transaction. Focused reviewer follow-up proved that was
+  insufficient because unchanged writes were absent from the pending marker and recovery path;
+  this statement is superseded by the durable guard repair below.
+- 2026-08-04: Resource SQL recursively rejects `secret://` strings at any admitted data-value
+  depth, rejects a secret reference in the configured-source position, reports only safe
+  remediation, and never echoes the reference. The `cdf add` SQL renderer applies the same recursive
+  boundary before writing. `upstream(...)` now derives relation, argument, name, and expression
+  diagnostics from SQL-parser AST spans translated through the resource-envelope query offset;
+  multiline behavior tests cover both missing-source and nested-secret locations.
+- 2026-08-04: Deleted the orphaned `cdf-project/src/sources.rs` TOML/YAML resolver, its module and
+  exports, and the unused declarative manifest-input variant. No compatibility reader, rejection
+  sentinel, or legacy fixture replaced them.
+- 2026-08-04: An initial focused project-test command omitted the repository's documented
+  `DUCKDB_DOWNLOAD_LIB=1` developer linkage setting and was incorrectly described as a host
+  limitation. The user caught the mistake. Re-ran the exact project test and the qualified-target
+  CLI test with the documented setting; both passed. Added a concise always-on `AGENTS.md` reminder
+  to rerun an exact focused `-lduckdb` failure with the developer setting before classifying it,
+  while preserving the separate static/bundled release rule.
+- 2026-08-04: Repaired the final publication finding by introducing distinct read-only
+  `ProjectFileGuard` authority. Offline and refresh compilation pass captured `cdf.toml` and
+  resource-SQL bytes as guards rather than synthetic writes. Pending transaction marker version 2
+  durably journals guard path, byte length, and SHA-256 without storing the guarded content. Normal
+  publication and crash recovery verify every guard around installs and immediately before marker
+  commit. A fault-injection test edits `cdf.toml` after the first output installs and proves both the
+  original publication and recovery fail `Contract`, preserve the edit, retain the pending marker,
+  and never install the final lock commit point.
+- 2026-08-04: Expanded root `AGENTS.md` with the project-wide invariants repeatedly established by
+  this workstream: current-only/no-compat development; behavior/artifact-first tests and a ban on
+  Rust-source-text assertions; economical targeted validation with explicit DuckDB, duplication,
+  unused-dependency, and cognitive-complexity procedures; crate/SQL/DataFusion/project authority;
+  Rust layout and naming; connector correctness/throughput/bounds; receipt/checkpoint/delete
+  semantics; safe typed diagnostics; primary-agent implementation ownership; and the preserved
+  graphify workflow.
 
 ## Blockers
 
@@ -318,13 +374,78 @@ evidence without reopening or re-verifying those tickets.
 - `cargo run -p cdf-cli-core --locked --features cli-artifacts --bin
   cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check` passed after regenerating the
   current error reference.
+- `cargo test -p cdf-engine --lib sql_analysis --locked -j12` passed all eight focused tests after
+  closure repair. This proves the admitted parser/lowering behavior plus envelope-adjusted malformed
+  argument locations and recursive secret-reference rejection without secret echo; it does not
+  exercise project publication or a destination.
+- `cargo check -p cdf-engine -p cdf-project -p cdf-cli --tests --locked -j12` passed after all six
+  closure repairs. This proves the affected production and test graph compiles, including target
+  authority, manifest snapshots, source overlays, and deletion of the legacy module.
+- `cargo clippy -p cdf-engine -p cdf-project -p cdf-cli --tests --locked -j12 -- -D warnings`
+  passed after all closure repairs.
+- The first `cargo test -p cdf-project --lib
+  selected_environment_does_not_inherit_the_default_source_overlay --locked -j12` invocation
+  omitted `DUCKDB_DOWNLOAD_LIB=1` and failed to link. That result is invalid as environment evidence.
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo test -p cdf-project --lib
+  selected_environment_does_not_inherit_the_default_source_overlay --locked -j12` then passed the
+  exact focused behavior test: 1 passed, 294 filtered out.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo test -p cdf-cli --lib
+  tests::planning::plan_uses_the_compiled_resource_target --locked -j12 -- --exact` passed: 1
+  passed, 272 filtered out. This observes the explicitly qualified compiled target at the real CLI
+  destination-planning report boundary.
+- `cargo machete --with-metadata` again reported no unused dependencies after deleting the legacy
+  resolver and manifest variant.
+- `cargo clippy -p cdf-engine -p cdf-project -p cdf-cli --lib --locked -j12 -- -W
+  clippy::cognitive_complexity` completed successfully. It reported the same six pre-existing
+  threshold crossings in transitive first-party packages and no changed D3 function. Ordinary
+  strict Clippy remains separate because this restriction lint is allow-by-default.
+- Focused `rg` sweeps found no Rust test reading a `.rs` source file or asserting Rust function,
+  import, token, line-count, or module-layout text; remaining `include_str!` uses consume benchmark,
+  conformance, protocol, generated, or documented artifact contracts rather than Rust source.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo test -p cdf-project --lib
+  project_files::tests:: --locked -j12` passed all 20 project-file transaction tests. The batch
+  includes fault injection proving a captured authored input changed after one output install blocks
+  both commit and forward recovery without overwriting the input or installing the final lock.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo check -p cdf-engine -p cdf-project -p cdf-cli
+  --tests --locked -j12` passed after the durable-guard change.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo clippy -p cdf-engine -p cdf-project -p cdf-cli
+  --all-targets --locked -j12 -- -D warnings` passed after folding test-only failure injection into
+  the transaction hook context.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo clippy -p cdf-engine -p cdf-project -p cdf-cli
+  --lib --locked -j12 -- -W clippy::cognitive_complexity` completed successfully. It reported the
+  same six pre-existing threshold crossings in transitive first-party packages and none in the D3
+  compiler/publication repair.
 
 ## Review
 
-Pending one independent red-team review after the implementation is coherently testable. Review
-must record severity, verdict, residual risk, and exact evidence; only concrete correctness,
-throughput, security, publication, or contract failures trigger one bounded repair pass.
+The independent red-team review initially returned `fail` with six concrete findings: compiled
+target authority was not threaded to runtime commands; non-default source overlays inherited the
+default environment; manifest inputs could be reread from a different filesystem snapshot;
+recursive resource values could carry secret references; upstream diagnostics lacked exact
+envelope-adjusted locations; and the orphaned TOML/YAML source resolver remained. All six received
+bounded repairs and focused behavior/compile/lint evidence.
+
+The first follow-up passed five findings but retained `fail` for manifest publication because the
+initial authored-input checks were unchanged writes omitted from the durable pending marker and
+recovery. The final focused, read-only reviewer pass examined only that defect and returned `pass`:
+authored inputs are distinct durable marker guards; path/length/hash authority is revalidated before
+publication, around every install, immediately before commit, and during recovery; and fault
+injection proves a post-install edit is preserved while publication and recovery fail closed.
+
+Residual risk: the review and local validation are intentionally affected-surface scoped. GitHub CI
+remains the asynchronous repository smoke boundary after this repair is pushed.
 
 ## Retrospective
 
-Pending execution.
+The hard failure was treating an unchanged write as equivalent to durable read authority. That was
+true before the pending marker but false after a crash: only installed writes survived in the
+journal. Separating `ProjectFileGuard` from `ProjectFileWrite` made the invariant explicit and
+allowed recovery to enforce the same snapshot contract as the original publisher without storing
+authored contents in private transaction state.
+
+The other recurring friction was process, not Rust: broad quality machinery had obscured focused
+behavioral evidence, a documented DuckDB build variable was initially missed, and source-text tests
+encoded repository shape instead of product behavior. Root `AGENTS.md` now makes these boundaries
+always-on. The effective loop was: bulk-search the obsolete surface, repair one owned seam, run the
+smallest behavior batch plus affected check/strict Clippy, then ask the original reviewer to
+re-evaluate only its surviving falsification.

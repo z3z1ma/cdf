@@ -138,7 +138,7 @@ pub(crate) fn plan_or_explain(
     let artifact_root = inspection_root
         .as_ref()
         .map_or(context.root.as_path(), tempfile::TempDir::path);
-    let target = scan_target(&args)?;
+    let target = scan_target(&context, &args)?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         &context,
@@ -211,7 +211,7 @@ pub(crate) fn preview(
         Some(execution),
         inspection_root.path(),
     )?;
-    let target = scan_target(&args)?;
+    let target = scan_target(&context, &args)?;
     let resolved = resolve_scan_destination(
         destinations,
         &context,
@@ -636,18 +636,8 @@ fn scan_report(
     })
 }
 
-fn scan_target(args: &ScanArgs) -> Result<TargetName, CliError> {
-    let target = default_target_for_resource(&args.resource_id);
-    TargetName::new(target).map_err(CliError::from)
-}
-
-pub(crate) fn default_target_for_resource(resource_id: &str) -> String {
-    resource_id
-        .rsplit('.')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or(resource_id)
-        .to_owned()
+fn scan_target(context: &ProjectContext, args: &ScanArgs) -> Result<TargetName, CliError> {
+    context.resource_target(&args.resource_id).cloned()
 }
 
 fn destination_plan_report(
@@ -797,26 +787,21 @@ mod render_tests {
     #[test]
     fn next_run_command_includes_explicit_destination_without_minted_ids() {
         assert_eq!(
-            render::next_run_command(
-                "local.events",
-                "events",
-                Some("duckdb://.cdf/explain-render.duckdb")
-            ),
+            render::next_run_command("local.events", Some("duckdb://.cdf/explain-render.duckdb")),
             "cdf run local.events --to duckdb://.cdf/explain-render.duckdb"
         );
     }
 
     #[test]
-    fn next_run_command_preserves_non_default_target_and_redacts_destination_userinfo() {
+    fn next_run_command_redacts_destination_userinfo() {
         let command = render::next_run_command(
             "local.events",
-            "custom_events",
             Some("postgres://user:secret-value@localhost/db"),
         );
 
         assert_eq!(
             command,
-            "cdf run local.events --target custom_events --to postgres://[redacted]@localhost/db"
+            "cdf run local.events --to postgres://[redacted]@localhost/db"
         );
         assert!(!command.contains("secret-value"));
         assert!(!command.contains("--package-id"));

@@ -10,11 +10,12 @@ use cdf_kernel::CdfError;
 use cdf_project::{
     CompiledProjectResource, LOCK_FILE_NAME, ManifestInputKind, ManifestSemanticSource,
     PROJECT_FILE_NAME, PROJECT_MANIFEST_RELATIVE_PATH, ProjectCompilationMode,
-    ProjectFileExpectation, ProjectFileTransactionReport, ProjectFileWrite,
+    ProjectFileExpectation, ProjectFileGuard, ProjectFileTransactionReport, ProjectFileWrite,
     ProjectManifestAuthoredInput, ProjectManifestCompileRequest, compile_project_manifest,
     current_dependency_tuple, finalize_query_project_resource,
     generate_lockfile_with_destination_artifacts, lock_to_toml,
-    publish_project_files_transactionally, publish_project_manifest,
+    publish_project_files_transactionally_guarded,
+    publish_project_files_transactionally_guarded_without_recovery,
 };
 use serde::Serialize;
 
@@ -49,7 +50,7 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         .bytes
         .clone();
     let entries = compiled_project_entries(&context)?;
-    let inputs = authored_inputs(&context.root, &entries)?;
+    let authored = captured_authored_inputs(&context, &entries)?;
     let selected_destination_id =
         cdf_builtin_drivers::builtin_destination_id_for_uri(&context.environment.destination)?;
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
@@ -58,7 +59,7 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         lock,
         lock_bytes: &lock_bytes,
         resources: &entries,
-        authored_inputs: inputs,
+        authored_inputs: manifest_inputs(&authored),
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::new(),
         selected_destination_id: &selected_destination_id,
@@ -70,8 +71,13 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         &context.root.join(PROJECT_MANIFEST_RELATIVE_PATH),
         "project manifest",
     )?;
-    let publication =
-        publish_project_manifest(&context.root, &manifest, lock, lock_bytes, prior_manifest)?;
+    let publication = publish_offline(
+        &context.root,
+        &manifest,
+        lock_bytes,
+        prior_manifest,
+        &authored,
+    )?;
     finish_report(
         &context,
         &manifest,
@@ -89,6 +95,7 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
     )?;
     let (_, execution) = crate::commands::default_services(cli)?;
     let mut entries = compiled_project_entries(&context)?;
+    let authored = captured_authored_inputs(&context, &entries)?;
     let mut artifact_files = BTreeMap::<String, Vec<u8>>::new();
     let mut source_observations = 0_usize;
 
@@ -161,7 +168,7 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         lock: &lock,
         lock_bytes: &lock_bytes,
         resources: &entries,
-        authored_inputs: authored_inputs(&context.root, &entries)?,
+        authored_inputs: manifest_inputs(&authored),
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
         selected_destination_id: &selected_destination_id,
@@ -178,6 +185,7 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
             .as_ref()
             .map(|authority| authority.bytes.clone()),
         artifact_files,
+        &authored,
     )?;
     finish_report(
         &context,
@@ -216,77 +224,87 @@ fn compiled_project_entries(
     Ok(entries)
 }
 
-fn authored_inputs(
-    root: &Path,
+struct CapturedAuthoredInput {
+    path: String,
+    manifest: ProjectManifestAuthoredInput,
+    bytes: Vec<u8>,
+}
+
+fn captured_authored_inputs(
+    context: &ProjectContext,
     entries: &[CompiledProjectResource],
-) -> Result<Vec<ProjectManifestAuthoredInput>, CliError> {
-    let mut inputs = vec![ProjectManifestAuthoredInput::explicit_file(
+) -> Result<Vec<CapturedAuthoredInput>, CliError> {
+    let mut inputs = vec![captured_authored_input(
         PROJECT_FILE_NAME,
         ManifestInputKind::Project,
-        &read_project_input(root, PROJECT_FILE_NAME)?,
+        context.project_bytes.clone(),
         "cdf-project-toml",
-        1,
     )?];
     for entry in entries {
-        let source_file = &entry.query.relative_path;
-        let bytes = read_project_input(root, source_file)?;
-        inputs.push(ProjectManifestAuthoredInput::explicit_file(
-            source_file,
+        inputs.push(captured_authored_input(
+            &entry.query.relative_path,
             ManifestInputKind::ResourceSql,
-            &bytes,
+            entry.query.authored_sql.as_bytes().to_vec(),
             "cdf-resource-sql",
-            1,
         )?);
     }
     Ok(inputs)
 }
 
-fn read_project_input(root: &Path, relative: &str) -> Result<Vec<u8>, CliError> {
-    let relative_path = Path::new(relative);
-    if relative_path.is_absolute()
-        || relative_path
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(CdfError::contract(format!(
-            "project compiler input `{relative}` must be a normalized project-relative path"
-        ))
-        .into());
-    }
-    let path = root.join(relative_path);
-    let canonical_root = fs::canonicalize(root).map_err(|error| {
-        crate::context::project_authority_read_error("resolve project root", root, error)
-    })?;
-    let canonical_path = fs::canonicalize(&path).map_err(|error| {
-        crate::context::project_authority_read_error("resolve project compiler input", &path, error)
-    })?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(CdfError::contract(format!(
-            "project compiler input `{relative}` resolves outside the project root"
-        ))
-        .into());
-    }
-    let metadata = fs::metadata(&canonical_path).map_err(|error| {
-        crate::context::project_authority_read_error(
-            "inspect project compiler input",
-            &canonical_path,
-            error,
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err(CdfError::contract(format!(
-            "project compiler input `{relative}` must resolve to a regular file"
-        ))
-        .into());
-    }
-    fs::read(&canonical_path).map_err(|error| {
-        crate::context::project_authority_read_error(
-            "read project compiler input",
-            &canonical_path,
-            error,
-        )
-        .into()
+fn captured_authored_input(
+    path: &str,
+    kind: ManifestInputKind,
+    bytes: Vec<u8>,
+    parser: &str,
+) -> Result<CapturedAuthoredInput, CliError> {
+    let path = path.to_owned();
+    Ok(CapturedAuthoredInput {
+        manifest: ProjectManifestAuthoredInput::explicit_file(&path, kind, &bytes, parser, 1)?,
+        path,
+        bytes,
     })
+}
+
+fn manifest_inputs(inputs: &[CapturedAuthoredInput]) -> Vec<ProjectManifestAuthoredInput> {
+    inputs.iter().map(|input| input.manifest.clone()).collect()
+}
+
+fn authored_input_guards(inputs: &[CapturedAuthoredInput]) -> Vec<ProjectFileGuard> {
+    inputs
+        .iter()
+        .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone()))
+        .collect()
+}
+
+fn publish_offline(
+    root: &Path,
+    manifest: &cdf_project::ProjectManifest,
+    lock_bytes: Vec<u8>,
+    prior_manifest: Option<Vec<u8>>,
+    authored: &[CapturedAuthoredInput],
+) -> Result<ProjectFileTransactionReport, CliError> {
+    let guards = authored_input_guards(authored);
+    let writes = vec![
+        ProjectFileWrite::new(
+            LOCK_FILE_NAME,
+            lock_bytes.clone(),
+            ProjectFileExpectation::Exact(lock_bytes),
+        ),
+        ProjectFileWrite::new(
+            PROJECT_MANIFEST_RELATIVE_PATH,
+            manifest.canonical_json_bytes()?,
+            expectation(prior_manifest),
+        )
+        .owner_only(),
+    ];
+    Ok(
+        publish_project_files_transactionally_guarded_without_recovery(
+            root,
+            PROJECT_MANIFEST_RELATIVE_PATH,
+            guards,
+            writes,
+        )?,
+    )
 }
 
 fn publish_refresh(
@@ -295,7 +313,9 @@ fn publish_refresh(
     lock_bytes: Vec<u8>,
     prior_lock_bytes: Option<Vec<u8>>,
     artifacts: BTreeMap<String, Vec<u8>>,
+    authored: &[CapturedAuthoredInput],
 ) -> Result<ProjectFileTransactionReport, CliError> {
+    let guards = authored_input_guards(authored);
     let mut writes = artifacts
         .into_iter()
         .map(|(path, bytes)| {
@@ -324,9 +344,10 @@ fn publish_refresh(
         lock_bytes,
         expectation(prior_lock_bytes),
     ));
-    Ok(publish_project_files_transactionally(
+    Ok(publish_project_files_transactionally_guarded(
         root,
         LOCK_FILE_NAME,
+        guards,
         writes,
     )?)
 }

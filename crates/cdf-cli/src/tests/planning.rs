@@ -78,6 +78,34 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
 }
 
 #[test]
+fn plan_uses_the_compiled_resource_target() {
+    let project = TestProject::new();
+    let resource_path = project.root.join("cdf/local/events.cdf.sql");
+    let resource = fs::read_to_string(&resource_path).unwrap();
+    fs::write(
+        resource_path,
+        resource.replace("TARGET events", "TARGET warehouse.userdata"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let report = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        report["result"]["destination"]["target"],
+        "warehouse.userdata"
+    );
+}
+
+#[test]
 fn plan_human_headless_render_prioritizes_decision_summary() {
     let project = TestProject::new();
     let result = run([
