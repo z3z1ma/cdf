@@ -1078,13 +1078,15 @@ mod tests {
 
         let reordered = RecordBatch::try_from_iter(vec![
             ("id", Arc::new(Int64Array::from(vec![0])) as ArrayRef),
-            ("label", Arc::new(StringArray::from(vec!["label-0"])) as ArrayRef),
+            (
+                "label",
+                Arc::new(StringArray::from(vec!["label-0"])) as ArrayRef,
+            ),
             ("metric", Arc::new(Int64Array::from(vec![0])) as ArrayRef),
             (
                 "updated_at",
-                Arc::new(
-                    TimestampMillisecondArray::from(vec![0_i64]).with_timezone("UTC"),
-                ) as ArrayRef,
+                Arc::new(TimestampMillisecondArray::from(vec![0_i64]).with_timezone("UTC"))
+                    as ArrayRef,
             ),
         ])
         .unwrap();

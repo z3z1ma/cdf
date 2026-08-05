@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use arrow_array::{
-    Array, FixedSizeBinaryArray, Int32Array, Int64Array, StringArray, TimestampMillisecondArray,
+    Array, FixedSizeBinaryArray, Int64Array, StringArray, TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
@@ -26,7 +26,8 @@ use crate::{
     query::{build_query, scan_from_partition},
     schema::{
         MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference,
-        attach_expected_physical_types, decode_batch, decode_batch_with_evidence, parse_decimal128,
+        attach_expected_physical_types, decode_batch, decode_batch_with_evidence,
+        decode_batch_with_physical_schema, parse_decimal128,
     },
 };
 
@@ -503,59 +504,39 @@ fn governed_decoder_captures_nested_unknown_field_at_exact_path() {
 }
 
 #[test]
-fn compatible_bson_integer_uses_the_pinned_materialized_observation_domain() {
-    let pinned = Arc::new(Schema::new(vec![with_physical_type(
-        with_source_name(Field::new("sequence", DataType::Int64, false), "sequence"),
-        "bson:int64",
+fn compatible_bson_integer_keeps_catalog_physical_observation_domain() {
+    let logical = Schema::new(vec![with_source_name(
+        Field::new("sequence", DataType::Int64, false),
+        "sequence",
+    )]);
+    let physical = Arc::new(Schema::new(vec![with_physical_type(
+        with_source_name(Field::new("sequence", DataType::Int32, false), "sequence"),
+        "bson:int32",
     )]));
+    let decoder = attach_expected_physical_types(&logical, physical.as_ref()).unwrap();
     let document = RawDocumentBuf::try_from(&doc! {"sequence": 7_i32}).unwrap();
 
-    let decoded = decode_batch_with_evidence(
-        Arc::clone(&pinned),
-        Arc::clone(&pinned),
+    let decoded = decode_batch_with_physical_schema(
+        Arc::clone(&decoder),
+        decoder,
+        physical,
         &[document.as_ref()],
         0,
     )
     .unwrap();
 
     assert!(decoded.residual_candidates.is_empty());
-    assert_eq!(decoded.physical_reconciliations.len(), 1);
-    let reconciliation = &decoded.physical_reconciliations[0];
-    assert_eq!(reconciliation.source_path(), ["sequence"]);
-    assert_eq!(
-        physical_type(reconciliation.observed_field()),
-        Some("bson:int32")
-    );
-    assert_eq!(
-        physical_type(reconciliation.expected_field()),
-        Some("bson:int64")
-    );
-    assert_eq!(
-        reconciliation
-            .observed_values()
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap()
-            .value(0),
-        7
-    );
-    assert_eq!(reconciliation.batch_row_ordinals(), [0]);
+    assert!(decoded.physical_reconciliations.is_empty());
     assert_eq!(decoded.record_batch.column(0).data_type(), &DataType::Int64);
     assert!(decoded.record_batch.schema().field(0).is_nullable());
     assert_eq!(
         decoded.physical_schema.field(0).data_type(),
-        &DataType::Int64
+        &DataType::Int32
     );
     assert_eq!(
         physical_type(decoded.physical_schema.field(0)),
-        Some("bson:int64")
+        Some("bson:int32")
     );
-
-    let clean = RawDocumentBuf::try_from(&doc! {"sequence": 9_i64}).unwrap();
-    let clean =
-        decode_batch_with_evidence(Arc::clone(&pinned), pinned, &[clean.as_ref()], 1).unwrap();
-    assert!(clean.physical_reconciliations.is_empty());
-    assert_eq!(decoded.record_batch.schema(), clean.record_batch.schema());
 }
 
 #[test]

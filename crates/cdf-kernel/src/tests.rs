@@ -9,7 +9,7 @@ use std::{
 
 use futures_core::Stream;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::{Array, ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 fn planned_task_set_reference() -> PlannedTaskSetReference {
@@ -1099,6 +1099,60 @@ fn batch_wraps_arrow_record_batch_and_reports_counts() {
     assert!(batch.header.byte_count > 0);
     assert!(batch.header.pre_contract_quarantine.is_empty());
     assert!(batch.record_batch().is_some());
+}
+
+#[test]
+fn batch_header_counts_shared_pre_contract_arrays_once() {
+    fn header() -> BatchHeader {
+        BatchHeader::new(
+            BatchId::new("batch-shared-evidence").unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("p0").unwrap(),
+            SchemaHash::new("schema-sha256").unwrap(),
+            2,
+            16,
+        )
+    }
+
+    fn candidate(value: ArrayRef, index: usize) -> PreContractResidualCandidate {
+        PreContractResidualCandidate::new(
+            index as u64,
+            index,
+            vec!["unknown".to_owned()],
+            Field::new("unknown", DataType::Binary, false),
+            None,
+            value,
+            index,
+        )
+        .unwrap()
+    }
+
+    fn evidence_values() -> ArrayRef {
+        Arc::new(BinaryArray::from(vec![
+            b"first".as_slice(),
+            b"second".as_slice(),
+        ]))
+    }
+
+    let shared = evidence_values();
+    let array_bytes = shared.get_array_memory_size() as u64;
+    let mut shared_header = header();
+    shared_header.push_residual_candidate(candidate(Arc::clone(&shared), 0));
+    shared_header.push_residual_candidate(candidate(shared, 1));
+
+    let mut distinct_header = header();
+    distinct_header.push_residual_candidate(candidate(evidence_values(), 0));
+    distinct_header.push_residual_candidate(candidate(evidence_values(), 1));
+
+    assert_eq!(
+        distinct_header
+            .pre_contract_evidence_retained_bytes()
+            .unwrap()
+            - shared_header
+                .pre_contract_evidence_retained_bytes()
+                .unwrap(),
+        array_bytes
+    );
 }
 
 #[test]

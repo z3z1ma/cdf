@@ -222,6 +222,185 @@ pub(super) fn assert_physical_reconciliation_stays_out_of_residual_variant(
     }
 }
 
+#[test]
+#[ignore = "live MongoDB public CLI lifecycle; set CDF_MONGODB_ENDPOINT"]
+fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
+    let endpoint = std::env::var("CDF_MONGODB_ENDPOINT")
+        .expect("CDF_MONGODB_ENDPOINT must name the live MongoDB endpoint");
+    let collection = "cdf_public_cli_lifecycle";
+    seed_collection(&endpoint, collection).unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let project_root = base.path().join("project");
+    let init = cdf_cli::invoke([
+        std::ffi::OsString::from("cdf"),
+        "--json".into(),
+        "init".into(),
+        project_root.as_os_str().to_owned(),
+    ]);
+    assert_eq!(init.exit_code, 0, "{}", init.stderr);
+    let mut location = url::Url::parse(&endpoint).unwrap();
+    assert!(
+        !location.username().is_empty() && location.password().is_some(),
+        "CDF_MONGODB_ENDPOINT must include fixture credentials so runtime secret resolution is exercised"
+    );
+    let encoded_secret = location.password().unwrap().to_owned();
+    location.set_path(&format!("/cdf_conformance/{collection}"));
+    let location = location.to_string();
+    let auth_source =
+        std::env::var("CDF_MONGODB_AUTH_SOURCE").unwrap_or_else(|_| "admin".to_owned());
+
+    let dry = super::tests::invoke_public_cli(
+        &project_root,
+        false,
+        &[
+            "add",
+            "warehouse.events",
+            &location,
+            "--option",
+            "cursor=updated_at",
+            "--option",
+            "batch_rows=1",
+            "--option",
+            &format!("auth_source={auth_source}"),
+            "--dry-run",
+        ],
+    );
+    assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
+    let add = super::tests::invoke_public_cli(
+        &project_root,
+        true,
+        &[
+            "add",
+            "warehouse.events",
+            &location,
+            "--option",
+            "cursor=updated_at",
+            "--option",
+            "batch_rows=1",
+            "--option",
+            &format!("auth_source={auth_source}"),
+        ],
+    );
+    assert_eq!(add.exit_code, 0, "{}", add.stderr);
+    let secret = super::tests::walk_files(&project_root.join(".cdf/secrets"))
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .find(|value| {
+            url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+                == encoded_secret
+        })
+        .expect("MongoDB add must publish the decoded credential to a private secret file");
+    assert_ne!(
+        secret, encoded_secret,
+        "authenticated lifecycle fixture must distinguish decoded and URL-encoded secret forms"
+    );
+    assert!(location.contains(&encoded_secret));
+    super::tests::assert_invocation_redacted(&dry, &secret);
+    super::tests::assert_invocation_redacted(&add, &secret);
+
+    // Remove only the scaffolded local source; MongoDB credential references stay active so every
+    // contact-bearing lifecycle command exercises secret resolution and output redaction.
+    let config_path = project_root.join("cdf.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    let mut removing_local = false;
+    let config = config
+        .lines()
+        .filter(|line| {
+            if line.trim() == "[sources.local]" {
+                removing_local = true;
+                return false;
+            }
+            if removing_local && line.starts_with('[') {
+                removing_local = false;
+            }
+            !removing_local
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&config_path, format!("{config}\n")).unwrap();
+    std::fs::remove_dir_all(project_root.join("cdf/local")).unwrap();
+
+    for command in [
+        vec!["schema", "discover", "warehouse.events"],
+        vec!["schema", "pin", "warehouse.events"],
+        vec!["compile", "--refresh"],
+        vec!["validate"],
+        vec!["plan", "warehouse.events"],
+    ] {
+        let result = super::tests::invoke_public_cli(&project_root, true, &command);
+        assert_eq!(
+            result.exit_code, 0,
+            "command {command:?} failed: {}",
+            result.stderr
+        );
+        super::tests::assert_invocation_redacted(&result, &secret);
+    }
+    make_lifecycle_runtime_cursor_physically_narrower(&endpoint, collection).unwrap();
+    for command in [vec!["preview", "warehouse.events"], vec!["doctor"]] {
+        let result = super::tests::invoke_public_cli(&project_root, true, &command);
+        assert_eq!(
+            result.exit_code, 0,
+            "command {command:?} failed: {}",
+            result.stderr
+        );
+        super::tests::assert_invocation_redacted(&result, &secret);
+    }
+
+    let jobs_one = base.path().join("jobs-one");
+    let jobs_four = base.path().join("jobs-four");
+    super::tests::copy_tree(&project_root, &jobs_one, &[]);
+    super::tests::copy_tree(&project_root, &jobs_four, &[]);
+    let first = super::tests::invoke_public_cli(
+        &jobs_one,
+        true,
+        &["run", "warehouse.events", "--jobs", "1"],
+    );
+    let second = super::tests::invoke_public_cli(
+        &jobs_four,
+        true,
+        &["run", "warehouse.events", "--jobs", "4"],
+    );
+    assert_eq!(first.exit_code, 0, "{}", first.stderr);
+    assert_eq!(second.exit_code, 0, "{}", second.stderr);
+    super::tests::assert_invocation_redacted(&first, &secret);
+    super::tests::assert_invocation_redacted(&second, &secret);
+    let first_json: serde_json::Value = serde_json::from_str(&first.stdout).unwrap();
+    let second_json: serde_json::Value = serde_json::from_str(&second.stdout).unwrap();
+    assert_eq!(first_json["result"]["row_count"], 2);
+    assert_eq!(second_json["result"]["row_count"], 2);
+    assert_eq!(
+        first_json["result"]["schema_hash"],
+        second_json["result"]["schema_hash"]
+    );
+
+    let package_id = first_json["result"]["package_id"].as_str().unwrap();
+    let second_package_id = second_json["result"]["package_id"].as_str().unwrap();
+    let package = jobs_one.join(".cdf/packages").join(package_id);
+    let second_package = jobs_four.join(".cdf/packages").join(second_package_id);
+    assert_eq!(
+        super::tests::package_identity_semantics(&package),
+        super::tests::package_identity_semantics(&second_package)
+    );
+    assert_eq!(
+        super::tests::checkpoint_position_semantics(&package),
+        super::tests::checkpoint_position_semantics(&second_package)
+    );
+    assert_eq!(
+        super::tests::receipt_semantics(&package),
+        super::tests::receipt_semantics(&second_package)
+    );
+    assert_physical_reconciliation_stays_out_of_residual_variant(&package);
+    std::fs::remove_file(jobs_one.join(".cdf/state.db")).unwrap();
+    std::fs::remove_file(jobs_one.join(".cdf/dev.duckdb")).unwrap();
+    let replay = super::tests::invoke_public_cli(
+        &jobs_one,
+        true,
+        &["replay", "package", package.to_str().unwrap()],
+    );
+    assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
+    super::tests::assert_invocation_redacted(&replay, &secret);
+}
+
 fn one_resource(resource: &CompiledResource) -> Result<()> {
     if resource.descriptor().resource_id.as_str() != RESOURCE_ID {
         return Err(CdfError::contract(format!(

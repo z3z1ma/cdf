@@ -179,7 +179,10 @@ enum InferredType {
     DateTime,
     DecimalText,
     List(Box<InferredType>),
-    Struct(BTreeMap<String, InferredField>),
+    Struct {
+        fields: BTreeMap<String, InferredField>,
+        observed_documents: usize,
+    },
     Null,
 }
 
@@ -237,7 +240,10 @@ impl SchemaInference {
                         .checked_add(merge_types(&mut field.value, inferred, &name)?)
                         .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
                     field.nullable |= matches!(value, RawBsonRef::Null);
-                    field.observed_documents += 1;
+                    field.observed_documents =
+                        field.observed_documents.checked_add(1).ok_or_else(|| {
+                            CdfError::internal("MongoDB discovery field count overflow")
+                        })?;
                 }
                 None => {
                     let added = 1_usize
@@ -261,11 +267,6 @@ impl SchemaInference {
                 return Err(CdfError::data(format!(
                     "MongoDB discovery exceeds the {MAXIMUM_SCHEMA_FIELDS}-field retained schema bound"
                 )));
-            }
-        }
-        for (name, field) in &mut self.fields {
-            if !observed.contains(name) {
-                field.nullable = true;
             }
         }
         Ok(())
@@ -366,7 +367,10 @@ fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
                     },
                 );
             }
-            InferredType::Struct(fields)
+            InferredType::Struct {
+                fields,
+                observed_documents: 1,
+            }
         }
         other => {
             return Err(CdfError::data(format!(
@@ -393,8 +397,19 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
         }
         (InferredType::Int64, InferredType::Int32) => Ok(0),
         (InferredType::List(left), InferredType::List(right)) => merge_types(left, *right, path),
-        (InferredType::Struct(left), InferredType::Struct(right)) => {
-            let right_names = right.keys().cloned().collect::<BTreeSet<_>>();
+        (
+            InferredType::Struct {
+                fields: left,
+                observed_documents: left_documents,
+            },
+            InferredType::Struct {
+                fields: right,
+                observed_documents: right_documents,
+            },
+        ) => {
+            *left_documents = left_documents
+                .checked_add(right_documents)
+                .ok_or_else(|| CdfError::internal("MongoDB nested document count overflow"))?;
             let mut added = 0_usize;
             for (name, right) in right {
                 match left.get_mut(&name) {
@@ -407,6 +422,12 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
                             )?)
                             .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
                         existing.nullable |= right.nullable;
+                        existing.observed_documents = existing
+                            .observed_documents
+                            .checked_add(right.observed_documents)
+                            .ok_or_else(|| {
+                                CdfError::internal("MongoDB nested field count overflow")
+                            })?;
                     }
                     None => {
                         added = added
@@ -417,19 +438,8 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
                                     .and_then(|nested| count.checked_add(nested))
                             })
                             .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
-                        left.insert(
-                            name,
-                            InferredField {
-                                nullable: true,
-                                ..right
-                            },
-                        );
+                        left.insert(name, right);
                     }
-                }
-            }
-            for (name, field) in left {
-                if !right_names.contains(name) {
-                    field.nullable = true;
                 }
             }
             Ok(added)
@@ -444,7 +454,7 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
 fn inferred_nested_field_count(value: &InferredType) -> Result<usize> {
     match value {
         InferredType::List(child) => inferred_nested_field_count(child),
-        InferredType::Struct(fields) => fields.values().try_fold(0_usize, |total, field| {
+        InferredType::Struct { fields, .. } => fields.values().try_fold(0_usize, |total, field| {
             let nested = inferred_nested_field_count(&field.value)?;
             total
                 .checked_add(1)
@@ -524,10 +534,18 @@ fn inferred_data_type(
                 None,
             )
         }
-        InferredType::Struct(fields) => {
+        InferredType::Struct {
+            fields,
+            observed_documents,
+        } => {
             let fields = fields
                 .into_iter()
-                .map(|(name, field)| inferred_field(name, field, depth + 1))
+                .map(|(name, mut field)| {
+                    if field.observed_documents != observed_documents {
+                        field.nullable = true;
+                    }
+                    inferred_field(name, field, depth + 1)
+                })
                 .collect::<Result<Vec<_>>>()?;
             (
                 DataType::Struct(fields.into()),
@@ -600,14 +618,47 @@ pub(crate) fn decode_batch(schema: SchemaRef, documents: &[&RawDocument]) -> Res
     Ok(decoded.record_batch)
 }
 
+#[cfg(test)]
 pub(crate) fn decode_batch_with_evidence(
     full_schema: SchemaRef,
     output_schema: SchemaRef,
     documents: &[&RawDocument],
     source_row_offset: u64,
 ) -> Result<DecodedMongoBatch> {
+    decode_batch_with_physical_schema(
+        Arc::clone(&full_schema),
+        output_schema,
+        full_schema,
+        documents,
+        source_row_offset,
+    )
+}
+
+pub(crate) fn decode_batch_with_physical_schema(
+    full_schema: SchemaRef,
+    output_schema: SchemaRef,
+    physical_schema: SchemaRef,
+    documents: &[&RawDocument],
+    source_row_offset: u64,
+) -> Result<DecodedMongoBatch> {
     validate_mongodb_schema(full_schema.as_ref())?;
     validate_mongodb_schema(output_schema.as_ref())?;
+    validate_mongodb_schema(physical_schema.as_ref())?;
+    if physical_schema.fields().len() != output_schema.fields().len()
+        || physical_schema
+            .fields()
+            .iter()
+            .zip(output_schema.fields())
+            .any(|(physical, output)| {
+                let physical_source = source_name(physical).unwrap_or_else(|| physical.name());
+                let output_source = source_name(output).unwrap_or_else(|| output.name());
+                physical_source != output_source
+            })
+    {
+        return Err(CdfError::data(
+            "MongoDB physical observation projection does not align with decoder output",
+        ));
+    }
     preflight_column_accumulator_bytes(output_schema.as_ref(), documents)?;
     let mut columns = output_schema
         .fields()
@@ -718,14 +769,9 @@ pub(crate) fn decode_batch_with_evidence(
         retained_pre_contract_evidence_bytes(&residual_candidates, &physical_reconciliations)?;
     validate_residual_evidence_bound(0, exact_evidence_bytes)?;
     pre_contract_evidence_bytes = pre_contract_evidence_bytes.max(exact_evidence_bytes);
-    // The MongoDB decoder owns BSON-subtype reconciliation and emits both a materialized Arrow
-    // output and complete residual evidence. Its engine-facing physical observation is therefore
-    // the fixed pinned decoder domain, not a per-wire-batch inference that could assign
-    // contradictory schemas to one partition observation identity.
-    let physical_schema = full_schema.as_ref().clone();
     Ok(DecodedMongoBatch {
         record_batch,
-        physical_schema,
+        physical_schema: physical_schema.as_ref().clone(),
         residual_candidates,
         physical_reconciliations,
         pre_contract_evidence_bytes,

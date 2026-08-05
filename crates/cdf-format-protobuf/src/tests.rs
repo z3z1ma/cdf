@@ -552,6 +552,54 @@ fn decodes_nested_repeated_map_oneof_wkt_recursive_and_unknown_provenance() {
 }
 
 #[test]
+fn shared_unknown_field_array_is_charged_once() {
+    block_on(async {
+        let mut message = Vec::new();
+        varint_field(1, 42, &mut message);
+        bytes_field(98, &vec![b'a'; 4096], &mut message);
+        bytes_field(99, &vec![b'b'; 4096], &mut message);
+        let memory = memory();
+        let source = Arc::new(
+            MemoryByteSource::from_bytes(
+                "memory:shared-unknowns",
+                framed(&message),
+                Arc::clone(&memory),
+            )
+            .await
+            .unwrap(),
+        );
+        let read = decode_bounded_format(
+            Arc::new(ProtobufFormatDriver::new().unwrap()),
+            source,
+            BoundedFormatRequest::new(
+                ReadOptions::new(
+                    ResourceId::new("test.rows").unwrap(),
+                    PartitionId::new("p0").unwrap(),
+                ),
+                Arc::clone(&memory),
+            )
+            .with_options(options()),
+        )
+        .await
+        .unwrap();
+        let header = &read.batches[0].header;
+        let residuals = header.residual_candidates();
+        assert_eq!(residuals.len(), 2);
+        assert!(std::ptr::eq(residuals[0].value(), residuals[1].value()));
+        let individually_charged = residuals
+            .iter()
+            .map(|candidate| candidate.retained_bytes().unwrap())
+            .sum::<u64>();
+        assert!(
+            header.pre_contract_evidence_retained_bytes().unwrap() < individually_charged,
+            "shared evidence array must not be charged once per residual candidate"
+        );
+        drop(read);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    });
+}
+
+#[test]
 fn schema_evolution_is_hash_stable_and_changes_only_with_descriptor_authority() {
     let (_, baseline) = ProtobufOptions::parse(options()).unwrap();
     let future = field("future", 12, Label::Optional, Type::String);

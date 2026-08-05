@@ -213,189 +213,7 @@ fn postgres_current_query_project_admits_compatible_live_catalog_drift() {
     assert_eq!(preview.quarantined_row_count, 0);
 }
 
-#[test]
-#[ignore = "live MongoDB public CLI lifecycle; set CDF_MONGODB_ENDPOINT"]
-fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
-    let endpoint = std::env::var("CDF_MONGODB_ENDPOINT")
-        .expect("CDF_MONGODB_ENDPOINT must name the live MongoDB endpoint");
-    let collection = "cdf_public_cli_lifecycle";
-    super::mongodb_fixture::seed_collection(&endpoint, collection).unwrap();
-    let base = tempfile::tempdir().unwrap();
-    let project_root = base.path().join("project");
-    let init = cdf_cli::invoke([
-        std::ffi::OsString::from("cdf"),
-        "--json".into(),
-        "init".into(),
-        project_root.as_os_str().to_owned(),
-    ]);
-    assert_eq!(init.exit_code, 0, "{}", init.stderr);
-    let mut location = url::Url::parse(&endpoint).unwrap();
-    assert!(
-        !location.username().is_empty() && location.password().is_some(),
-        "CDF_MONGODB_ENDPOINT must include fixture credentials so runtime secret resolution is exercised"
-    );
-    let encoded_secret = location.password().unwrap().to_owned();
-    location.set_path(&format!("/cdf_conformance/{collection}"));
-    let location = location.to_string();
-    let auth_source =
-        std::env::var("CDF_MONGODB_AUTH_SOURCE").unwrap_or_else(|_| "admin".to_owned());
-
-    let dry = invoke_public_cli(
-        &project_root,
-        false,
-        &[
-            "add",
-            "warehouse.events",
-            &location,
-            "--option",
-            "cursor=updated_at",
-            "--option",
-            "batch_rows=1",
-            "--option",
-            &format!("auth_source={auth_source}"),
-            "--dry-run",
-        ],
-    );
-    assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
-    let add = invoke_public_cli(
-        &project_root,
-        true,
-        &[
-            "add",
-            "warehouse.events",
-            &location,
-            "--option",
-            "cursor=updated_at",
-            "--option",
-            "batch_rows=1",
-            "--option",
-            &format!("auth_source={auth_source}"),
-        ],
-    );
-    assert_eq!(add.exit_code, 0, "{}", add.stderr);
-    let secret = walk_files(&project_root.join(".cdf/secrets"))
-        .into_iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .find(|value| {
-            url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
-                == encoded_secret
-        })
-        .expect("MongoDB add must publish the decoded credential to a private secret file");
-    assert_ne!(
-        secret, encoded_secret,
-        "authenticated lifecycle fixture must distinguish decoded and URL-encoded secret forms"
-    );
-    assert!(location.contains(&encoded_secret));
-    assert_invocation_redacted(&dry, &secret);
-    assert_invocation_redacted(&add, &secret);
-
-    // Remove only the scaffolded local source; MongoDB credential references stay active so every
-    // contact-bearing lifecycle command exercises secret resolution and output redaction.
-    let config_path = project_root.join("cdf.toml");
-    let config = std::fs::read_to_string(&config_path).unwrap();
-    let mut removing_local = false;
-    let config = config
-        .lines()
-        .filter(|line| {
-            if line.trim() == "[sources.local]" {
-                removing_local = true;
-                return false;
-            }
-            if removing_local && line.starts_with('[') {
-                removing_local = false;
-            }
-            !removing_local
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&config_path, format!("{config}\n")).unwrap();
-    std::fs::remove_dir_all(project_root.join("cdf/local")).unwrap();
-
-    for command in [
-        vec!["schema", "discover", "warehouse.events"],
-        vec!["schema", "pin", "warehouse.events"],
-        vec!["compile", "--refresh"],
-        vec!["validate"],
-        vec!["plan", "warehouse.events"],
-    ] {
-        let result = invoke_public_cli(&project_root, true, &command);
-        assert_eq!(
-            result.exit_code, 0,
-            "command {command:?} failed: {}",
-            result.stderr
-        );
-        assert_invocation_redacted(&result, &secret);
-    }
-    super::mongodb_fixture::make_lifecycle_runtime_cursor_physically_narrower(
-        &endpoint, collection,
-    )
-    .unwrap();
-    for command in [vec!["preview", "warehouse.events"], vec!["doctor"]] {
-        let result = invoke_public_cli(&project_root, true, &command);
-        assert_eq!(
-            result.exit_code, 0,
-            "command {command:?} failed: {}",
-            result.stderr
-        );
-        assert_invocation_redacted(&result, &secret);
-    }
-
-    let jobs_one = base.path().join("jobs-one");
-    let jobs_four = base.path().join("jobs-four");
-    copy_tree(&project_root, &jobs_one, &[]);
-    copy_tree(&project_root, &jobs_four, &[]);
-    let first = invoke_public_cli(&jobs_one, true, &["run", "warehouse.events", "--jobs", "1"]);
-    let second = invoke_public_cli(
-        &jobs_four,
-        true,
-        &["run", "warehouse.events", "--jobs", "4"],
-    );
-    assert_eq!(first.exit_code, 0, "{}", first.stderr);
-    assert_eq!(second.exit_code, 0, "{}", second.stderr);
-    assert_invocation_redacted(&first, &secret);
-    assert_invocation_redacted(&second, &secret);
-    let first_json: serde_json::Value = serde_json::from_str(&first.stdout).unwrap();
-    let second_json: serde_json::Value = serde_json::from_str(&second.stdout).unwrap();
-    assert_eq!(first_json["result"]["row_count"], 2);
-    assert_eq!(second_json["result"]["row_count"], 2);
-    assert_eq!(
-        first_json["result"]["schema_hash"],
-        second_json["result"]["schema_hash"]
-    );
-
-    let package_id = first_json["result"]["package_id"].as_str().unwrap();
-    let second_package_id = second_json["result"]["package_id"].as_str().unwrap();
-    let package = jobs_one.join(".cdf/packages").join(package_id);
-    let second_package = jobs_four.join(".cdf/packages").join(second_package_id);
-    assert_eq!(
-        package_identity_semantics(&package),
-        package_identity_semantics(&second_package)
-    );
-    assert_eq!(
-        checkpoint_position_semantics(&package),
-        checkpoint_position_semantics(&second_package)
-    );
-    assert_eq!(
-        receipt_semantics(&package),
-        receipt_semantics(&second_package)
-    );
-    assert_physical_reconciliation_stays_out_of_residual_variant(&package);
-    std::fs::remove_file(jobs_one.join(".cdf/state.db")).unwrap();
-    std::fs::remove_file(jobs_one.join(".cdf/dev.duckdb")).unwrap();
-    let replay = invoke_public_cli(
-        &jobs_one,
-        true,
-        &["replay", "package", package.to_str().unwrap()],
-    );
-    assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
-    assert_invocation_redacted(&replay, &secret);
-}
-
-fn assert_physical_reconciliation_stays_out_of_residual_variant(package: &std::path::Path) {
-    super::mongodb_fixture::assert_physical_reconciliation_stays_out_of_residual_variant(package);
-}
-
-fn invoke_public_cli(
+pub(super) fn invoke_public_cli(
     root: &std::path::Path,
     json: bool,
     command: &[&str],
@@ -409,7 +227,10 @@ fn invoke_public_cli(
     cdf_cli::invoke(args)
 }
 
-fn assert_invocation_redacted(result: &cdf_cli_core::output::InvocationResult, secret: &str) {
+pub(super) fn assert_invocation_redacted(
+    result: &cdf_cli_core::output::InvocationResult,
+    secret: &str,
+) {
     let encoded = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect::<String>();
     for sensitive in [secret, encoded.as_str()] {
         assert!(!result.stdout.contains(sensitive));
@@ -417,7 +238,7 @@ fn assert_invocation_redacted(result: &cdf_cli_core::output::InvocationResult, s
     }
 }
 
-fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+pub(super) fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if !root.exists() {
         return files;
@@ -433,7 +254,7 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn package_identity_semantics(package: &std::path::Path) -> serde_json::Value {
+pub(super) fn package_identity_semantics(package: &std::path::Path) -> serde_json::Value {
     let reader = cdf_package::PackageReader::open(package).unwrap();
     let header = reader.manifest();
     let mut files = Vec::new();
@@ -503,7 +324,7 @@ fn identity_file_content_semantics(
     serde_json::Value::String(cdf_runtime::artifact_hash(&value).unwrap())
 }
 
-fn checkpoint_position_semantics(package: &std::path::Path) -> serde_json::Value {
+pub(super) fn checkpoint_position_semantics(package: &std::path::Path) -> serde_json::Value {
     let delta = cdf_package::PackageReader::open(package)
         .unwrap()
         .state_delta_preimage()
@@ -537,7 +358,7 @@ fn checkpoint_position_semantics(package: &std::path::Path) -> serde_json::Value
     })
 }
 
-fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
+pub(super) fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
     let reader = cdf_package::PackageReader::open(package).unwrap();
     let project_root = package
         .parent()
@@ -549,7 +370,19 @@ fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
         .for_each_receipt(&mut |mut receipt| {
             let package_hash = receipt.package_hash.to_string();
             let idempotency_token = receipt.idempotency_token.to_string();
-            assert!(receipt.receipt_id.as_str().ends_with(&idempotency_token));
+            let normalized_receipt_id = format!(
+                "{}:{}:<invocation-specific>",
+                receipt.destination.as_str(),
+                receipt.target.as_str()
+            );
+            assert_eq!(
+                receipt.receipt_id.as_str(),
+                format!(
+                    "{}:{}:{idempotency_token}",
+                    receipt.destination.as_str(),
+                    receipt.target.as_str()
+                )
+            );
             let verify_package_hash = receipt
                 .verify
                 .parameters
@@ -597,7 +430,7 @@ fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
                 })
             });
             receipts.push(serde_json::json!({
-                "receipt_id": "<invocation-specific>",
+                "receipt_id": normalized_receipt_id,
                 "destination": receipt.destination,
                 "target": receipt.target,
                 "package_hash": "<invocation-specific>",
@@ -622,7 +455,7 @@ fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
     serde_json::Value::Array(receipts)
 }
 
-fn copy_tree(source: &std::path::Path, target: &std::path::Path, excluded: &[&str]) {
+pub(super) fn copy_tree(source: &std::path::Path, target: &std::path::Path, excluded: &[&str]) {
     std::fs::create_dir_all(target).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();

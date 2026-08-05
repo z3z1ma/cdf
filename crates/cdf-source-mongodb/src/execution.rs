@@ -25,7 +25,7 @@ use crate::{
     identifier::MongoDbIdentifier,
     query::{build_query, field_by_name, scan_from_partition},
     resource::validate_resource_shape,
-    schema::decode_batch_with_evidence,
+    schema::decode_batch_with_physical_schema,
 };
 
 pub(crate) const MONGODB_MAXIMUM_WIRE_BATCH_BYTES: u64 = 64 * 1024 * 1024;
@@ -44,6 +44,7 @@ pub(crate) struct MongoDbExecutionInput {
     pub(crate) descriptor: ResourceDescriptor,
     pub(crate) schema: SchemaRef,
     pub(crate) decoder_schema: SchemaRef,
+    pub(crate) physical_schema: SchemaRef,
     pub(crate) database: MongoDbIdentifier,
     pub(crate) collection: MongoDbIdentifier,
     pub(crate) batch_rows: u32,
@@ -110,6 +111,11 @@ pub(crate) async fn execute_mongodb_collection(
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
     let output_schema = projected_schema(&input.decoder_schema, &scan.projection)?;
+    let physical_schema = projected_physical_schema(
+        &input.physical_schema,
+        &input.decoder_schema,
+        &scan.projection,
+    )?;
     let handle = input
         .client
         .get_or_try_init(|| {
@@ -195,9 +201,10 @@ pub(crate) async fn execute_mongodb_collection(
                 )?,
             ))
             .await?;
-        let decoded = decode_batch_with_evidence(
+        let decoded = decode_batch_with_physical_schema(
             Arc::clone(&input.decoder_schema),
             Arc::clone(&output_schema),
+            Arc::clone(&physical_schema),
             &documents,
             source_row_offset,
         )?;
@@ -266,6 +273,41 @@ fn projected_schema(schema: &SchemaRef, projection: &[String]) -> Result<SchemaR
     // physical observation that justified them. Do not publish the plan as untrusted Arrow
     // metadata on the runtime batch.
     Ok(Arc::new(Schema::new(fields)))
+}
+
+fn projected_physical_schema(
+    physical_schema: &SchemaRef,
+    decoder_schema: &SchemaRef,
+    projection: &[String],
+) -> Result<SchemaRef> {
+    let fields = projection
+        .iter()
+        .map(|logical_name| {
+            let decoder = field_by_name(decoder_schema, logical_name).ok_or_else(|| {
+                CdfError::contract(format!(
+                    "MongoDB decoder projection field `{logical_name}` disappeared"
+                ))
+            })?;
+            let source = cdf_kernel::source_name(decoder).unwrap_or_else(|| decoder.name());
+            physical_schema
+                .fields()
+                .iter()
+                .find(|field| {
+                    field.name() == source
+                        || cdf_kernel::source_name(field.as_ref()) == Some(source)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "MongoDB physical observation omitted projected source field `{source}`"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new_with_metadata(
+        fields,
+        physical_schema.metadata().clone(),
+    )))
 }
 
 fn batch_cursor_position(
