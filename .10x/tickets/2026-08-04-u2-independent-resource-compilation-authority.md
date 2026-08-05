@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-04
 Updated: 2026-08-05
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -200,11 +200,24 @@ None. The first execution step is a deliberate committed-upstream reconciliation
 - Initial independent verdict: **fail**, with four significant findings: whole-project
   over-binding plus selected-config under-verification; global duplicate lock authorities;
   flattened unknown-source diagnostic identity; and post-allocation artifact/index size checks.
-- All four findings were repaired with focused behavioral tests. Same-reviewer recheck is pending;
-  no second reviewer was commissioned. The first recheck closed three findings and identified one
-  incomplete selected-default binding; that exact gap is now repaired and awaiting final
-  confirmation from the same reviewer.
+- All four findings were repaired with focused behavioral tests. No second reviewer was
+  commissioned. The first same-reviewer recheck closed three findings and identified one incomplete
+  selected-default binding; the final recheck confirmed that exact gap was closed.
+- Final same-reviewer verdict: **pass**. The reviewer confirmed the complete effective-resource
+  envelope recomputation closes the remaining selected-configuration gap and reported no
+  actionable findings within the review scope. Residual risk is limited to unexercised literal
+  process termination between every new artifact/index/lock install boundary; the shared
+  transaction failpoint/recovery suite covers the same guarded publisher and passed.
 
 ## Retrospective
 
-Pending execution.
+- The expensive mistake was treating “selected configuration” as the selected source alone. A
+  resource artifact also inherits project defaults, selected environment destination policy, and
+  path-derived values. Currentness checks should be expressed as recomputation of the complete
+  effective resource envelope, not a hand-maintained list of likely fields.
+- Reusing the guarded project transaction and the mature compiled-section validators kept the
+  publication and artifact safety work bounded. The useful review pressure was at authority seams:
+  what exact bytes or typed values make A current, and can B alter that answer?
+- Running one full `cdf-project` certificate only after the lock model stabilized caught every
+  downstream consumer of the removed global destination authority without repeated workspace-wide
+  churn. Focused CLI tests remained the fastest oracle for the user-visible isolation laws.
