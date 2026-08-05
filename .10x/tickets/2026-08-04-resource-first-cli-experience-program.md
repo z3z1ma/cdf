@@ -34,9 +34,10 @@ resources, and every adjacent command has one scope and effect ceiling.
 6. **U5 — source discovery, generation, and add.** Add source/resource discovery and canonical
    artifacts, adapter-owned catalog enumeration, thin create-or-verify generation, then reconcile
    the single-location add path against the ratified authoring model.
-7. **U6 — operational and recovery command coherence.** Implement scoped doctor and audit
-   preview/backfill/status/inspect/replay/resume loaders, reports, negative-I/O laws, and
-   remediation against the command-effect contract.
+7. **U6 — operational and recovery command coherence.** Implement scoped doctor; fold package
+   execution and interrupted-run recovery into explicit `run` input modes; audit
+   preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
+   command-effect contract.
 8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
 
@@ -88,8 +89,9 @@ closure.
    partial outcomes.
 3. Existing plan terminal output remains the primary beautiful report while artifact effects are
    additive and JSON/human facts share one typed authority.
-4. The sandbox can add/discover/validate/plan/export/run/replay/resume one selected resource while
-   unrelated broken or credential-inaccessible resources remain irrelevant.
+4. The sandbox can add/discover/validate/plan/export and run from resource, portable-plan, package,
+   or interrupted-run authority while unrelated broken or credential-inaccessible resources remain
+   irrelevant.
 5. Removed grammar/artifact shapes have no aliases, shims, fallbacks, dead fixtures, or
    rejection-only compatibility tests.
 
@@ -102,6 +104,9 @@ closure.
 - 2026-08-04: Work is isolated in
   `/Users/alexanderbut/code_projects/personal/cdf-usage-ergonomics` on
   `codex/cdf-usage-ergonomics`; the shared checkout was not switched.
+- 2026-08-04: The user conditionally confirmed doctor/add but rejected separate replay/resume verbs
+  as surprising. The focused draft now recommends one `run` verb with mutually exclusive resource,
+  portable-plan, package, and interrupted-run authority; exact confirmation remains U6-only.
 
 ## Blockers
 

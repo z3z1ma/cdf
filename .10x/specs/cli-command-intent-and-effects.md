@@ -8,8 +8,8 @@ Updated: 2026-08-04
 
 Every CDF command must have one user intent, one identity space, and an explicit effect ceiling.
 Preparation phases are reusable internals, not a workflow the user must manually sequence. This
-specification applies the resource-first model to validate, doctor, add, replay, resume, preview,
-backfill, status, and inspect so the redesigned plan/run surface does not leave neighboring
+specification applies the resource-first model to validate, doctor, add, package/run recovery,
+preview, backfill, status, and inspect so the redesigned plan/run surface does not leave neighboring
 commands coupled to whole-project loading or generic remediation.
 
 ## Command law
@@ -108,19 +108,37 @@ Batch authoring from an existing source belongs only to `cdf discover source ...
 Direct database DSNs retain the owner-only private-secret decision in
 `.10x/decisions/cdf-add-dsn-secret-persistence.md`.
 
-## Replay and resume
+## One execution verb, explicit input authority
 
-`cdf replay package <package> --to <destination>` is a package-authority execution. Selection and
-preflight load only the exact package, destination binding, required runtime capability, and
-optional explicit state target. It MUST NOT load project resources, compile SQL, contact a source,
-rediscover schema, re-evaluate a contract, or recommend compile/validate. It previews the package,
-destination effects, receipt/checkpoint conditions, and duplicate behavior in the established CLI
-language before mutation, then reports the exact durable effects.
+CDF has one top-level execution intent: `run`. Resource preparation, portable-plan consumption,
+package delivery, and interrupted-run recovery differ by input authority, not by user-facing verb:
 
-`cdf resume [run-id]` begins from run-ledger/package/receipt/checkpoint authority. A finalized
-package makes source and compiler access forbidden. A pre-package interrupted run may re-enter
-preparation/extraction only for the exact recorded resource/source under the existing crash matrix;
-unrelated project failures cannot block it.
+```text
+cdf run <resource-selector>...
+cdf run --plan <plan.json>
+cdf run --package <package> --to <destination>
+cdf run --resume [<run-id>]
+```
+
+The four input modes are mutually exclusive. The typed report names `resource_set`, `portable_plan`,
+`package`, or `interrupted_run` as its input authority and renders the same established preflight,
+effects, and proof language. There are no top-level `cdf replay` or `cdf resume` commands and no
+compatibility aliases.
+
+`cdf run --package` creates a new run from exact package authority. Selection and preflight load
+only the package, destination binding, required runtime capability, and optional explicit state
+target. It MUST NOT load project resources, compile SQL, contact a source, rediscover schema,
+re-evaluate a contract, or recommend compile/validate. It previews package/destination effects,
+receipt/checkpoint conditions, and duplicate behavior before mutation, then reports exact durable
+effects.
+
+`cdf run --resume` continues existing run authority from run-ledger/package/receipt/checkpoint
+facts. With an explicit run id it selects exactly that run. Without one, it proceeds only when
+exactly one recoverable interrupted run exists; zero is a clean no-work result and multiple is an
+ambiguity report listing exact ids without mutating anything. A finalized package makes source and
+compiler access forbidden. A pre-package interrupted run may re-enter preparation/extraction only
+for the exact recorded resource/source under the existing crash matrix; unrelated project failures
+cannot block it.
 
 Backfill and other resource execution commands use resource selectors and the same all-selected
 preparation barrier as run. Preview is bounded `observe`; status and inspect remain read-only over
@@ -136,10 +154,10 @@ their named authority. None may hide an effectful repair behind a read-only comm
    its reachable authorities; `doctor all` is the sole whole-project probe.
 4. Add creates one thin resource and source proposal without lock/compiled artifacts, then points to
    plan. An unrelated invalid resource or missing secret does not block it.
-5. Replay of a valid package succeeds when authored project SQL is broken and source credentials are
-   absent, because package authority is sufficient.
-6. Resume after package finalization performs zero source/compiler calls and follows durable
-   receipt/checkpoint facts.
+5. `run --package` succeeds when authored project SQL is broken and source credentials are absent,
+   because package authority is sufficient.
+6. `run --resume` after package finalization performs zero source/compiler calls and follows
+   durable receipt/checkpoint facts; a missing id with multiple candidates makes no choice.
 7. Human and JSON reports agree on scope, effect ceiling, actual effects, skipped checks, and safe
    remediation for every command family.
 
@@ -147,10 +165,10 @@ their named authority. None may hide an effectful repair behind a read-only comm
 
 - Counter/fault tests prove each command's negative I/O and mutation boundaries.
 - CLI grammar/help/generated artifacts describe scopes and effects without legacy aliases.
-- Add/doctor/validate/replay/resume reports use one typed report each with JSON/human/redaction
-  parity.
-- Static validate, scoped doctor, add dry/write, replay, and resume pass focused integration tests
-  with unrelated broken resources and unavailable credentials.
+- Add/doctor/validate reports and every run input mode use one typed report each with
+  JSON/human/redaction parity.
+- Static validate, scoped doctor, add dry/write, run-from-package, and run-resume pass focused
+  integration tests with unrelated broken resources and unavailable credentials.
 - `validate --deep`, generic compile/refresh/pin advice, fat generated resource envelopes, and
   whole-project preload paths are absent.
 
@@ -159,13 +177,14 @@ their named authority. None may hide an effectful repair behind a read-only comm
 - automatic repair by validate or doctor;
 - source/destination contact from validate;
 - hidden schema pin/compile from add or discovery generation;
-- replay from mutable project SQL instead of package authority;
+- package execution from mutable project SQL instead of package authority;
 - compatibility aliases or parsers for removed command forms;
 - a generic selector language spanning resources, configured sources, packages, runs, and
   destinations.
 
 ## Ratification blocker
 
-Confirm or correct the exact doctor scopes/default, add grammar/source-name proposal and thin
-no-pin effects, and authority-preserving replay/resume behavior before their implementation tickets
-open. The static validate boundary is already independently ratified and active.
+The user's conditional confirmation accepts the proposed doctor and add surfaces if the surprising
+top-level replay/resume split is removed. Confirm or correct the exact single-verb `run --package`
+and `run --resume` surface above before this specification activates. The static validate boundary
+is already independently ratified and active.
