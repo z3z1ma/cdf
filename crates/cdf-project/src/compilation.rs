@@ -20,6 +20,7 @@ use crate::{
     },
     parse_cdf_toml, parse_lock, project_file_transaction_generation,
     project_inputs::current_project_source_configuration,
+    query_compiler::current_effective_resource_envelope,
 };
 
 pub const COMPILATION_INDEX_RELATIVE_PATH: &str = ".cdf/manifest.json";
@@ -707,6 +708,25 @@ fn load_current_artifact(
     if sha256(&authored) != artifact.resource.origin.authored_content_hash {
         return Err(CdfError::data(format!(
             "authored resource `{}` changed after compilation",
+            entry.resource_id
+        )));
+    }
+    let authored_sql = std::str::from_utf8(&authored).map_err(|error| {
+        CdfError::data(format!(
+            "authored resource `{}` is not UTF-8: {error}",
+            entry.resource_id
+        ))
+    })?;
+    let default_target = cdf_kernel::TargetName::new(&entry.resource_id)?;
+    let effective = current_effective_resource_envelope(
+        config,
+        authored_sql,
+        &artifact.resource.origin.relative_path,
+        &default_target,
+    )?;
+    if effective != artifact.resource.effective {
+        return Err(CdfError::data(format!(
+            "compiled artifact for `{}` is stale for its effective resource configuration",
             entry.resource_id
         )));
     }

@@ -150,6 +150,11 @@ Replace the current exact-project compilation snapshot with one current-only res
   destination capability bindings into each resource lock entry and deletes both global lock
   indexes, carries a typed narrow source diagnostic instead of embedding a code in its message,
   and bounds index/artifact reads before allocation.
+- 2026-08-05: Same-reviewer recheck closed three findings and narrowed the remaining one: selected
+  source and normalizer verification did not cover project defaults used by the effective resource
+  envelope. Currentness now reparses the exact unchanged resource input and recomputes the complete
+  effective target/disposition/keys/cursor/trust/semantics/execution envelope from current project
+  defaults before serving compiled facts.
 
 ## Blockers
 
@@ -185,6 +190,10 @@ None. The first execution step is a deliberate committed-upstream reconciliation
   configuration makes only A stale, unknown sources retain `CDF-SOURCE-UNKNOWN` without a nested
   code string, and oversized private index/artifact files are bounded while system SQL remains
   available. Strict Clippy passed for every package changed by the repairs.
+- Final selected-config repair: the focused
+  `project_defaults_stale_only_resources_that_resolve_through_them` CLI test passed, proving a
+  project trust default change downgrades a resource that resolved through that default. Affected
+  all-target check, strict Clippy, formatter, and diff check passed afterward.
 
 ## Review
 
@@ -192,7 +201,9 @@ None. The first execution step is a deliberate committed-upstream reconciliation
   over-binding plus selected-config under-verification; global duplicate lock authorities;
   flattened unknown-source diagnostic identity; and post-allocation artifact/index size checks.
 - All four findings were repaired with focused behavioral tests. Same-reviewer recheck is pending;
-  no second reviewer was commissioned.
+  no second reviewer was commissioned. The first recheck closed three findings and identified one
+  incomplete selected-default binding; that exact gap is now repaired and awaiting final
+  confirmation from the same reviewer.
 
 ## Retrospective
 
