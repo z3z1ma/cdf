@@ -1763,7 +1763,14 @@ fn inspect_json_security(
 ) -> Result<()> {
     match value {
         serde_json::Value::String(value) => {
-            if value.len() > MAX_MANIFEST_STRING_BYTES || value.chars().any(char::is_control) {
+            let authored_sql_whitespace = |character: char| {
+                key == Some("authored_sql") && matches!(character, '\n' | '\r' | '\t')
+            };
+            if value.len() > MAX_MANIFEST_STRING_BYTES
+                || value
+                    .chars()
+                    .any(|character| character.is_control() && !authored_sql_whitespace(character))
+            {
                 return manifest_error(
                     authority,
                     "manifest string exceeds bounds or contains control characters",

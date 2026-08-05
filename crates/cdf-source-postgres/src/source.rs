@@ -177,6 +177,7 @@ impl PostgresTableResource {
         let target = self.target;
         let connection = self.connection;
         let egress = self.egress;
+        let baseline_observation_schema_catalog = self.baseline_observation_schema_catalog;
         let Some(execution) = self.execution else {
             return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(CdfError::contract(
@@ -184,13 +185,14 @@ impl PostgresTableResource {
                 ))
             }));
         };
-        open_postgres_table_with_connection(
+        open_postgres_table_with_connection_and_catalog(
             descriptor,
             schema,
             target,
             partition,
             execution,
             egress,
+            baseline_observation_schema_catalog,
             move |cancellation| match connection {
                 PostgresConnection::Resolved(database_url) => Ok(database_url),
                 PostgresConnection::Deferred(resolver) => resolver(cancellation),
@@ -211,6 +213,32 @@ pub fn open_postgres_table_with_connection<F>(
     partition: PartitionPlan,
     execution: ExecutionServices,
     egress: SourceEgressScope,
+    resolve_connection: F,
+) -> cdf_kernel::PartitionOpenAttempt<'static>
+where
+    F: FnOnce(cdf_runtime::RunCancellation) -> Result<String> + Send + 'static,
+{
+    open_postgres_table_with_connection_and_catalog(
+        descriptor,
+        schema,
+        target,
+        partition,
+        execution,
+        egress,
+        Vec::new(),
+        resolve_connection,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_postgres_table_with_connection_and_catalog<F>(
+    descriptor: ResourceDescriptor,
+    schema: SchemaRef,
+    target: PostgresTarget,
+    partition: PartitionPlan,
+    execution: ExecutionServices,
+    egress: SourceEgressScope,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     resolve_connection: F,
 ) -> cdf_kernel::PartitionOpenAttempt<'static>
 where
@@ -247,6 +275,7 @@ where
                     partition,
                     memory,
                     egress,
+                    baseline_observation_schema_catalog,
                 },
                 sender,
                 cancellation.clone(),
@@ -571,6 +600,7 @@ struct PostgresExecutionInput {
     partition: PartitionPlan,
     memory: Arc<dyn MemoryCoordinator>,
     egress: SourceEgressScope,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
 fn execute_postgres_table(
@@ -586,6 +616,7 @@ fn execute_postgres_table(
         partition,
         memory,
         egress,
+        baseline_observation_schema_catalog,
     } = input;
     validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
     let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
@@ -649,9 +680,27 @@ fn execute_postgres_table(
             )));
         }
         lease.reconcile(retained_bytes)?;
-        let physical_schema = record_batch.schema();
-        let observed_schema_hash =
-            cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
+        let (observed_schema_hash, physical_schema) = match baseline_observation_schema_catalog
+            .as_slice()
+        {
+            [] => {
+                let schema = record_batch.schema();
+                (
+                    cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+                    schema,
+                )
+            }
+            [entry] => (
+                entry.physical_schema_hash.clone(),
+                Arc::clone(&entry.schema),
+            ),
+            entries => {
+                return Err(CdfError::contract(format!(
+                    "Postgres table execution requires one physical schema observation, found {}",
+                    entries.len()
+                )));
+            }
+        };
         batch_index = batch_index.saturating_add(1);
         let mut batch = Batch::from_record_batch(
             BatchId::new(format!(

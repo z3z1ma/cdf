@@ -734,7 +734,7 @@ fn discover_registered_resource_schema(
     )?;
     let mut probes = Vec::with_capacity(scheduled_candidates.len());
     let mut probe_reports = Vec::with_capacity(scheduled_candidates.len());
-    let mut failed = false;
+    let mut failures = Vec::new();
     for (candidate, result) in scheduled_candidates.into_iter().zip(probe_results) {
         match result {
             Ok(probe) => {
@@ -745,18 +745,32 @@ fn discover_registered_resource_schema(
                 probes.push(probe);
             }
             Err(error) => {
-                failed = true;
                 probe_reports.push(format!("{}: failed: {}", candidate.location, error));
+                failures.push(error);
             }
         }
     }
-    if failed {
-        return Err(CdfError::data(format!(
-            "{file_coverage_label} + {within_file_coverage_label} {} discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
-            source_label,
-            resource.descriptor().resource_id,
-            probe_reports.join("; ")
-        )));
+    if let Some(first) = failures.first() {
+        let aggregate_kind = if failures.iter().all(|error| error.kind == first.kind) {
+            first.kind.clone()
+        } else {
+            cdf_kernel::ErrorKind::Data
+        };
+        let retry_after_ms = failures
+            .iter()
+            .filter_map(|error| error.retry_after_ms)
+            .max();
+        let mut error = CdfError::new(
+            aggregate_kind,
+            format!(
+                "{file_coverage_label} + {within_file_coverage_label} {} discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
+                source_label,
+                resource.descriptor().resource_id,
+                probe_reports.join("; ")
+            ),
+        );
+        error.retry_after_ms = retry_after_ms;
+        return Err(error);
     }
 
     let selected_probes = probes

@@ -16,6 +16,9 @@ contributors.
 - [ClickHouse source and destination](clickhouse.md) documents credential-safe HTTP configuration,
   exact ArrowStream reads and writes, stable cursors, default ReplacingMergeTree merge, opt-in
   atomic copy-on-write merge, failure ownership, and direct-ArrowStream roofline cells.
+- [MongoDB collection source](mongodb.md) documents credential-safe finite collection reads,
+  bounded discovery, exact BSON-to-Arrow mapping, stable cursor windows, runtime bounds, failure
+  ownership, and the direct raw-BSON roofline.
 - [SQLite destination](operators/sqlite-destination.md) documents local-file configuration,
   append/replace/merge semantics, durability preservation, receipt recovery, failure ownership,
   and the direct-library destination roofline.

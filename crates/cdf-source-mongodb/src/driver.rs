@@ -27,8 +27,8 @@ use crate::{
     schema::SchemaInference,
 };
 
-const DEFAULT_BATCH_ROWS: u32 = 4_096;
-const DEFAULT_MAX_POOL_SIZE: u32 = 2;
+const DEFAULT_BATCH_ROWS: u32 = 65_536;
+const DEFAULT_MAX_POOL_SIZE: u32 = 1;
 const DEFAULT_STREAM_BUFFER_BATCHES: usize = 1;
 const DEFAULT_DISCOVERY_RECORDS: u64 = 1_000;
 const DEFAULT_DISCOVERY_BYTES: u64 = 16 * 1024 * 1024;

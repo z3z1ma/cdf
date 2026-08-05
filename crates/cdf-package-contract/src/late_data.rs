@@ -406,7 +406,7 @@ mod tests {
         assert!(evidence.validate_payloads(None, 1).is_err());
 
         let mut wrong_version = serde_json::to_value(&evidence).unwrap();
-        wrong_version["version"] = serde_json::json!(2);
+        wrong_version["version"] = serde_json::json!(LATE_DATA_EVIDENCE_VERSION + 1);
         assert!(serde_json::from_value::<LateDataEvidence>(wrong_version).is_err());
 
         let mismatched = batch(

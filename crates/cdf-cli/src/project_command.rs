@@ -75,7 +75,8 @@ pub(crate) fn validate(
 }
 
 pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context =
+        ProjectContext::load_for_command("diff schema", cli.project.as_ref(), cli.env.as_deref())?;
     let lock = require_lock(&context)?;
     let destination_artifacts = lock
         .destinations

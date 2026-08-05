@@ -65,8 +65,13 @@ pub(crate) fn run(
     let requested = args.resource_id.clone().ok_or_else(|| {
         CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
     })?;
-    let mut context =
-        ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
+    let mut context = ProjectContext::load_for_command_with_destination_registry(
+        "run",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let adhoc = if context.has_resource(&requested) {
         None
     } else if looks_like_adhoc_location(&requested)? {

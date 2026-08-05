@@ -124,7 +124,7 @@ fn compile_refresh_and_offline_compile_publish_one_typed_report() {
     assert_eq!(refresh["command"], "compile");
     assert_eq!(refresh["result"]["mode"], "refresh");
     assert_eq!(refresh["result"]["resources"], 1);
-    assert_eq!(refresh["result"]["source_observations"], 0);
+    assert_eq!(refresh["result"]["source_observations"], 1);
     assert_eq!(refresh["result"]["writes"]["manifest"], true);
     assert_eq!(refresh["result"]["writes"]["lockfile"], true);
     for external in ["destination", "state", "package", "receipt", "checkpoint"] {
@@ -173,22 +173,6 @@ fn offline_compile_requires_lock_and_names_refresh_without_publishing() {
 #[test]
 fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_authority() {
     let project = TestProject::new();
-    fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-"#,
-    )
-    .unwrap();
 
     let result = run([
         "cdf",

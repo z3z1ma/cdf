@@ -131,7 +131,7 @@ fn keyless_append_rest_validate_plan_preview_run_has_no_key_nudge() {
         { "id": 1, "updated_at": 10 },
         { "id": 2, "updated_at": 20 }
     ] }"#;
-    let (base_url, requests) = serve_json_sequence([body, body]);
+    let (base_url, requests) = serve_json_sequence([body, body, body]);
     write_rest_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
@@ -170,7 +170,7 @@ fn keyless_append_rest_validate_plan_preview_run_has_no_key_nudge() {
     let run_json = stderr_or_stdout_json(&run_result.stdout);
     assert_eq!(run_json["result"]["receipt"]["disposition"], "append");
     assert_eq!(run_json["result"]["row_count"], 2);
-    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(requests.lock().unwrap().len(), 3);
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     assert_eq!(run_report["schema_snapshot"]["outcome"], "unchanged");
     assert_eq!(run_report["schema_snapshot"]["snapshot_written"], false);
     assert_eq!(run_report["schema_snapshot"]["lockfile_written"], false);
-    assert_eq!(run_report["target"], "orders");
+    assert_eq!(run_report["target"], "warehouse.orders");
     assert_eq!(run_report["schema_hash"], snapshot["schema_hash"]);
     assert_eq!(run_report["row_count"], 3);
     assert_eq!(run_report["checkpoint"]["status"], "committed");
@@ -753,7 +753,7 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = conn
-        .prepare("SELECT vendor_id, updated_at FROM orders ORDER BY vendor_id")
+        .prepare("SELECT vendor_id, updated_at FROM warehouse.orders ORDER BY vendor_id")
         .unwrap()
         .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
         .unwrap()
@@ -988,7 +988,7 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = conn
-        .prepare("SELECT vendor_id, updated_at FROM items ORDER BY vendor_id")
+        .prepare("SELECT vendor_id, updated_at FROM api.items ORDER BY vendor_id")
         .unwrap()
         .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
         .unwrap()

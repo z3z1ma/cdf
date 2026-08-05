@@ -20,10 +20,12 @@ pub(crate) fn inspect(
     match args.noun {
         InspectNoun::Package(path) => inspect_package(path),
         noun => {
-            let context = ProjectContext::load_for_command(
+            let context = ProjectContext::load_for_command_with_destination_registry(
                 inspect_command_name(&noun),
                 cli.project.as_ref(),
                 cli.env.as_deref(),
+                true,
+                destinations,
             )?;
             match noun {
                 InspectNoun::Project => {

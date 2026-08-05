@@ -50,21 +50,22 @@ fn doctor_reports_lockfile_presence_when_lock_exists() {
 fn doctor_registered_source_probe_fails_independently_before_network_or_writes() {
     let project = TestProject::new();
     fs::write(
+        project.root.join("cdf.toml"),
+        PROJECT.replace(
+            "root = \"data\"",
+            "root = \"https://private.example.test/data\"\negress_allowlist = [\"allowed.example.test\"]",
+        ),
+    )
+    .unwrap();
+    fs::write(
         project.root.join("cdf/local/events.cdf.sql"),
-        r#"
-[source.local]
-kind = "files"
-root = "https://private.example.test/data"
-egress_allowlist = ["allowed.example.test"]
-
-[resource.events]
-glob = "events.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-] }
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'local', glob => 'events.parquet', format => 'parquet');
 "#,
     )
     .unwrap();

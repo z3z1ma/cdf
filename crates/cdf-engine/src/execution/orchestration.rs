@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::expression_execution::{
-    BoundExpressionTransform, BoundScalarExpression, apply_bound_expression_transforms,
-    apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
-    bind_filter_expressions, bind_relational_expression_plan,
+    BoundExpressionTransform, BoundScalarExpression, SOURCE_ROW_TRACKING_FIELD,
+    apply_bound_expression_transforms, apply_bound_filters, apply_expression_transforms,
+    bind_expression_transforms, bind_filter_expressions, bind_relational_expression_plan,
     execute_bound_relational_expression_plan_tracked, expression_transform_output_schema,
 };
 use crate::expression_memory::expression_working_set_bytes;
@@ -90,8 +90,6 @@ use crate::{
         ResidualTypedProjection, contract_evolution_artifact_metadata, normalize_batch,
     },
 };
-
-const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
 
 /// Mutable epoch-scoped authorities that may advance only through one canonical drain closure.
 pub struct DrainEpochExecution<'a> {
@@ -318,6 +316,7 @@ where
     let mut attested_partition_count = 0_u64;
     let mut inspected_partition_count = 0_u64;
     let mut inspected_batch_count = 0_u64;
+    let mut remaining_query_limit = plan.final_limit.or(plan.scan.request.limit);
     let mut row_count = 0_u64;
     let mut byte_count = 0_u64;
     let mut output_byte_count = 0_u64;
@@ -538,7 +537,11 @@ where
             let quota = base_quota + u64::from((selected_index as u64) < quota_remainder);
             let mut admitted = 0_u64;
             let mut complete = false;
-            if remaining_rows > 0 && remaining_bytes > 0 && remaining_batches > 0 {
+            if remaining_rows > 0
+                && remaining_bytes > 0
+                && remaining_batches > 0
+                && remaining_query_limit != Some(0)
+            {
                 let mut opening = resource.open_executable(candidate.executable.clone());
                 let mut stream = match (&mut opening).await {
                     Ok(stream) => stream,
@@ -559,6 +562,7 @@ where
                         && remaining_rows > 0
                         && remaining_bytes > 0
                         && remaining_batches > 0
+                        && remaining_query_limit != Some(0)
                     {
                         let Some(batch) = stream.next().await else {
                             complete = true;
@@ -687,7 +691,6 @@ where
                             }
                             None => (record_batch, None),
                         };
-                        let mut no_row_limit = None;
                         let executed = execute_batch(
                             &record_batch,
                             if track_source_rows {
@@ -710,7 +713,7 @@ where
                             } else {
                                 &bound_transforms
                             },
-                            &mut no_row_limit,
+                            &mut remaining_query_limit,
                             track_source_rows,
                             transform_memory_lease.as_ref(),
                             &cdf_runtime::RunCancellation::default(),
@@ -6703,14 +6706,14 @@ fn execute_batch(
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<ExecutedBatch> {
     let tracked = if track_source_rows {
-        if batch.schema().index_of(SOURCE_ROW_FIELD).is_ok() {
+        if batch.schema().index_of(SOURCE_ROW_TRACKING_FIELD).is_ok() {
             return Err(CdfError::contract(format!(
-                "input field {SOURCE_ROW_FIELD:?} conflicts with reserved execution metadata"
+                "input field {SOURCE_ROW_TRACKING_FIELD:?} conflicts with reserved execution metadata"
             )));
         }
         let mut fields = batch.schema().fields().iter().cloned().collect::<Vec<_>>();
         fields.push(Arc::new(Field::new(
-            SOURCE_ROW_FIELD,
+            SOURCE_ROW_TRACKING_FIELD,
             DataType::UInt64,
             false,
         )));
@@ -6784,7 +6787,7 @@ fn apply_pre_contract_expressions(
             limit_truncated,
         });
     }
-    let ordinal_index = transformed.schema().index_of(SOURCE_ROW_FIELD)?;
+    let ordinal_index = transformed.schema().index_of(SOURCE_ROW_TRACKING_FIELD)?;
     let ordinals = transformed
         .column(ordinal_index)
         .as_any()
@@ -6807,14 +6810,14 @@ fn apply_pre_contract_expressions(
 }
 
 fn source_row_tracking_schema(schema: &Schema) -> Result<Schema> {
-    if schema.index_of(SOURCE_ROW_FIELD).is_ok() {
+    if schema.index_of(SOURCE_ROW_TRACKING_FIELD).is_ok() {
         return Err(CdfError::contract(format!(
-            "input field {SOURCE_ROW_FIELD:?} conflicts with reserved execution metadata"
+            "input field {SOURCE_ROW_TRACKING_FIELD:?} conflicts with reserved execution metadata"
         )));
     }
     let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
     fields.push(Arc::new(Field::new(
-        SOURCE_ROW_FIELD,
+        SOURCE_ROW_TRACKING_FIELD,
         DataType::UInt64,
         false,
     )));
@@ -8091,7 +8094,7 @@ mod transform_kernel_tests {
         .unwrap();
         let derived_schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new("selected", DataType::Boolean, true),
+            Field::new("selected", DataType::Boolean, false),
         ]);
         let filter = crate::expression::plan_expression(
             match &transforms[1] {
@@ -8139,7 +8142,7 @@ mod transform_kernel_tests {
             output
                 .batch
                 .schema()
-                .index_of(super::SOURCE_ROW_FIELD)
+                .index_of(crate::expression_execution::SOURCE_ROW_TRACKING_FIELD)
                 .is_err()
         );
     }

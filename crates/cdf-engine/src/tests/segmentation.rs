@@ -148,7 +148,7 @@ fn limited_cursor_batch_never_assigns_unsliced_position_to_output_segments() {
 
 #[test]
 fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
-    let resource = MockResource::tier_b(sample_batches());
+    let resource = MockResource::tier_b(sample_batches()).without_control_keys();
     let plan = Planner::new()
         .plan_tier_b(
             &resource,

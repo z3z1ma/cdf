@@ -733,9 +733,10 @@ where
             validate_prepared_correction_package_authority(&prepared, staged, target, &hydrated)?;
             prepared
         };
-        let checkpoint =
-            ensure_promotion_checkpoint(request.settlement_store, &prepared.state_delta)?;
-        chain_parent = Some(checkpoint_input_authority(&checkpoint));
+        chain_parent = Some(expected_checkpoint_input_authority(
+            request.settlement_store,
+            &prepared.state_delta,
+        )?);
         packages.push(prepared);
     }
     Ok(packages)
@@ -750,7 +751,7 @@ fn checkpoint_input_authority(checkpoint: &Checkpoint) -> Checkpoint {
     authority
 }
 
-fn ensure_promotion_checkpoint<Store: CheckpointStore>(
+fn expected_checkpoint_input_authority<Store: CheckpointStore>(
     store: &Store,
     expected: &StateDelta,
 ) -> cdf_kernel::Result<Checkpoint> {
@@ -763,11 +764,21 @@ fn ensure_promotion_checkpoint<Store: CheckpointStore>(
         .into_iter()
         .find(|checkpoint| checkpoint.delta.checkpoint_id == expected.checkpoint_id);
     match existing {
-        Some(checkpoint) if checkpoint.delta == *expected => Ok(checkpoint),
+        Some(checkpoint) if checkpoint.delta == *expected => {
+            Ok(checkpoint_input_authority(&checkpoint))
+        }
         Some(_) => Err(cdf_kernel::CdfError::contract(
             "promotion checkpoint conflicts with deterministic package authority",
         )),
-        None => store.propose(expected.clone()),
+        None => Ok(Checkpoint {
+            delta: expected.clone(),
+            status: CheckpointStatus::Committed,
+            receipt: None,
+            is_head: true,
+            created_at_ms: 0,
+            committed_at_ms: Some(0),
+            rewind_target_checkpoint_id: None,
+        }),
     }
 }
 

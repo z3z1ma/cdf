@@ -42,7 +42,7 @@ pub(crate) fn contract(
             CommandOutput::rendered("contract show", render::show_document(&report), report)
         }
         ContractCommand::Freeze { contract } => freeze(cli, contract, destinations),
-        ContractCommand::Test { contract } => test(cli, contract),
+        ContractCommand::Test { contract } => test(cli, contract, destinations),
     }
 }
 
@@ -51,7 +51,13 @@ fn freeze(
     selector: Option<String>,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "contract freeze",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
         destinations,
         &context,
@@ -72,8 +78,18 @@ fn freeze(
     CommandOutput::rendered("contract freeze", render::freeze_document(&report), report)
 }
 
-fn test(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+fn test(
+    cli: &Cli,
+    selector: Option<String>,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "contract test",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let lock = context.lock.as_ref().ok_or_else(|| {
         CliError::mapped(
             CdfError::contract(format!(

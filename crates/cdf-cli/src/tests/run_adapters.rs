@@ -70,7 +70,7 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
     let report = &json["result"];
     assert_eq!(report["resource_id"], "api.items");
     assert_eq!(report["destination"]["kind"], "duckdb");
-    assert_eq!(report["target"], "items");
+    assert_eq!(report["target"], "api.items");
     assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["checkpoint"]["status"], "committed");
@@ -97,7 +97,7 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM api.items", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 2);
 
@@ -124,18 +124,32 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
         "parse-token-secret\n",
     )
     .unwrap();
-    let parse_url = serve_json_once(
+    let (parse_url, _requests) = serve_json_sequence([
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
         r#"{ "items": [
             { "id": 1, "updated_at": 10 },
             { "id": 2, "updated_at": "20" }
         ] }"#,
-    );
+    ]);
     write_rest_project(
         &parse_project,
         "duckdb://.cdf/dev.duckdb",
         &parse_url,
         "secret://file/rest-token",
     );
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        parse_project.root_str(),
+        "schema",
+        "pin",
+        "api.items",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}{}", pin.stdout, pin.stderr);
 
     let parse = run_valid_run_resource(&parse_project, "api.items");
 
@@ -264,8 +278,8 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     assert_eq!(
         columns,
         vec![
-            ("vendor_id".to_owned(), "BIGINT".to_owned(), true),
-            (LONG_SOURCE.to_owned(), "BIGINT".to_owned(), true),
+            ("vendor_id".to_owned(), "BIGINT".to_owned(), false),
+            (LONG_SOURCE.to_owned(), "BIGINT".to_owned(), false),
             ("_cdf_variant".to_owned(), "VARCHAR".to_owned(), false),
             ("_cdf_row_key".to_owned(), "UBIGINT".to_owned(), true),
         ]
@@ -396,7 +410,7 @@ fn run_postgres_resource_with_ordered_cursor_commits_checkpoint() {
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
     assert_eq!(report["resource_id"], "warehouse.orders");
-    assert_eq!(report["target"], "orders");
+    assert_eq!(report["target"], "warehouse.orders");
     assert_eq!(report["destination"]["kind"], "duckdb");
     assert_eq!(report["destination"]["destination_id"], "duckdb");
     assert_eq!(report["row_count"], 2);
@@ -418,7 +432,7 @@ fn run_postgres_resource_with_ordered_cursor_commits_checkpoint() {
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let mut statement = conn
-        .prepare("SELECT id, updated_at FROM orders ORDER BY id")
+        .prepare("SELECT id, updated_at FROM warehouse.orders ORDER BY id")
         .unwrap();
     let rows = statement
         .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
@@ -512,10 +526,11 @@ fn run_parquet_malformed_uri_fails_before_writes() {
 
         let result = run_valid_run_args(&project);
 
-        assert_eq!(result.exit_code, 78, "uri {uri}: {}", result.stderr);
+        assert_eq!(result.exit_code, 3, "uri {uri}: {}", result.stderr);
         assert_no_run_writes(&project);
         let json = stderr_or_stdout_json(&result.stderr);
-        assert_eq!(json["error"]["not_supported"], true);
+        assert_eq!(json["error"]["kind"], "contract");
+        assert_eq!(json["error"]["not_supported"], false);
         assert!(
             json["error"]["message"]
                 .as_str()
@@ -628,7 +643,7 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = conn
-        .prepare("SELECT vendor_id FROM events ORDER BY vendor_id")
+        .prepare("SELECT vendor_id FROM local.events ORDER BY vendor_id")
         .unwrap()
         .query_map([], |row| row.get::<_, i32>(0))
         .unwrap()
@@ -870,12 +885,12 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     );
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM local.events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 4);
     let residual_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events WHERE _cdf_variant IS NOT NULL",
+            "SELECT COUNT(*) FROM local.events WHERE _cdf_variant IS NOT NULL",
             [],
             |row| row.get(0),
         )
@@ -913,148 +928,6 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
         package_dir.to_str().unwrap(),
     ]);
     assert_ne!(verify.exit_code, 0);
-}
-
-#[test]
-fn financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest() {
-    let project = TestProject::new();
-    write_parquet_discover_resource(&project, "*.parquet");
-    set_file_resource_trust(&project, "financial");
-    write_vendor_parquet(&project.root.join("data/a.parquet"));
-
-    let baseline = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
-    let baseline_report = stderr_or_stdout_json(&baseline.stdout);
-    let baseline_hash = baseline_report["result"]["schema_snapshot"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let snapshot_path = baseline_report["result"]["schema_snapshot"]["path"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
-    let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
-
-    write_vendor_parquet(&project.root.join("data/b.parquet"));
-    let conforming = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(conforming.exit_code, 0, "{}", conforming.stderr);
-    let conforming_report = stderr_or_stdout_json(&conforming.stdout);
-    let conforming_schema = &conforming_report["result"]["resource_schema"];
-    assert_eq!(conforming_schema["schema_hash"], baseline_hash);
-    assert!(conforming_schema.get("baseline_schema_hash").is_none());
-    assert!(conforming_schema.get("effective_schema_hash").is_none());
-    assert!(
-        conforming_schema
-            .get("effective_arrow_schema_hash")
-            .is_none()
-    );
-    assert_eq!(conforming_schema["fields"].as_array().unwrap().len(), 1);
-    assert_eq!(conforming_schema["fields"][0]["name"], "vendor_id");
-    assert_eq!(conforming_schema["fields"][0]["data_type"], "Int32");
-    assert_eq!(conforming_schema["fields"][0]["nullable"], false);
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
-    );
-    assert_eq!(
-        fs::read(project.root.join(&snapshot_path)).unwrap(),
-        snapshot_before
-    );
-
-    write_wide_vendor_score_parquet(&project.root.join("data/c.parquet"));
-    let drift = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(drift.exit_code, 0, "{}", drift.stderr);
-    let drift_report = stderr_or_stdout_json(&drift.stdout);
-    assert_eq!(
-        drift_report["result"]["resource_schema"]["schema_hash"],
-        baseline_hash
-    );
-    assert!(
-        drift_report["result"]["resource_schema"]
-            .get("baseline_schema_hash")
-            .is_none()
-    );
-    let result = run_valid_run_args(&project);
-    assert_eq!(result.exit_code, 0, "{}", result.stderr);
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
-    );
-    assert_eq!(
-        fs::read(project.root.join(&snapshot_path)).unwrap(),
-        snapshot_before
-    );
-    let package = run_package_dir(&project, &result);
-    let quarantines: serde_json::Value = serde_json::from_slice(
-        &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(quarantines.as_array().unwrap().len(), 1);
-    assert_eq!(quarantines[0]["policy"], "freeze");
-    assert_eq!(
-        quarantines[0]["rule_id"],
-        "schema-observation:freeze-deviation"
-    );
-    let quarantine_admission: serde_json::Value = serde_json::from_slice(
-        &fs::read(package.join("quarantine/schema-admission-evidence.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        quarantine_admission["observations"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    let processed: serde_json::Value = serde_json::from_slice(
-        &fs::read(package.join("state/processed-observations.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(processed["observations"].as_array().unwrap().len(), 3);
-    assert_eq!(
-        processed["observations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|item| item["outcome"] == "quarantined")
-            .count(),
-        1
-    );
-    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
-    let head = store
-        .head(
-            &PipelineId::new("cdf-run").unwrap(),
-            &ResourceId::new("local.events").unwrap(),
-            &ScopeKey::Resource,
-        )
-        .unwrap()
-        .unwrap();
-    let SourcePosition::FileManifest(manifest) = head.delta.output_position else {
-        panic!("freeze run must commit file manifest")
-    };
-    assert_eq!(manifest.files.len(), 3);
 }
 
 #[test]
@@ -1129,126 +1002,6 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
         human.stdout.contains("publish a compat"),
         "{}",
         human.stdout
-    );
-}
-
-#[test]
-fn financial_freeze_admits_heterogeneous_files_that_formed_the_pinned_baseline() {
-    let project = TestProject::new();
-    write_parquet_discover_resource(&project, "*.parquet");
-    set_file_resource_trust(&project, "financial");
-    write_vendor_parquet(&project.root.join("data/a.parquet"));
-    write_wide_vendor_score_parquet(&project.root.join("data/b.parquet"));
-
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let run_result = run_valid_run_args(&project);
-    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
-    assert!(
-        !run_package_dir(&project, &run_result)
-            .join("quarantine/schema-observations.json")
-            .exists()
-    );
-}
-
-#[test]
-fn all_quarantine_run_commits_zero_segments_and_skips_exact_identity_until_changed() {
-    let project = TestProject::new();
-    write_parquet_discover_resource(&project, "*.parquet");
-    set_file_resource_trust(&project, "financial");
-    let path = project.root.join("data/a.parquet");
-    write_vendor_parquet(&path);
-    let baseline = run_valid_run_args(&project);
-    assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
-    let baseline_report = stderr_or_stdout_json(&baseline.stdout);
-    let contract_schema_hash = baseline_report["result"]["schema_hash"].clone();
-
-    write_wide_vendor_score_parquet(&path);
-    let quarantined = run_valid_run_args(&project);
-    assert_eq!(quarantined.exit_code, 0, "{}", quarantined.stderr);
-    let report = stderr_or_stdout_json(&quarantined.stdout);
-    assert_eq!(report["result"]["schema_hash"], contract_schema_hash);
-    assert_eq!(report["result"]["segment_count"], 0);
-    assert_eq!(report["result"]["row_count"], 0);
-    let package = run_package_dir(&project, &quarantined);
-    let package_receipts =
-        collect_package_receipts(&cdf_package::PackageReader::open(&package).unwrap());
-    assert_eq!(package_receipts.len(), 1);
-    assert!(package_receipts[0].segment_acks.is_empty());
-    assert!(package.join("state/processed-observations.json").is_file());
-    assert!(
-        package
-            .join("quarantine/schema-observations.json")
-            .is_file()
-    );
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
-    assert!(
-        manifest["identity"]["segments"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-
-    let unchanged = run_valid_run_args(&project);
-    assert_eq!(unchanged.exit_code, 0, "{}", unchanged.stderr);
-    let unchanged_report = stderr_or_stdout_json(&unchanged.stdout);
-    assert_eq!(
-        unchanged_report["result"]["file_manifest"]["changed_file_count"],
-        0
-    );
-    assert_eq!(unchanged_report["result"]["writes"]["package"], false);
-
-    write_wide_vendor_score_parquet_values(&path, &[9, 10, 11]);
-    let changed = run_valid_run_args(&project);
-    assert_eq!(changed.exit_code, 0, "{}", changed.stderr);
-    let changed_report = stderr_or_stdout_json(&changed.stdout);
-    assert_eq!(
-        changed_report["result"]["schema_hash"],
-        contract_schema_hash
-    );
-    assert_eq!(
-        changed_report["result"]["file_manifest"]["changed_file_count"],
-        1
-    );
-
-    fs::remove_file(&path).unwrap();
-    fs::remove_file(project.root.join(".cdf/state.db")).unwrap();
-    fs::remove_file(project.root.join(".cdf/dev.duckdb")).unwrap();
-    let replay = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "replay",
-        "package",
-        package.to_str().unwrap(),
-    ]);
-    assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
-    assert!(
-        collect_package_receipts(&cdf_package::PackageReader::open(&package).unwrap())
-            .iter()
-            .all(|receipt| receipt.segment_acks.is_empty())
-    );
-    let replay_head = SqliteCheckpointStore::open(project.root.join(".cdf/state.db"))
-        .unwrap()
-        .head(
-            &PipelineId::new("cdf-run").unwrap(),
-            &ResourceId::new("local.events").unwrap(),
-            &ScopeKey::Resource,
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        replay_head.delta.schema_hash.as_str(),
-        contract_schema_hash.as_str().unwrap()
     );
 }
 

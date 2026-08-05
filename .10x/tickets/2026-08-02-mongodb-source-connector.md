@@ -81,6 +81,30 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv`. All 12 Internal-bearing lines
   are CDF/official-driver invariant sites. Direct and nested typed errors preserve kind, message,
   and retry delay before raw I/O or SDK fallback classification.
+- 2026-08-04: Added the release raw-BSON source roofline. The favorable direct path uses the same
+  official asynchronous client, projection, stable sort, duplicate-key rejection, BSON field
+  conversion, Arrow construction, and full payload verification while omitting CDF governance.
+  The final five-sample, 100,000-row MongoDB 8.0.13 sweep selected the minimum pool required for
+  declared concurrency and then the fastest passing CDF median: 65,536 rows, pool size one,
+  119,474,542 ns CDF median versus 108,078,000 ns direct median, ratio 0.904611. All six batch/pool
+  sweep cells cleared 0.90 with median absolute deviation below 10%. The production defaults now
+  match the selected bounds, and the report binds the digest-pinned image, workspace content, and
+  executable hashes.
+- 2026-08-04: The aggregate closure barrier exposed shared query-first integration defects rather
+  than MongoDB leaf failures. Repaired current-only schema provenance canonicalization before
+  relational execution, query-level limit ownership across preview/runtime partition frontiers,
+  tracked source-row placement, residual predicate reporting, injected destination-registry
+  propagation, Postgres discovery-to-runtime schema observation identity, error-kind preservation,
+  and sequential receipt-gated multi-target promotion checkpoints. Updated current fixtures and
+  deleted unreachable legacy financial-schema tests instead of retaining compatibility behavior.
+- 2026-08-04: Workspace nextest executed 2,219 tests: 2,214 passed, three failed in the separately
+  owned CLI ergonomics workstream, one required an unavailable `CDF_CLICKHOUSE_ENDPOINT`, and one
+  source-position fixture expectation was then repaired and passed in isolation. Strict workspace
+  Clippy passed. Focused cognitive-complexity diagnostics added no MongoDB finding; the changed
+  preview coordinator remains at 34/25 and is retained as one cohesive authority. First-party
+  `jscpd` reported 2.52% duplicated lines, below the 10% threshold, and `cargo machete
+  --with-metadata` found no unused dependencies. `graphify update .` could not run because the
+  executable is unavailable in this environment.
 
 ## Blockers
 
@@ -93,7 +117,11 @@ None.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.
 - Error inventory and classification are frozen at the paths recorded in the journal.
-- Roofline, final connector certificate, and closure review remain pending.
+- The release raw-BSON roofline passes at 0.904611 with the selected pool/batch settings recorded
+  in `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json`.
+- Workspace integration, strict Clippy, duplication, and dependency-hygiene observations are
+  recorded in the journal and `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
+- The final connector certificate and closure review remain pending.
 
 ## Review
 

@@ -49,7 +49,7 @@ pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionIn
     };
     // Exact limits own input-attempt authority, so later partitions cannot be speculatively
     // opened until the planner and source expose a bounded side-effect-free budget.
-    if plan.scan.request.limit.is_some() {
+    if plan.final_limit.or(plan.scan.request.limit).is_some() {
         return 1;
     }
     let speculative_safe = plan

@@ -98,6 +98,8 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let contract_test_json = invoke_json(project.root(), ["contract", "test", RESOURCE_ID]);
     assert_eq!(contract_test_json["result"]["counts"]["passed"], 1);
     let contract_human = invoke_human(project.root(), ["contract", "test", RESOURCE_ID]);
+    let compile_json = invoke_json(project.root(), ["compile"]);
+    assert_eq!(compile_json["command"], "compile");
 
     let (resource, transport) = github_issues_resource(project.root()).unwrap();
     let destination = crate::destination_catalog::resolve(
@@ -480,7 +482,93 @@ impl DemoProject {
             self.root.join("cdf/github/issues.cdf.sql"),
             GITHUB_ISSUES_SQL,
         )
-        .map_err(|error| crate::conformance_private_io_error("write demo resource SQL", error))
+        .map_err(|error| crate::conformance_private_io_error("write demo resource SQL", error))?;
+        self.pin_fixture_schema()
+    }
+
+    fn pin_fixture_schema(&self) -> Result<()> {
+        let config = cdf_project::parse_cdf_toml(&self.project_toml())?;
+        let resource_id = ResourceId::new(RESOURCE_ID)?;
+        let schema = github_issues_schema();
+        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
+        let registry = crate::test_rest_source_registry(RecordingTransport::default())?;
+        let destination = crate::destination_catalog::registry()?.inspect(
+            &crate::destination_catalog::local_uri("duckdb", &self.destination_path),
+            &cdf_runtime::DestinationResolutionContext::for_project_inspection(&self.root)
+                .with_environment_name("dev"),
+        )?;
+        let semantic_catalog = cdf_semantic::SemanticCatalog::builtins()?;
+        let entries = cdf_project::compile_query_project_resources(
+            &registry,
+            &config,
+            &self.root,
+            "dev",
+            &destination.sheet_artifact.sheet,
+            &semantic_catalog,
+            &BTreeMap::from([(
+                RESOURCE_ID.to_owned(),
+                cdf_project::ProjectInputSchemaAuthority::new(
+                    cdf_kernel::SchemaSource::Declared {
+                        schema_hash,
+                        source: "mvp-acceptance-fixture".to_owned(),
+                    },
+                    schema.clone(),
+                )?,
+            )]),
+        )?;
+        let source_plan = entries[0].resource.source_plan();
+        let artifact = cdf_project::SchemaSnapshotArtifact::new(
+            &resource_id,
+            &schema,
+            BTreeMap::from([
+                ("probe".to_owned(), "mvp-acceptance-fixture".to_owned()),
+                (
+                    "source_driver".to_owned(),
+                    source_plan.driver.driver_id.as_str().to_owned(),
+                ),
+                (
+                    "source_driver_version".to_owned(),
+                    source_plan.driver.driver_version.clone(),
+                ),
+                (
+                    "source_discovery_binding".to_owned(),
+                    source_plan.discovery_binding_hash()?.to_string(),
+                ),
+                ("cdf:normalizer".to_owned(), "namecase-v1".to_owned()),
+            ]),
+        )?;
+        let resources = entries
+            .into_iter()
+            .map(|entry| {
+                cdf_project::finalize_query_project_resource(
+                    cdf_project::CompiledProjectResource {
+                        resource: entry.resource.with_schema_source_and_schema(
+                            cdf_kernel::SchemaSource::Discovered {
+                                snapshot: artifact.reference(),
+                            },
+                            std::sync::Arc::new(schema.clone()),
+                        ),
+                        query: entry.query,
+                    },
+                    &semantic_catalog,
+                )
+                .map(|entry| entry.resource)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let lock = cdf_project::generate_lockfile_with_destination_artifacts(
+            &config,
+            &resources,
+            cdf_project::current_dependency_tuple(),
+            &[destination.sheet_artifact],
+            BTreeMap::new(),
+            &semantic_catalog,
+        )?;
+        cdf_project::SchemaSnapshotStore::new(&self.root).write(&artifact)?;
+        cdf_project::write_lock_file_guarded(
+            self.root.join(cdf_project::LOCK_FILE_NAME),
+            None,
+            cdf_project::lock_to_toml(&lock)?,
+        )
     }
 
     fn project_toml(&self) -> String {
@@ -519,23 +607,19 @@ fn github_issues_resource(
         &fs::read_to_string(project_root.join("cdf.toml"))
             .map_err(|error| crate::conformance_private_io_error("read demo cdf.toml", error))?,
     )?;
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("number", DataType::Int64, false),
-        Field::new("title", DataType::Utf8, false),
-        Field::new("state", DataType::Utf8, false),
-        Field::new("updated_at", DataType::Int64, false),
-        Field::new("html_url", DataType::Utf8, false),
-        Field::new("user_login", DataType::Utf8, false),
-    ]);
-    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
+    let schema = github_issues_schema();
+    let lock = cdf_project::parse_lock(
+        &fs::read_to_string(project_root.join(cdf_project::LOCK_FILE_NAME))
+            .map_err(|error| crate::conformance_private_io_error("read demo lockfile", error))?,
+    )?;
+    let snapshot = lock.resources[RESOURCE_ID]
+        .schema_snapshot
+        .clone()
+        .ok_or_else(|| CdfError::internal("MVP acceptance fixture schema was not pinned"))?;
     let schemas = BTreeMap::from([(
         RESOURCE_ID.to_owned(),
         cdf_project::ProjectInputSchemaAuthority::new(
-            cdf_kernel::SchemaSource::Declared {
-                schema_hash,
-                source: "mvp-acceptance-fixture".to_owned(),
-            },
+            cdf_kernel::SchemaSource::Discovered { snapshot },
             schema,
         )?,
     )]);
@@ -575,6 +659,18 @@ fn github_issues_resource(
         &context,
     )?;
     Ok((resource, transport))
+}
+
+fn github_issues_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("number", DataType::Int64, false),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("state", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Int64, false),
+        Field::new("html_url", DataType::Utf8, false),
+        Field::new("user_login", DataType::Utf8, false),
+    ])
 }
 
 fn engine_plan(
@@ -642,7 +738,7 @@ fn assert_checkpoint_position(position: &SourcePosition) {
     let SourcePosition::Cursor(cursor) = position else {
         panic!("GitHub issues REST run must checkpoint a cursor position");
     };
-    assert_eq!(cursor.version, 1);
+    assert_eq!(cursor.version, cdf_kernel::SOURCE_POSITION_VERSION);
     assert_eq!(cursor.field, "updated_at");
     assert_eq!(cursor.value, CursorValue::I64(1_783_505_700_000_000));
 }

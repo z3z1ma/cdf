@@ -17,7 +17,6 @@ use datafusion::{
         },
     },
 };
-use futures_executor::block_on;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number};
 
@@ -123,21 +122,8 @@ pub fn analyze_project_query_at(
     let origin = QueryOrigin::new(start_line, start_column)?;
     let (query, upstream, normalized_query) = parse_and_rewrite(sql, file, origin)?;
     let authored_ast_hash = cdf_runtime::artifact_hash(&normalized_query)?;
-    let context = SessionContext::new();
-    let table = MemTable::try_new(Arc::new(input_schema.clone()), vec![Vec::new()])
-        .map_err(datafusion_error)?;
-    context
-        .register_table(UPSTREAM_TABLE, Arc::new(table))
-        .map_err(datafusion_error)?;
     let rewritten_sql = query.to_string();
-    let frame = block_on(context.sql(&rewritten_sql)).map_err(|error| {
-        sql_error(
-            "CDF-SQL-ANALYSIS",
-            file,
-            format!("DataFusion could not resolve the admitted query: {error}"),
-        )
-    })?;
-    let plan = frame.into_unoptimized_plan();
+    let plan = resolve_logical_plan(input_schema, rewritten_sql, file.to_owned())?;
     let (projection, filter) = admitted_relational_nodes(&plan, file)?;
     let projection = projection
         .expr
@@ -163,6 +149,44 @@ pub fn analyze_project_query_at(
         relational_plan,
         output_schema,
     })
+}
+
+fn resolve_logical_plan(
+    input_schema: &Schema,
+    rewritten_sql: String,
+    file: String,
+) -> Result<LogicalPlan> {
+    let input_schema = input_schema.clone();
+    // DataFusion exposes SQL planning as async even though CDF's project compiler is deliberately
+    // synchronous. Project compilation may run inside an injected async execution host, so a
+    // nested LocalPool would panic. One scoped, named analysis thread keeps the synchronous
+    // compiler boundary honest without constructing a runtime or leaking work past compilation.
+    std::thread::Builder::new()
+        .name("cdf-sql-analysis".to_owned())
+        .spawn(move || {
+            let context = SessionContext::new();
+            let table = MemTable::try_new(Arc::new(input_schema), vec![Vec::new()])
+                .map_err(datafusion_error)?;
+            context
+                .register_table(UPSTREAM_TABLE, Arc::new(table))
+                .map_err(datafusion_error)?;
+            futures_executor::block_on(context.sql(&rewritten_sql))
+                .map(|frame| frame.into_unoptimized_plan())
+                .map_err(|error| {
+                    sql_error(
+                        "CDF-SQL-ANALYSIS",
+                        &file,
+                        format!("DataFusion could not resolve the admitted query: {error}"),
+                    )
+                })
+        })
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "start bounded DataFusion SQL analysis worker: {error}"
+            ))
+        })?
+        .join()
+        .map_err(|_| CdfError::internal("bounded DataFusion SQL analysis worker panicked"))?
 }
 
 fn offset_span(
@@ -764,4 +788,27 @@ fn sql_error_at(
         "[{code}] {file}:{}:{}: {message}",
         span.start_line, span.start_column
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::analyze_project_query;
+
+    #[test]
+    fn synchronous_sql_analysis_is_safe_inside_an_async_execution_host() {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let analyzed = futures_executor::block_on(async {
+            analyze_project_query(
+                "SELECT id FROM upstream(source => 'warehouse', table => 'events')",
+                "cdf/analytics/events.cdf.sql",
+                &schema,
+                Vec::new(),
+            )
+        })
+        .unwrap();
+        assert_eq!(analyzed.output_schema.fields.len(), 1);
+        assert_eq!(analyzed.output_schema.fields[0].name, "id");
+    }
 }

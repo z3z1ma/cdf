@@ -244,12 +244,12 @@ fn authored_envelope_does_not_pollute_equivalent_execution_identity() {
     let explicit_root = TempDir::new().unwrap();
     let bare_config = project(
         &bare_root,
-        "SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "RESOURCE DISPOSITION APPEND AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
         "",
     );
     let explicit_config = project(
         &explicit_root,
-        "RESOURCE TARGET analytics.orders DISPOSITION REPLACE TRUST EXPERIMENTAL EXECUTION BOUNDED AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "RESOURCE TARGET analytics.orders DISPOSITION APPEND TRUST EXPERIMENTAL EXECUTION BOUNDED AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
         "",
     );
     let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
@@ -275,6 +275,33 @@ fn authored_envelope_does_not_pollute_equivalent_execution_identity() {
         explicit.query.authored_content_hash
     );
     assert_eq!(bare.query.source_node_id, explicit.query.source_node_id);
-    assert_eq!(bare.query.effective, explicit.query.effective);
+    assert_eq!(
+        bare.query.effective.target.canonical_identity,
+        explicit.query.effective.target.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.disposition.canonical_identity,
+        explicit.query.effective.disposition.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.merge_keys.canonical_identity,
+        explicit.query.effective.merge_keys.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.cursor.canonical_identity,
+        explicit.query.effective.cursor.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.trust.canonical_identity,
+        explicit.query.effective.trust.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.semantics.canonical_identity,
+        explicit.query.effective.semantics.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.execution.canonical_identity,
+        explicit.query.effective.execution.canonical_identity
+    );
     assert_eq!(bare.query.relational_plan, explicit.query.relational_plan);
 }

@@ -14,7 +14,11 @@ pub(crate) fn doctor(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let mut checks = vec![
         DoctorCheck::passed("project_file", "cdf.toml parsed and environment resolved")
             .with_details(project_health_details(&context)),

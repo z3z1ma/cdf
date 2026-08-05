@@ -3,7 +3,7 @@
 
 This matrix separates every `ReservationRequest::new` site discovered in production Rust source from allocations that require an explicit native, child-process, metadata, or external-storage authority. `Inherited` means the reservation receives an already-validated typed `ConsumerKey`; the row still records the concrete byte-bound expression at the allocation site.
 
-Managed reservation declarations: **84** grouped rows across **94** production call sites.
+Managed reservation declarations: **89** grouped rows across **99** production call sites.
 
 ## Managed ledger owners
 
@@ -72,7 +72,12 @@ Managed reservation declarations: **84** grouped rows across **94** production c
 | cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog/mod.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-decode | Source | source.decode_reservation_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-null-canonicalization | Source | retained_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
-| cdf-source-postgres | postgres-source-batch | Source | POSTGRES_MAXIMUM_BATCH_BYTES | crates/cdf-source-postgres/src/source.rs | 1 |
+| cdf-source-mongodb | mongodb-arrow-decode | Decode | MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES | crates/cdf-source-mongodb/src/execution.rs | 1 |
+| cdf-source-mongodb | mongodb-raw-cursor | Decode | MONGODB_MAXIMUM_WIRE_BATCH_BYTES | crates/cdf-source-mongodb/src/execution.rs | 1 |
+| cdf-source-mongodb | mongodb-discovery-raw | Discovery | MONGODB_MAXIMUM_WIRE_BATCH_BYTES + MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES | crates/cdf-source-mongodb/src/driver.rs | 1 |
+| cdf-source-mongodb | mongodb-client-pool | Source | MONGODB_CLIENT_POOL_BYTES | crates/cdf-source-mongodb/src/execution.rs | 1 |
+| cdf-source-postgres | postgres-source-batch | Source | batch_reservation_bytes | crates/cdf-source-postgres/src/source.rs | 1 |
+| cdf-source-postgres | postgres-source-decoder | Source | decoder_reservation_bytes | crates/cdf-source-postgres/src/source.rs | 1 |
 | cdf-source-sqlite | sqlite-source-batch | Source | SQLITE_BUILDER_RESERVATION_BYTES | crates/cdf-source-sqlite/src/source/execution.rs | 1 |
 | cdf-subprocess | `consumer` | Source | accounted_bytes; bytes.max(1) | crates/cdf-subprocess/src/protocol_stream.rs<br>crates/cdf-subprocess/src/runner.rs | 2 |
 | cdf-subprocess | subprocess-stdout-chunk | Source | bytes.max(1) | crates/cdf-subprocess/src/runner.rs | 1 |
@@ -114,6 +119,7 @@ Managed reservation declarations: **84** grouped rows across **94** production c
 | DataFusion execution allocations | native | cdf-engine DataFusion MemoryPool bridge | cdf-memory QueryEngine reservations | .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md | bounded |
 | DuckDB transaction and execution engine | native | cdf-dest-duckdb execution-service binding | adapter memory_limit plus spill-reserved temp_directory ceiling | .10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md | measured |
 | HTTP, TLS, and object-store client internals | native | cdf-object-access and transport adapters | one admitted response frame per request, bounded connection concurrency, and measured process native headroom | .10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md | measured |
+| MongoDB source client and raw BSON cursor internals | native | cdf-source-mongodb one-query official client session | one reusable client pool capped at the selected size of one, plus separately leased client, cursor, wire-batch, and Arrow-output reservations | .10x/evidence/2026-08-04-mongodb-source-connector.md | bounded |
 | PostgreSQL source and destination client internals | native | cdf-source-postgres and cdf-dest-postgres synchronous client sessions | one admitted Arrow/COPY window per synchronous session plus measured client/server protocol headroom | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | codec parser and compressor dependency scratch | native | registered format and byte-transform drivers | driver-declared parser/transform working sets plus measured native headroom across Parquet scale and compressed-stream laws | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | embedded Python runtime | native | cdf-python host blocking lane | process native headroom plus preaccounted Arrow source batches | .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md | measured |

@@ -156,12 +156,12 @@ pub fn inventory_project_resources(
         })?;
         let entry_path = entry.path();
         let name = utf8_file_name(&entry_path, "resource namespace directory")?;
-        let namespace = ProjectResourceNamespace::new(&name, &entry_path.display().to_string())?;
         let metadata = fs::symlink_metadata(&entry_path).map_err(|error| {
             project_input_io_error("inspect CDF resource namespace", &entry_path, error)
         })?;
         require_real_directory(&entry_path, &metadata, "CDF resource namespace")?;
         ensure_inside_project_root(&canonical_root, &entry_path)?;
+        let namespace = ProjectResourceNamespace::new(&name, &entry_path.display().to_string())?;
         if namespace_directories.len() == PROJECT_MANIFEST_MAX_INPUTS {
             return Err(CdfError::contract(format!(
                 "CDF resource namespaces exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"

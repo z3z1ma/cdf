@@ -72,8 +72,12 @@ fn apply_transform_output_schema(
 }
 
 pub(crate) fn canonicalize_effective_output_schema(batch: RecordBatch) -> Result<RecordBatch> {
-    let fields = batch
-        .schema()
+    let schema = canonicalize_expression_input_schema(batch.schema().as_ref());
+    RecordBatch::try_new(Arc::new(schema), batch.columns().to_vec()).map_err(CdfError::from)
+}
+
+pub(crate) fn canonicalize_expression_input_schema(schema: &Schema) -> Schema {
+    let fields = schema
         .fields()
         .iter()
         .map(|field| {
@@ -82,8 +86,11 @@ pub(crate) fn canonicalize_effective_output_schema(batch: RecordBatch) -> Result
             field.as_ref().clone().with_metadata(metadata)
         })
         .collect::<Vec<_>>();
-    let mut metadata = batch.schema().metadata().clone();
+    let mut metadata = schema.metadata().clone();
     metadata.remove(SCHEMA_COERCION_PLAN_METADATA_KEY);
-    let schema = Arc::new(Schema::new_with_metadata(fields, metadata));
-    RecordBatch::try_new(schema, batch.columns().to_vec()).map_err(CdfError::from)
+    Schema::new_with_metadata(fields, metadata)
+}
+
+pub(crate) fn canonicalize_expression_input_batch(batch: RecordBatch) -> Result<RecordBatch> {
+    canonicalize_effective_output_schema(batch)
 }

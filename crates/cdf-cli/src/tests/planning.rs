@@ -282,18 +282,12 @@ fn explain_human_headless_render_uses_operator_panels() {
 
 #[test]
 fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = seed_ordered_cursor_table(&postgres, "backfill_dry_plan_orders", "(1, 5)");
     let project = TestProject::new();
-    write_secret_project(
-        &project,
-        "duckdb://.cdf/dev.duckdb",
-        None,
-        Some("secret://file/postgres-dsn"),
-    );
-    fs::write(
-        project.root.join("cdf/warehouse/orders.cdf.sql"),
-        postgres_resource_sql("orders", true),
-    )
-    .unwrap();
+    let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -313,6 +307,7 @@ fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
@@ -381,18 +376,12 @@ fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
 
 #[test]
 fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = seed_ordered_cursor_table(&postgres, "backfill_rich_plan_orders", "(1, 5)");
     let project = TestProject::new();
-    write_secret_project(
-        &project,
-        "duckdb://.cdf/dev.duckdb",
-        None,
-        Some("secret://file/postgres-dsn"),
-    );
-    fs::write(
-        project.root.join("cdf/warehouse/orders.cdf.sql"),
-        postgres_resource_sql("orders", true),
-    )
-    .unwrap();
+    let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
 
     let (host, services) =
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
@@ -415,6 +404,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
     let result = render_rich(output);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
     for expected in [
         "planned backfill warehouse.orders -> orders",
         "Backfill",
@@ -499,7 +489,7 @@ fn backfill_execute_postgres_cursor_window_commits_window_scope() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -584,7 +574,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -641,7 +631,7 @@ fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
     };
     let table = seed_ordered_cursor_table(&postgres, "backfill_progress_failure_orders", "(1, 5)");
     let project = TestProject::new();
-    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
 
     let args = || {
         vec![
@@ -731,12 +721,9 @@ fn plan_unsupported_destination_disposition_fails_closed_without_writes() {
 
     assert_ne!(result.exit_code, 0);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Parquet")
-    );
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(message.contains("parquet_object_store"), "{message}");
+    assert!(message.contains("does not support Merge"), "{message}");
     assert!(
         !result.stdout.contains("effectively_once"),
         "unsupported plan must not pretend a delivery guarantee"

@@ -1651,6 +1651,10 @@ state = ".cdf/state.db"
 packages = ".cdf/packages"
 destination = "mock://user:quasar-secret@example.invalid/database"
 
+[sources.local]
+type = "files"
+root = "data"
+
 "#,
     )
     .unwrap();
@@ -2386,7 +2390,7 @@ fn artifact_replay_rejects_stale_compiled_expression_plan_before_destination_mut
     assert!(
         error
             .to_string()
-            .contains("expression compatibility tuple is not supported"),
+            .contains("recorded scalar plan is stale; run `cdf compile`"),
         "{error}"
     );
     assert!(

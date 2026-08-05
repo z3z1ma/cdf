@@ -187,9 +187,7 @@ fn committed_before_checkpoint_recovers_without_source_file() {
         .history(
             &spec.pipeline_id,
             &ResourceId::new(LIVE_LOCAL_FILE_V1_RESOURCE_ID).unwrap(),
-            &ScopeKey::File {
-                path: "*".to_owned(),
-            },
+            &ScopeKey::Resource,
         )
         .unwrap();
     assert_eq!(history.len(), 1);
@@ -350,12 +348,7 @@ fn assert_file_manifest_resource_scope_mirror(
             .expect("scope mirror"),
     )
     .unwrap();
-    assert_eq!(
-        scope,
-        ScopeKey::File {
-            path: "*".to_owned()
-        }
-    );
+    assert_eq!(scope, ScopeKey::Resource);
 }
 
 fn assert_harness_panics(f: impl FnOnce()) {

@@ -120,11 +120,12 @@ pub(crate) fn plan_or_explain(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_locked_snapshots(
+    let context = ProjectContext::load_for_command_with_destination_registry(
         command,
         cli.project.as_ref(),
         cli.env.as_deref(),
         !args.no_pin,
+        destinations,
     )?;
     let inspection_root = args
         .no_pin
@@ -193,8 +194,13 @@ pub(crate) fn preview(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context =
-        ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "preview",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let inspection_root = tempfile::Builder::new()
         .prefix("cdf-preview-")
         .tempdir()
@@ -719,7 +725,7 @@ fn preview_resource_report(
     schema_snapshot: Option<SchemaSnapshotActionReport>,
     host: &cdf_engine::StandaloneExecutionHost,
 ) -> cdf_kernel::Result<PreviewReport> {
-    let limits = match plan.scan.request.limit {
+    let limits = match plan.final_limit.or(plan.scan.request.limit) {
         Some(limit) => EnginePreviewLimits::default().with_max_rows(limit)?,
         None => EnginePreviewLimits::default(),
     };

@@ -882,21 +882,6 @@ FROM upstream(source => 'local', glob => '{glob}', format => 'parquet');
     .unwrap();
 }
 
-fn set_file_resource_trust(project: &TestProject, trust: &str) {
-    let path = project.root.join("cdf/local/events.cdf.sql");
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("TRUST GOVERNED"));
-    fs::write(
-        path,
-        text.replacen(
-            "TRUST GOVERNED",
-            &format!("TRUST {}", trust.to_uppercase()),
-            1,
-        ),
-    )
-    .unwrap();
-}
-
 fn write_arrow_ipc_discover_resource(project: &TestProject, glob: &str) {
     for entry in fs::read_dir(project.root.join("data")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
@@ -921,8 +906,9 @@ fn write_protobuf_resource(project: &TestProject) {
     for entry in fs::read_dir(project.root.join("data")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
+    fs::remove_file(project.root.join("cdf/local/events.cdf.sql")).unwrap();
     fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
+        project.root.join("cdf/local/rows.cdf.sql"),
         r#"RESOURCE
 DISPOSITION APPEND
 TRUST GOVERNED
@@ -955,9 +941,15 @@ FROM upstream(
 fn remove_resource_format(project: &TestProject, format: &str) {
     let path = project.root.join("cdf/local/events.cdf.sql");
     let text = fs::read_to_string(&path).unwrap();
-    let explicit = format!("  format => '{format}'\n");
-    assert!(text.contains(&explicit));
-    fs::write(path, text.replacen(&explicit, "", 1)).unwrap();
+    let multiline = format!(",\n  format => '{format}'");
+    let inline = format!(", format => '{format}'");
+    let updated = if text.contains(&multiline) {
+        text.replacen(&multiline, "", 1)
+    } else {
+        assert!(text.contains(&inline));
+        text.replacen(&inline, "", 1)
+    };
+    fs::write(path, updated).unwrap();
 }
 
 fn write_vendor_arrow_ipc(project: &TestProject, filename: &str) {
@@ -1496,26 +1488,6 @@ fn rebuild_correction_package_semantically(
         .unwrap();
 }
 
-fn write_wide_vendor_score_parquet(path: &Path) {
-    write_wide_vendor_score_parquet_values(path, &[3, 4]);
-}
-
-fn write_wide_vendor_score_parquet_values(path: &Path, vendor_ids: &[i64]) {
-    let fields = vec![
-        Field::new("VendorID", DataType::Int64, false),
-        Field::new("score", DataType::Int64, false),
-    ];
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(Int64Array::from_iter_values(vendor_ids.iter().copied())),
-        Arc::new(Int64Array::from_iter_values(
-            (0..vendor_ids.len()).map(|index| 10_i64 + index as i64),
-        )),
-    ];
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
-    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
-    fs::write(path, bytes).unwrap();
-}
-
 fn write_empty_vendor_parquet(path: &Path) {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "VendorID",
@@ -1786,25 +1758,30 @@ fn write_secret_project(
     rest_token: Option<&str>,
     sql_connection: Option<&str>,
 ) {
-    let (source, namespace, resource_sql) = match (rest_token, sql_connection) {
+    let (source, resources) = match (rest_token, sql_connection) {
         (Some(token), None) => (
             format!(
                 "[sources.api]\ntype = \"rest\"\nbase_url = \"https://api.example.test\"\nauth = {{ kind = \"bearer\", token = {token:?} }}\n"
             ),
-            "api",
-            rest_resource_sql("exact"),
+            vec![("api", "items", rest_resource_sql("exact"))],
         ),
         (None, Some(connection)) => (
             format!("[sources.warehouse]\ntype = \"postgres\"\nconnection = {connection:?}\n"),
-            "warehouse",
-            postgres_resource_sql("orders", true),
+            vec![("warehouse", "orders", postgres_resource_sql("orders", true))],
         ),
         (None, None) => (
             "[sources.local]\ntype = \"files\"\nroot = \"data\"\n".to_owned(),
-            "local",
-            RESOURCE.to_owned(),
+            vec![("local", "events", RESOURCE.to_owned())],
         ),
-        (Some(_), Some(_)) => panic!("secret fixture configures exactly one source"),
+        (Some(token), Some(connection)) => (
+            format!(
+                "[sources.api]\ntype = \"rest\"\nbase_url = \"https://api.example.test\"\nauth = {{ kind = \"bearer\", token = {token:?} }}\n\n[sources.warehouse]\ntype = \"postgres\"\nconnection = {connection:?}\n"
+            ),
+            vec![
+                ("api", "items", rest_resource_sql("exact")),
+                ("warehouse", "orders", postgres_resource_sql("orders", true)),
+            ],
+        ),
     };
 
     fs::write(
@@ -1830,18 +1807,14 @@ destination = "{destination}"
     if cdf.exists() {
         fs::remove_dir_all(&cdf).unwrap();
     }
-    fs::create_dir_all(cdf.join(namespace)).unwrap();
-    let resource = match namespace {
-        "api" => "items",
-        "warehouse" => "orders",
-        "local" => "events",
-        _ => unreachable!(),
-    };
-    fs::write(
-        cdf.join(namespace).join(format!("{resource}.cdf.sql")),
-        resource_sql,
-    )
-    .unwrap();
+    for (namespace, resource, resource_sql) in resources {
+        fs::create_dir_all(cdf.join(namespace)).unwrap();
+        fs::write(
+            cdf.join(namespace).join(format!("{resource}.cdf.sql")),
+            resource_sql,
+        )
+        .unwrap();
+    }
 }
 
 fn write_rest_project(project: &TestProject, destination: &str, base_url: &str, token: &str) {
@@ -2084,7 +2057,7 @@ fn seed_ordered_cursor_table(postgres: &LivePostgres, table: &str, values: &str)
     table
 }
 
-fn write_postgres_project_with_secret(
+fn write_pinned_postgres_project_with_secret(
     project: &TestProject,
     postgres: &LivePostgres,
     table: &str,
@@ -2111,6 +2084,17 @@ fn write_postgres_project_with_secret(
         postgres_resource_sql(table, true),
     )
     .unwrap();
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "warehouse.orders",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}{}", pin.stdout, pin.stderr);
+    assert_secret_absent(&pin, &source_dsn);
     source_dsn
 }
 

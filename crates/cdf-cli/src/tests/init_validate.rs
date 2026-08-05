@@ -413,6 +413,16 @@ fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
 #[test]
 fn validate_deep_reports_json_row_mismatch_as_governed_warning() {
     let project = TestProject::new();
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}{}", pin.stdout, pin.stderr);
     fs::write(
         project.root.join("data/events.ndjson"),
         b"{\"id\":1,\"updated_at\":1}\n{\"id\":\"bad\",\"updated_at\":2}\n",
@@ -442,7 +452,9 @@ fn validate_deep_reports_json_row_mismatch_as_governed_warning() {
     assert!(mismatch["message"].as_str().unwrap().contains("id"));
     assert!(mismatch["message"].as_str().unwrap().contains("Utf8"));
     assert!(mismatch["message"].as_str().unwrap().contains("Int64"));
-    assert_no_schema_discovery_writes(&project);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
 #[test]
@@ -466,8 +478,8 @@ fn validate_deep_rejects_malformed_json_probe_instead_of_downgrading_it() {
         .unwrap();
     let probe = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic["check"] == "physical_schema_probe")
-        .unwrap_or_else(|| panic!("expected physical probe failure, got {diagnostics:#?}"));
+        .find(|diagnostic| diagnostic["check"] == "schema_discovery")
+        .unwrap_or_else(|| panic!("expected schema discovery failure, got {diagnostics:#?}"));
     assert_eq!(probe["severity"], "error");
     assert_no_schema_discovery_writes(&project);
 }

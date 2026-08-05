@@ -133,7 +133,7 @@ fn preview_rest_resource_uses_local_http_runtime_without_writes() {
         "preview",
         "api.items",
         "--filter",
-        "updated_at >= 10",
+        "updated_at >= 20",
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -142,9 +142,9 @@ fn preview_rest_resource_uses_local_http_runtime_without_writes() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["resource"], "api.items");
     assert_eq!(json["result"]["partition"], "rest");
-    assert_eq!(json["result"]["row_count"], 2);
+    assert_eq!(json["result"]["row_count"], 1);
     let request = request.lock().unwrap().clone().unwrap();
-    assert!(request.starts_with("GET /items?since=10 HTTP/1.1"));
+    assert!(request.starts_with("GET /items HTTP/1.1"));
 }
 
 #[test]

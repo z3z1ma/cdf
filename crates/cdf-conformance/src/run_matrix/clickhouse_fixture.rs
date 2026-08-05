@@ -66,7 +66,7 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
         panic!("run matrix ClickHouse source must checkpoint a cursor position");
     };
-    assert_eq!(cursor.version, 1);
+    assert_eq!(cursor.version, cdf_kernel::SOURCE_POSITION_VERSION);
     assert_eq!(cursor.field, "updated_at");
     assert_eq!(cursor.value, CursorValue::I64(20));
 }

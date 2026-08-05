@@ -28,6 +28,8 @@ use crate::{
     expression_memory::{expression_nodes_working_set_bytes, expression_working_set_bytes},
 };
 
+pub(crate) const SOURCE_ROW_TRACKING_FIELD: &str = "_cdf_internal_source_row";
+
 #[derive(Clone)]
 pub(crate) struct BoundScalarExpression {
     physical: Arc<dyn PhysicalExpr>,
@@ -218,6 +220,8 @@ pub(crate) fn apply_bound_expression_transforms(
                 let mut columns = batch.columns().to_vec();
                 if let Ok(index) = batch.schema().index_of(column) {
                     columns[index] = values;
+                } else if let Ok(index) = batch.schema().index_of(SOURCE_ROW_TRACKING_FIELD) {
+                    columns.insert(index, values);
                 } else {
                     columns.push(values);
                 }
@@ -283,7 +287,8 @@ pub fn bind_relational_expression_plan(
     plan: &RelationalExpressionPlan,
 ) -> Result<BoundRelationalExpressionPlan> {
     plan.validate_recorded()?;
-    let input_schema = plan.input_schema.to_arrow()?;
+    let input_schema =
+        crate::output_schema::canonicalize_expression_input_schema(&plan.input_schema.to_arrow()?);
     let output_schema = plan.output_schema.to_arrow()?;
     let filter = plan
         .filter
@@ -323,11 +328,12 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
     memory: &MemoryLease,
     cancellation: &RunCancellation,
 ) -> Result<(RecordBatch, Vec<usize>)> {
+    let batch = crate::output_schema::canonicalize_expression_input_batch(batch.clone())?;
     let expression_bytes = bound_expression_working_set_bytes(
         plan.filter.iter().chain(plan.projection.iter()),
         batch.num_rows(),
     )?;
-    validate_expression_memory(batch, expression_bytes, memory)?;
+    validate_expression_memory(&batch, expression_bytes, memory)?;
     cancellation.check()?;
     if batch.schema().as_ref() != &plan.input_schema {
         return Err(CdfError::contract(
@@ -336,7 +342,7 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
     }
     let (filtered, source_rows) = match &plan.filter {
         Some(filter) => {
-            let values = evaluate_bound_scalar(batch, filter, Some(memory), cancellation)?;
+            let values = evaluate_bound_scalar(&batch, filter, Some(memory), cancellation)?;
             let predicate = values
                 .as_any()
                 .downcast_ref::<BooleanArray>()
@@ -349,7 +355,7 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
                 .filter_map(|(index, keep)| keep.unwrap_or(false).then_some(index))
                 .collect::<Vec<_>>();
             (
-                filter_record_batch(batch, predicate).map_err(CdfError::from)?,
+                filter_record_batch(&batch, predicate).map_err(CdfError::from)?,
                 source_rows,
             )
         }
@@ -367,7 +373,7 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
     }
     let output = RecordBatch::try_new(Arc::new(plan.output_schema.clone()), columns)
         .map_err(CdfError::from)?;
-    validate_expression_output_memory(batch, output.get_array_memory_size(), memory)?;
+    validate_expression_output_memory(&batch, output.get_array_memory_size(), memory)?;
     Ok((output, source_rows))
 }
 
@@ -377,6 +383,7 @@ fn execute_bound_relational_expression_plan_inner(
     memory: &MemoryLease,
     cancellation: &RunCancellation,
 ) -> Result<RecordBatch> {
+    let batch = crate::output_schema::canonicalize_expression_input_batch(batch.clone())?;
     cancellation.check()?;
     if batch.schema().as_ref() != &plan.input_schema {
         return Err(CdfError::contract(
@@ -385,7 +392,7 @@ fn execute_bound_relational_expression_plan_inner(
     }
     let filtered = match &plan.filter {
         Some(filter) => apply_bound_filters(
-            batch,
+            &batch,
             std::slice::from_ref(filter),
             Some(memory),
             cancellation,
@@ -404,7 +411,7 @@ fn execute_bound_relational_expression_plan_inner(
     }
     let output = RecordBatch::try_new(Arc::new(plan.output_schema.clone()), columns)
         .map_err(CdfError::from)?;
-    validate_expression_output_memory(batch, output.get_array_memory_size(), memory)?;
+    validate_expression_output_memory(&batch, output.get_array_memory_size(), memory)?;
     Ok(output)
 }
 
@@ -634,6 +641,8 @@ fn schema_with_derived(schema: &Schema, column: &str, scalar_type: &ScalarType) 
     let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
     if let Ok(index) = schema.index_of(column) {
         fields[index] = field;
+    } else if let Ok(index) = schema.index_of(SOURCE_ROW_TRACKING_FIELD) {
+        fields.insert(index, field);
     } else {
         fields.push(field);
     }

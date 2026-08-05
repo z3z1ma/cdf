@@ -44,6 +44,7 @@ cdf-object-access = { path = "../cdf-object-access" }
 cdf-source-clickhouse = { path = "../cdf-source-clickhouse" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-iceberg = { path = "../cdf-source-iceberg" }
+cdf-source-mongodb = { path = "../cdf-source-mongodb" }
 cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-source-sqlite = { path = "../cdf-source-sqlite" }
@@ -57,6 +58,7 @@ futures-executor = "0.3.32"
 futures-util = "0.3.32"
 fallible-iterator = "0.2.0"
 hex = "0.4.3"
+mongodb = { version = "=3.8.0", default-features = false, features = ["compat-3-3-0", "bson-3", "dns-resolver", "rustls-tls"] }
 nix = { version = "0.31.3", default-features = false, features = ["resource"] }
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19.14"

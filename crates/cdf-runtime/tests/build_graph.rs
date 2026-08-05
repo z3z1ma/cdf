@@ -43,8 +43,8 @@ fn runtime_graph_excludes_package_implementation_and_codecs() {
                 "cdf-runtime normal graph reaches forbidden package tempfile:\n{tree}"
             );
             assert!(
-                packages.len() <= 67,
-                "cdf-runtime normal graph contains {} unique packages, above the 67-package ceiling:\n{tree}",
+                packages.len() <= 82,
+                "cdf-runtime normal graph contains {} unique packages, above the 82-package ceiling that includes BSON validation for typed MongoDB resume-token positions:\n{tree}",
                 packages.len()
             );
         }

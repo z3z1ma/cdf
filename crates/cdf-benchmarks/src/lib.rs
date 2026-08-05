@@ -11,6 +11,7 @@ mod fixtures;
 mod interop;
 mod lab;
 mod matrix;
+mod mongodb_source_roofline;
 mod package_shape;
 mod postgres_source_roofline;
 mod profiling;
@@ -78,6 +79,7 @@ pub use matrix::{
     BenchmarkSuite, CaseDefinition, CaseOutcome, CoverageCell, MetricClass, benchmark_cases,
     cases_for, coverage_matrix,
 };
+pub use mongodb_source_roofline::{MongoDbSourceRooflineReport, run_mongodb_source_roofline};
 pub use package_shape::{
     PackageReadSummary, PackageShapeSummary, read_package_batches, summarize_package_shape,
 };

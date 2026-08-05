@@ -67,14 +67,22 @@ impl ProjectContext {
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
     ) -> StdResult<Self, CliError> {
-        Self::load_for_command_with_locked_snapshots(command, project_arg, env_arg, true)
+        let destinations = crate::destination_registry::builtin_destination_registry()?;
+        Self::load_for_command_with_destination_registry(
+            command,
+            project_arg,
+            env_arg,
+            true,
+            &destinations,
+        )
     }
 
-    pub fn load_for_command_with_locked_snapshots(
+    pub fn load_for_command_with_destination_registry(
         command: &str,
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
         hydrate_locked_snapshots: bool,
+        destinations: &cdf_runtime::DestinationRegistry,
     ) -> StdResult<Self, CliError> {
         Self::load_for_command_with_policy(
             command,
@@ -82,6 +90,7 @@ impl ProjectContext {
             env_arg,
             hydrate_locked_snapshots,
             ProjectPublicationRecovery::FailClosed,
+            destinations,
         )
     }
 
@@ -90,12 +99,28 @@ impl ProjectContext {
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
     ) -> StdResult<Self, CliError> {
+        let destinations = crate::destination_registry::builtin_destination_registry()?;
+        Self::load_for_command_with_recovery_and_destination_registry(
+            command,
+            project_arg,
+            env_arg,
+            &destinations,
+        )
+    }
+
+    pub fn load_for_command_with_recovery_and_destination_registry(
+        command: &str,
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> StdResult<Self, CliError> {
         Self::load_for_command_with_policy(
             command,
             project_arg,
             env_arg,
             true,
             ProjectPublicationRecovery::Complete,
+            destinations,
         )
     }
 
@@ -105,13 +130,23 @@ impl ProjectContext {
         env_arg: Option<&str>,
         hydrate_locked_snapshots: bool,
         recovery: ProjectPublicationRecovery,
+        destinations: &cdf_runtime::DestinationRegistry,
     ) -> StdResult<Self, CliError> {
-        Self::load_with_policy(project_arg, env_arg, recovery)
+        Self::load_with_policy(project_arg, env_arg, recovery, destinations)
             .and_then(|mut context| {
                 if hydrate_locked_snapshots
                     && matches!(
                         command,
-                        "compile" | "plan" | "explain" | "preview" | "run" | "validate --deep"
+                        "compile"
+                            | "plan"
+                            | "explain"
+                            | "preview"
+                            | "run"
+                            | "backfill"
+                            | "validate --deep"
+                            | "contract freeze"
+                            | "contract test"
+                            | "diff schema"
                     )
                 {
                     let entries = context
@@ -140,13 +175,28 @@ impl ProjectContext {
     }
 
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
-        Self::load_with_policy(project_arg, env_arg, ProjectPublicationRecovery::FailClosed)
+        let destinations = crate::destination_registry::builtin_destination_registry()?;
+        Self::load_with_destination_registry(project_arg, env_arg, &destinations)
+    }
+
+    pub fn load_with_destination_registry(
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> CdfResult<Self> {
+        Self::load_with_policy(
+            project_arg,
+            env_arg,
+            ProjectPublicationRecovery::FailClosed,
+            destinations,
+        )
     }
 
     fn load_with_policy(
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
         recovery: ProjectPublicationRecovery,
+        destinations: &cdf_runtime::DestinationRegistry,
     ) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
         for attempt in 0..3 {
@@ -156,7 +206,7 @@ impl ProjectContext {
                 }
                 ProjectPublicationRecovery::Complete => recover_project_file_transaction(&root)?,
             };
-            let loaded = Self::load_observed_project(&root, &project_file, env_arg);
+            let loaded = Self::load_observed_project(&root, &project_file, env_arg, destinations);
             let generation_after = match recovery {
                 ProjectPublicationRecovery::FailClosed => {
                     project_file_transaction_generation(&root)?
@@ -182,6 +232,7 @@ impl ProjectContext {
         root: &Path,
         project_file: &Path,
         env_arg: Option<&str>,
+        destinations: &cdf_runtime::DestinationRegistry,
     ) -> CdfResult<Self> {
         let project_text = fs::read_to_string(project_file).map_err(|error| {
             project_authority_read_error("read project configuration", project_file, error)
@@ -192,7 +243,6 @@ impl ProjectContext {
         let environment = config.effective_environment(env_name)?;
         let source_registry = crate::source_registry::builtin_source_registry()?;
         let semantic_catalog = SemanticCatalog::builtins()?;
-        let destinations = crate::destination_registry::builtin_destination_registry()?;
         let destination = destinations
             .inspect(
                 &environment.destination,

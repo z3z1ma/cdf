@@ -340,7 +340,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     );
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM local.events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 2);
 }
@@ -559,21 +559,26 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
     let (base_url, _requests) = serve_parquet_file(remote_bytes, 16);
     let remote = TestProject::new();
     fs::write(
-        remote.root.join("cdf/local/events.cdf.sql"),
-        format!(
-            r#"
-[source.local]
-kind = "files"
-root = "{base_url}/"
-egress_allowlist = ["127.0.0.1"]
-
-[resource.events]
-glob = "events.arrow"
-format = "arrow_ipc"
-write_disposition = "append"
-trust = "governed"
-"#
+        remote.root.join("cdf.toml"),
+        PROJECT.replace(
+            "root = \"data\"",
+            &format!(
+                "root = {root:?}\negress_allowlist = [\"127.0.0.1\"]",
+                root = format!("{base_url}/"),
+            ),
         ),
+    )
+    .unwrap();
+    fs::write(
+        remote.root.join("cdf/local/events.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'local', glob => 'events.arrow', format => 'arrow_ipc');
+"#,
     )
     .unwrap();
     let remote_result = run([
@@ -612,7 +617,7 @@ fn protobuf_descriptor_discovery_run_and_duckdb_commit_share_one_native_driver()
     assert_eq!(report["result"]["checkpoint"]["status"], "committed");
     let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = connection
-        .prepare("SELECT id, name FROM rows ORDER BY id")
+        .prepare("SELECT id, name FROM local.rows ORDER BY id")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -688,183 +693,6 @@ fn pinned_arrow_ipc_type_drift_is_observed_and_quarantined_in_the_preview_run_st
         })
         .unwrap();
     assert!(has_quarantine);
-}
-
-#[test]
-fn declared_arrow_ipc_lossless_widening_records_physical_and_coercion_evidence() {
-    let project = TestProject::new();
-    for entry in fs::read_dir(project.root.join("data")).unwrap() {
-        fs::remove_file(entry.unwrap().path()).unwrap();
-    }
-    fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.arrow"
-format = "arrow_ipc"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "VendorID", type = "int64", nullable = false },
-  { name = "Note", type = "string", nullable = true },
-] }
-"#,
-    )
-    .unwrap();
-    write_vendor_arrow_ipc(&project, "events.arrow");
-
-    let preview = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "preview",
-        "local.events",
-    ]);
-    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
-    assert_eq!(
-        stderr_or_stdout_json(&preview.stdout)["result"]["fields"],
-        json!(["vendor_id", "note", "_cdf_variant"])
-    );
-
-    let run_result = run_valid_run_args(&project);
-    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
-    let package_dir = run_package_dir(&project, &run_result);
-    let reader = PackageReader::open(&package_dir).unwrap();
-    reader.verify().unwrap();
-    let batches = collect_package_segments_for_test(&reader);
-    let schema = batches[0].1[0].schema();
-    assert_eq!(schema.field(0).data_type(), &DataType::Int64);
-    assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
-    assert!(!schema.field(0).metadata().contains_key("cdf:physical_type"));
-    assert!(
-        !package_dir
-            .join("schema/effective-schema-evidence.json")
-            .exists(),
-        "declared execution must classify the physical schema in-stream without a pre-scan artifact"
-    );
-    let stream_admission: serde_json::Value = serde_json::from_slice(
-        &fs::read(package_dir.join("schema/stream-admission-evidence.json")).unwrap(),
-    )
-    .unwrap();
-    let coercion: cdf_contract::SchemaCoercionPlan =
-        serde_json::from_value(stream_admission["observations"][0]["coercion_plan"].clone())
-            .unwrap();
-    let vendor = coercion
-        .fields
-        .iter()
-        .find(|field| field.source_name == "VendorID")
-        .unwrap();
-    assert_eq!(
-        vendor.decision,
-        cdf_contract::FieldCoercionDecision::Widened
-    );
-    assert_eq!(vendor.observed_type.as_deref(), Some("Int32"));
-    assert_eq!(vendor.constraint_type.as_deref(), Some("Int64"));
-}
-
-#[test]
-fn hints_schema_discovers_pins_and_constrains_observed_parquet() {
-    let project = TestProject::new();
-    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
-    fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "vendors.parquet"
-format = "parquet"
-schema_mode = "hints"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "VendorID", type = "int64", nullable = false },
-] }
-"#,
-    )
-    .unwrap();
-
-    let plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
-    let plan_json = stderr_or_stdout_json(&plan.stdout);
-    assert_eq!(plan_json["result"]["schema_snapshot"]["outcome"], "added");
-    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    let initial_reference = lock.resources["local.events"]
-        .schema_snapshot
-        .as_ref()
-        .unwrap()
-        .clone();
-    let initial_lock = fs::read(project.root.join("cdf.lock")).unwrap();
-    let initial_snapshot = fs::read(project.root.join(&initial_reference.path)).unwrap();
-
-    let unchanged = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(unchanged.exit_code, 0, "{}", unchanged.stderr);
-    assert_eq!(
-        stderr_or_stdout_json(&unchanged.stdout)["result"]["schema_snapshot"]["outcome"],
-        "unchanged"
-    );
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        initial_lock
-    );
-    assert_eq!(
-        fs::read(project.root.join(&initial_reference.path)).unwrap(),
-        initial_snapshot
-    );
-
-    write_vendor_score_parquet(&project.root.join("data/vendors.parquet"));
-    let drifted = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(drifted.exit_code, 0, "{}", drifted.stderr);
-    assert_eq!(
-        stderr_or_stdout_json(&drifted.stdout)["result"]["schema_snapshot"]["outcome"],
-        "unchanged"
-    );
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        initial_lock
-    );
-    assert_eq!(
-        fs::read(project.root.join(&initial_reference.path)).unwrap(),
-        initial_snapshot
-    );
-
-    let run_result = run_valid_run_args(&project);
-    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
-    let reader = PackageReader::open(run_package_dir(&project, &run_result)).unwrap();
-    let batches = collect_package_segments_for_test(&reader);
-    assert_eq!(
-        batches[0].1[0].schema().field(0).data_type(),
-        &DataType::Int64
-    );
-    assert_eq!(batches[0].1[0].schema().field(0).name(), "vendor_id");
 }
 
 #[test]

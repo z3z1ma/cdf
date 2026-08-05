@@ -352,7 +352,13 @@ fn project_input_inventory_rejects_files_directly_under_cdf() {
 
     let error = inventory_project_resources(
         root.path(),
-        &project_config(""),
+        &project_config(
+            r#"
+[sources.local]
+type = "files"
+root = "data"
+"#,
+        ),
         "dev",
         &test_source_registry(),
     )

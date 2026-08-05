@@ -52,7 +52,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
 
     assert_eq!(plan.explain.pushed_predicates, Vec::new());
-    assert_eq!(plan.explain.unsupported_predicates.len(), 2);
+    assert_eq!(plan.residual_predicates.len(), 2);
 
     let temp = TempDir::new().unwrap();
     let pre_finalize =
@@ -487,7 +487,7 @@ fn external_partition_schedule_preserves_ordinals_above_u32_without_enumeration(
 
 #[test]
 fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
-    let resource = MockResource::tier_b(sample_batches());
+    let resource = MockResource::tier_b(sample_batches()).without_control_keys();
     let mut plan = Planner::new()
         .plan_tier_b(
             &resource,

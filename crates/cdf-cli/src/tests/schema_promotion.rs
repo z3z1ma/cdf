@@ -267,7 +267,7 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
     assert_eq!(
         replay_inputs.state_delta.scope,
         ScopeKey::SchemaContract {
-            contract: cdf_kernel::ContractRef::new("events-contract").unwrap(),
+            contract: cdf_kernel::ContractRef::new("local.events").unwrap(),
         }
     );
 
@@ -396,7 +396,10 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         failpoint: Some(SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(1)),
     })
     .unwrap_err();
-    assert!(failure.message.contains("schema promotion failpoint"));
+    assert!(
+        failure.message.contains("schema promotion failpoint"),
+        "{failure}"
+    );
     drop(store);
     drop(context);
     fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-a")).unwrap();

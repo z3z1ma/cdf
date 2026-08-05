@@ -72,7 +72,7 @@ impl Planner {
             physical_request,
             PartitionAuthority::Inline(partitions),
             Vec::new(),
-            Vec::new(),
+            input.request.filters.clone(),
             None,
             None,
             delivery_guarantee(write_disposition.clone()),
@@ -733,7 +733,7 @@ pub(crate) fn rebind_validation_program(
         &candidate.schema_authority,
         expression_schema,
         &physical_expression_schema,
-        &program,
+        &candidate.schema_admission_program,
         candidate.compiled_schema_admission.type_policy.clone(),
     )?;
     compiled_schema_admission.baseline_projection = baseline_projection;
@@ -769,7 +769,7 @@ pub(crate) fn rebind_validation_program(
     candidate.validate_compiled_expression_plan()?;
     candidate
         .compiled_schema_admission
-        .validate_intrinsic(&candidate.validation_program)?;
+        .validate_intrinsic(&candidate.schema_admission_program)?;
     *plan = candidate;
     Ok(())
 }

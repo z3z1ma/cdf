@@ -1837,11 +1837,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
             "seg-000001",
             exact_value_batch(
                 "numeric(77,1)",
-                &[
-                    (1, "1", "1", "1.0"),
-                    (2, "2", "2", constrained),
-                    (1, "3", "3", "2.0"),
-                ],
+                &[(2, "2", "2", constrained), (1, "3", "3", "2.0")],
             ),
         )],
     );

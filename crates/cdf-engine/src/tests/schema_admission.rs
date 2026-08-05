@@ -217,20 +217,13 @@ fn pinned_baseline_admission_projects_full_physical_catalog_before_hashing() {
             baseline_hash,
             baseline_physical,
         )]);
-    let mut input = plan_input_for_schema(
+    let input = plan_input_for_schema(
         effective,
         Vec::new(),
         Some(vec!["id".to_owned()]),
         None,
         ExecutionExtent::bounded(),
     );
-    input
-        .validation_program
-        .schema_verdicts
-        .iter_mut()
-        .find(|rule| rule.change == SchemaChangeKind::TypeWidening)
-        .unwrap()
-        .verdict = VerdictAction::RejectBatch;
 
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     assert_eq!(
@@ -245,13 +238,11 @@ fn pinned_baseline_admission_projects_full_physical_catalog_before_hashing() {
 
     let new_drift = Schema::new(vec![Field::new("id", DataType::Int16, false)]);
     let drift_hash = cdf_kernel::canonical_arrow_schema_hash(&new_drift).unwrap();
-    assert!(
-        plan.compiled_schema_admission
-            .instantiate(&new_drift, &drift_hash)
-            .unwrap_err()
-            .message
-            .contains("width coercion")
-    );
+    let drift = plan
+        .compiled_schema_admission
+        .instantiate(&new_drift, &drift_hash)
+        .unwrap();
+    assert_eq!(drift.fields[0].decision, FieldCoercionDecision::Widened);
 }
 
 #[test]

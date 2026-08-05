@@ -3035,6 +3035,7 @@ mod tests {
                     execution_extent: ExecutionExtent::bounded(),
                     segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-external-preview-run".to_owned(),
+                    relational_expression_plan: None,
                     committed_frontier: None,
                 },
             )
@@ -3124,6 +3125,7 @@ mod tests {
                     execution_extent: ExecutionExtent::bounded(),
                     segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-residual-projection".to_owned(),
+                    relational_expression_plan: None,
                     committed_frontier: None,
                 },
             )

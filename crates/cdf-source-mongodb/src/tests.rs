@@ -118,6 +118,9 @@ fn compile_is_contact_free_redacted_and_io_owned() {
     );
     assert!(plan.execution_capabilities.blocking_lane.is_none());
     assert_eq!(plan.execution_capabilities.maximum_concurrency, 1);
+    assert_eq!(plan.redacted_options["batch_rows"], 65_536);
+    assert_eq!(plan.redacted_options["max_pool_size"], 1);
+    assert_eq!(plan.redacted_options["stream_buffer_batches"], 1);
     let encoded = serde_json::to_string(&plan).unwrap();
     assert!(encoded.contains("secret://env/MONGODB_PASSWORD"));
     assert!(!encoded.contains("inline-password"));

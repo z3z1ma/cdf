@@ -1371,7 +1371,7 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     let (head_sender, head_receiver) = tokio::sync::oneshot::channel::<()>();
     let later_polls = Arc::new(AtomicUsize::new(0));
     let resource = StalledHeadResource {
-        inner: MockResource::tier_b(sample_batches()),
+        inner: MockResource::tier_b(sample_batches()).without_control_keys(),
         head_gate: Arc::new(Mutex::new(Some(head_receiver))),
         later_polls: Arc::clone(&later_polls),
     };

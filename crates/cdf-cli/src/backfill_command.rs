@@ -29,7 +29,13 @@ pub(crate) fn backfill(
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "backfill",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let resource = context.resource(&args.resource_id)?;
     let target = match args.target.clone() {
         Some(target) => TargetName::new(target).map_err(CliError::from)?,

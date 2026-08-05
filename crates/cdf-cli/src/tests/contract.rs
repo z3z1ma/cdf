@@ -17,6 +17,15 @@ fn contract_show_remains_project_free() {
 #[test]
 fn contract_freeze_writes_lock_and_contract_test_passes() {
     let project = TestProject::new();
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
     let result = run([
         "cdf",
         "--json",
@@ -87,6 +96,15 @@ fn contract_freeze_writes_lock_and_contract_test_passes() {
 #[test]
 fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
     let project = TestProject::new();
+    let initial_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(initial_plan.exit_code, 0, "stderr: {}", initial_plan.stderr);
     let initial_freeze = run([
         "cdf",
         "--json",
@@ -115,6 +133,15 @@ fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
     )
     .unwrap();
     fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
+    let new_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "extra.events",
+    ]);
+    assert_eq!(new_plan.exit_code, 0, "stderr: {}", new_plan.stderr);
     let new_freeze = run([
         "cdf",
         "--json",
@@ -140,10 +167,11 @@ fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
     .unwrap();
     fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
     let marker = json!({
-        "version": 1,
+        "version": 2,
         "generation": 1,
         "state": "pending",
         "commit_relative_path": "cdf.lock",
+        "guards": [],
         "entries": [
             {
                 "relative_path": "cdf/extra/events.cdf.sql",
@@ -267,8 +295,17 @@ fn contract_test_fails_closed_when_lock_is_missing() {
 }
 
 #[test]
-fn contract_test_reports_schema_and_program_drift() {
+fn contract_test_reports_query_validation_program_drift() {
     let project = TestProject::new();
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
     let freeze = run([
         "cdf",
         "--json",
@@ -302,7 +339,6 @@ fn contract_test_reports_schema_and_program_drift() {
         .iter()
         .map(|detail| detail["field"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert!(fields.contains(&"schema_hash"));
     assert!(fields.contains(&"validation_program_hash"));
 }
 

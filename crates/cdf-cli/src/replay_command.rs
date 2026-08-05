@@ -373,8 +373,13 @@ fn u64_from_usize(value: usize) -> cdf_kernel::Result<u64> {
 pub(crate) fn load_package_replay_context(
     cli: &Cli,
     package_dir: &Path,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<PackageReplayContext, CliError> {
-    let project = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let project = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let reader = PackageReader::open(package_dir)?;
     let package_id = reader.manifest().identity.package_id.clone();
     let inputs = reader.replay_inputs()?;
@@ -533,7 +538,7 @@ pub(crate) fn replay_package(
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let package = load_package_replay_context(cli, &args.package_dir)?;
+    let package = load_package_replay_context(cli, &args.package_dir, destinations)?;
     let mut replay_destination = build_replay_destination(
         destinations,
         &package.project,

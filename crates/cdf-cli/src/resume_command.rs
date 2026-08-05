@@ -29,7 +29,11 @@ pub(crate) fn resume(
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let state_path = context.state_store_path()?;
     let state_path_ownership = context.state_store_path_ownership();
     if !cdf_state_sqlite::database_path_exists(&state_path, state_path_ownership)? {

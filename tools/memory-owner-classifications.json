@@ -9,6 +9,14 @@
       "status": "measured"
     },
     {
+      "owner": "MongoDB source client and raw BSON cursor internals",
+      "class": "native",
+      "boundary": "cdf-source-mongodb one-query official client session",
+      "bound_authority": "one reusable client pool capped at the selected size of one, plus separately leased client, cursor, wire-batch, and Arrow-output reservations",
+      "evidence": ".10x/evidence/2026-08-04-mongodb-source-connector.md",
+      "status": "bounded"
+    },
+    {
       "owner": "DuckDB transaction and execution engine",
       "class": "native",
       "boundary": "cdf-dest-duckdb execution-service binding",

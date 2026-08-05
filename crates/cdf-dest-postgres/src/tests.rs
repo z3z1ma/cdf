@@ -633,8 +633,7 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
         .unwrap()
         .sql
         .as_str();
-    assert!(merge_sql.contains("ROW_NUMBER() OVER"));
-    assert!(merge_sql.contains("ORDER BY \"_cdf_row_key\" DESC"));
+    assert!(!merge_sql.contains("ROW_NUMBER() OVER"));
     assert!(merge_sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
     assert!(merge.write_sql.iter().any(|statement| {
         statement.name == "copy_stage_binary"

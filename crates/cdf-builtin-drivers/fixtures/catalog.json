@@ -22,8 +22,8 @@
     },
     {
       "id": "mongodb",
-      "descriptor_sha256": "sha256:fec511f8359ba848e26ca94777bdf8a135fdeec23b4ef413680fd64f48071b68",
-      "option_schema_sha256": "sha256:1b23f4684b94975665875de49a2f6c5ab4374f2633effdd25765afd5016ba76f"
+      "descriptor_sha256": "sha256:5be580e3e82627640ed3e9811e364e3c03f047a8b17023a657e2a07e6b37f82f",
+      "option_schema_sha256": "sha256:b6af64119dedbfeb4d708f5a04579862c589e1f307d5b94a7327499c63e5b712"
     },
     {
       "id": "postgres",

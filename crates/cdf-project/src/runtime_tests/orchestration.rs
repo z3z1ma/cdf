@@ -1118,7 +1118,7 @@ pub(super) fn single_segment_manifest_path(report: &ProjectRunReport) -> String 
 }
 
 pub(super) fn file_position(path: &str) -> SourcePosition {
-    file_position_with_identity(path, 42, Some(format!("sha256:{path}")))
+    file_position_with_identity(path, 42, Some(format!("sha256:{}", "00".repeat(32))))
 }
 
 pub(super) fn file_position_with_identity(
@@ -3053,7 +3053,8 @@ fn state_delta_rejects_mixed_file_and_non_file_source_positions() {
     assert!(
         error
             .to_string()
-            .contains("divergent segment source positions")
+            .contains("mixed, divergent, or opaque unordered positions"),
+        "{error}"
     );
 }
 
@@ -3087,7 +3088,7 @@ fn state_delta_preserves_engine_canonical_file_manifest_entries() {
     assert_eq!(output_manifest.files[0].path, "events-a.ndjson");
     assert_eq!(
         output_manifest.files[0].sha256.as_deref(),
-        Some("sha256:events-a.ndjson")
+        Some("sha256:0000000000000000000000000000000000000000000000000000000000000000")
     );
     let SourcePosition::FileManifest(segment_manifest) = &delta.segments[0].output_position else {
         panic!("state segment should retain file manifest evidence");

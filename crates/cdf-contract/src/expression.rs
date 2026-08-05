@@ -498,12 +498,20 @@ fn output_metadata_matches(
     output: &HashMap<String, String>,
     expression_metadata: &HashMap<String, String>,
 ) -> bool {
-    output
+    let output = output
         .iter()
         .filter(|(key, _)| key.as_str() != cdf_kernel::SEMANTIC_METADATA_KEY)
-        .eq(expression_metadata
-            .iter()
-            .filter(|(key, _)| key.as_str() != cdf_kernel::SEMANTIC_METADATA_KEY))
+        .collect::<Vec<_>>();
+    let expression_len = expression_metadata
+        .keys()
+        .filter(|key| key.as_str() != cdf_kernel::SEMANTIC_METADATA_KEY)
+        .count();
+    output.len() == expression_len
+        && output.into_iter().all(|(key, value)| {
+            expression_metadata
+                .get(key)
+                .is_some_and(|expected| expected == value)
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,5 +610,21 @@ mod tests {
             CompiledExpressionPlan::current(Vec::new(), Vec::new(), vec![forged], Vec::new())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn relational_metadata_comparison_is_order_independent_and_ignores_semantics() {
+        let mut output = HashMap::new();
+        output.insert("source_driver".to_owned(), "postgres".to_owned());
+        output.insert("cdf:source_name".to_owned(), "updated_at".to_owned());
+        output.insert(
+            cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+            "time.timestamp@1".to_owned(),
+        );
+        let mut expression = HashMap::new();
+        expression.insert("cdf:source_name".to_owned(), "updated_at".to_owned());
+        expression.insert("source_driver".to_owned(), "postgres".to_owned());
+
+        assert!(output_metadata_matches(&output, &expression));
     }
 }
