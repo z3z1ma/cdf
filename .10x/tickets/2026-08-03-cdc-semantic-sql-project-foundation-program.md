@@ -287,8 +287,8 @@ Depends-On: D1, D1.5a, D2, and C1 for first-class semantic syntax. D3 is also th
 project-authoring cutover: it deletes the retired resource map/declarative reader in the same
 tranche that makes the SQL resources executable.
 
-Ratified authority is complete. Executable owner:
-`.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`.
+Status: complete. Closed at:
+`.10x/tickets/done/2026-08-04-d3-query-first-project-authoring-cutover.md`.
 
 **D4. Explicit generation; templating remains parked**
 
@@ -584,13 +584,18 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
   default and `REPLACE` is available only for proven bounded replayable input. The complete
   relational exclusion, identity, diagnostic, manifest, no-DataFusion-runtime, and no-compatibility
   laws are now active. D3 shaping is closed and the executable cutover ticket is
-  `.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`.
+  `.10x/tickets/done/2026-08-04-d3-query-first-project-authoring-cutover.md`.
 - 2026-08-04: During D3 execution, the user reopened only the resource-root noun, supplied a full
   comparison of `sources/`, `cdf/`, and `pipelines/`, and delegated the final choice. `cdf/` is now
   the sole root and an identity-excluded tool-ownership marker. It preserves the existing
   `<namespace>.<resource>` identity while avoiding both `sources/` configured-source ambiguity and
   `pipelines/` orchestration implications. The never-released `resources/` proposal is superseded
   without a compatibility reader.
+- 2026-08-04: D3 closed after bounded query-first compiler/cutover commits, one independent
+  red-team review, repair of all six concrete findings, a focused reviewer pass over the surviving
+  publication-guard defect, affected-boundary validation, and successful GitHub Actions run
+  `30968316660` for final implementation commit `f24eee00`. The terminal owner is
+  `.10x/tickets/done/2026-08-04-d3-query-first-project-authoring-cutover.md`.
 
 ## Blockers
 

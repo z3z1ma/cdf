@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -65,30 +65,30 @@ retired public authority rather than wrapping them.
 
 ### Project and identity
 
-- [ ] Only regular `cdf/<namespace>/<resource>.cdf.sql` files are current resources;
+- [x] Only regular `cdf/<namespace>/<resource>.cdf.sql` files are current resources;
   namespace/stem/source names use `[a-z][a-z0-9_]{0,127}` with no normalization, path fencing and
   stable-read guarantees remain intact, and deterministic enumeration ignores no malformed
   `.cdf.sql` near-match silently.
-- [ ] Path derives only namespace, resource id, and default logical target. Configured source is
+- [x] Path derives only namespace, resource id, and default logical target. Configured source is
   explicit in the relation; logical target is explicit/defaulted independently. A namespace/source
   mismatch compiles successfully.
-- [ ] Every configured source is referenced by at least one accepted resource, without requiring a
+- [x] Every configured source is referenced by at least one accepted resource, without requiring a
   same-named directory. Unknown/unreferenced sources fail `Contract` before external I/O.
 
 ### Parser, relation, and defaults
 
-- [ ] Bare `SELECT` and optional ordered `RESOURCE [TARGET] [DISPOSITION] [CURSOR] [TRUST]
+- [x] Bare `SELECT` and optional ordered `RESOURCE [TARGET] [DISPOSITION] [CURSOR] [TRUST]
   [SEMANTICS] [EXECUTION] AS SELECT` forms parse with exact one-based spans. Unknown, repeated,
   contradictory, or out-of-order clauses fail with stable codes.
-- [ ] `CREATE RESOURCE`, an id after `RESOURCE`, `FROM SOURCE`, `SINK`, generic `WITH`/`OPTIONS`,
+- [x] `CREATE RESOURCE`, an id after `RESOURCE`, `FROM SOURCE`, `SINK`, generic `WITH`/`OPTIONS`,
   and multiple statements fail through the ordinary current grammar.
-- [ ] `source` is required exactly once as a named string literal, is removed before driver
+- [x] `source` is required exactly once as a named string literal, is removed before driver
   resource-schema validation, and cannot be positional, computed, duplicated, or replaced by a
   type/driver/URI/credential/secret/source-level option.
-- [ ] Recursive string/number/Boolean/NULL/ARRAY/OBJECT relation values lower through the ordinary
+- [x] Recursive string/number/Boolean/NULL/ARRAY/OBJECT relation values lower through the ordinary
   driver resource schema. Executable expressions and JSON/secret/environment escape hatches fail;
   canonical typed identity is order-independent while authored identity is not.
-- [ ] Default precedence is exactly authored, applicable typed project default, narrow built-in,
+- [x] Default precedence is exactly authored, applicable typed project default, narrow built-in,
   then failure. Target defaults to resource id, trust defaults to `EXPERIMENTAL`, and `REPLACE`
   defaults only for proven bounded replayable input. Existing `[defaults]` becomes the sole typed
   trust/disposition/execution default authority; it admits no keyless merge, `cdc_apply`,
@@ -96,45 +96,45 @@ retired public authority rather than wrapping them.
 
 ### Metadata and native lowering
 
-- [ ] `DISPOSITION APPEND`, `REPLACE`, and `MERGE(key, ...)` compile through native disposition
+- [x] `DISPOSITION APPEND`, `REPLACE`, and `MERGE(key, ...)` compile through native disposition
   authority. Merge keys are nonempty/unique, resolve against final output fields, use package
   duplicate/null/delete authority, and require destination capability.
-- [ ] `CURSOR` resolves exactly against final output schema and compatible source capability.
-- [ ] `TRUST EXPERIMENTAL|GOVERNED` binds the exact existing contract presets and their review,
+- [x] `CURSOR` resolves exactly against final output schema and compatible source capability.
+- [x] `TRUST EXPERIMENTAL|GOVERNED` binds the exact existing contract presets and their review,
   validation, quarantine, retention, publication, observability, and trust-ledger consequences;
   `GOVERNED` is never defaulted.
-- [ ] `SEMANTICS (field => 'canonical.reference', ...)` resolves exact C1 definitions/versions/
+- [x] `SEMANTICS (field => 'canonical.reference', ...)` resolves exact C1 definitions/versions/
   hashes/parameters, validates Arrow compatibility and control fields, and changes no physical
   representation.
-- [ ] `EXECUTION BOUNDED` and the exact complete DRAIN vocabulary lower to native extent/stream
+- [x] `EXECUTION BOUNDED` and the exact complete DRAIN vocabulary lower to native extent/stream
   policy; unknown, repeated, incomplete, overflowing, or inapplicable members fail. Unbounded input
   with no complete explicit/project drain policy fails; resident execution remains unavailable.
-- [ ] Pinned DataFusion analyzes the admitted one-relation projection/filter/scalar surface and D2
+- [x] Pinned DataFusion analyzes the admitted one-relation projection/filter/scalar surface and D2
   lowers it completely. Joins, every set operation including `UNION ALL`, aggregates, windows,
   subqueries, unsupported functions, and multiple upstream relations fail before I/O/publication.
-- [ ] Native runtime execution has no SQL/default/source-resolution branch and no durable DataFusion
+- [x] Native runtime execution has no SQL/default/source-resolution branch and no durable DataFusion
   type/plan. Differential fixtures prove DataFusion analysis and native execution agree for
   admitted values, types, nulls, casts, filters, and errors.
 
 ### Manifest, product cutover, and quality
 
-- [ ] Manifest schema/query projections expose exact authored bytes/hash/form/AST hash, effective
+- [x] Manifest schema/query projections expose exact authored bytes/hash/form/AST hash, effective
   definition identity, versions, resource path/id/default target, every effective metadata value
   and origin, explicit source/config/driver/args/source-node identity, native IR, schema,
   semantics/contracts, lineage, and pushdown/residual decisions. No secret or DataFusion plan leaks.
-- [ ] Bare and explicit forms share execution identity only when all effective values/policies/
+- [x] Bare and explicit forms share execution identity only when all effective values/policies/
   dependencies match; authored hashes always remain distinct.
-- [ ] Compile, validate, plan, explain, run, preview, inspect, `cdf sql`, lock binding, scaffold,
+- [x] Compile, validate, plan, explain, run, preview, inspect, `cdf sql`, lock binding, scaffold,
   add/generate, examples, and generated help/man/completions agree on one query-first current model.
-- [ ] Superseded wildcard/declarative/path-bound-source code and its fixtures are deleted. Tests
+- [x] Superseded wildcard/declarative/path-bound-source code and its fixtures are deleted. Tests
   exercise only the current model and its actual contract boundaries.
-- [ ] Focused parser/project/manifest/CLI/driver-boundary/differential tests pass; affected-package
+- [x] Focused parser/project/manifest/CLI/driver-boundary/differential tests pass; affected-package
   formatting and strict Clippy pass; generated artifacts are current; one stable affected-boundary
   certificate passes without repeatedly running the full workspace.
-- [ ] One independent red-team review attempts to falsify identity separation, default safety,
+- [x] One independent red-team review attempts to falsify identity separation, default safety,
   parser rejection, secret redaction, native-only runtime, publication atomicity, and no-compat
   deletion. All significant findings are repaired once and the final verdict passes.
-- [ ] Changes are committed and pushed to `main` in bounded coherent increments; GitHub CI is
+- [x] Changes are committed and pushed to `main` in bounded coherent increments; GitHub CI is
   checked asynchronously after pushes and any concrete failure receives evidence-backed repair.
 
 ## References
@@ -415,6 +415,10 @@ evidence without reopening or re-verifying those tickets.
   --lib --locked -j12 -- -W clippy::cognitive_complexity` completed successfully. It reported the
   same six pre-existing threshold crossings in transitive first-party packages and none in the D3
   compiler/publication repair.
+- GitHub Actions `Fast Quality` run `30968316660` passed for closure-repair commit `f24eee00` after
+  both the Core Rust smoke and tracked-source secret checks completed successfully. Together with
+  the earlier passing incremental runs, this closes the asynchronous CI acceptance criterion; it
+  does not substitute for the focused behavioral evidence above.
 
 ## Review
 
@@ -449,3 +453,8 @@ encoded repository shape instead of product behavior. Root `AGENTS.md` now makes
 always-on. The effective loop was: bulk-search the obsolete surface, repair one owned seam, run the
 smallest behavior batch plus affected check/strict Clippy, then ask the original reviewer to
 re-evaluate only its surviving falsification.
+
+D3 is complete. Its implementation landed in bounded commits through `f24eee00`, every acceptance
+criterion maps to the evidence above, the independent review verdict is pass, the current-only
+query-first authoring surface has no compatibility reader, and the final pushed implementation
+commit passed GitHub Actions.

@@ -187,9 +187,9 @@ Manifest path/publication, source/resource layout, configuration ownership, and 
 authority are ratified. Path tokens, explicit configured-source binding, recursive relation values,
 query/envelope grammar, defaults, merge keys, semantic annotations, bounded/drain execution,
 relational exclusions, identities, diagnostics, and manifest obligations are ratified; D2 is
-complete and D3 has no remaining shaping blocker. Execution owner:
-`.10x/tickets/2026-08-04-d3-query-first-project-authoring-cutover.md`. Every older authoring surface
-is implementation drift to delete, not a coequal front-end or migration authority.
+complete and D3 is implemented and closed at
+`.10x/tickets/done/2026-08-04-d3-query-first-project-authoring-cutover.md`. Every older authoring
+surface is deleted implementation history, not a coequal front-end or migration authority.
 
 ### Plan-declared hooks
 
