@@ -70,9 +70,9 @@ impl fmt::Display for ClickHouseIdentifier {
 
 pub(crate) fn identifier_rules() -> IdentifierRules {
     IdentifierRules {
-        normalizer: "identity_utf8_then_backtick_quote".to_owned(),
+        normalizer: "namecase-v1".to_owned(),
         max_length: Some(255),
-        allowed_pattern: Some("control-free UTF-8 excluding reserved _cdf_ prefix".to_owned()),
+        allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
     }
 }
 

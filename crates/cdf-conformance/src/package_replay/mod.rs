@@ -244,6 +244,10 @@ fn write_compiled_plan_artifacts(
         },
     )?;
     builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    builder.write_json_artifact(
+        cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
+        &plan.schema_admission_program,
+    )?;
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact(
         "plan/schema-admission.json",

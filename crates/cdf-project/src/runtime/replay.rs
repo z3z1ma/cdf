@@ -912,9 +912,10 @@ fn validate_package_compiled_expression_plan(package: &VerifiedPackageReader) ->
 }
 
 fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -> Result<()> {
-    let program: cdf_contract::ValidationProgram = package
-        .reader()
-        .verified_json_artifact(package.verification(), "plan/validation-program.json")?;
+    let program: cdf_contract::ValidationProgram = package.reader().verified_json_artifact(
+        package.verification(),
+        cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
+    )?;
     let admission: cdf_engine::CompiledSchemaAdmissionPlan = package
         .reader()
         .verified_json_artifact(package.verification(), "plan/schema-admission.json")?;

@@ -19,6 +19,7 @@ pub(crate) fn destination_for_case(
         &crate::run_matrix::MatrixDestination::new(destination.as_str())?,
         root,
         &target_table(destination, window),
+        cdf_kernel::WriteDisposition::Append,
         environment,
     )
 }

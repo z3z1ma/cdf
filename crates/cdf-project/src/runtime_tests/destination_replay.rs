@@ -2244,6 +2244,7 @@ fn artifact_replay_rejects_corrupted_or_missing_preimages_before_mutation() {
         STATE_INPUT_CHECKPOINT_FILE,
         STATE_PROPOSED_DELTA_FILE,
         DESTINATION_COMMIT_PLAN_FILE,
+        cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
         "plan/schema-admission.json",
         "schema/stream-admission-evidence.json",
     ] {

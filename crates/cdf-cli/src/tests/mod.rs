@@ -1248,6 +1248,12 @@ fn write_current_replay_artifacts(
         .write_json_artifact("plan/validation-program.json", &plan.validation_program)
         .unwrap();
     builder
+        .write_json_artifact(
+            cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
+            &plan.schema_admission_program,
+        )
+        .unwrap();
+    builder
         .write_json_artifact("plan/scan.json", &plan.scan)
         .unwrap();
     builder

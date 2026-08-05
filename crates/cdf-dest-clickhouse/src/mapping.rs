@@ -311,55 +311,59 @@ pub(crate) fn physical_columns(logical: &[ClickHouseColumn]) -> Result<Vec<Click
 }
 
 pub(crate) fn type_mappings() -> Vec<TypeMapping> {
-    [
-        ("Boolean", "Bool", TypeMappingFidelity::Lossless),
-        ("Int8..Int64", "Int8..Int64", TypeMappingFidelity::Lossless),
-        (
-            "UInt8..UInt64",
-            "UInt8..UInt64",
-            TypeMappingFidelity::Lossless,
-        ),
-        (
-            "Float32/Float64",
-            "Float32/Float64",
-            TypeMappingFidelity::Lossless,
-        ),
-        ("Utf8/Binary", "String", TypeMappingFidelity::Lossless),
-        (
-            "FixedSizeBinary",
+    let mapping = |arrow_type: &str, destination_type: &str, fidelity| TypeMapping {
+        arrow_type: arrow_type.to_owned(),
+        destination_type: destination_type.to_owned(),
+        fidelity,
+    };
+    vec![
+        mapping("Boolean", "Bool", TypeMappingFidelity::Lossless),
+        mapping("Int8", "Int8", TypeMappingFidelity::Lossless),
+        mapping("Int16", "Int16", TypeMappingFidelity::Lossless),
+        mapping("Int32", "Int32", TypeMappingFidelity::Lossless),
+        mapping("Int64", "Int64", TypeMappingFidelity::Lossless),
+        mapping("UInt8", "UInt8", TypeMappingFidelity::Lossless),
+        mapping("UInt16", "UInt16", TypeMappingFidelity::Lossless),
+        mapping("UInt32", "UInt32", TypeMappingFidelity::Lossless),
+        mapping("UInt64", "UInt64", TypeMappingFidelity::Lossless),
+        mapping("Float32", "Float32", TypeMappingFidelity::Lossless),
+        mapping("Float64", "Float64", TypeMappingFidelity::Lossless),
+        mapping("Utf8", "String", TypeMappingFidelity::Lossless),
+        mapping("LargeUtf8", "String", TypeMappingFidelity::Lossless),
+        mapping("Utf8View", "String", TypeMappingFidelity::Lossless),
+        mapping("Binary", "String", TypeMappingFidelity::Lossless),
+        mapping("LargeBinary", "String", TypeMappingFidelity::Lossless),
+        mapping("BinaryView", "String", TypeMappingFidelity::Lossless),
+        mapping(
+            "FixedSizeBinary(*)",
             "FixedString/UUID/IP with metadata",
             TypeMappingFidelity::Lossless,
         ),
-        ("Date32", "Date32", TypeMappingFidelity::Lossless),
-        (
-            "Timestamp",
+        mapping("Date32", "Date32", TypeMappingFidelity::Lossless),
+        mapping(
+            "Timestamp(*,timezone)",
             "DateTime64 with explicit timezone",
             TypeMappingFidelity::Lossless,
         ),
-        ("Decimal128/256", "Decimal", TypeMappingFidelity::Lossless),
-        (
-            "List/Struct/Map",
-            "Array/Tuple/Map",
-            TypeMappingFidelity::Lossless,
-        ),
-        (
+        mapping("Decimal128(p,s)", "Decimal", TypeMappingFidelity::Lossless),
+        mapping("Decimal256(p,s)", "Decimal", TypeMappingFidelity::Lossless),
+        mapping("List", "Array", TypeMappingFidelity::Lossless),
+        mapping("LargeList", "Array", TypeMappingFidelity::Lossless),
+        mapping("FixedSizeList", "Array", TypeMappingFidelity::Lossless),
+        mapping("Struct", "Tuple", TypeMappingFidelity::Lossless),
+        mapping("Map", "Map", TypeMappingFidelity::Lossless),
+        mapping(
             "Dictionary",
             "LowCardinality",
             TypeMappingFidelity::Lossless,
         ),
-        (
-            "Union/RunEndEncoded",
+        mapping("Union", "unsupported", TypeMappingFidelity::Unsupported),
+        mapping(
+            "RunEndEncoded",
             "unsupported",
             TypeMappingFidelity::Unsupported,
         ),
     ]
-    .into_iter()
-    .map(|(arrow_type, destination_type, fidelity)| TypeMapping {
-        arrow_type: arrow_type.to_owned(),
-        destination_type: destination_type.to_owned(),
-        fidelity,
-    })
-    .collect()
 }
 
 pub(crate) fn normalized_type(value: &str) -> String {

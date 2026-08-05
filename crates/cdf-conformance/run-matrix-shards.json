@@ -4,6 +4,7 @@
   "rest",
   "postgres",
   "clickhouse",
+  "mongodb",
   "sqlite",
   "nebula"
 ]

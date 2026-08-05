@@ -61,7 +61,8 @@ struct DestinationCatalogEntry {
     #[cfg(test)]
     inspection_uri: fn(&Path) -> String,
     #[cfg(test)]
-    fixture: fn(&Path, &str, &ConformanceEnvironment) -> Result<DestinationFixture>,
+    fixture:
+        fn(&Path, &str, WriteDisposition, &ConformanceEnvironment) -> Result<DestinationFixture>,
 }
 
 #[cfg(test)]
@@ -443,6 +444,7 @@ enum DestinationFixtureState {
         endpoint: String,
         database: String,
         table: String,
+        disposition: WriteDisposition,
     },
     DuckDb {
         database_path: PathBuf,
@@ -632,8 +634,9 @@ impl DestinationFixture {
                 endpoint,
                 database,
                 table,
+                disposition,
                 ..
-            } => clickhouse_footprint(endpoint, database, table),
+            } => clickhouse_footprint(endpoint, database, table, disposition),
             DestinationFixtureState::DuckDb { database_path } => {
                 if destination_artifact_is_missing(database_path)? {
                     return Ok(DestinationFootprint::DuckDb {
@@ -670,9 +673,13 @@ impl DestinationFixture {
                 endpoint,
                 database,
                 table,
+                disposition,
                 ..
             } => Ok(DestinationPayload(clickhouse_payload(
-                endpoint, database, table,
+                endpoint,
+                database,
+                table,
+                disposition,
             )?)),
             DestinationFixtureState::DuckDb { database_path } => Ok(DestinationPayload(
                 if !destination_artifact_is_missing(database_path)? {
@@ -709,8 +716,9 @@ impl DestinationFixture {
                 endpoint,
                 database,
                 table,
+                disposition,
             } => {
-                reset_clickhouse_database(endpoint, database, table)?;
+                reset_clickhouse_database(endpoint, database, table, disposition)?;
                 Ok(Self {
                     destination: self.destination.clone(),
                     runtime_destination_id: self.runtime_destination_id,
@@ -851,6 +859,7 @@ pub(crate) fn fixture(
     destination: &MatrixDestination,
     root: &Path,
     table: &str,
+    disposition: WriteDisposition,
     environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let entry = DESTINATIONS
@@ -862,19 +871,20 @@ pub(crate) fn fixture(
                 destination.as_str()
             ))
         })?;
-    (entry.fixture)(root, table, environment)
+    (entry.fixture)(root, table, disposition, environment)
 }
 
 #[cfg(test)]
 fn clickhouse_fixture(
     root: &Path,
     table: &str,
+    disposition: WriteDisposition,
     environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let database = format!("cdf_conformance_{table}");
     let (uri, endpoint) =
         clickhouse_fixture_connection(environment.clickhouse_endpoint()?, &database)?;
-    reset_clickhouse_database(&endpoint, &database, table)?;
+    reset_clickhouse_database(&endpoint, &database, table, &disposition)?;
     Ok(DestinationFixture {
         destination: MatrixDestination::new("clickhouse")?,
         runtime_destination_id: "clickhouse",
@@ -888,6 +898,7 @@ fn clickhouse_fixture(
             endpoint,
             database,
             table: table.to_owned(),
+            disposition,
         },
     })
 }
@@ -896,6 +907,7 @@ fn clickhouse_fixture(
 fn duckdb_fixture(
     root: &Path,
     table: &str,
+    _disposition: WriteDisposition,
     _environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let database_path = root.join(".cdf/run-matrix.duckdb");
@@ -951,9 +963,23 @@ fn clickhouse_fixture_connection(endpoint: &str, database: &str) -> Result<(Stri
 }
 
 #[cfg(test)]
-fn reset_clickhouse_database(endpoint: &str, database: &str, table: &str) -> Result<()> {
+fn reset_clickhouse_database(
+    endpoint: &str,
+    database: &str,
+    table: &str,
+    disposition: &WriteDisposition,
+) -> Result<()> {
     let database_sql = quote_clickhouse_identifier(database)?;
     let table_sql = quote_clickhouse_identifier(table)?;
+    let table_engine = match disposition {
+        WriteDisposition::Append | WriteDisposition::Replace => "MergeTree",
+        WriteDisposition::Merge => "ReplacingMergeTree",
+        _ => {
+            return Err(CdfError::contract(
+                "ClickHouse conformance fixture does not support this disposition",
+            ));
+        }
+    };
     let client = clickhouse::Client::default().with_url(endpoint);
     let database_client = client.clone().with_database(database);
     crate::test_execution_services().run_io(async move {
@@ -969,7 +995,7 @@ fn reset_clickhouse_database(endpoint: &str, database: &str, table: &str) -> Res
             .map_err(|error| clickhouse_conformance_error("create destination database", error))?;
         database_client
             .query(&format!(
-                "CREATE TABLE {table_sql} (id Int64, name Nullable(String), _cdf_package_hash FixedString(32), _cdf_package_row_ord UInt64) ENGINE = ReplacingMergeTree ORDER BY id SETTINGS non_replicated_deduplication_window = 100000"
+                "CREATE TABLE {table_sql} (id Int64, name Nullable(String), updated_at Int64 DEFAULT 0, _cdf_variant Nullable(String), _cdf_package_hash FixedString(32), _cdf_package_row_ord UInt64) ENGINE = {table_engine} ORDER BY id SETTINGS non_replicated_deduplication_window = 100000"
             ))
             .execute()
             .await
@@ -995,6 +1021,7 @@ fn quote_clickhouse_identifier(value: &str) -> Result<String> {
 fn parquet_fixture(
     root: &Path,
     table: &str,
+    _disposition: WriteDisposition,
     _environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let lake_root = root.join(".cdf/lake");
@@ -1017,6 +1044,7 @@ fn parquet_fixture(
 fn postgres_fixture(
     root: &Path,
     table: &str,
+    _disposition: WriteDisposition,
     environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let postgres = environment.postgres()?;
@@ -1041,6 +1069,7 @@ fn postgres_fixture(
 fn sqlite_fixture(
     root: &Path,
     table: &str,
+    _disposition: WriteDisposition,
     _environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let database_path = root.join(".cdf/run-matrix.sqlite");
@@ -1060,6 +1089,7 @@ fn sqlite_fixture(
 fn quasar_fixture(
     root: &Path,
     table: &str,
+    _disposition: WriteDisposition,
     _environment: &ConformanceEnvironment,
 ) -> Result<DestinationFixture> {
     let quasar_root = root.join(".cdf/quasar");
@@ -1219,8 +1249,10 @@ fn clickhouse_footprint(
     endpoint: &str,
     database: &str,
     table: &str,
+    disposition: &WriteDisposition,
 ) -> Result<DestinationFootprint> {
-    let (payload_rows, loads_rows, state_rows) = clickhouse_snapshot(endpoint, database, table)?;
+    let (payload_rows, loads_rows, state_rows) =
+        clickhouse_snapshot(endpoint, database, table, disposition)?;
     Ok(DestinationFootprint::ClickHouse {
         payload_rows,
         loads_rows,
@@ -1229,8 +1261,13 @@ fn clickhouse_footprint(
 }
 
 #[cfg(test)]
-fn clickhouse_payload(endpoint: &str, database: &str, table: &str) -> Result<Vec<LogicalRow>> {
-    clickhouse_snapshot(endpoint, database, table).map(|snapshot| snapshot.0)
+fn clickhouse_payload(
+    endpoint: &str,
+    database: &str,
+    table: &str,
+    disposition: &WriteDisposition,
+) -> Result<Vec<LogicalRow>> {
+    clickhouse_snapshot(endpoint, database, table, disposition).map(|snapshot| snapshot.0)
 }
 
 #[cfg(test)]
@@ -1238,9 +1275,15 @@ fn clickhouse_snapshot(
     endpoint: &str,
     database: &str,
     table: &str,
+    disposition: &WriteDisposition,
 ) -> Result<(Vec<LogicalRow>, u64, u64)> {
     let database = database.to_owned();
     let table = table.to_owned();
+    let final_modifier = if disposition == &WriteDisposition::Merge {
+        " FINAL"
+    } else {
+        ""
+    };
     let client = clickhouse::Client::default().with_url(endpoint);
     crate::test_execution_services().run_io(async move {
         let exists = client
@@ -1257,7 +1300,9 @@ fn clickhouse_snapshot(
         } else {
             let table = quote_clickhouse_identifier(&table)?;
             database_client
-                .query(&format!("SELECT id, name FROM {table} FINAL ORDER BY id"))
+                .query(&format!(
+                    "SELECT id, name FROM {table}{final_modifier} ORDER BY id"
+                ))
                 .fetch_all::<ClickHouseLogicalRow>()
                 .await
                 .map_err(|error| clickhouse_conformance_error("read destination target", error))?

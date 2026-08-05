@@ -222,6 +222,8 @@ mod file_fixture;
 #[cfg(test)]
 pub(crate) mod local_postgres;
 #[cfg(test)]
+mod mongodb_fixture;
+#[cfg(test)]
 mod nebula_task_fixture;
 #[cfg(test)]
 mod plan_json;

@@ -17,6 +17,7 @@ pub(crate) fn destination_for_cell(
         &cell.destination,
         root,
         &target_table_for_cell(cell),
+        cell.disposition.to_write_disposition(),
         environment,
     )
 }

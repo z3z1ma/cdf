@@ -29,6 +29,18 @@ fn sheet_and_bulk_path_are_truthful() {
     ));
     let sheet = destination.sheet();
     assert_eq!(sheet.destination.as_str(), "clickhouse");
+    assert_eq!(sheet.identifier_rules.normalizer, "namecase-v1");
+    assert_eq!(sheet.identifier_rules.max_length, Some(255));
+    cdf_contract::identifier_policy_from_destination_rules(&sheet.identifier_rules).unwrap();
+    cdf_contract::validate_destination_schema_mappings(
+        &cdf_contract::TypePolicy::strict_fidelity(),
+        sheet,
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
+    )
+    .unwrap();
     assert_eq!(
         sheet.supported_dispositions,
         [

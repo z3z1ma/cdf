@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # MongoDB destination
 
@@ -62,7 +62,7 @@ contract allowance selects an explicit lossless envelope or lossy mapping. Date-
 duration, interval, timezone, and source semantic annotations MUST remain in connector schema
 evidence; there is no silent local-time or Extended JSON conversion.
 
-An `Utf8` field carrying the exact `cdf:semantic=mongodb_decimal128_value_text_v1` tag MUST parse
+An `Utf8` field carrying the exact `cdf:semantic=mongodb.decimal128_value_text@1` tag MUST parse
 and reconstruct BSON Decimal128 exactly, including supported native special values. Ordinary
 `Utf8`, `cdf:physical_type` alone, and tags owned by another source remain BSON strings. Parse or
 range failure MUST stop planning or mutation without a partial package. Decimal256 is not

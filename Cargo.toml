@@ -35,6 +35,7 @@ members = [
     "crates/cdf-source-postgres",
     "crates/cdf-source-sqlite",
     "crates/cdf-source-clickhouse",
+    "crates/cdf-source-mongodb",
     "crates/cdf-source-rest",
     "crates/cdf-source-files",
     "crates/cdf-source-iceberg",

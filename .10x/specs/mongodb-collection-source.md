@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # MongoDB collection source
 
@@ -57,7 +57,7 @@ one while claiming one server snapshot.
 
 The source MUST map BSON exactly as follows where representable: bool; signed integers; double;
 string; binary; DateTime to UTC millisecond timestamp; ObjectId to 12-byte fixed-size binary with
-`cdf:semantic=mongodb_object_id`; arrays to lists; documents to structs/maps under the frozen
+`cdf:semantic=mongodb.object_id@1`; arrays to lists; documents to structs/maps under the frozen
 schema; and BSON null to Arrow nullability. Regex, JavaScript,
 DBPointer, MinKey/MaxKey, undefined, symbols, timestamps used as replication tokens, duplicate
 document keys, heterogeneous arrays, and values outside the pin MUST follow explicit variant or
@@ -67,7 +67,7 @@ BSON Decimal128 maps to Arrow Decimal128 only when validator or user-declared sc
 proves that the complete field domain fits one Arrow precision and scale. Schemaless observation
 alone cannot prove that bound. Otherwise it maps to canonical exact `Utf8`, including native
 special values, with `cdf:physical_type` retained and
-`cdf:semantic=mongodb_decimal128_value_text_v1`. This scalar spelling is the BSON Decimal128 value
+`cdf:semantic=mongodb.decimal128_value_text@1`. This scalar spelling is the BSON Decimal128 value
 contract, not Extended JSON. Decimal128 never becomes floating point; a value outside a pinned Arrow
 decimal domain follows the explicit drift policy or fails before publishing a partial batch.
 

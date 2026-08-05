@@ -28,6 +28,7 @@ cdf-runtime = { path = "../cdf-runtime" }
 cdf-semantic = { path = "../cdf-semantic" }
 cdf-source-clickhouse = { path = "../cdf-source-clickhouse" }
 cdf-source-files = { path = "../cdf-source-files" }
+cdf-source-mongodb = { path = "../cdf-source-mongodb" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -51,6 +52,7 @@ duckdb.workspace = true
 futures-executor = "0.3.32"
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
+mongodb = { version = "=3.8.0", default-features = false, features = ["compat-3-3-0", "bson-3", "dns-resolver", "rustls-tls"] }
 proptest = "1.11.0"
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "modern_sqlite"] }
 tempfile = "3.27.0"

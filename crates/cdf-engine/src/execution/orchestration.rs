@@ -3327,6 +3327,10 @@ where
     }
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     builder.write_json_artifact(
+        cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
+        &plan.schema_admission_program,
+    )?;
+    builder.write_json_artifact(
         "plan/schema-admission.json",
         &plan.compiled_schema_admission,
     )?;
@@ -7790,6 +7794,10 @@ pub fn assemble_isolated_worker_package(
         builder.write_json_artifact("plan/operator-graph.json", graph)?;
     }
     builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    builder.write_json_artifact(
+        cdf_package_contract::SCHEMA_ADMISSION_PROGRAM_FILE,
+        &plan.schema_admission_program,
+    )?;
     builder.write_json_artifact(
         "plan/schema-admission.json",
         &plan.compiled_schema_admission,

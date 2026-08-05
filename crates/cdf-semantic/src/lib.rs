@@ -22,6 +22,8 @@ pub const CDF_VARIANT_SEMANTIC: &str = "cdf.variant@1";
 pub const POSTGRES_JSON_TEXT_SEMANTIC: &str = "postgres.json_text@1";
 pub const POSTGRES_JSONB_TEXT_SEMANTIC: &str = "postgres.jsonb_text@1";
 pub const POSTGRES_NUMERIC_TEXT_SEMANTIC: &str = "postgres.numeric_text@1";
+pub const MONGODB_OBJECT_ID_SEMANTIC: &str = "mongodb.object_id@1";
+pub const MONGODB_DECIMAL128_TEXT_SEMANTIC: &str = "mongodb.decimal128_value_text@1";
 
 pub const POSTGRES_JSON_TEXT_MAPPING_PROFILE: &str = "postgres_exact_json_text_v1";
 pub const POSTGRES_JSONB_TEXT_MAPPING_PROFILE: &str = "postgres_exact_jsonb_text_v1";
@@ -918,6 +920,12 @@ fn exact_uint64_pattern() -> ArrowPattern {
     }
 }
 
+fn exact_fixed_size_binary_pattern(byte_width: i32) -> ArrowPattern {
+    ArrowPattern::Exact {
+        arrow_type: CanonicalArrowType::FixedSizeBinary { byte_width },
+    }
+}
+
 fn builtin_definitions() -> Vec<SemanticDefinition> {
     vec![
         definition(
@@ -973,6 +981,18 @@ fn builtin_definitions() -> Vec<SemanticDefinition> {
             POSTGRES_JSONB_TEXT_MAPPING_PROFILE,
         ),
         postgres_numeric_definition(),
+        mongodb_exact_definition(
+            "object_id",
+            "Exact MongoDB ObjectId represented as its 12-byte binary value",
+            exact_fixed_size_binary_pattern(12),
+            "bson:object_id",
+        ),
+        mongodb_exact_definition(
+            "decimal128_value_text",
+            "Exact BSON Decimal128 value represented as canonical UTF-8 scalar text",
+            exact_utf8_pattern(),
+            "bson:decimal128",
+        ),
     ]
 }
 
@@ -1067,6 +1087,29 @@ fn postgres_numeric_definition() -> SemanticDefinition {
     }
 }
 
+fn mongodb_exact_definition(
+    name: &str,
+    description: &str,
+    arrow_pattern: ArrowPattern,
+    physical_type: &str,
+) -> SemanticDefinition {
+    SemanticDefinition {
+        required_metadata: vec![MetadataRequirement {
+            key: cdf_kernel::PHYSICAL_TYPE_METADATA_KEY.to_owned(),
+            predicate: MetadataPredicate::AsciiCaseInsensitiveExact {
+                value: physical_type.to_owned(),
+            },
+        }],
+        ..definition(
+            "mongodb",
+            name,
+            description,
+            vec![arrow_pattern],
+            SemanticNullability::Any,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,7 +1132,7 @@ mod tests {
             .map(|entry| entry.definition_hash.clone())
             .collect::<Vec<_>>();
         assert_eq!(first, second);
-        assert_eq!(first.len(), 6);
+        assert_eq!(first.len(), 8);
         assert!(first.iter().all(|hash| hash.starts_with("sha256:")));
     }
 
@@ -1145,6 +1188,41 @@ mod tests {
                     Field::new("variant", DataType::Utf8, true),
                     CDF_VARIANT_SEMANTIC,
                     SemanticAuthority::Authored,
+                )
+                .is_ok()
+        );
+        let object_id = with_physical_type(
+            Field::new("id", DataType::FixedSizeBinary(12), false),
+            "bson:object_id",
+        );
+        assert!(
+            catalog
+                .apply_reference(
+                    object_id,
+                    MONGODB_OBJECT_ID_SEMANTIC,
+                    SemanticAuthority::Observed,
+                )
+                .is_ok()
+        );
+        assert!(
+            catalog
+                .apply_reference(
+                    Field::new("id", DataType::Binary, false),
+                    MONGODB_OBJECT_ID_SEMANTIC,
+                    SemanticAuthority::Observed,
+                )
+                .is_err()
+        );
+        let decimal = with_physical_type(
+            Field::new("amount", DataType::Utf8, true),
+            "bson:decimal128",
+        );
+        assert!(
+            catalog
+                .apply_reference(
+                    decimal,
+                    MONGODB_DECIMAL128_TEXT_SEMANTIC,
+                    SemanticAuthority::Observed,
                 )
                 .is_ok()
         );

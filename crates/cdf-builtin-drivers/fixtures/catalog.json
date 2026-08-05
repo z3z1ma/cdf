@@ -21,6 +21,11 @@
       "option_schema_sha256": "sha256:506672e747c196f4d2c2f55db8b861a94ad35459a403e455a7b326a5e2b143f5"
     },
     {
+      "id": "mongodb",
+      "descriptor_sha256": "sha256:fec511f8359ba848e26ca94777bdf8a135fdeec23b4ef413680fd64f48071b68",
+      "option_schema_sha256": "sha256:1b23f4684b94975665875de49a2f6c5ab4374f2633effdd25765afd5016ba76f"
+    },
+    {
       "id": "postgres",
       "descriptor_sha256": "sha256:0bf6a1ff17888ef71e2520bea5c4bd446b287f93c9e182c9f1b81ef5b90e9d93",
       "option_schema_sha256": "sha256:744901b2ac372d3ec863c866613c69accdf2311020645b2e94ad5604ac719a84"
@@ -32,8 +37,8 @@
     },
     {
       "id": "rest",
-      "descriptor_sha256": "sha256:5972c256582a27540dc3718e43fece0598f5521cbf0e457dd47fc25b051adbc5",
-      "option_schema_sha256": "sha256:e5667b2a88ae75e32e44357454a429ef90cbd41ec62d34466b45a44acdfa7904"
+      "descriptor_sha256": "sha256:5ab874e50d6d64d8b65d1ff9332ca0e0bbc404e85bf8b1cdbfdb339a5bdac383",
+      "option_schema_sha256": "sha256:013f4a0f8d765ade7ce315c90fd7060ae26ad217446c9fd0a76c411e53d0b7a0"
     },
     {
       "id": "sqlite",
@@ -73,27 +78,27 @@
     {
       "id": "clickhouse",
       "schemes": ["clickhouse", "clickhouses"],
-      "inspection_sha256": "sha256:8d0e458f760d8446456f6dea387a3cd9e29cac080915a023aab87b28c09b5fb9"
+      "inspection_sha256": "sha256:b3cbf67e3ef5ba89ee222b0349680438e70381646bb1199e73b0b290ab5b9a63"
     },
     {
       "id": "duckdb",
       "schemes": ["duckdb"],
-      "inspection_sha256": "sha256:122dc5717f44fbbb62dee1f9907eaa41ad1a3ba62b3a38c6c000a5b6774be569"
+      "inspection_sha256": "sha256:b7b8d5bc8eec1fadfcd689b270b627a92b03693ad400e3e3e0924995bd6f0642"
     },
     {
       "id": "parquet_object_store",
       "schemes": ["parquet"],
-      "inspection_sha256": "sha256:645a8aa05e3993d1c605f9282199e82db70f312ba0a18455ecfdb1f7b9433973"
+      "inspection_sha256": "sha256:ee6c2224ef6c8f682ea4a439af4ea9fbc0aeb766dc284e320051066da1b02d8d"
     },
     {
       "id": "postgres",
       "schemes": ["postgres", "postgresql"],
-      "inspection_sha256": "sha256:baa1932bfbbbef85b31bfbc92ace3dc6245b024322b7201bb612cef9394f2b3c"
+      "inspection_sha256": "sha256:15f29fc349f4f582bf02443299579d928422eb182987b0db8449ce6daa9926e0"
     },
     {
       "id": "sqlite",
       "schemes": ["sqlite"],
-      "inspection_sha256": "sha256:1c61a59ab6759c477623db5cbddcb2ee3bdeda19855601b39106db771a93bcd8"
+      "inspection_sha256": "sha256:a95efa41bcb89a1b36ca35350d01835bb4a8cb52e9b5bd9231b778432222ce9c"
     }
   ]
 }

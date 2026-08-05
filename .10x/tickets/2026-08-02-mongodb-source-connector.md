@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-08-02
-Updated: 2026-08-03
+Updated: 2026-08-04
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 
@@ -55,14 +55,45 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 - 2026-08-02: Ticket opened; execution waits for complete ClickHouse tranche closure.
 - 2026-08-03: Exact-value audit corrected schemaless BSON Decimal128 to tagged canonical text;
   schema-proven fixed domains remain Arrow Decimal128 and special values never become floats.
+- 2026-08-04: Execution resumed after the ClickHouse source/destination implementations and their
+  independent reviews stabilized. Their remaining non-terminal gate is the connector parent's
+  deliberately final six-cell certificate, so treating it as a prerequisite to connector five
+  would create a cycle. Read the complete ticket and governing source, roofline, exact-value,
+  extension, checkpoint, and error-ownership authorities. Selected official `mongodb` 3.8.0 with
+  BSON 3 and the raw-batch cursor API. The error audit scope is the new source leaf; catalog and
+  conformance enrollment remain supporting boundaries and do not own SDK error classification.
+- 2026-08-04: Implemented the `cdf-source-mongodb` leaf with contact-free compilation, typed
+  configuration and secret references, one reusable official async client/pool, bounded discovery,
+  raw BSON batch decoding, sampled effective-schema authority, exact ObjectId/Decimal128/DateTime
+  mappings, typed filters/projection/cursors, cancellation, egress, and byte-accounted memory.
+  Added the canonical MongoDB semantic definitions to the built-in registry and enrolled the
+  source in the built-in catalog and generic source matrix.
+- 2026-08-04: The digest-pinned MongoDB 8.0.13 live shard passed 15 executed append/replace/merge
+  cells and three sheet-governed exclusions across ClickHouse, DuckDB, Parquet, Postgres, SQLite,
+  and Quasar. Every executed cell proved package verification, receipt-gated checkpointing,
+  duplicate no-op replay, and fresh-artifact replay. The live path exposed and repaired three
+  shared current-contract defects without compatibility behavior: ClickHouse's sheet now publishes
+  its real namecase/type rows, its conformance fixture creates disposition-truthful table engines,
+  and packages persist the source schema-admission program separately from the destination-
+  normalized validation program.
+- 2026-08-04: Froze the nine-file source error scope and 146 construction-bearing lines under
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv`. All 12 Internal-bearing lines
+  are CDF/official-driver invariant sites. Direct and nested typed errors preserve kind, message,
+  and retry delay before raw I/O or SDK fallback classification.
 
 ## Blockers
 
-None beyond the declared dependency.
+None.
 
 ## Evidence
 
-Pending.
+- Eight focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+  injection, portability/redaction, cursor, and error-wrapper behavior.
+- The selected live generic source shard passes all required cells against MongoDB 8.0.13,
+  PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.
+- Error inventory and classification are frozen at the paths recorded in the journal.
+- Roofline, final connector certificate, and closure review remain pending.
 
 ## Review
 

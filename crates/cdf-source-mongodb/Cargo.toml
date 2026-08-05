@@ -1,0 +1,26 @@
+[package]
+name = "cdf-source-mongodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Finite MongoDB collection source adapter for cdf."
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-buffer = "58.3.0"
+arrow-schema = { version = "58.3.0", features = ["serde"] }
+cdf-http = { path = "../cdf-http" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
+futures = "0.3.31"
+mongodb = { version = "=3.8.0", default-features = false, features = ["compat-3-3-0", "bson-3", "dns-resolver", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.49.0", features = ["sync"] }
+url = "2.5.8"
+
+[lints]
+workspace = true
