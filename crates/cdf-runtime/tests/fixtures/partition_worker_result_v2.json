@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "task_sha256": "sha256:b721a1e2ee3f0d29fef1617f860f93423190619445a15cabd8f1f52789d45407",
+  "task_sha256": "sha256:346880730887b33bdaed970f1b94506c926252ffe41f15c7df44b87aa1d985d7",
   "attempt_id": "attempt-4",
-  "write_permit_sha256": "sha256:2ba22ef6bbd9e2c387850cfed5d8364a321e315d110ffdab5905a106bcadcefd",
+  "write_permit_sha256": "sha256:3dcf2661d096878d1197335060ce990588b7c3741f8292e885a5f1a44c914649",
   "status": {
     "kind": "succeeded"
   },
@@ -53,5 +53,5 @@
     "peak_memory_bytes": 1024,
     "spill_bytes": 0
   },
-  "result_sha256": "sha256:49fe230da176b4e53177bb7e6ea715ddfa15c3262e08babb9dcacc04fa89057c"
+  "result_sha256": "sha256:68b83381959f78f2b5339df97c47cd8880f87856f1ad8c2f2a8289f4bf68b3d5"
 }
