@@ -219,12 +219,27 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
     let (registry, state) =
         crate::destination_registry_test_support::registry_with_quasar_destination().unwrap();
 
-    for command in [
+    let mut read_only_commands = vec![
+        vec!["compile".to_owned(), "--refresh".to_owned()],
+        vec!["validate".to_owned()],
         vec!["contract".to_owned(), "freeze".to_owned()],
+        vec!["diff".to_owned(), "schema".to_owned()],
         vec!["inspect".to_owned(), "destinations".to_owned()],
         vec!["doctor".to_owned()],
         vec!["plan".to_owned(), "local.events".to_owned()],
-    ] {
+        vec!["package".to_owned(), "ls".to_owned()],
+    ];
+    read_only_commands.push(vec![
+        "add".to_owned(),
+        "local.copy".to_owned(),
+        project
+            .root
+            .join("data/events.ndjson")
+            .display()
+            .to_string(),
+        "--dry-run".to_owned(),
+    ]);
+    for command in read_only_commands {
         let command_label = command.join(" ");
         let result = run_injected_dynamic(&project, &registry, command);
         assert_eq!(
@@ -265,6 +280,35 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
     assert_eq!(state.commit_begins(), 1);
     assert!(state.plans() >= 1);
     let package_dir = run_package_dir(&project, &loaded);
+
+    for command in [
+        vec![
+            "schema".to_owned(),
+            "show".to_owned(),
+            "local.events".to_owned(),
+        ],
+        vec![
+            "state".to_owned(),
+            "show".to_owned(),
+            "local.events".to_owned(),
+        ],
+        vec![
+            "state".to_owned(),
+            "history".to_owned(),
+            "local.events".to_owned(),
+        ],
+        vec!["status".to_owned()],
+        vec!["package".to_owned(), "ls".to_owned()],
+    ] {
+        let command_label = command.join(" ");
+        let result = run_injected_dynamic(&project, &registry, command);
+        assert_eq!(
+            result.exit_code, 0,
+            "{command_label} failed; stdout: {}; stderr: {}",
+            result.stdout, result.stderr
+        );
+        assert_secret_absent(&result, secret);
+    }
 
     remove_state_store(&project);
     let userinfo_uri = crate::destination_registry_test_support::destination_uri_with_userinfo();

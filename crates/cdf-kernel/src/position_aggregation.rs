@@ -521,7 +521,7 @@ fn aggregate_cursor(
         ))
     })?;
     let arithmetic = match field.data_type() {
-        DataType::Int64 => CursorArithmetic::I64,
+        DataType::Int32 | DataType::Int64 => CursorArithmetic::I64,
         DataType::UInt64 => CursorArithmetic::U64,
         DataType::Timestamp(
             TimeUnit::Second | TimeUnit::Millisecond | TimeUnit::Microsecond | TimeUnit::Nanosecond,

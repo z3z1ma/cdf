@@ -254,7 +254,7 @@ pub fn run_mongodb_source_roofline(
         server_image,
         server_version,
         client_version: "mongodb=3.8.0;bson=3.1.0".to_owned(),
-        protocol: "official asynchronous driver RawBatchCursor; find projection + stable sort"
+        protocol: "official asynchronous driver RawBatchCursor; full-document find + stable sort"
             .to_owned(),
         rows,
         samples,
@@ -278,7 +278,8 @@ pub fn run_mongodb_source_roofline(
         workspace_content_inputs,
         executable_sha256,
         semantic_bias: vec![
-            "the direct runner uses the same official client, projection, stable sort, RawBatchCursor, BSON field decoding, Arrow array construction, record-batch validation, and full content checksum as CDF".to_owned(),
+            "the direct runner uses the same official client, full known-fixture documents, stable sort, RawBatchCursor, BSON field decoding, Arrow array construction, record-batch validation, and full content checksum as CDF".to_owned(),
+            "CDF retains unknown-field schema evidence before materializing its governed projection; the fixed benchmark fixture contains exactly the four governed fields, so neither timed path receives extra document fields".to_owned(),
             "the direct runner omits CDF schema-evidence binding, descriptor checks, retained-memory accounting, batch headers, cancellation, egress, and governed stream completion, so it remains a favorable roofline".to_owned(),
             format!("stream_buffer_batches={STREAM_BUFFER_BATCHES} is queue capacity; queue + producer + consumer gives a truthful retained-batch overlap of {IN_FLIGHT_BATCH_BOUND}"),
             "both paths reuse one configured client/pool and issue one query at a time; pool-size sweep values above one measure pool bookkeeping rather than manufacturing concurrency".to_owned(),
@@ -488,7 +489,6 @@ async fn read_direct(
     let started = Instant::now();
     let mut cursor = collection
         .find(Document::new())
-        .projection(doc! {"_id": 1_i32, "metric": 1_i32, "label": 1_i32, "updated_at": 1_i32})
         .sort(doc! {"updated_at": 1_i32, "_id": 1_i32})
         .batch_size(batch_rows)
         .batch()
@@ -934,6 +934,16 @@ fn process_counters() -> Result<(u64, u64)> {
 }
 
 fn base_git_revision(workspace_root: &Path) -> BenchResult<String> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return Err(bench_error(
+            "MongoDB roofline requires a clean tracked Git snapshot so cdf_revision reconstructs the measured source",
+        ));
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)

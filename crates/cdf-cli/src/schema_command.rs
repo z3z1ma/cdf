@@ -33,10 +33,10 @@ pub(crate) fn schema(
     destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     match command {
-        SchemaCommand::Discover(args) => discover(cli, args, execution),
+        SchemaCommand::Discover(args) => discover(cli, args, execution, destination_registry),
         SchemaCommand::Pin(args) => pin(cli, args, execution, destination_registry),
-        SchemaCommand::Show(args) => show(cli, args),
-        SchemaCommand::Diff(args) => diff(cli, args, execution),
+        SchemaCommand::Show(args) => show(cli, args, destination_registry),
+        SchemaCommand::Diff(args) => diff(cli, args, execution, destination_registry),
         SchemaCommand::Promote(args) => promote(cli, args, execution, destination_registry),
     }
 }
@@ -47,7 +47,7 @@ fn promote(
     execution: &cdf_runtime::ExecutionServices,
     destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema promote")?;
+    let context = load_context(cli, "schema promote", destination_registry)?;
     let resource = context.resource(&args.resource_id)?;
     if args.execute {
         return execute_promotion(&context, resource, &args, execution, destination_registry);
@@ -242,8 +242,9 @@ fn discover(
     cli: &Cli,
     args: SchemaDiscoverArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema discover")?;
+    let context = load_context(cli, "schema discover", destinations)?;
     let resource = context.resource(&args.resource_id)?;
     let inspection_root = inspection_artifact_root("schema-discover")?;
     let artifacts =
@@ -269,7 +270,7 @@ fn pin(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema pin")?;
+    let context = load_context(cli, "schema pin", destinations)?;
     let resource = context.resource(&args.resource_id)?;
     let previous = pinned_snapshot_reference(&context, resource).cloned();
     let previous_artifact = previous
@@ -331,8 +332,12 @@ fn pin(
     CommandOutput::rendered("schema pin", render::schema_pin_document(&report), report)
 }
 
-fn show(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema show")?;
+fn show(
+    cli: &Cli,
+    args: SchemaResourceArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = load_context(cli, "schema show", destinations)?;
     let resource = context.resource(&args.resource_id)?;
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
@@ -350,8 +355,9 @@ fn diff(
     cli: &Cli,
     args: SchemaResourceArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema diff")?;
+    let context = load_context(cli, "schema diff", destinations)?;
     let resource = context.resource(&args.resource_id)?;
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
@@ -394,8 +400,18 @@ fn has_same_discovery_observation(
         .is_some_and(|manifest| manifest.has_same_observation(fresh_manifest)))
 }
 
-fn load_context(cli: &Cli, command: &str) -> Result<ProjectContext, CliError> {
-    ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())
+fn load_context(
+    cli: &Cli,
+    command: &str,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<ProjectContext, CliError> {
+    ProjectContext::load_for_command_with_destination_registry(
+        command,
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )
 }
 
 pub(crate) fn discover_artifacts_for_cli(

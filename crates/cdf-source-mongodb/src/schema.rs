@@ -11,7 +11,8 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CdfError, Result, semantic, source_name, with_physical_type, with_semantic, with_source_name,
+    CdfError, PreContractResidualCandidate, Result, semantic, source_name, with_physical_type,
+    with_semantic, with_source_name,
 };
 use mongodb::bson::{RawBsonRef, RawDocument};
 
@@ -382,29 +383,317 @@ fn validate_field(field: &Field, depth: usize) -> Result<()> {
     }
 }
 
+pub(crate) struct DecodedMongoBatch {
+    pub(crate) record_batch: RecordBatch,
+    pub(crate) physical_schema: Schema,
+    pub(crate) residual_candidates: Vec<PreContractResidualCandidate>,
+}
+
+#[cfg(test)]
 pub(crate) fn decode_batch(schema: SchemaRef, documents: &[&RawDocument]) -> Result<RecordBatch> {
-    validate_mongodb_schema(schema.as_ref())?;
-    let mut columns = schema
+    let decoded = decode_batch_with_evidence(Arc::clone(&schema), schema, documents, 0)?;
+    if let Some(candidate) = decoded.residual_candidates.first() {
+        return Err(CdfError::data(format!(
+            "MongoDB value at `{}` contradicted the pinned Arrow schema",
+            candidate.source_path().join(".")
+        )));
+    }
+    Ok(decoded.record_batch)
+}
+
+pub(crate) fn decode_batch_with_evidence(
+    full_schema: SchemaRef,
+    output_schema: SchemaRef,
+    documents: &[&RawDocument],
+    source_row_offset: u64,
+) -> Result<DecodedMongoBatch> {
+    validate_mongodb_schema(full_schema.as_ref())?;
+    validate_mongodb_schema(output_schema.as_ref())?;
+    let mut columns = output_schema
         .fields()
         .iter()
         .map(|field| ColumnAccumulator::new(field))
         .collect::<Result<Vec<_>>>()?;
-    for document in documents {
+    let known_sources = full_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            source_name(field)
+                .unwrap_or_else(|| field.name())
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    let projected_sources = output_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            source_name(field)
+                .unwrap_or_else(|| field.name())
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    let mut residual_candidates = Vec::new();
+    for (row, document) in documents.iter().enumerate() {
         validate_unique_document(document)?;
-        for (field, column) in schema.fields().iter().zip(&mut columns) {
+        for (field, column) in output_schema.fields().iter().zip(&mut columns) {
             let source = source_name(field).unwrap_or_else(|| field.name());
-            column.append(raw_value_at_path(document, source)?)?;
+            let value = raw_value_at_path(document, source)?;
+            if value_matches_field(field, value)? {
+                column.append(value)?;
+            } else {
+                column.append(None)?;
+                residual_candidates.push(residual_candidate(
+                    source_row_offset.saturating_add(row as u64),
+                    row,
+                    source,
+                    value,
+                    Some(field.as_ref().clone()),
+                )?);
+            }
+        }
+        for element in document.iter() {
+            let (name, value) = element.map_err(|error| {
+                CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+            })?;
+            let name = name.to_string();
+            if known_sources.contains(&name) {
+                continue;
+            }
+            residual_candidates.push(residual_candidate(
+                source_row_offset.saturating_add(row as u64),
+                row,
+                &name,
+                Some(value),
+                None,
+            )?);
         }
     }
+    let residual_sources = residual_candidates
+        .iter()
+        .filter(|candidate| candidate.expected_field().is_some())
+        .filter_map(|candidate| candidate.source_path().first().cloned())
+        .collect::<BTreeSet<_>>();
+    let materialized_fields = output_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let source = source_name(field).unwrap_or_else(|| field.name());
+            if residual_sources.contains(source) {
+                Arc::new(field.as_ref().clone().with_nullable(true))
+            } else {
+                Arc::clone(field)
+            }
+        })
+        .collect::<Vec<_>>();
+    let materialized_schema = Arc::new(Schema::new_with_metadata(
+        materialized_fields,
+        output_schema.metadata().clone(),
+    ));
     let arrays = columns
         .into_iter()
         .map(ColumnAccumulator::finish)
         .collect::<Result<Vec<_>>>()?;
-    RecordBatch::try_new(schema, arrays).map_err(|error| {
+    let record_batch = RecordBatch::try_new(materialized_schema, arrays).map_err(|error| {
         CdfError::data(format!(
             "MongoDB decoded batch contradicted the pinned Arrow schema: {error}"
         ))
+    })?;
+    let physical_schema = execution_physical_schema(
+        &full_schema,
+        &output_schema,
+        documents,
+        &projected_sources,
+        &known_sources,
+        &residual_candidates,
+    )?;
+    Ok(DecodedMongoBatch {
+        record_batch,
+        physical_schema,
+        residual_candidates,
     })
+}
+
+fn value_matches_field(field: &Field, value: Option<RawBsonRef<'_>>) -> Result<bool> {
+    let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
+        return Ok(field.is_nullable());
+    };
+    Ok(match (field.data_type(), value) {
+        (DataType::Boolean, RawBsonRef::Boolean(_))
+        | (DataType::Int32, RawBsonRef::Int32(_))
+        | (DataType::Int64, RawBsonRef::Int32(_) | RawBsonRef::Int64(_))
+        | (DataType::Utf8, RawBsonRef::String(_))
+        | (DataType::Binary, RawBsonRef::Binary(_))
+        | (DataType::FixedSizeBinary(12), RawBsonRef::ObjectId(_))
+        | (DataType::Timestamp(TimeUnit::Millisecond, _), RawBsonRef::DateTime(_)) => true,
+        (DataType::Float64, RawBsonRef::Double(value)) => value.is_finite(),
+        (DataType::Utf8, RawBsonRef::Decimal128(_)) => {
+            semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC)
+        }
+        (DataType::Date32, RawBsonRef::DateTime(value)) => {
+            value.timestamp_millis().rem_euclid(86_400_000) == 0
+                && i32::try_from(value.timestamp_millis().div_euclid(86_400_000)).is_ok()
+        }
+        (DataType::Decimal128(precision, scale), RawBsonRef::Decimal128(value)) => {
+            parse_decimal128(&value.to_string(), *precision, *scale).is_ok()
+        }
+        (DataType::List(child), RawBsonRef::Array(array)) => {
+            for value in array {
+                let value = value.map_err(|error| {
+                    CdfError::data(format!("MongoDB array value is malformed: {error}"))
+                })?;
+                if !value_matches_field(child, Some(value))? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (DataType::Struct(fields), RawBsonRef::Document(document)) => {
+            validate_unique_document(document)?;
+            for child in fields {
+                let source = source_name(child).unwrap_or_else(|| child.name());
+                if !value_matches_field(child, raw_value_at_path(document, source)?)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (DataType::Null, _) => false,
+        _ => false,
+    })
+}
+
+fn residual_candidate(
+    source_row_ordinal: u64,
+    batch_row_ordinal: usize,
+    source: &str,
+    value: Option<RawBsonRef<'_>>,
+    expected: Option<Field>,
+) -> Result<PreContractResidualCandidate> {
+    let (observed_field, value) = observed_value_evidence(source, value)?;
+    PreContractResidualCandidate::new(
+        source_row_ordinal,
+        batch_row_ordinal,
+        source.split('.').map(str::to_owned).collect(),
+        observed_field,
+        expected,
+        value,
+        0,
+    )
+}
+
+fn observed_value_evidence(
+    source: &str,
+    value: Option<RawBsonRef<'_>>,
+) -> Result<(Field, ArrayRef)> {
+    let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
+        return Ok((
+            with_source_name(Field::new(source, DataType::Null, true), source),
+            Arc::new(NullArray::new(1)),
+        ));
+    };
+    match infer_value(value, 0).and_then(|inferred| {
+        inferred_field(
+            source.to_owned(),
+            InferredField {
+                value: inferred,
+                nullable: true,
+                observed_documents: 1,
+            },
+            0,
+        )
+    }) {
+        Ok(field) => {
+            let mut column = ColumnAccumulator::new(&field)?;
+            column.append(Some(value))?;
+            Ok((field, column.finish()?))
+        }
+        Err(_) => {
+            let owned = mongodb::bson::Bson::try_from(value).map_err(|error| {
+                CdfError::data(format!(
+                    "encode unsupported MongoDB value evidence: {error}"
+                ))
+            })?;
+            let bytes = mongodb::bson::serialize_to_vec(&mongodb::bson::doc! {"value": owned})
+                .map_err(|error| {
+                    CdfError::data(format!(
+                        "encode unsupported MongoDB value evidence: {error}"
+                    ))
+                })?;
+            Ok((
+                with_physical_type(
+                    with_source_name(Field::new(source, DataType::Binary, true), source),
+                    format!("bson:{:?}", value.element_type()),
+                ),
+                Arc::new(BinaryArray::from(vec![Some(bytes.as_slice())])),
+            ))
+        }
+    }
+}
+
+fn execution_physical_schema(
+    full_schema: &Schema,
+    output_schema: &Schema,
+    documents: &[&RawDocument],
+    projected_sources: &BTreeSet<String>,
+    known_sources: &BTreeSet<String>,
+    residual_candidates: &[PreContractResidualCandidate],
+) -> Result<Schema> {
+    let inferred = (|| {
+        let mut inference = SchemaInference::default();
+        for document in documents {
+            inference.observe(document)?;
+        }
+        inference.finish().map(|(schema, _, _)| schema)
+    })();
+    if let Ok(inferred) = inferred {
+        let mut fields = inferred
+            .fields()
+            .iter()
+            .filter(|field| {
+                let source = source_name(field).unwrap_or_else(|| field.name());
+                projected_sources.contains(source) || !known_sources.contains(source)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for output in output_schema.fields() {
+            let source = source_name(output).unwrap_or_else(|| output.name());
+            if !fields
+                .iter()
+                .any(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
+            {
+                fields.push(Arc::new(with_source_name(
+                    Field::new(source, DataType::Null, true),
+                    source,
+                )));
+            }
+        }
+        fields.sort_by(|left, right| left.name().cmp(right.name()));
+        return Ok(Schema::new_with_metadata(
+            fields,
+            full_schema.metadata().clone(),
+        ));
+    }
+    let mut fields = output_schema.fields().to_vec();
+    for candidate in residual_candidates
+        .iter()
+        .filter(|candidate| candidate.expected_field().is_none())
+    {
+        let source = candidate
+            .source_path()
+            .first()
+            .ok_or_else(|| CdfError::internal("MongoDB residual source path disappeared"))?;
+        if !fields
+            .iter()
+            .any(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
+        {
+            fields.push(Arc::new(candidate.observed_field().clone()));
+        }
+    }
+    fields.sort_by(|left, right| left.name().cmp(right.name()));
+    Ok(Schema::new_with_metadata(
+        fields,
+        full_schema.metadata().clone(),
+    ))
 }
 
 fn validate_unique_document(document: &RawDocument) -> Result<()> {
@@ -736,7 +1025,7 @@ fn type_mismatch<T>(expected: &str, actual: RawBsonRef<'_>) -> Result<T> {
     )))
 }
 
-fn parse_decimal128(value: &str, precision: u8, scale: i8) -> Result<i128> {
+pub(crate) fn parse_decimal128(value: &str, precision: u8, scale: i8) -> Result<i128> {
     if matches!(value, "NaN" | "sNaN" | "Infinity" | "-Infinity") {
         return Err(CdfError::data(
             "MongoDB Decimal128 special value cannot enter an Arrow decimal; use the exact tagged text mapping",
@@ -764,7 +1053,10 @@ fn parse_decimal128(value: &str, precision: u8, scale: i8) -> Result<i128> {
     let digits = format!("{whole}{fraction}")
         .trim_start_matches('0')
         .to_owned();
-    let digits = if digits.is_empty() { "0" } else { &digits };
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    let digits = digits.as_str();
     let adjustment =
         exponent - i32::try_from(fraction.len()).unwrap_or(i32::MAX) + i32::from(scale);
     let (significand, trailing_zeros) = if adjustment >= 0 {

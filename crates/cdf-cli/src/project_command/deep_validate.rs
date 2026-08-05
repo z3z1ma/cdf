@@ -25,10 +25,12 @@ pub(super) fn run(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command(
+    let context = ProjectContext::load_for_command_with_destination_registry(
         "validate --deep",
         cli.project.as_ref(),
         cli.env.as_deref(),
+        true,
+        destinations,
     )?;
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;

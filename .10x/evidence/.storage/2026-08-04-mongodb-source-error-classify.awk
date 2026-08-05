@@ -15,6 +15,10 @@ BEGIN {
 
     if (match(source, /CdfError::[a-z_]+/)) {
         syntax = substr(source, RSTART, RLENGTH)
+    } else if (match(source, /=> ErrorKind::[A-Za-z]+/)) {
+        syntax = substr(source, RSTART + 3, RLENGTH - 3)
+    } else if (match(source, /MongoErrorKind::[A-Za-z]+/)) {
+        syntax = substr(source, RSTART, RLENGTH)
     } else {
         match(source, /ErrorKind::[A-Za-z]+/)
         syntax = substr(source, RSTART, RLENGTH)
@@ -47,6 +51,26 @@ BEGIN {
         retry = "kind_dependent"
         redaction = "controlled_message_without_endpoint_or_credentials"
         rationale = "The central SDK boundary applies the stable variant and nested typed/I/O classification."
+    } else if (syntax == "MongoErrorKind::Authentication") {
+        owner = "mongodb_auth"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The official driver authentication variant maps to the CDF authentication owner."
+    } else if (syntax == "MongoErrorKind::InvalidArgument") {
+        owner = "caller_contract"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The official driver rejected a caller-supplied or compiled request argument."
+    } else if (syntax == "MongoErrorKind::Shutdown") {
+        owner = "remote_transport"
+        retry = "host_policy_only"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Driver shutdown is a transient external availability condition."
+    } else if (syntax ~ /^MongoErrorKind::/) {
+        owner = "dynamic_foreign_classifier"
+        retry = "kind_dependent"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "This official-driver variant participates in the adjacent exhaustive typed mapping branch."
     } else if (kind == "Transient") {
         owner = "remote_transport"
         retry = "host_policy_only"

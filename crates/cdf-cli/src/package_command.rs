@@ -21,21 +21,28 @@ use crate::{
     output::{CliError, CommandOutput},
 };
 
-pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutput, CliError> {
+pub(crate) fn package(
+    cli: &Cli,
+    command: PackageCommand,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     match command {
         PackageCommand::Ls { packages_dir } => {
             let root = match packages_dir {
                 Some(path) => path,
-                None => {
-                    ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?.package_root()
-                }
+                None => ProjectContext::load_with_destination_registry(
+                    cli.project.as_ref(),
+                    cli.env.as_deref(),
+                    destinations,
+                )?
+                .package_root(),
             };
             let packages = list_packages(root)?;
             let report = PackageListReport { packages };
             CommandOutput::rendered("package ls", report.render_document(), report)
         }
         PackageCommand::Gc { packages_dir } => {
-            let report = package_gc_plan(cli, packages_dir)?;
+            let report = package_gc_plan(cli, packages_dir, destinations)?;
             CommandOutput::rendered("package gc", report.render_document(), report)
         }
         PackageCommand::Verify { package_dir } => {
@@ -55,11 +62,13 @@ pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutpu
 fn package_gc_plan(
     cli: &Cli,
     packages_dir: Option<PathBuf>,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<PackageGcPlanReport, CliError> {
     let context = if packages_dir.is_none() || cli.project.is_some() {
-        Some(ProjectContext::load(
+        Some(ProjectContext::load_with_destination_registry(
             cli.project.as_ref(),
             cli.env.as_deref(),
+            destinations,
         )?)
     } else {
         None

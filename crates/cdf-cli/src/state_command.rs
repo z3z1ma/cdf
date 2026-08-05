@@ -22,15 +22,23 @@ pub(crate) fn state(
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     match command {
-        StateCommand::Show(args) => show(cli, args),
-        StateCommand::History(args) => history(cli, args),
-        StateCommand::Rewind(args) => rewind(cli, args),
+        StateCommand::Show(args) => show(cli, args, destinations),
+        StateCommand::History(args) => history(cli, args, destinations),
+        StateCommand::Rewind(args) => rewind(cli, args, destinations),
         StateCommand::Recover(args) => recover(cli, args, execution, destinations),
     }
 }
 
-fn show(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+fn show(
+    cli: &Cli,
+    args: StateScopeArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let store = context.state_store()?;
     let pipeline_id = state_pipeline_id(&args)?;
     let resource_id = ResourceId::new(args.resource_id.clone())?;
@@ -45,8 +53,16 @@ fn show(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     CommandOutput::rendered("state show", render::show_document(&report), report)
 }
 
-fn history(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+fn history(
+    cli: &Cli,
+    args: StateScopeArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let store = context.state_store()?;
     let pipeline_id = state_pipeline_id(&args)?;
     let resource_id = ResourceId::new(args.resource_id.clone())?;
@@ -61,8 +77,16 @@ fn history(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     CommandOutput::rendered("state history", render::history_document(&report), report)
 }
 
-fn rewind(cli: &Cli, args: RewindArgs) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+fn rewind(
+    cli: &Cli,
+    args: RewindArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_with_destination_registry(
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        destinations,
+    )?;
     let store = context.state_store()?;
     let outcome = store.rewind(cdf_kernel::RewindRequest {
         marker_checkpoint_id: CheckpointId::new(args.marker_checkpoint_id)?,

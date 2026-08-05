@@ -25,18 +25,30 @@ use crate::{
     output::{CliError, CommandOutput},
 };
 
-pub(crate) fn compile(cli: &Cli, args: CompileArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn compile(
+    cli: &Cli,
+    args: CompileArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     let result = if args.refresh {
-        compile_refresh(cli)
+        compile_refresh(cli, destinations)
     } else {
-        compile_offline(cli)
+        compile_offline(cli, destinations)
     };
     result.map_err(with_compile_remediation)
 }
 
-fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
-    let context =
-        ProjectContext::load_for_command("compile", cli.project.as_ref(), cli.env.as_deref())?;
+fn compile_offline(
+    cli: &Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "compile",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let lock = context.lock.as_ref().ok_or_else(|| {
         CdfError::contract(format!(
             "{LOCK_FILE_NAME} is missing under {}",
@@ -51,8 +63,12 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         .clone();
     let entries = compiled_project_entries(&context)?;
     let authored = captured_authored_inputs(&context, &entries)?;
-    let selected_destination_id =
-        cdf_builtin_drivers::builtin_destination_id_for_uri(&context.environment.destination)?;
+    let (selected_destination_id, _) =
+        crate::destination_registry::inspect_destination_artifacts_and_id(
+            destinations,
+            &context,
+            &context.environment.destination,
+        )?;
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: &context.config,
         environment: &context.environment,
@@ -87,11 +103,15 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
     )
 }
 
-fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_recovery(
+fn compile_refresh(
+    cli: &Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_for_command_with_recovery_and_destination_registry(
         "compile --refresh",
         cli.project.as_ref(),
         cli.env.as_deref(),
+        destinations,
     )?;
     let (_, execution) = crate::commands::default_services(cli)?;
     let mut entries = compiled_project_entries(&context)?;
@@ -145,12 +165,12 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         .iter()
         .map(|entry| entry.resource.clone())
         .collect::<Vec<_>>();
-    let destinations = crate::destination_registry::builtin_destination_registry()?;
-    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
-        &destinations,
-        &context,
-        &context.environment.destination,
-    )?;
+    let (selected_destination_id, destination_artifacts) =
+        crate::destination_registry::inspect_destination_artifacts_and_id(
+            destinations,
+            &context,
+            &context.environment.destination,
+        )?;
     let lock = generate_lockfile_with_destination_artifacts(
         &context.config,
         &resources,
@@ -160,8 +180,6 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         &context.semantic_catalog,
     )?;
     let lock_bytes = lock_to_toml(&lock)?.into_bytes();
-    let selected_destination_id =
-        cdf_builtin_drivers::builtin_destination_id_for_uri(&context.environment.destination)?;
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: &context.config,
         environment: &context.environment,

@@ -5,9 +5,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    Batch, BatchId, CdfError, CursorPosition, CursorValue, EffectiveSchemaRuntime,
-    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PartitionPlan, PayloadRetention, ResourceDescriptor, Result,
-    SourcePosition, partition_schema_observation_id, source_name,
+    Batch, BatchId, CdfError, CursorPosition, CursorValue, PartitionPlan, PayloadRetention,
+    ResourceDescriptor, Result, SourcePosition,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
@@ -26,11 +25,12 @@ use crate::{
     identifier::MongoDbIdentifier,
     query::{build_query, field_by_name, scan_from_partition},
     resource::validate_resource_shape,
-    schema::decode_batch,
+    schema::decode_batch_with_evidence,
 };
 
 pub(crate) const MONGODB_MAXIMUM_WIRE_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MONGODB_MAXIMUM_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const MONGODB_CLIENT_POOL_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) struct MongoDbClientHandle {
@@ -49,7 +49,6 @@ pub(crate) struct MongoDbExecutionInput {
     pub(crate) partition: PartitionPlan,
     pub(crate) memory: Arc<dyn MemoryCoordinator>,
     pub(crate) egress: SourceEgressScope,
-    pub(crate) effective_schema_runtime: Option<EffectiveSchemaRuntime>,
 }
 
 pub(crate) async fn connect_mongodb(
@@ -110,8 +109,6 @@ pub(crate) async fn execute_mongodb_collection(
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
     let output_schema = projected_schema(&input.schema, &scan.projection)?;
-    let physical_schema = execution_physical_schema(&input, &scan.projection)?;
-    let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&physical_schema)?;
     let handle = input
         .client
         .get_or_try_init(|| {
@@ -136,10 +133,7 @@ pub(crate) async fn execute_mongodb_collection(
             )?,
         ))
         .await?;
-    let mut find = collection
-        .find(query.filter)
-        .projection(query.projection)
-        .batch_size(input.batch_rows);
+    let mut find = collection.find(query.filter).batch_size(input.batch_rows);
     if !query.sort.is_empty() {
         find = find.sort(query.sort);
     }
@@ -154,6 +148,7 @@ pub(crate) async fn execute_mongodb_collection(
         })
         .await?;
     let mut batch_index = 0_u64;
+    let mut source_row_offset = 0_u64;
     while let Some(raw_batch) = cancellation
         .await_or_cancel(async {
             cursor
@@ -195,18 +190,40 @@ pub(crate) async fn execute_mongodb_collection(
                 Arc::clone(&input.memory),
                 ReservationRequest::new(
                     ConsumerKey::new("mongodb-arrow-decode", MemoryClass::Decode)?,
-                    MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES,
+                    MONGODB_MAXIMUM_DECODE_BYTES,
                 )?,
             ))
             .await?;
-        let record_batch = decode_batch(Arc::clone(&output_schema), &documents)?;
+        let decoded = decode_batch_with_evidence(
+            Arc::clone(&input.schema),
+            Arc::clone(&output_schema),
+            &documents,
+            source_row_offset,
+        )?;
+        let record_batch = decoded.record_batch;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-        if retained_bytes == 0 || retained_bytes > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
+        let evidence_bytes =
+            decoded
+                .residual_candidates
+                .iter()
+                .try_fold(0_u64, |total, candidate| {
+                    let bytes =
+                        u64::try_from(candidate.value().get_array_memory_size()).map_err(|_| {
+                            CdfError::data("MongoDB residual evidence memory exceeds u64")
+                        })?;
+                    total.checked_add(bytes).ok_or_else(|| {
+                        CdfError::data("MongoDB residual evidence memory accounting overflow")
+                    })
+                })?;
+        let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
+            CdfError::data("MongoDB decoded batch retained-memory accounting overflow")
+        })?;
+        if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
             return Err(CdfError::data(format!(
-                "MongoDB Arrow batch retains {retained_bytes} bytes outside its compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
+                "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
             )));
         }
-        output_lease.reconcile(retained_bytes)?;
+        output_lease.reconcile(retained_total)?;
         batch_index = batch_index.saturating_add(1);
         let source_position =
             batch_cursor_position(&input.descriptor, &scan.projection, &record_batch)?;
@@ -217,18 +234,23 @@ pub(crate) async fn execute_mongodb_collection(
             ))?,
             input.descriptor.resource_id.clone(),
             input.partition.partition_id.clone(),
-            observed_schema_hash.clone(),
+            cdf_kernel::canonical_arrow_schema_hash(&decoded.physical_schema)?,
             record_batch,
         )?
         .with_retention(PayloadRetention::new(
             Arc::new(output_lease),
-            retained_bytes,
+            retained_total,
         )?)?;
         batch
             .header
-            .mark_materialized_output(physical_schema.as_ref())?;
+            .mark_materialized_output(&decoded.physical_schema)?;
+        batch
+            .header
+            .extend_residual_candidates(decoded.residual_candidates);
+        batch.header.mark_materialized_residuals_complete();
         batch.header.source_position = source_position;
         sender.send(batch).await?;
+        source_row_offset = source_row_offset.saturating_add(documents.len() as u64);
     }
     drop(cursor_lease);
     Ok(())
@@ -250,66 +272,6 @@ fn projected_schema(schema: &SchemaRef, projection: &[String]) -> Result<SchemaR
     // physical observation that justified them. Do not publish the plan as untrusted Arrow
     // metadata on the runtime batch.
     Ok(Arc::new(Schema::new(fields)))
-}
-
-fn execution_physical_schema(
-    input: &MongoDbExecutionInput,
-    projection: &[String],
-) -> Result<SchemaRef> {
-    let runtime = input.effective_schema_runtime.as_ref().ok_or_else(|| {
-        CdfError::data("MongoDB execution has no sampled physical schema observation")
-    })?;
-    let observation_id = partition_schema_observation_id(&input.partition);
-    let observation = runtime
-        .evidence
-        .observation(observation_id)
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "MongoDB partition references absent schema observation {observation_id:?}"
-            ))
-        })?;
-    let physical = runtime
-        .physical_schema(&observation.physical_schema_hash)
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "MongoDB observation {observation_id:?} references absent physical schema {}",
-                observation.physical_schema_hash
-            ))
-        })?;
-    let fields = projection
-        .iter()
-        .map(|logical| {
-            let effective = input.schema.field_with_name(logical).map_err(|_| {
-                CdfError::contract(format!("MongoDB effective field `{logical}` disappeared"))
-            })?;
-            let source = source_name(effective).unwrap_or_else(|| effective.name());
-            physical
-                .fields()
-                .iter()
-                .find(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
-                .cloned()
-                .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "MongoDB physical observation omitted source field `{source}`"
-                    ))
-                })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let projected = Schema::new_with_metadata(fields, physical.metadata().clone());
-    let projected_hash = cdf_kernel::canonical_arrow_schema_hash(&projected)?;
-    let planned = input
-        .partition
-        .metadata
-        .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
-        .ok_or_else(|| {
-            CdfError::data("MongoDB partition omitted its planned physical schema hash")
-        })?;
-    if planned != projected_hash.as_str() {
-        return Err(CdfError::data(format!(
-            "MongoDB projected physical schema hash {projected_hash} differs from planned authority {planned}"
-        )));
-    }
-    Ok(Arc::new(projected))
 }
 
 fn batch_cursor_position(
@@ -337,7 +299,7 @@ fn batch_cursor_position(
     })))
 }
 
-fn cursor_value(field: &Field, array: &dyn Array, row: usize) -> Result<CursorValue> {
+pub(crate) fn cursor_value(field: &Field, array: &dyn Array, row: usize) -> Result<CursorValue> {
     if array.is_null(row) {
         return Err(CdfError::data(format!(
             "MongoDB cursor field `{}` produced NULL",
@@ -360,10 +322,21 @@ fn cursor_value(field: &Field, array: &dyn Array, row: usize) -> Result<CursorVa
         DataType::Timestamp(TimeUnit::Millisecond, timezone) => array
             .as_any()
             .downcast_ref::<TimestampMillisecondArray>()
-            .map(|array| CursorValue::TimestampMicros {
-                micros: array.value(row).saturating_mul(1_000),
-                timezone: timezone.as_deref().map(str::to_owned),
-            }),
+            .map(|array| {
+                array
+                    .value(row)
+                    .checked_mul(1_000)
+                    .map(|micros| CursorValue::TimestampMicros {
+                        micros,
+                        timezone: timezone.as_deref().map(str::to_owned),
+                    })
+                    .ok_or_else(|| {
+                        CdfError::data(
+                            "MongoDB DateTime cursor exceeds the durable microsecond position domain",
+                        )
+                    })
+            })
+            .transpose()?,
         _ => None,
     }
     .ok_or_else(|| {

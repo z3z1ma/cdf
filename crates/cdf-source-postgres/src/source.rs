@@ -177,7 +177,6 @@ impl PostgresTableResource {
         let target = self.target;
         let connection = self.connection;
         let egress = self.egress;
-        let baseline_observation_schema_catalog = self.baseline_observation_schema_catalog;
         let Some(execution) = self.execution else {
             return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(CdfError::contract(
@@ -192,7 +191,6 @@ impl PostgresTableResource {
             partition,
             execution,
             egress,
-            baseline_observation_schema_catalog,
             move |cancellation| match connection {
                 PostgresConnection::Resolved(database_url) => Ok(database_url),
                 PostgresConnection::Deferred(resolver) => resolver(cancellation),
@@ -225,7 +223,6 @@ where
         partition,
         execution,
         egress,
-        Vec::new(),
         resolve_connection,
     )
 }
@@ -238,7 +235,6 @@ fn open_postgres_table_with_connection_and_catalog<F>(
     partition: PartitionPlan,
     execution: ExecutionServices,
     egress: SourceEgressScope,
-    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     resolve_connection: F,
 ) -> cdf_kernel::PartitionOpenAttempt<'static>
 where
@@ -275,7 +271,6 @@ where
                     partition,
                     memory,
                     egress,
-                    baseline_observation_schema_catalog,
                 },
                 sender,
                 cancellation.clone(),
@@ -600,7 +595,6 @@ struct PostgresExecutionInput {
     partition: PartitionPlan,
     memory: Arc<dyn MemoryCoordinator>,
     egress: SourceEgressScope,
-    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
 fn execute_postgres_table(
@@ -616,7 +610,6 @@ fn execute_postgres_table(
         partition,
         memory,
         egress,
-        baseline_observation_schema_catalog,
     } = input;
     validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
     let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
@@ -636,7 +629,15 @@ fn execute_postgres_table(
         .prepare(&query.sql)
         .map_err(|error| classify_postgres_error("prepare Postgres source query", error))?;
     validate_copy_descriptor(&statement, output_schema.as_ref())?;
-    validate_source_domains(&mut transaction, &target, output_schema.as_ref())?;
+    let catalog = read_catalog_columns(&mut transaction, &target)?;
+    validate_source_domains_from_catalog(output_schema.as_ref(), &catalog)?;
+    let live_schema =
+        crate::catalog::schema_from_catalog_columns(&descriptor.resource_id, catalog)?;
+    let physical_schema = Arc::new(project_physical_schema(
+        &live_schema,
+        output_schema.as_ref(),
+    )?);
+    let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
     let copy_sql = format!("COPY ({}) TO STDOUT WITH (FORMAT BINARY)", query.sql);
     let reader = transaction
         .copy_out(&copy_sql)
@@ -680,27 +681,6 @@ fn execute_postgres_table(
             )));
         }
         lease.reconcile(retained_bytes)?;
-        let (observed_schema_hash, physical_schema) = match baseline_observation_schema_catalog
-            .as_slice()
-        {
-            [] => {
-                let schema = record_batch.schema();
-                (
-                    cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
-                    schema,
-                )
-            }
-            [entry] => (
-                entry.physical_schema_hash.clone(),
-                Arc::clone(&entry.schema),
-            ),
-            entries => {
-                return Err(CdfError::contract(format!(
-                    "Postgres table execution requires one physical schema observation, found {}",
-                    entries.len()
-                )));
-            }
-        };
         batch_index = batch_index.saturating_add(1);
         let mut batch = Batch::from_record_batch(
             BatchId::new(format!(
@@ -710,7 +690,7 @@ fn execute_postgres_table(
             ))?,
             descriptor.resource_id.clone(),
             partition.partition_id.clone(),
-            observed_schema_hash,
+            observed_schema_hash.clone(),
             record_batch,
         )?
         .with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
@@ -770,14 +750,22 @@ fn validate_copy_descriptor(statement: &Statement, schema: &Schema) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_source_domains(
     client: &mut impl postgres::GenericClient,
     target: &PostgresTarget,
     schema: &Schema,
 ) -> Result<()> {
     let catalog = read_catalog_columns(client, target)?;
+    validate_source_domains_from_catalog(schema, &catalog)
+}
+
+fn validate_source_domains_from_catalog(
+    schema: &Schema,
+    catalog: &[PostgresCatalogColumn],
+) -> Result<()> {
     let catalog = catalog
-        .into_iter()
+        .iter()
         .map(|column| (column.name.clone(), column))
         .collect::<BTreeMap<_, _>>();
     for field in schema.fields() {
@@ -791,6 +779,35 @@ fn validate_source_domains(
         validate_source_column_domain(field, column)?;
     }
     Ok(())
+}
+
+fn project_physical_schema(physical: &Schema, effective: &Schema) -> Result<Schema> {
+    let fields = effective
+        .fields()
+        .iter()
+        .map(|effective_field| {
+            let physical_name =
+                source_name(effective_field.as_ref()).unwrap_or(effective_field.name());
+            physical
+                .fields()
+                .iter()
+                .find(|field| {
+                    field.name() == physical_name
+                        || source_name(field.as_ref()) == Some(physical_name)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "Postgres physical schema observation omitted projected source field `{physical_name}` for effective field `{}`",
+                        effective_field.name()
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Schema::new_with_metadata(
+        fields,
+        physical.metadata().clone(),
+    ))
 }
 
 fn validate_source_column_domain(field: &Field, column: &PostgresCatalogColumn) -> Result<()> {
@@ -1734,7 +1751,7 @@ mod tests {
     use arrow_schema::Field;
     use cdf_kernel::{
         ContractRef, CursorOrderingClaim, CursorSpec, ResourceId, ScopeKey, TrustLevel,
-        WriteDisposition, with_source_name,
+        WriteDisposition, with_physical_type, with_source_name,
     };
 
     fn test_egress() -> SourceEgressScope {
@@ -1942,6 +1959,27 @@ mod tests {
         assert_eq!(
             query.sql,
             "SELECT \"VendorID\"::bigint AS \"vendor_id\" FROM \"raw\".\"orders\" WHERE \"VendorID\"::bigint > 1::bigint ORDER BY \"VendorID\"::bigint DESC"
+        );
+    }
+
+    #[test]
+    fn runtime_physical_schema_uses_live_catalog_projection_not_compiled_baseline() {
+        let effective = Schema::new(vec![with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]);
+        let live = Schema::new(vec![
+            with_physical_type(Field::new("VendorID", DataType::Int64, false), "integer"),
+            with_physical_type(Field::new("new_live_column", DataType::Utf8, true), "text"),
+        ]);
+
+        let projected = project_physical_schema(&live, &effective).unwrap();
+
+        assert_eq!(projected.fields().len(), 1);
+        assert_eq!(projected.field(0).name(), "VendorID");
+        assert_eq!(
+            projected.field(0).metadata()[cdf_kernel::PHYSICAL_TYPE_METADATA_KEY],
+            "integer"
         );
     }
 

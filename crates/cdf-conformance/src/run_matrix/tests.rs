@@ -119,6 +119,40 @@ fn registered_destination_shard_cells_persist_output() {
     println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
 }
 
+#[test]
+#[ignore = "live MongoDB runtime-drift boundary; set CDF_MONGODB_ENDPOINT"]
+fn mongodb_current_query_project_runtime_drift_fails_closed() {
+    let environment = ConformanceEnvironment::start().expect(
+        "MongoDB drift conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let cell = RunMatrixCell::new(
+        SourceArchetype::new("mongodb").unwrap(),
+        MatrixDestination::new("duckdb").unwrap(),
+        super::MatrixDisposition::Append,
+    );
+    let source = source_catalog::prepare(&cell, temp.path(), &environment).unwrap();
+    super::mongodb_fixture::add_runtime_unknown_field(&cell).unwrap();
+    let plan = source
+        .engine_plan("mongodb-runtime-drift", cell.disposition, None)
+        .unwrap();
+
+    let error = futures_executor::block_on(cdf_engine::preview_resource(
+        &plan,
+        source.queryable(),
+        cdf_engine::EnginePreviewLimits::default(),
+    ))
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("produced physical schema hash"));
+    assert!(
+        error
+            .message
+            .contains("verified discovery evidence requires")
+    );
+}
+
 fn execute_cells(
     cells: Vec<RunMatrixCell>,
     environment: &ConformanceEnvironment,

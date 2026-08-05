@@ -1,14 +1,16 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use cdf_http::{SecretProvider, SecretUri};
+use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result, SchemaSource};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
-    CompiledSourcePlan, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
-    SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
-    SourceDriverDescriptor, SourceDriverId, SourceEgressScope, SourceExecutionCapabilities,
-    SourceExecutorClass, SourceHealthRequest, SourceHealthResult, SourceHealthStatus,
-    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    CompiledSourcePlan, SourceAddCursor, SourceAddCursorOrdering, SourceAddPlanner,
+    SourceAddPrivateFile, SourceAddProposal, SourceAddRequest, SourceAttestationStrength,
+    SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest,
+    SourceDiscoverySession, SourceDriver, SourceDriverDescriptor, SourceDriverId,
+    SourceEgressScope, SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceResolutionContext,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use futures::StreamExt;
 use mongodb::bson::{Bson, Document, doc};
@@ -17,7 +19,8 @@ use url::Url;
 
 use crate::{
     execution::{
-        MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES, MONGODB_MAXIMUM_WIRE_BATCH_BYTES, connect_mongodb,
+        MONGODB_MAXIMUM_DECODE_BYTES, MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES,
+        MONGODB_MAXIMUM_WIRE_BATCH_BYTES, connect_mongodb,
     },
     identifier::MongoDbIdentifier,
     resource::{
@@ -89,6 +92,10 @@ impl SourceDriver for MongoDbSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
     }
 
     fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
@@ -259,6 +266,144 @@ impl SourceDriver for MongoDbSourceDriver {
     }
 }
 
+impl SourceAddPlanner for MongoDbSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
+        let Some((scheme, _)) = request.location.split_once("://") else {
+            return Ok(None);
+        };
+        if !matches!(scheme, "mongodb" | "mongodb+srv") {
+            return Ok(None);
+        }
+        const KEYS: [&str; 7] = [
+            "auth_source",
+            "batch_rows",
+            "max_pool_size",
+            "stream_buffer_batches",
+            "discovery_records",
+            "discovery_bytes",
+            "cursor",
+        ];
+        let unknown = request
+            .options
+            .keys()
+            .filter(|key| !KEYS.contains(&key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(CdfError::contract(format!(
+                "MongoDB cdf add received unknown options: {}",
+                unknown.join(", ")
+            )));
+        }
+        let mut parsed = Url::parse(&request.location).map_err(|error| {
+            CdfError::contract(format!("cdf add could not parse MongoDB URL: {error}"))
+        })?;
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(CdfError::contract(
+                "MongoDB cdf add URL must not contain query or fragment text",
+            ));
+        }
+        let segments = parsed
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if segments.len() != 2 {
+            return Err(CdfError::contract(
+                "MongoDB cdf add URL must end with exactly `/database/collection`",
+            ));
+        }
+        let database = MongoDbIdentifier::new(segments[0].clone())?;
+        let collection = MongoDbIdentifier::new(segments[1].clone())?;
+        let username = (!parsed.username().is_empty()).then(|| parsed.username().to_owned());
+        let password = parsed.password().map(str::to_owned);
+        parsed
+            .set_username("")
+            .map_err(|()| CdfError::contract("clear MongoDB URL username"))?;
+        parsed
+            .set_password(None)
+            .map_err(|()| CdfError::contract("clear MongoDB URL password"))?;
+        parsed.set_path("");
+        let endpoint = normalize_endpoint(parsed.as_str())?;
+        let mut source_options = BTreeMap::from([
+            ("endpoint".to_owned(), serde_json::json!(endpoint)),
+            ("database".to_owned(), serde_json::json!(database.as_str())),
+        ]);
+        let mut private_files = Vec::new();
+        if let Some(username) = username {
+            let (reference, file) = add_private_file(&request.source_name, "username", username)?;
+            source_options.insert("username".to_owned(), serde_json::json!(reference.as_str()));
+            private_files.push(file);
+        }
+        if let Some(password) = password {
+            let (reference, file) = add_private_file(&request.source_name, "password", password)?;
+            source_options.insert("password".to_owned(), serde_json::json!(reference.as_str()));
+            private_files.push(file);
+        }
+        if let Some(auth_source) = request.options.get("auth_source") {
+            source_options.insert(
+                "auth_source".to_owned(),
+                serde_json::json!(MongoDbIdentifier::new(auth_source.clone())?.as_str()),
+            );
+        }
+        for key in [
+            "batch_rows",
+            "max_pool_size",
+            "stream_buffer_batches",
+            "discovery_records",
+            "discovery_bytes",
+        ] {
+            if let Some(value) = request.options.get(key) {
+                let value = value.parse::<u64>().map_err(|_| {
+                    CdfError::contract(format!("MongoDB cdf add {key} must be an integer"))
+                })?;
+                source_options.insert(key.to_owned(), serde_json::json!(value));
+            }
+        }
+        Ok(Some(SourceAddProposal {
+            source_kind: "mongodb".to_owned(),
+            source_options,
+            resource_options: BTreeMap::from([(
+                "collection".to_owned(),
+                serde_json::json!(collection.as_str()),
+            )]),
+            cursor: request.options.get("cursor").map(|field| SourceAddCursor {
+                field: field.clone(),
+                parameter: None,
+                ordering: SourceAddCursorOrdering::Exact,
+                lag_tolerance_ms: 0,
+            }),
+            display_location: SourceEvidenceLocation::from_operational(&endpoint)?,
+            display_selection: format!("{}.{}", database.as_str(), collection.as_str()),
+            private_files,
+        }))
+    }
+}
+
+fn add_private_file(
+    source_name: &str,
+    field: &str,
+    value: String,
+) -> Result<(SecretUri, SourceAddPrivateFile)> {
+    let relative_path = PathBuf::from(format!(".cdf/secrets/sources/{source_name}.{field}"));
+    let reference = SecretUri::new(format!(
+        "secret://file/.cdf/secrets/sources/{source_name}.{field}"
+    ))?;
+    Ok((
+        reference.clone(),
+        SourceAddPrivateFile {
+            reference,
+            relative_path,
+            value: SecretValue::new(value),
+        },
+    ))
+}
+
 struct MongoDbDiscoverySession {
     database: MongoDbIdentifier,
     collection: MongoDbIdentifier,
@@ -307,30 +452,27 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
         let execution = self.execution.clone();
         let egress = self.egress.clone();
         let cancellation = request.cancellation.clone();
-        let (schema, records, bytes, server_version) = self.execution.run_io(async move {
-            discover_mongodb_collection(MongoDbDiscoveryInput {
-                runtime,
-                database,
-                collection,
-                maximum_records,
-                maximum_bytes,
-                memory: execution.memory(),
-                egress,
-                cancellation,
-            })
-            .await
-        })?;
-        SourceSchemaObservation::new(
-            candidate,
-            schema,
-            BTreeMap::from([
-                ("server_version".to_owned(), server_version),
-                ("sample_records".to_owned(), records.to_string()),
-                ("sample_bytes".to_owned(), bytes.to_string()),
-            ]),
-            bytes,
-            records,
-        )
+        let (schema, records, bytes, server_version, collection_metadata) =
+            self.execution.run_io(async move {
+                discover_mongodb_collection(MongoDbDiscoveryInput {
+                    runtime,
+                    database,
+                    collection,
+                    maximum_records,
+                    maximum_bytes,
+                    memory: execution.memory(),
+                    egress,
+                    cancellation,
+                })
+                .await
+            })?;
+        let mut source_identity = BTreeMap::from([
+            ("server_version".to_owned(), server_version),
+            ("sample_records".to_owned(), records.to_string()),
+            ("sample_bytes".to_owned(), bytes.to_string()),
+        ]);
+        source_identity.extend(collection_metadata.identity());
+        SourceSchemaObservation::new(candidate, schema, source_identity, bytes, records)
     }
 }
 
@@ -347,7 +489,13 @@ struct MongoDbDiscoveryInput {
 
 async fn discover_mongodb_collection(
     input: MongoDbDiscoveryInput,
-) -> Result<(arrow_schema::Schema, u64, u64, String)> {
+) -> Result<(
+    arrow_schema::Schema,
+    u64,
+    u64,
+    String,
+    MongoDbCollectionMetadata,
+)> {
     let MongoDbDiscoveryInput {
         runtime,
         database,
@@ -371,6 +519,8 @@ async fn discover_mongodb_collection(
         })
         .await?;
     let version = validate_server_version(&build_info)?;
+    let collection_metadata =
+        read_collection_metadata(&database_handle, &collection, &cancellation).await?;
     let _raw_lease = cancellation
         .await_or_cancel(reserve(
             memory,
@@ -436,7 +586,107 @@ async fn discover_mongodb_collection(
             "MongoDB discovery counters diverged from inference authority",
         ));
     }
-    Ok((schema, records, bytes, version))
+    let mut metadata = schema.metadata().clone();
+    metadata.extend(collection_metadata.schema_metadata());
+    let schema = arrow_schema::Schema::new_with_metadata(schema.fields().clone(), metadata);
+    Ok((schema, records, bytes, version, collection_metadata))
+}
+
+#[derive(Clone, Debug)]
+struct MongoDbCollectionMetadata {
+    collection_type: String,
+    default_collation: String,
+    validator_sha256: Option<String>,
+    validation_level: Option<String>,
+    validation_action: Option<String>,
+}
+
+impl MongoDbCollectionMetadata {
+    fn identity(&self) -> BTreeMap<String, String> {
+        let mut identity = BTreeMap::from([
+            ("collection_type".to_owned(), self.collection_type.clone()),
+            (
+                "default_collation".to_owned(),
+                self.default_collation.clone(),
+            ),
+            (
+                "validator_present".to_owned(),
+                self.validator_sha256.is_some().to_string(),
+            ),
+        ]);
+        if let Some(hash) = &self.validator_sha256 {
+            identity.insert("validator_sha256".to_owned(), hash.clone());
+        }
+        if let Some(level) = &self.validation_level {
+            identity.insert("validation_level".to_owned(), level.clone());
+        }
+        if let Some(action) = &self.validation_action {
+            identity.insert("validation_action".to_owned(), action.clone());
+        }
+        identity
+    }
+
+    fn schema_metadata(&self) -> std::collections::HashMap<String, String> {
+        self.identity()
+            .into_iter()
+            .map(|(key, value)| (format!("cdf:mongodb_{key}"), value))
+            .collect()
+    }
+}
+
+async fn read_collection_metadata(
+    database: &mongodb::Database,
+    collection: &MongoDbIdentifier,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<MongoDbCollectionMetadata> {
+    let response = cancellation
+        .await_or_cancel(async {
+            database
+                .run_command(doc! {
+                    "listCollections": 1_i32,
+                    "filter": {"name": collection.as_str()},
+                    "nameOnly": false,
+                    "authorizedCollections": true,
+                })
+                .await
+                .map_err(|error| {
+                    crate::error::classify_mongodb_error("read MongoDB collection metadata", error)
+                })
+        })
+        .await?;
+    let entries = response
+        .get_document("cursor")
+        .ok()
+        .and_then(|cursor| cursor.get_array("firstBatch").ok())
+        .ok_or_else(|| CdfError::data("MongoDB listCollections omitted cursor.firstBatch"))?;
+    let entry = entries
+        .iter()
+        .filter_map(Bson::as_document)
+        .find(|entry| entry.get_str("name").ok() == Some(collection.as_str()))
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "MongoDB collection `{collection}` was not returned by bounded metadata discovery"
+            ))
+        })?;
+    let options = entry.get_document("options").cloned().unwrap_or_default();
+    let default_collation = options
+        .get_document("collation")
+        .ok()
+        .and_then(|collation| collation.get_str("locale").ok())
+        .map_or_else(|| "simple".to_owned(), |locale| locale.to_owned());
+    let validator_sha256 = options
+        .get_document("validator")
+        .ok()
+        .filter(|validator| !validator.is_empty())
+        .map(artifact_hash)
+        .transpose()?;
+    Ok(MongoDbCollectionMetadata {
+        collection_type: entry.get_str("type").unwrap_or("collection").to_owned(),
+        default_collation,
+        validator_sha256,
+        validation_level: options.get_str("validationLevel").ok().map(str::to_owned),
+        validation_action: options.get_str("validationAction").ok().map(str::to_owned),
+    })
 }
 
 fn validate_server_version(build_info: &Document) -> Result<String> {
@@ -627,7 +877,7 @@ fn execution_capabilities(
         minimum_poll_bytes: 16 * 1024,
         maximum_poll_bytes: MONGODB_MAXIMUM_WIRE_BATCH_BYTES,
         minimum_decode_bytes: 16 * 1024,
-        maximum_decode_bytes: MONGODB_MAXIMUM_WIRE_BATCH_BYTES + MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES,
+        maximum_decode_bytes: MONGODB_MAXIMUM_DECODE_BYTES,
         maximum_emitted_batch_bytes: MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES,
         maximum_concurrency: 1,
         useful_concurrency: 1,

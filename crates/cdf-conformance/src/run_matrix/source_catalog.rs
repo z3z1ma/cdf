@@ -194,11 +194,11 @@ fn prepare_clickhouse(
 
 fn prepare_mongodb(
     cell: &RunMatrixCell,
-    _project_root: &Path,
+    project_root: &Path,
     _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
-        mongodb_fixture::resource(cell)?,
+        mongodb_fixture::resource(cell, project_root)?,
         mongodb_fixture::assert_source_position,
     ))
 }

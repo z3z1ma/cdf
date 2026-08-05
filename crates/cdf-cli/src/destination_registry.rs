@@ -11,11 +11,23 @@ pub(crate) fn inspect_destination_artifacts(
     context: &ProjectContext,
     uri: &str,
 ) -> Result<Vec<cdf_kernel::DestinationSheetArtifact>> {
+    inspect_destination_artifacts_and_id(registry, context, uri).map(|(_, artifacts)| artifacts)
+}
+
+pub(crate) fn inspect_destination_artifacts_and_id(
+    registry: &DestinationRegistry,
+    context: &ProjectContext,
+    uri: &str,
+) -> Result<(String, Vec<cdf_kernel::DestinationSheetArtifact>)> {
     let resolution =
         cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
             .with_environment_name(&context.environment.name)
             .with_destination_policy(&context.environment.destination_policy);
-    Ok(vec![registry.inspect(uri, &resolution)?.sheet_artifact])
+    let inspection = registry.inspect(uri, &resolution)?;
+    Ok((
+        inspection.description.destination_id.to_string(),
+        vec![inspection.sheet_artifact],
+    ))
 }
 
 pub(crate) fn inspect_destination_runtime(

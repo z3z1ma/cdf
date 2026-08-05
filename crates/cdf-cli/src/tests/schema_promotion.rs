@@ -365,7 +365,12 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
     assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
     let plan: SchemaPromotionPlanReport =
         serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
-    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
     let destinations = plan
         .targets
         .iter()
@@ -506,7 +511,12 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         let plan: SchemaPromotionPlanReport =
             serde_json::from_value(dry_json["result"].clone()).unwrap();
 
-        let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+        let context = crate::context::ProjectContext::load_with_destination_registry(
+            Some(&project.root),
+            None,
+            &test_destination_registry(),
+        )
+        .unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
         let destination = crate::destination_uri::resolve_environment_destination(
@@ -740,7 +750,12 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
         let plan: SchemaPromotionPlanReport =
             serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
-        let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+        let context = crate::context::ProjectContext::load_with_destination_registry(
+            Some(&project.root),
+            None,
+            &test_destination_registry(),
+        )
+        .unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
         let destination = crate::destination_uri::resolve_environment_destination(
@@ -871,7 +886,12 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
     let plan: SchemaPromotionPlanReport =
         serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
-    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
     let resource = context.resource("local.events").unwrap();
     let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
     let destination = crate::destination_uri::resolve_environment_destination(
@@ -963,7 +983,12 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
         let plan: SchemaPromotionPlanReport =
             serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
-        let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+        let context = crate::context::ProjectContext::load_with_destination_registry(
+            Some(&project.root),
+            None,
+            &test_destination_registry(),
+        )
+        .unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
         let destination = crate::destination_uri::resolve_environment_destination(

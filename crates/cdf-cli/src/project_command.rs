@@ -56,8 +56,13 @@ pub(crate) fn validate(
     if args.deep {
         return deep_validate::run(cli, execution, destinations);
     }
-    let context =
-        ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "validate",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     let validation = validate_project(
@@ -74,9 +79,17 @@ pub(crate) fn validate(
     CommandOutput::rendered("validate", render::validate_document(&report), report)
 }
 
-pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
-    let context =
-        ProjectContext::load_for_command("diff schema", cli.project.as_ref(), cli.env.as_deref())?;
+pub(crate) fn diff_schema(
+    cli: &Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load_for_command_with_destination_registry(
+        "diff schema",
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        true,
+        destinations,
+    )?;
     let lock = require_lock(&context)?;
     let destination_artifacts = lock
         .destinations

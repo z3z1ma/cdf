@@ -1,13 +1,15 @@
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
-use arrow_array::{Array, FixedSizeBinaryArray, Int64Array, StringArray};
+use arrow_array::{
+    Array, FixedSizeBinaryArray, Int64Array, StringArray, TimestampMillisecondArray,
+};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     CompiledScanIntent, CursorPosition, CursorSpec, CursorValue, PartitionId, PartitionPlan,
     PartitionRetrySafety, ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey,
     SourcePosition, TrustLevel, WriteDisposition, with_semantic, with_source_name,
 };
-use cdf_runtime::{SourceCompileRequest, SourceDriver, SourceExecutorClass};
+use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceExecutorClass};
 use mongodb::bson::{
     DateTime, Decimal128, doc,
     oid::ObjectId,
@@ -17,10 +19,12 @@ use mongodb::bson::{
 use crate::{
     MongoDbSourceDriver,
     error::classify_mongodb_error,
+    execution::cursor_value,
     identifier::{MongoDbIdentifier, validate_field_path},
     query::{build_query, scan_from_partition},
     schema::{
         MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference, decode_batch,
+        decode_batch_with_evidence, parse_decimal128,
     },
 };
 
@@ -118,6 +122,10 @@ fn compile_is_contact_free_redacted_and_io_owned() {
     );
     assert!(plan.execution_capabilities.blocking_lane.is_none());
     assert_eq!(plan.execution_capabilities.maximum_concurrency, 1);
+    assert_eq!(
+        plan.execution_capabilities.maximum_decode_bytes,
+        128 * 1024 * 1024
+    );
     assert_eq!(plan.redacted_options["batch_rows"], 65_536);
     assert_eq!(plan.redacted_options["max_pool_size"], 1);
     assert_eq!(plan.redacted_options["stream_buffer_batches"], 1);
@@ -172,6 +180,39 @@ fn compile_rejects_credentials_in_endpoint_and_unknown_options() {
         .compile(request("mongodb://localhost:27017", true))
         .unwrap_err();
     assert!(error.message.contains("unknown field `legacy_mode`"));
+}
+
+#[test]
+fn add_planner_compiles_authority_collection_and_private_credentials() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let request = SourceAddRequest {
+        source_name: "warehouse".to_owned(),
+        resource_name: "events".to_owned(),
+        location: "mongodb://reader:unprintable-password@mongo.example:27017/analytics/events"
+            .to_owned(),
+        project_root: "/project".into(),
+        current_dir: "/project".into(),
+        options: BTreeMap::from([("cursor".to_owned(), "sequence".to_owned())]),
+        project_options: None,
+    };
+    let proposal = driver
+        .add_planner()
+        .unwrap()
+        .propose_add(&request)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(proposal.source_kind, "mongodb");
+    assert_eq!(
+        proposal.source_options["endpoint"],
+        "mongodb://mongo.example:27017"
+    );
+    assert_eq!(proposal.source_options["database"], "analytics");
+    assert_eq!(proposal.resource_options["collection"], "events");
+    assert_eq!(proposal.cursor.as_ref().unwrap().field, "sequence");
+    assert_eq!(proposal.private_files.len(), 2);
+    let rendered = format!("{proposal:?}");
+    assert!(!rendered.contains("unprintable-password"));
 }
 
 #[test]
@@ -277,7 +318,52 @@ fn raw_decoder_preserves_object_id_decimal_and_cursor_types() {
     .unwrap();
     let error = decode_batch(schema, &[drifted.as_ref()]).unwrap_err();
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
-    assert!(error.message.contains("expected Int64"));
+    assert!(
+        error
+            .message
+            .contains("contradicted the pinned Arrow schema")
+    );
+}
+
+#[test]
+fn governed_decoder_preserves_unknown_and_mismatched_values_as_residual_evidence() {
+    let object_id = ObjectId::parse_str("64b64c27f6f1a00f92d66c6a").unwrap();
+    let document = RawDocumentBuf::try_from(&doc! {
+        "_id": object_id,
+        "sequence": "wrong",
+        "amount": Decimal128::from_str("1").unwrap(),
+        "observed_at": DateTime::from_millis(0),
+        "new_field": 42_i64,
+    })
+    .unwrap();
+    let schema = Arc::new(schema());
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 17).unwrap();
+
+    assert_eq!(decoded.record_batch.num_rows(), 1);
+    assert_eq!(decoded.residual_candidates.len(), 2);
+    assert!(decoded.residual_candidates.iter().any(|candidate| {
+        candidate.source_row_ordinal() == 17
+            && candidate.source_path() == ["sequence"]
+            && candidate.expected_field().is_some()
+    }));
+    assert!(decoded.residual_candidates.iter().any(|candidate| {
+        candidate.source_path() == ["new_field"] && candidate.expected_field().is_none()
+    }));
+    assert!(
+        decoded
+            .physical_schema
+            .fields()
+            .iter()
+            .any(|field| field.name() == "new_field")
+    );
+}
+
+#[test]
+fn decimal_zero_is_exact_at_every_pinned_scale() {
+    for value in ["0", "-0", "+0.0", "0E-10", "-0.000E+20"] {
+        assert_eq!(parse_decimal128(value, 38, 18).unwrap(), 0, "{value}");
+    }
 }
 
 #[test]
@@ -362,4 +448,54 @@ fn sdk_wrapper_preserves_typed_error_ownership_and_retry_delay() {
         std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
     );
     assert_eq!(denied.kind, cdf_kernel::ErrorKind::Environment);
+
+    for (code, expected_kind) in [
+        (13, cdf_kernel::ErrorKind::Auth),
+        (18, cdf_kernel::ErrorKind::Auth),
+        (26, cdf_kernel::ErrorKind::Data),
+        (91, cdf_kernel::ErrorKind::Transient),
+        (50, cdf_kernel::ErrorKind::RateLimited),
+        (16500, cdf_kernel::ErrorKind::RateLimited),
+    ] {
+        let command: mongodb::error::CommandError = serde_json::from_value(serde_json::json!({
+            "code": code,
+            "codeName": "fixture",
+            "errmsg": "must remain redacted",
+        }))
+        .unwrap();
+        let classified = classify_mongodb_error(
+            "read collection",
+            mongodb::error::ErrorKind::Command(command).into(),
+        );
+        assert_eq!(classified.kind, expected_kind, "command code {code}");
+        assert!(!classified.message.contains("must remain redacted"));
+    }
+
+    let shutdown = classify_mongodb_error(
+        "read collection",
+        mongodb::error::ErrorKind::Shutdown.into(),
+    );
+    assert_eq!(shutdown.kind, cdf_kernel::ErrorKind::Transient);
+    let sessions = classify_mongodb_error(
+        "read collection",
+        mongodb::error::ErrorKind::SessionsNotSupported.into(),
+    );
+    assert_eq!(sessions.kind, cdf_kernel::ErrorKind::Contract);
+}
+
+#[test]
+fn timestamp_cursor_overflow_fails_without_saturating() {
+    let field = Field::new(
+        "observed_at",
+        DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+        false,
+    );
+    let values = TimestampMillisecondArray::from(vec![i64::MAX]);
+    let error = cursor_value(&field, &values, 0).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(
+        error
+            .message
+            .contains("durable microsecond position domain")
+    );
 }

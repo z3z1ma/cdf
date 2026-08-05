@@ -19,15 +19,22 @@ pub(crate) fn add(
     cli: &Cli,
     args: AddArgs,
     _execution: &cdf_runtime::ExecutionServices,
-    _destinations: &cdf_runtime::DestinationRegistry,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = if args.dry_run {
-        ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?
-    } else {
-        ProjectContext::load_for_command_with_recovery(
+        ProjectContext::load_for_command_with_destination_registry(
             "add",
             cli.project.as_ref(),
             cli.env.as_deref(),
+            true,
+            destinations,
+        )?
+    } else {
+        ProjectContext::load_for_command_with_recovery_and_destination_registry(
+            "add",
+            cli.project.as_ref(),
+            cli.env.as_deref(),
+            destinations,
         )?
     };
     let registry = crate::source_registry::builtin_source_registry()?;

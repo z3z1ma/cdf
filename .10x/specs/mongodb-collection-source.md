@@ -19,8 +19,8 @@ tranche on 2026-08-02.
 
 `cdf-source-mongodb` MUST be a leaf adapter with driver id and source kind `mongodb`, and
 `mongodb`/`mongodb+srv` schemes. Credentials remain secret references. The compiled plan contains
-only redacted topology/database authority, a validated collection target, projection/filter/cursor
-policy, schema authority, and client capability floor. Compilation and portability validation
+only redacted topology/database authority, a validated collection target, logical
+projection/filter/cursor policy, schema authority, and client capability floor. Compilation and portability validation
 perform no contact.
 
 The initial resource is one collection. Discovery MUST combine bounded collection metadata,
@@ -35,7 +35,9 @@ create a client per partition, private executor, unbounded queue, semaphore, or 
 
 ## Query and cursor semantics
 
-Projection, limit, supported comparison filters, and cursor ranges compile to typed BSON filters.
+Limit, supported comparison filters, and cursor ranges compile to typed BSON filters. Logical
+projection controls governed Arrow materialization, but execution reads complete BSON documents so
+unknown-field drift remains observable; it MUST NOT use server projection to hide source shape.
 A filter is exact only when MongoDB missing/null, array, numeric comparison, collation, and timezone
 semantics match Arrow; otherwise CDF reapplies it. Field paths and collection names are validated,
 and values are BSON bindings rather than JSON/string fragments.
@@ -77,9 +79,11 @@ not given a local timezone.
 
 ## Execution and performance
 
-Cursor batch size, projection, raw decode, pool size, and bounded in-flight work are selected from
-measured capability data and injected host/memory pressure. Cancellation closes the cursor and
-joins all admitted tasks. The direct-library roofline follows
+Cursor batch size, logical projection, raw decode, pool size, and bounded in-flight work are selected
+from measured capability data and injected host/memory pressure. One poll admits at most 64 MiB of
+raw BSON plus a 128 MiB decode working set, including construction scratch and retained drift
+evidence, before a retained output of at most 64 MiB crosses the source frontier. Cancellation
+closes the cursor and joins all admitted tasks. The direct-library roofline follows
 `.10x/specs/database-connector-roofline.md`.
 
 ## Scenarios and acceptance criteria

@@ -62,21 +62,6 @@ enum ProjectPublicationRecovery {
 }
 
 impl ProjectContext {
-    pub fn load_for_command(
-        command: &str,
-        project_arg: Option<&PathBuf>,
-        env_arg: Option<&str>,
-    ) -> StdResult<Self, CliError> {
-        let destinations = crate::destination_registry::builtin_destination_registry()?;
-        Self::load_for_command_with_destination_registry(
-            command,
-            project_arg,
-            env_arg,
-            true,
-            &destinations,
-        )
-    }
-
     pub fn load_for_command_with_destination_registry(
         command: &str,
         project_arg: Option<&PathBuf>,
@@ -91,20 +76,6 @@ impl ProjectContext {
             hydrate_locked_snapshots,
             ProjectPublicationRecovery::FailClosed,
             destinations,
-        )
-    }
-
-    pub fn load_for_command_with_recovery(
-        command: &str,
-        project_arg: Option<&PathBuf>,
-        env_arg: Option<&str>,
-    ) -> StdResult<Self, CliError> {
-        let destinations = crate::destination_registry::builtin_destination_registry()?;
-        Self::load_for_command_with_recovery_and_destination_registry(
-            command,
-            project_arg,
-            env_arg,
-            &destinations,
         )
     }
 
@@ -172,11 +143,6 @@ impl ProjectContext {
                 Ok(context)
             })
             .map_err(CliError::from)
-    }
-
-    pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
-        let destinations = crate::destination_registry::builtin_destination_registry()?;
-        Self::load_with_destination_registry(project_arg, env_arg, &destinations)
     }
 
     pub fn load_with_destination_registry(

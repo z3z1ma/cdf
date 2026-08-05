@@ -559,7 +559,12 @@ fn compiler_planning_frontier_comes_from_the_default_pipeline_head() {
         "receipt-planning-frontier",
         1_700_000_000_000,
     );
-    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
     let descriptor = context.resource("local.events").unwrap().descriptor();
 
     let frontier = crate::scan_command::planning_frontier(

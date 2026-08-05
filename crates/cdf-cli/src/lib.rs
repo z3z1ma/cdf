@@ -52,12 +52,7 @@ fn invoke_with_progress_delivery(
     let args = args.into_iter().collect::<Vec<_>>();
     let json_mode = args.iter().any(|arg| arg == "--json");
     match cdf_cli_core::args::Cli::parse(args) {
-        Ok(cli)
-            if matches!(
-                cli.command,
-                cdf_cli_core::args::Command::Compile(_) | cdf_cli_core::args::Command::Sql(_)
-            ) =>
-        {
+        Ok(cli) if matches!(cli.command, cdf_cli_core::args::Command::Sql(_)) => {
             commands::execute_without_destination_registry(cli)
         }
         Ok(cli) => match destination_registry::builtin_destination_registry() {
@@ -77,12 +72,7 @@ pub fn invoke_with_destination_registry(
     let args = args.into_iter().collect::<Vec<_>>();
     let json_mode = args.iter().any(|arg| arg == "--json");
     match cdf_cli_core::args::Cli::parse(args) {
-        Ok(cli)
-            if matches!(
-                cli.command,
-                cdf_cli_core::args::Command::Compile(_) | cdf_cli_core::args::Command::Sql(_)
-            ) =>
-        {
+        Ok(cli) if matches!(cli.command, cdf_cli_core::args::Command::Sql(_)) => {
             commands::execute_without_destination_registry(cli)
         }
         Ok(cli) => commands::execute(cli, registry, progress::ProgressDelivery::Buffered),

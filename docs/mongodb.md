@@ -56,8 +56,10 @@ FROM upstream(source => 'warehouse', collection => 'events');
 ```
 
 ObjectId itself is not a checkpoint cursor. Strings are not guessed to be dates or timestamps.
-Projection, exact supported comparisons, cursor bounds, and finite snapshot limits use typed BSON
-documents; field paths and collection names are validated rather than interpolated into user SQL.
+Exact supported comparisons, cursor bounds, and finite snapshot limits use typed BSON documents;
+field paths and collection names are validated rather than interpolated into user SQL. Projection
+governs the Arrow output, while the source reads complete BSON documents so unknown-field drift
+cannot be hidden by a server projection.
 Predicates whose missing/null, array, numeric, collation, or timezone behavior is not exactly Arrow
 equivalent remain residual CDF work.
 
@@ -85,9 +87,11 @@ not silently stringify through Extended JSON or widen the compiled schema.
 
 One resource owns one reusable official client and native pool. The measured defaults are 65,536
 cursor rows, one pool connection, one logical query, and a one-batch queue. Queue, producer, and
-consumer can retain at most three output batches. Raw cursor and Arrow output batches each have a
-64 MiB admission ceiling; reduce `batch_rows` or project fewer fields if a document shape exceeds
-the output bound. The host owns async execution, memory, cancellation, egress, and retries. The
+consumer can retain at most three output batches. Each poll admits at most 64 MiB of raw BSON plus
+a 128 MiB decode working set covering construction scratch, retained Arrow output, and drift
+evidence; the emitted batch is capped at 64 MiB. Reduce `batch_rows` or project fewer fields if a
+document shape exceeds the output bound. The host owns async execution, memory, cancellation,
+egress, and retries. The
 connector creates no private runtime, worker pool, semaphore, retry loop, or unbounded queue.
 
 - Invalid configuration, collection/schema drift, malformed BSON, and unsupported values are typed
@@ -100,8 +104,8 @@ connector creates no private runtime, worker pool, semaphore, retry loop, or unb
 
 The release-mode local 100,000-row mixed BSON sweep uses MongoDB 8.0.13 from the digest-pinned
 `mongo` image. Five samples compare the shipped raw-BSON/Arrow path with the same official client,
-projection, stable sort, duplicate-key validation, field conversion, Arrow construction, and full
-content verification. The selected 65,536-row, one-connection cell measured a 0.905 median
+complete fixed-fixture documents, stable sort, duplicate-key validation, field conversion, Arrow
+construction, and full content verification. The selected 65,536-row, one-connection cell measured a 0.905 median
 throughput ratio against the favorable direct path, above the required 0.900 roofline. The raw,
 host-labelled report is
 [`2026-08-04-mongodb-source-roofline.json`](../.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json).

@@ -56,7 +56,6 @@ struct StoredOrder {
 
 pub(crate) struct MongoDbQuery {
     pub(crate) filter: Document,
-    pub(crate) projection: Document,
     pub(crate) sort: Document,
     pub(crate) limit: Option<i64>,
 }
@@ -184,23 +183,6 @@ pub(crate) fn build_query(
             filter
         }
     };
-    let mut projection = Document::new();
-    let projected_sources = scan
-        .projection
-        .iter()
-        .map(|name| {
-            let field = field_by_name(schema, name).ok_or_else(|| {
-                CdfError::contract(format!("MongoDB projection field `{name}` disappeared"))
-            })?;
-            Ok(source_field(field)?.to_owned())
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
-    for source in &projected_sources {
-        projection.insert(source, 1_i32);
-    }
-    if !projected_sources.contains("_id") {
-        projection.insert("_id", 0_i32);
-    }
     let mut sort = Document::new();
     for order in &scan.order_by {
         sort.insert(
@@ -219,7 +201,6 @@ pub(crate) fn build_query(
         .transpose()?;
     Ok(MongoDbQuery {
         filter,
-        projection,
         sort,
         limit,
     })
@@ -275,9 +256,6 @@ fn parse_supported_predicate(
             }
             Bson::Double(value)
         }
-        (DataType::Utf8, DeclarativeExpressionLiteral::String(value)) => {
-            Bson::String(value.clone())
-        }
         _ => return None,
     };
     Some(StoredPredicate {
@@ -330,6 +308,12 @@ fn canonical_order(
                     order.field
                 ))
             })?;
+            if field.data_type() == &DataType::Utf8 {
+                return Err(CdfError::contract(format!(
+                    "MongoDB string ordering for `{}` is not exact without compiled simple-collation authority",
+                    order.field
+                )));
+            }
             Ok(StoredOrder {
                 source_field: source_field(field)?.to_owned(),
                 direction: order.direction.clone(),

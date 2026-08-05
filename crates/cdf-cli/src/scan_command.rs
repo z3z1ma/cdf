@@ -725,10 +725,7 @@ fn preview_resource_report(
     schema_snapshot: Option<SchemaSnapshotActionReport>,
     host: &cdf_engine::StandaloneExecutionHost,
 ) -> cdf_kernel::Result<PreviewReport> {
-    let limits = match plan.final_limit.or(plan.scan.request.limit) {
-        Some(limit) => EnginePreviewLimits::default().with_max_rows(limit)?,
-        None => EnginePreviewLimits::default(),
-    };
+    let limits = governed_preview_limits(plan.final_limit.or(plan.scan.request.limit))?;
     let preview = host.block_on_root(cdf_engine::preview_resource(
         plan,
         resource.as_project_resource().stream(),
@@ -778,6 +775,15 @@ fn preview_resource_report(
         write_effects: writes.clone(),
         writes,
     })
+}
+
+fn governed_preview_limits(query_limit: Option<u64>) -> cdf_kernel::Result<EnginePreviewLimits> {
+    let defaults = EnginePreviewLimits::default();
+    match query_limit {
+        Some(limit) if limit > 0 => defaults.clone().with_max_rows(defaults.max_rows.min(limit)),
+        Some(0) | None => Ok(defaults),
+        Some(_) => unreachable!("positive query limits handled above"),
+    }
 }
 
 fn lower_runtime_missing(error: &CdfError) -> bool {
@@ -1227,7 +1233,7 @@ fn capability_support_name(support: &CapabilitySupport) -> &'static str {
 mod source_authority_tests {
     use std::collections::BTreeMap;
 
-    use super::validate_recorded_source_authority;
+    use super::{governed_preview_limits, validate_recorded_source_authority};
     use cdf_kernel::SourceDiscoveryBinding;
 
     #[test]
@@ -1250,5 +1256,18 @@ mod source_authority_tests {
                 .contains("does not match compiled source authority")
         );
         assert!(error.message.contains("repin the schema"));
+    }
+
+    #[test]
+    fn query_limits_can_only_tighten_the_governed_preview_bound() {
+        let defaults = governed_preview_limits(None).unwrap();
+        assert_eq!(governed_preview_limits(Some(0)).unwrap(), defaults);
+        assert_eq!(
+            governed_preview_limits(Some(defaults.max_rows + 1))
+                .unwrap()
+                .max_rows,
+            defaults.max_rows
+        );
+        assert_eq!(governed_preview_limits(Some(7)).unwrap().max_rows, 7);
     }
 }

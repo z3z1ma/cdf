@@ -38,7 +38,6 @@ pub fn execute_without_destination_registry(cli: Cli) -> InvocationResult {
     let stdout_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stdout);
     let stderr_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stderr);
     let result = match cli.command.clone() {
-        Command::Compile(args) => crate::compile_command::compile(&cli, args),
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
         _ => Err(CdfError::internal(
             "registry-free dispatch received a command that requires destination composition",
@@ -76,10 +75,10 @@ fn dispatch(
             let (_, services) = default_services(&cli)?;
             crate::add_command::add(&cli, args, &services, destinations)
         }
-        Command::Compile(_) | Command::Sql(_) => Err(CdfError::internal(
-            "compile and sql must use registry-free command dispatch",
-        )
-        .into()),
+        Command::Compile(args) => crate::compile_command::compile(&cli, args, destinations),
+        Command::Sql(_) => {
+            Err(CdfError::internal("sql must use registry-free command dispatch").into())
+        }
         Command::Validate(args) => {
             let (_, services) = default_services(&cli)?;
             crate::project_command::validate(&cli, args, &services, destinations)
@@ -108,7 +107,7 @@ fn dispatch(
             crate::scan_command::preview(&cli, args, host.as_ref(), &services, destinations)
         }
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args, destinations),
-        Command::DiffSchema => crate::project_command::diff_schema(&cli),
+        Command::DiffSchema => crate::project_command::diff_schema(&cli, destinations),
         Command::Schema(command) => {
             let (_, services) = default_services(&cli)?;
             crate::schema_command::schema(&cli, command, &services, destinations)
@@ -144,12 +143,12 @@ fn dispatch(
                 progress_delivery,
             )
         }
-        Command::Package(command) => crate::package_command::package(&cli, command),
+        Command::Package(command) => crate::package_command::package(&cli, command, destinations),
         Command::Doctor => {
             let (_, services) = default_services(&cli)?;
             crate::doctor_command::doctor(&cli, &services, destinations)
         }
-        Command::Status => crate::status_command::status(&cli),
+        Command::Status => crate::status_command::status(&cli, destinations),
     }
 }
 

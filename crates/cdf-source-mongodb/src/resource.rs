@@ -124,7 +124,6 @@ impl MongoDbCollectionResource {
                         partition,
                         memory,
                         egress: self.egress,
-                        effective_schema_runtime: self.effective_schema_runtime,
                     },
                     sender,
                     cancellation,

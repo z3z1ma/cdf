@@ -179,7 +179,12 @@ fn inspect_run_human_rich_render_uses_recovery_and_artifact_panels() {
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
     let run_id = run_json["result"]["run_id"].as_str().unwrap();
-    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
 
     let output = crate::inspect_run_command::inspect_run(&context, run_id.to_owned()).unwrap();
     let result = render_rich(output);
