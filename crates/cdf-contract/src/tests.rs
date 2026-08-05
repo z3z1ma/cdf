@@ -1371,6 +1371,63 @@ fn exact_source_materialization_round_trips_non_mongodb_and_every_list_container
             "{container}"
         );
     }
+
+    let observed_children = ["z_decimal", "a_decimal"]
+        .into_iter()
+        .map(|name| {
+            Arc::new(
+                Field::new(name, DataType::Utf8, true).with_metadata(HashMap::from([(
+                    "wire:encoding".to_owned(),
+                    "number-v1".to_owned(),
+                )])),
+            )
+        })
+        .collect::<Vec<_>>();
+    let constraint_children = ["z_decimal", "a_decimal"]
+        .into_iter()
+        .map(|name| Arc::new(Field::new(name, DataType::Int64, true)))
+        .collect::<Vec<_>>();
+    let observed = Schema::new(vec![Field::new(
+        "payload",
+        DataType::Struct(observed_children.into()),
+        true,
+    )]);
+    let constraint = Schema::new(vec![Field::new(
+        "payload",
+        DataType::Struct(constraint_children.into()),
+        true,
+    )]);
+    let rules = ["a_decimal", "z_decimal"]
+        .into_iter()
+        .map(|name| {
+            cdf_kernel::SourceMaterializationRule::new(
+                format!("example.{name}_text_to_int.v1"),
+                vec!["payload".to_owned(), name.to_owned()],
+                cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Utf8).unwrap(),
+                BTreeMap::from([("wire:encoding".to_owned(), "number-v1".to_owned())]),
+                cdf_kernel::CanonicalArrowType::from_arrow(&DataType::Int64).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reconciliation = reconcile_schema_with_source_materializations(
+        &observed,
+        &constraint,
+        &ContractPolicy::default().types,
+        &rules,
+    )
+    .unwrap();
+    let evidence = decision_for(&reconciliation.plan, "payload")
+        .source_materialization
+        .as_ref()
+        .unwrap();
+    assert_eq!(evidence.rules, rules);
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&reconciliation.schema)
+            .unwrap()
+            .unwrap(),
+        reconciliation.plan
+    );
 }
 
 #[test]

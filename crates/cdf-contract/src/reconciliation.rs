@@ -693,7 +693,9 @@ pub fn plan_schema_reconciliation_with_source_materializations(
             SCHEMA_COERCION_PLAN_METADATA_KEY.to_owned(),
             serialized_plan,
         );
-        Some(Schema::new_with_metadata(output_fields, metadata))
+        let schema = Schema::new_with_metadata(output_fields, metadata);
+        validate_schema_coercion_plan(&schema, &plan)?;
+        Some(schema)
     } else {
         None
     };
@@ -988,7 +990,12 @@ fn exact_source_materializations(
                     return Ok(None);
                 }
             }
-            Ok((!matched.is_empty()).then_some(matched))
+            if matched.is_empty() {
+                Ok(None)
+            } else {
+                matched.sort_by(|left, right| left.field_path.cmp(&right.field_path));
+                Ok(Some(matched))
+            }
         }
         (DataType::List(observed_child), DataType::List(constraint_child))
         | (DataType::LargeList(observed_child), DataType::LargeList(constraint_child))
