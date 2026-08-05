@@ -12,8 +12,8 @@ Implement the complete ratified D3 authoring/compiler surface in one current-mod
 
 1. Replace project resource discovery with path-fenced, stable enumeration of exactly
    `cdf/<namespace>/<resource>.cdf.sql`; derive canonical resource id/default logical target
-   from the path; `cdf/` is an identity-excluded ownership marker, and all other resource roots are
-   rejected.
+   from the path; `cdf/` is an identity-excluded ownership marker and the only enumerated resource
+   root.
 2. Parse one bare admitted `SELECT` or optional ordered, no-identifier
    `RESOURCE ... AS SELECT` envelope with exact source spans and stable diagnostics.
 3. Require one `upstream(source => '<configured_source>', ...)` relation; resolve the typed project
@@ -33,9 +33,9 @@ Implement the complete ratified D3 authoring/compiler surface in one current-mod
    lineage, pushdown/residual decisions, and rejected-construct diagnostics.
 8. Update `cdf init`, `cdf add`/generation, examples, fixtures, generated CLI artifacts, and docs to
    emit only the query-first `cdf/` layout.
-9. Delete the spike-era wildcard/declarative resource authoring reader and the never-public
-   path-bound-source prototype. Reject retired syntax/layout directly; add no legacy enum, shim,
-   migration, fallback parser, feature flag, alias, or dual reader.
+9. Delete the superseded wildcard/declarative resource authoring reader and path-bound-source
+   prototype. Compile only the current model; add no second reader, migration path, fallback parser,
+   feature flag, alias, or dual authority.
 10. Keep validation economical: focused crate/test targets during implementation, formatting and
     strict Clippy for affected packages, one affected-boundary certificate after the cutover is
     stable, one thorough independent red-team review, and asynchronous GitHub CI observation.
@@ -59,7 +59,6 @@ retired public authority rather than wrapping them.
 - resident supervision, macros/Jinja/runtime templating, or row-level Python/WASM hooks;
 - changing semantic-registry, package-delete, destination, CDC, or source-driver behavior beyond
   the typed bindings required by D3;
-- compatibility with any retired project or SQL authoring shape;
 - a whole-workspace test loop after each repair.
 
 ## Acceptance Criteria
@@ -82,7 +81,7 @@ retired public authority rather than wrapping them.
   [SEMANTICS] [EXECUTION] AS SELECT` forms parse with exact one-based spans. Unknown, repeated,
   contradictory, or out-of-order clauses fail with stable codes.
 - [ ] `CREATE RESOURCE`, an id after `RESOURCE`, `FROM SOURCE`, `SINK`, generic `WITH`/`OPTIONS`,
-  multiple statements, and retired project roots/readers fail with focused current-form guidance.
+  and multiple statements fail through the ordinary current grammar.
 - [ ] `source` is required exactly once as a named string literal, is removed before driver
   resource-schema validation, and cannot be positional, computed, duplicated, or replaced by a
   type/driver/URI/credential/secret/source-level option.
@@ -127,8 +126,8 @@ retired public authority rather than wrapping them.
   dependencies match; authored hashes always remain distinct.
 - [ ] Compile, validate, plan, explain, run, preview, inspect, `cdf sql`, lock binding, scaffold,
   add/generate, examples, and generated help/man/completions agree on one query-first current model.
-- [ ] Retired wildcard/declarative/path-bound-source models and associated tests/code are deleted;
-  rejection tests do not preserve a compatibility reader.
+- [ ] Superseded wildcard/declarative/path-bound-source code and its fixtures are deleted. Tests
+  exercise only the current model and its actual contract boundaries.
 - [ ] Focused parser/project/manifest/CLI/driver-boundary/differential tests pass; affected-package
   formatting and strict Clippy pass; generated artifacts are current; one stable affected-boundary
   certificate passes without repeatedly running the full workspace.
@@ -227,6 +226,32 @@ retired public authority rather than wrapping them.
   validation is now the ordinary closed driver schema boundary. Extended relational-plan structural
   validation to admit only the `cdf:semantic` metadata overlay applied after D2 analysis while
   retaining all expression-derived physical metadata invariants.
+- 2026-08-04: The user tightened the current-only boundary before CLI fixture conversion. Project
+  resource discovery now enumerates only `cdf/` and ignores unrelated directories; it contains no
+  sentinel for superseded config keys or alternate roots. Deleted tests whose sole purpose was to
+  reject never-released project layouts, removed the special-case `CREATE RESOURCE` migration
+  diagnostic, and changed product diagnostics from tranche-labelled `CDF-D3-*` codes to stable
+  capability-labelled `CDF-*` codes. The earlier journal statements about rejected alternate roots
+  and `CDF-D3-*` diagnostics are superseded by this ratified correction.
+- 2026-08-04: Cut the CLI command surface over to the current compiler. Project context now loads
+  only query-first resources, commands carry query authority through schema hydration and
+  finalization, and ad-hoc runs persist a private `.cdf.sql` definition then compile its typed
+  source proposal directly. Removed the hidden ad-hoc TOML compiler round-trip and both
+  `parse_declarative_toml`/`parse_declarative_yaml` aliases. Ad-hoc identity is tracked explicitly
+  in the invocation context; no configured-source name has reserved behavior.
+- 2026-08-04: Converted the scaffold, `cdf add`, executable CLI/conformance fixtures, source
+  examples, constant-memory runner, smoke matrix, quickstart, vision examples, and generated error
+  reference to `cdf/<namespace>/<resource>.cdf.sql` plus shared `[sources.<name>]` configuration.
+  Bulk searches over first-party code/docs/tools now find no wildcard resource mappings, resource
+  TOML paths, old project-resource mapping diagnostic, tranche-labelled product codes, or retired
+  public parser aliases.
+- 2026-08-04: The user classified tests that inspect Rust source text, function/import names, line
+  counts, or module layout as invalid quality evidence. Removed the repository's hand-written
+  source-token/import/module-cycle/runtime-owner/dependency-direction pseudo-tests while retaining
+  behavioral tests and real generated/serialized artifact contracts. Added this boundary and the
+  periodic first-party `jscpd`/`cargo machete`/complexity procedure to `QUALITY.md`; narrowed the
+  scheduled duplication scan to first-party `crates`, `examples`, and `tools`; and removed every
+  dependency exposed as unused by `cargo machete`.
 
 ## Blockers
 
@@ -265,6 +290,34 @@ evidence without reopening or re-verifying those tickets.
   12 -- -D warnings` passed. This is strict lint evidence for the compiler/default/semantic-metadata
   boundary and the removal of the obsolete source-option compatibility hook; it is not a whole-
   workspace certificate.
+- `cargo check -p cdf-cli -p cdf-project -p cdf-engine -p cdf-runtime -p cdf-kernel -p cdf-memory
+  -p cdf-package -p cdf-conformance -p cdf-foreign-stream -p cdf-source-sqlite -p cdf-dest-sqlite
+  --tests --locked -j 12` passed after the query-first fixture conversion and removal of structural
+  pseudo-tests. This is compile evidence for the affected test surfaces, not behavioral execution.
+- `cargo machete --with-metadata` initially identified six first-party unused dependencies exposed
+  by the current-only/test cleanup plus one unused vendored dev dependency. After deletion, the
+  repeated command reported no unused dependencies.
+- First-party `jscpd` over `crates examples tools` at the scheduled 12-line/80-token thresholds
+  passed with 2.4469% duplicated lines and 2.6253% duplicated tokens. A whole-tree invocation was
+  rejected as a useful gate because immutable evidence archives and vendored/generated upstream
+  code raised the aggregate to 10.11%; CI and `QUALITY.md` now encode the meaningful first-party
+  scope.
+- Explicit `clippy::cognitive_complexity` diagnostics confirmed the lint is allow-by-default and
+  therefore not covered by ordinary `-D warnings`. The diagnostic surfaced six first-party
+  functions: one existing engine preview function touched by the native relational integration and
+  five existing kernel/state/contract/subprocess functions. No newly introduced query/compiler
+  function crossed the default threshold. This heuristic inventory is recorded honestly and is
+  not represented as a strict gate.
+- `cargo clippy -p cdf-source-rest -p cdf-engine -p cdf-project -p cdf-cli -p cdf-conformance -p
+  cdf-runtime -p cdf-kernel -p cdf-memory -p cdf-package -p cdf-foreign-stream -p
+  cdf-source-sqlite -p cdf-dest-sqlite --tests --locked -j 12 -- -D warnings` passed.
+- `cargo test -p cdf-engine --lib project_query --locked -j 12` passed six focused parser/lowering
+  tests, and `cargo test -p cdf-engine --lib
+  query_first_relational_plan_executes_before_cli_residual_projection_and_limit --locked -j 12`
+  passed its native execution-order law.
+- `cargo run -p cdf-cli-core --locked --features cli-artifacts --bin
+  cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check` passed after regenerating the
+  current error reference.
 
 ## Review
 

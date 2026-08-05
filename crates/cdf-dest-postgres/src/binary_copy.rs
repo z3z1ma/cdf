@@ -855,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "release-mode D3 binary-vs-CSV encoder benchmark"]
+    #[ignore = "release-mode binary-vs-CSV encoder benchmark"]
     fn binary_copy_encoder_is_at_least_twice_csv() {
         const ROWS: usize = 262_144;
         let batch = RecordBatch::try_new(

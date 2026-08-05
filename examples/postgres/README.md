@@ -25,4 +25,6 @@ cdf sql 'select * from package_files'
 rm postgres-dsn
 ```
 
-`postgres-dsn` is ignored by the repository. The resource contains only its `secret://file/postgres-dsn` reference.
+`postgres-dsn` is ignored by the repository. `cdf.toml` contains only its
+`secret://file/postgres-dsn` reference; the resource query lives at
+`cdf/warehouse/orders.cdf.sql`.

@@ -46,14 +46,7 @@ pub(super) fn validate_document(report: &ProjectValidationCliReport) -> RenderDo
             KeyValuePanel::new("Project")
                 .row("name", report.project_name.clone())
                 .row("environment", validation.environment.name.clone())
-                .row(
-                    "declarative resources",
-                    validation.declarative_resources.to_string(),
-                )
-                .row(
-                    "external resources",
-                    validation.external_resources.to_string(),
-                )
+                .row("query resources", validation.resources.to_string())
                 .row(
                     "secret references",
                     validation.checked_secrets.len().to_string(),

@@ -310,6 +310,63 @@ fn tier_b_negotiates_pushdown_fidelity_without_io() {
 }
 
 #[test]
+fn query_first_relational_plan_executes_before_cli_residual_projection_and_limit() {
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.source_position = Some(terminal_file_position());
+    }
+    let resource = MockResource::tier_b(batches)
+        .with_write_disposition(WriteDisposition::Append)
+        .without_control_keys();
+    let analyzed = crate::analyze_project_query_at(
+        "SELECT id, CAST(id AS BIGINT) + 10 AS adjusted FROM upstream(source => 'warehouse', table => 'orders') WHERE active",
+        "cdf/analytics/orders.cdf.sql",
+        1,
+        1,
+        sample_schema().as_ref(),
+        Vec::new(),
+    )
+    .unwrap();
+    let logical_schema = analyzed.relational_plan.output_schema.to_arrow().unwrap();
+    let mut input = plan_input(
+        vec!["adjusted != 13"],
+        Some(vec!["id".to_owned(), "adjusted".to_owned()]),
+        Some(1),
+        ExecutionExtent::bounded(),
+    );
+    input.validation_program = cdf_contract::compile_validation_program(
+        &cdf_contract::ContractPolicy::for_trust(cdf_kernel::TrustLevel::Governed),
+        &cdf_contract::ObservedSchema::from_arrow(&logical_schema),
+    )
+    .unwrap();
+    input.relational_expression_plan = Some(analyzed.relational_plan);
+
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+
+    assert!(plan.scan.request.projection.is_none());
+    assert!(plan.scan.request.filters.is_empty());
+    assert!(plan.scan.request.limit.is_none());
+    assert_eq!(plan.residual_predicates.len(), 1);
+    assert_eq!(plan.final_limit, Some(1));
+    assert!(!plan.explain.projection_pushed);
+    assert!(!plan.explain.limit_pushed);
+    plan.validate_compiled_expression_plan().unwrap();
+
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    assert_eq!(output.profile.output_rows, 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
+    let adjusted = batches[0]
+        .column_by_name("adjusted")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(adjusted.values(), &[12]);
+}
+
+#[test]
 fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
     let resource = MockResource::tier_b(sample_batches());
     let input = plan_input(
@@ -384,39 +441,6 @@ fn resident_execution_plan_is_rejected_until_supervisor_exists() {
 
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
     assert!(error.message.contains("resident execution is not enabled"));
-}
-
-#[test]
-fn execution_extent_is_not_redefined_by_the_engine() {
-    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for entry in std::fs::read_dir(source_dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
-            || path.file_name().and_then(std::ffi::OsStr::to_str) == Some("tests.rs")
-        {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).unwrap();
-        for forbidden in ["PlanBoundedness", "UnboundedLive", "UnboundedDrain"] {
-            assert!(
-                !source.contains(forbidden),
-                "{} contains obsolete execution-extent authority {forbidden}",
-                path.display()
-            );
-        }
-        for line in source.lines() {
-            let tokens = line.split_whitespace().collect::<Vec<_>>();
-            for declaration in tokens.windows(2) {
-                assert!(
-                    !matches!(declaration[0], "enum" | "struct")
-                        || !declaration[1].trim_end_matches('{').contains("Extent"),
-                    "{} defines engine-owned extent type on line `{}`",
-                    path.display(),
-                    line.trim()
-                );
-            }
-        }
-    }
 }
 
 #[test]

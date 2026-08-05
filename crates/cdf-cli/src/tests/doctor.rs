@@ -50,7 +50,7 @@ fn doctor_reports_lockfile_presence_when_lock_exists() {
 fn doctor_registered_source_probe_fails_independently_before_network_or_writes() {
     let project = TestProject::new();
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         r#"
 [source.local]
 kind = "files"
@@ -258,44 +258,6 @@ fn doctor_skips_python_without_interpreter_or_python_resources() {
     assert_eq!(python["status"], "skipped");
     assert_eq!(python["details"]["python_resources"], 0);
     assert_eq!(python["details"]["require_free_threaded"], false);
-}
-
-#[test]
-fn doctor_fails_python_resource_without_interpreter() {
-    let project = TestProject::new();
-    fs::write(project.root.join("cdf.toml"), PYTHON_RESOURCE_PROJECT).unwrap();
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
-
-    assert_eq!(result.exit_code, 1);
-    let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "source.python.interpreter");
-    assert_eq!(python["status"], "failed");
-    assert!(
-        python["message"]
-            .as_str()
-            .unwrap()
-            .contains("python.interpreter")
-    );
-    assert_eq!(python["details"]["python_resources"], 1);
-}
-
-#[test]
-fn doctor_uses_fixed_python_probe_not_python_resource_code() {
-    let project = TestProject::new();
-    let interpreter = project.root.join("fake-python");
-    write_probe_validating_interpreter(
-        &interpreter,
-        &python_probe_json(&interpreter, 3, 12, 7, true, false),
-    );
-    write_python_resource_config_project(&project, "fake-python");
-
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
-
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "source.python.interpreter");
-    assert_eq!(python["status"], "passed");
-    assert_eq!(python["details"]["version"], "3.12.7");
 }
 
 #[test]

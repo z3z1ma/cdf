@@ -22,15 +22,6 @@ use cdf_contract::NORMALIZER_NAMECASE_V1;
     unused_imports,
     reason = "white-box crate tests aggregate project internals"
 )]
-use cdf_declarative::{
-    CompiledResource, DeclarativeDocument, compile_document, compile_document_with_project_root,
-    parse_toml as parse_declarative_toml, parse_yaml as parse_declarative_yaml,
-};
-#[cfg(test)]
-#[allow(
-    unused_imports,
-    reason = "white-box crate tests aggregate project internals"
-)]
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 #[cfg(test)]
 #[allow(
@@ -90,6 +81,7 @@ mod schema_discovery;
 mod schema_snapshot;
 mod secrets;
 mod semantic_uses;
+#[cfg(test)]
 mod sources;
 #[cfg(test)]
 mod test_destinations;
@@ -119,14 +111,10 @@ pub use lock_cas::{
     read_lock_file_authority, write_lock_file_guarded,
 };
 pub use lockfile::{
-    CdfLock, CompiledProjectResource, ContractFreezeReport, ContractSnapshot,
-    ContractSnapshotComparison, ContractSnapshotCounts, ContractSnapshotDrift,
-    ContractSnapshotVerdict, ContractTestReport, DependencyTuple, LockDiff, LockDiffKind,
-    LockedDestination, LockedResource, ProjectLock, ProjectResourceOrigin, ProjectValidationReport,
-    SecretCheck, SecretCheckStatus, compile_project_declarative_resource_entries_with_root,
-    compile_project_declarative_resource_entries_with_root_and_semantic_catalog,
-    compile_project_declarative_resources, compile_project_declarative_resources_with_root,
-    compile_project_declarative_resources_with_semantic_catalog, contract_snapshot_for_resource,
+    CdfLock, ContractFreezeReport, ContractSnapshot, ContractSnapshotComparison,
+    ContractSnapshotCounts, ContractSnapshotDrift, ContractSnapshotVerdict, ContractTestReport,
+    DependencyTuple, LockDiff, LockDiffKind, LockedDestination, LockedResource, ProjectLock,
+    ProjectValidationReport, SecretCheck, SecretCheckStatus, contract_snapshot_for_resource,
     contract_snapshot_for_resource_with_semantic_catalog, contract_snapshots_for_resources,
     contract_snapshots_for_resources_with_semantic_catalog, current_dependency_tuple,
     diff_lockfiles, freeze_contract_snapshots, generate_lockfile_with_destination_artifacts,
@@ -150,9 +138,8 @@ pub use manifest::{
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
-    ProjectConfig, ProjectFreshness, ProjectMetadata, ProjectResource, ProjectSourceConfig,
-    ProjectSourceOverlay, ResourceSourceKind, RetentionPolicy, RetentionRule, TrustPreset,
-    WriteDispositionPreset,
+    ProjectConfig, ProjectMetadata, ProjectSourceConfig, ProjectSourceOverlay, RetentionPolicy,
+    RetentionRule, TrustPreset, WriteDispositionPreset,
 };
 pub use observation_cache::{
     DEFAULT_OBSERVATION_CACHE_MAX_BYTES, DEFAULT_OBSERVATION_CACHE_MAX_ENTRIES,
@@ -189,7 +176,7 @@ pub use promotion::{
     validate_schema_promotion_plan_identity,
 };
 pub use query_compiler::{
-    CompiledQueryProjectResource, EffectiveResourceEnvelope, ProjectConfiguredSourceIdentity,
+    CompiledProjectResource, EffectiveResourceEnvelope, ProjectConfiguredSourceIdentity,
     ProjectInputSchemaAuthority, ProjectQueryCompilation, ResolutionOrigin, ResolvedResourceValue,
     compile_query_project_resources, finalize_query_project_resource,
 };
@@ -242,6 +229,7 @@ pub use schema_snapshot::{
     SchemaSnapshotUnionMode, schema_snapshot_relative_path,
 };
 pub use secrets::{DefaultSecretProvider, EnvSecretProvider, FileSecretProvider, SecretRef};
+#[cfg(test)]
 pub use sources::{
     FileResourceSourceResolver, InMemoryResourceSourceResolver, ResolvedResourceSource,
     ResourceSourceResolver,

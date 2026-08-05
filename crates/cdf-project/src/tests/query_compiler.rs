@@ -158,7 +158,7 @@ fn query_compiler_requires_all_configured_sources_to_be_referenced() {
     )
     .unwrap_err();
 
-    assert!(error.message.contains("CDF-D3-SOURCE-UNREFERENCED"));
+    assert!(error.message.contains("CDF-SOURCE-UNREFERENCED"));
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn query_compiler_rejects_unknown_resource_options_before_analysis() {
     )
     .unwrap_err();
 
-    assert!(error.message.contains("CDF-D3-SOURCE-RESOURCE-OPTIONS"));
+    assert!(error.message.contains("CDF-SOURCE-RESOURCE-OPTIONS"));
     assert!(!error.message.contains("do-not-accept"));
 }
 
@@ -205,7 +205,7 @@ fn query_compiler_rejects_unsafe_built_in_replace_default() {
     )
     .unwrap_err();
 
-    assert!(error.message.contains("CDF-D3-DISPOSITION-DEFAULT"));
+    assert!(error.message.contains("CDF-DISPOSITION-DEFAULT"));
 }
 
 #[test]
@@ -236,4 +236,45 @@ fn query_compiler_accepts_namespace_source_mismatch_and_path_target_default() {
         compiled[0].query.effective.target.origin,
         ResolutionOrigin::ResourcePathDefault
     );
+}
+
+#[test]
+fn authored_envelope_does_not_pollute_equivalent_execution_identity() {
+    let bare_root = TempDir::new().unwrap();
+    let explicit_root = TempDir::new().unwrap();
+    let bare_config = project(
+        &bare_root,
+        "SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "",
+    );
+    let explicit_config = project(
+        &explicit_root,
+        "RESOURCE TARGET analytics.orders DISPOSITION REPLACE TRUST EXPERIMENTAL EXECUTION BOUNDED AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "",
+    );
+    let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
+    let compile = |root: &TempDir, config: &ProjectConfig| {
+        compile_query_project_resources(
+            &registry(),
+            config,
+            root.path(),
+            "dev",
+            &destination(),
+            &SemanticCatalog::builtins().unwrap(),
+            &schemas,
+        )
+        .unwrap()
+        .remove(0)
+    };
+
+    let bare = compile(&bare_root, &bare_config);
+    let explicit = compile(&explicit_root, &explicit_config);
+
+    assert_ne!(
+        bare.query.authored_content_hash,
+        explicit.query.authored_content_hash
+    );
+    assert_eq!(bare.query.source_node_id, explicit.query.source_node_id);
+    assert_eq!(bare.query.effective, explicit.query.effective);
+    assert_eq!(bare.query.relational_plan, explicit.query.relational_plan);
 }

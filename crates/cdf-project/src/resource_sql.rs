@@ -65,7 +65,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
     let tokens = lex_envelope_prefix(sql, file)?;
     let first = tokens.first().ok_or_else(|| {
         resource_sql_error(
-            "CDF-D3-RESOURCE-EMPTY",
+            "CDF-RESOURCE-EMPTY",
             file,
             None,
             "resource file must contain one SELECT query",
@@ -79,17 +79,9 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
             query_span: first.span.clone(),
         });
     }
-    if first.is_word("CREATE") && tokens.get(1).is_some_and(|token| token.is_word("RESOURCE")) {
-        return Err(resource_sql_error(
-            "CDF-D3-RESOURCE-CREATE",
-            file,
-            Some(&first.span),
-            "CREATE RESOURCE is retired; use a bare SELECT or RESOURCE ... AS SELECT",
-        ));
-    }
     if !first.is_word("RESOURCE") {
         return Err(resource_sql_error(
-            "CDF-D3-RESOURCE-FORM",
+            "CDF-RESOURCE-FORM",
             file,
             Some(&first.span),
             "resource file must begin with SELECT or the no-identifier RESOURCE envelope",
@@ -107,7 +99,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
         }
         let (rank, clause) = clause_rank(&token).ok_or_else(|| {
             resource_sql_error(
-                "CDF-D3-RESOURCE-CLAUSE",
+                "CDF-RESOURCE-CLAUSE",
                 file,
                 Some(&token.span),
                 "RESOURCE takes no identifier; expected TARGET, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION, or AS",
@@ -115,7 +107,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
         })?;
         if rank <= previous_rank {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-CLAUSE-ORDER",
+                "CDF-RESOURCE-CLAUSE-ORDER",
                 file,
                 Some(&token.span),
                 format!(
@@ -142,7 +134,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
     let query = parser.peek()?.clone();
     if !query.is_word("SELECT") {
         return Err(resource_sql_error(
-            "CDF-D3-RESOURCE-AS",
+            "CDF-RESOURCE-AS",
             file,
             Some(&query.span),
             "RESOURCE AS must be followed by one SELECT query",
@@ -187,7 +179,7 @@ impl<'a> EnvelopeParser<'a> {
     fn peek(&self) -> Result<&Token> {
         self.tokens.get(self.cursor).ok_or_else(|| {
             resource_sql_error(
-                "CDF-D3-RESOURCE-INCOMPLETE",
+                "CDF-RESOURCE-INCOMPLETE",
                 self.file,
                 None,
                 "resource envelope ended before AS SELECT",
@@ -235,7 +227,7 @@ impl<'a> EnvelopeParser<'a> {
         let token = self.take()?;
         let TokenKind::Word(value) = token.kind else {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-NAME",
+                "CDF-RESOURCE-NAME",
                 self.file,
                 Some(&token.span),
                 format!("{label} must be an unquoted identifier"),
@@ -268,7 +260,7 @@ impl<'a> EnvelopeParser<'a> {
         }
         let value = TargetName::new(value).map_err(|error| {
             resource_sql_error(
-                "CDF-D3-RESOURCE-TARGET",
+                "CDF-RESOURCE-TARGET",
                 self.file,
                 Some(clause_span),
                 error.message,
@@ -287,7 +279,7 @@ impl<'a> EnvelopeParser<'a> {
         } else if kind.is_word("REPLACE") {
             AuthoredDisposition::Replace
         } else if kind.is_word("MERGE") {
-            self.expect_punctuation('(', "CDF-D3-RESOURCE-MERGE")?;
+            self.expect_punctuation('(', "CDF-RESOURCE-MERGE")?;
             let mut keys = Vec::new();
             let mut seen = BTreeSet::new();
             loop {
@@ -298,7 +290,7 @@ impl<'a> EnvelopeParser<'a> {
                 {
                     if keys.is_empty() {
                         return Err(resource_sql_error(
-                            "CDF-D3-RESOURCE-MERGE-EMPTY",
+                            "CDF-RESOURCE-MERGE-EMPTY",
                             self.file,
                             Some(&kind.span),
                             "DISPOSITION MERGE requires at least one output key",
@@ -310,7 +302,7 @@ impl<'a> EnvelopeParser<'a> {
                 let key = self.parse_name("merge key")?;
                 if !seen.insert(key.value.clone()) {
                     return Err(resource_sql_error(
-                        "CDF-D3-RESOURCE-MERGE-DUPLICATE",
+                        "CDF-RESOURCE-MERGE-DUPLICATE",
                         self.file,
                         Some(&key.span),
                         format!("merge key {:?} appears more than once", key.value),
@@ -323,7 +315,7 @@ impl<'a> EnvelopeParser<'a> {
                     TokenKind::Punctuation(')') => break,
                     _ => {
                         return Err(resource_sql_error(
-                            "CDF-D3-RESOURCE-MERGE",
+                            "CDF-RESOURCE-MERGE",
                             self.file,
                             Some(&separator.span),
                             "expected comma or closing parenthesis after merge key",
@@ -334,7 +326,7 @@ impl<'a> EnvelopeParser<'a> {
             AuthoredDisposition::Merge { keys }
         } else {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-DISPOSITION",
+                "CDF-RESOURCE-DISPOSITION",
                 self.file,
                 Some(&kind.span),
                 "DISPOSITION must be APPEND, REPLACE, or MERGE(key, ...)",
@@ -354,7 +346,7 @@ impl<'a> EnvelopeParser<'a> {
             TrustPreset::Governed
         } else {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-TRUST",
+                "CDF-RESOURCE-TRUST",
                 self.file,
                 Some(&token.span),
                 "TRUST must be EXPERIMENTAL or GOVERNED",
@@ -367,7 +359,7 @@ impl<'a> EnvelopeParser<'a> {
     }
 
     fn parse_semantics(&mut self) -> Result<Vec<AuthoredSemanticBinding>> {
-        self.expect_punctuation('(', "CDF-D3-RESOURCE-SEMANTICS")?;
+        self.expect_punctuation('(', "CDF-RESOURCE-SEMANTICS")?;
         let mut bindings = Vec::new();
         let mut seen = BTreeSet::new();
         loop {
@@ -378,7 +370,7 @@ impl<'a> EnvelopeParser<'a> {
             {
                 if bindings.is_empty() {
                     return Err(resource_sql_error(
-                        "CDF-D3-RESOURCE-SEMANTICS-EMPTY",
+                        "CDF-RESOURCE-SEMANTICS-EMPTY",
                         self.file,
                         Some(&self.peek()?.span),
                         "SEMANTICS requires at least one field binding",
@@ -390,7 +382,7 @@ impl<'a> EnvelopeParser<'a> {
             let field = self.parse_name("semantic output field")?;
             if !seen.insert(field.value.clone()) {
                 return Err(resource_sql_error(
-                    "CDF-D3-RESOURCE-SEMANTICS-DUPLICATE",
+                    "CDF-RESOURCE-SEMANTICS-DUPLICATE",
                     self.file,
                     Some(&field.span),
                     format!("semantic field {:?} appears more than once", field.value),
@@ -399,7 +391,7 @@ impl<'a> EnvelopeParser<'a> {
             let arrow = self.take()?;
             if arrow.kind != TokenKind::RightArrow {
                 return Err(resource_sql_error(
-                    "CDF-D3-RESOURCE-SEMANTICS",
+                    "CDF-RESOURCE-SEMANTICS",
                     self.file,
                     Some(&arrow.span),
                     "semantic bindings use field => 'canonical.reference'",
@@ -408,7 +400,7 @@ impl<'a> EnvelopeParser<'a> {
             let reference = self.take()?;
             let TokenKind::String(reference_value) = reference.kind else {
                 return Err(resource_sql_error(
-                    "CDF-D3-RESOURCE-SEMANTICS-REFERENCE",
+                    "CDF-RESOURCE-SEMANTICS-REFERENCE",
                     self.file,
                     Some(&reference.span),
                     "semantic reference must be a single-quoted string literal",
@@ -427,7 +419,7 @@ impl<'a> EnvelopeParser<'a> {
                 TokenKind::Punctuation(')') => break,
                 _ => {
                     return Err(resource_sql_error(
-                        "CDF-D3-RESOURCE-SEMANTICS",
+                        "CDF-RESOURCE-SEMANTICS",
                         self.file,
                         Some(&separator.span),
                         "expected comma or closing parenthesis after semantic binding",
@@ -449,7 +441,7 @@ impl<'a> EnvelopeParser<'a> {
             self.parse_drain()?
         } else {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-EXECUTION",
+                "CDF-RESOURCE-EXECUTION",
                 self.file,
                 Some(&mode.span),
                 "EXECUTION must be BOUNDED or a complete DRAIN policy",
@@ -462,30 +454,30 @@ impl<'a> EnvelopeParser<'a> {
     }
 
     fn parse_drain(&mut self) -> Result<ExecutionDeclaration> {
-        self.expect_punctuation('(', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("CHECKPOINT", "CDF-D3-RESOURCE-DRAIN-CHECKPOINT")?;
+        self.expect_punctuation('(', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("CHECKPOINT", "CDF-RESOURCE-DRAIN-CHECKPOINT")?;
         let checkpoint_cadence = self.parse_epoch_trigger()?;
-        self.expect_punctuation(',', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("PACKAGE", "CDF-D3-RESOURCE-DRAIN-PACKAGE")?;
+        self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("PACKAGE", "CDF-RESOURCE-DRAIN-PACKAGE")?;
         let package_rotation = self.parse_epoch_trigger()?;
-        self.expect_punctuation(',', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("UNTIL", "CDF-D3-RESOURCE-DRAIN-UNTIL")?;
+        self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("UNTIL", "CDF-RESOURCE-DRAIN-UNTIL")?;
         let termination = Box::new(self.parse_termination()?);
-        self.expect_punctuation(',', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("WATERMARK", "CDF-D3-RESOURCE-DRAIN-WATERMARK")?;
-        self.expect_word("DISABLED", "CDF-D3-RESOURCE-DRAIN-WATERMARK")?;
-        self.expect_punctuation(',', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("LATE", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
-        self.expect_word("DATA", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
+        self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("WATERMARK", "CDF-RESOURCE-DRAIN-WATERMARK")?;
+        self.expect_word("DISABLED", "CDF-RESOURCE-DRAIN-WATERMARK")?;
+        self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("LATE", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
+        self.expect_word("DATA", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
         let late_data = self.parse_late_data()?;
-        self.expect_punctuation(',', "CDF-D3-RESOURCE-DRAIN")?;
-        self.expect_word("SAFE", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_word("FRONTIER", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_word("CANONICAL", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_word("ADMITTED", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_word("SOURCE", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_word("POSITION", "CDF-D3-RESOURCE-DRAIN-SAFE-FRONTIER")?;
-        self.expect_punctuation(')', "CDF-D3-RESOURCE-DRAIN")?;
+        self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
+        self.expect_word("SAFE", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_word("FRONTIER", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_word("CANONICAL", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_word("ADMITTED", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_word("SOURCE", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_word("POSITION", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
+        self.expect_punctuation(')', "CDF-RESOURCE-DRAIN")?;
         Ok(ExecutionDeclaration::Drain {
             checkpoint_cadence,
             package_rotation,
@@ -499,13 +491,13 @@ impl<'a> EnvelopeParser<'a> {
     fn parse_epoch_trigger(&mut self) -> Result<EpochClosureDeclaration> {
         let kind = self.take()?;
         if kind.is_word("ELAPSED") {
-            self.expect_word("MILLISECONDS", "CDF-D3-RESOURCE-DRAIN-TRIGGER")?;
+            self.expect_word("MILLISECONDS", "CDF-RESOURCE-DRAIN-TRIGGER")?;
             return Ok(EpochClosureDeclaration::Elapsed {
                 milliseconds: self.parse_positive_u64("elapsed milliseconds")?,
             });
         }
         if kind.is_word("WATERMARK") {
-            self.expect_word("ADVANCE", "CDF-D3-RESOURCE-DRAIN-TRIGGER")?;
+            self.expect_word("ADVANCE", "CDF-RESOURCE-DRAIN-TRIGGER")?;
             return Ok(EpochClosureDeclaration::WatermarkAdvance {
                 units: self.parse_positive_u64("watermark advance units")?,
             });
@@ -519,7 +511,7 @@ impl<'a> EnvelopeParser<'a> {
             Ok(EpochClosureDeclaration::Bytes { count })
         } else {
             Err(resource_sql_error(
-                "CDF-D3-RESOURCE-DRAIN-TRIGGER",
+                "CDF-RESOURCE-DRAIN-TRIGGER",
                 self.file,
                 Some(&kind.span),
                 "epoch trigger must be BATCHES, ROWS, BYTES, ELAPSED MILLISECONDS, or WATERMARK ADVANCE",
@@ -533,7 +525,7 @@ impl<'a> EnvelopeParser<'a> {
             return Ok(DrainTerminationDeclaration::Quiescent);
         }
         if kind.is_word("DURATION") {
-            self.expect_word("MILLISECONDS", "CDF-D3-RESOURCE-DRAIN-UNTIL")?;
+            self.expect_word("MILLISECONDS", "CDF-RESOURCE-DRAIN-UNTIL")?;
             return Ok(DrainTerminationDeclaration::Duration {
                 milliseconds: self.parse_positive_u64("termination milliseconds")?,
             });
@@ -549,7 +541,7 @@ impl<'a> EnvelopeParser<'a> {
             });
         }
         Err(resource_sql_error(
-            "CDF-D3-RESOURCE-DRAIN-UNTIL",
+            "CDF-RESOURCE-DRAIN-UNTIL",
             self.file,
             Some(&kind.span),
             "UNTIL must be QUIESCENT, DURATION MILLISECONDS, RECORDS, or BYTES",
@@ -562,17 +554,17 @@ impl<'a> EnvelopeParser<'a> {
             return Ok(LateDataDeclaration::Quarantine);
         }
         if kind.is_word("RECAPTURE") {
-            self.expect_word("NEXT", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
-            self.expect_word("EPOCH", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
+            self.expect_word("NEXT", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
+            self.expect_word("EPOCH", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
             return Ok(LateDataDeclaration::RecaptureNextEpoch);
         }
         if kind.is_word("ADMIT") {
-            self.expect_word("WITH", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
-            self.expect_word("ANNOTATION", "CDF-D3-RESOURCE-DRAIN-LATE-DATA")?;
+            self.expect_word("WITH", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
+            self.expect_word("ANNOTATION", "CDF-RESOURCE-DRAIN-LATE-DATA")?;
             return Ok(LateDataDeclaration::AdmitWithAnnotation);
         }
         Err(resource_sql_error(
-            "CDF-D3-RESOURCE-DRAIN-LATE-DATA",
+            "CDF-RESOURCE-DRAIN-LATE-DATA",
             self.file,
             Some(&kind.span),
             "LATE DATA must be QUARANTINE, RECAPTURE NEXT EPOCH, or ADMIT WITH ANNOTATION",
@@ -583,7 +575,7 @@ impl<'a> EnvelopeParser<'a> {
         let token = self.take()?;
         let TokenKind::Number(value) = &token.kind else {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-DRAIN-NUMBER",
+                "CDF-RESOURCE-DRAIN-NUMBER",
                 self.file,
                 Some(&token.span),
                 format!("{label} must be a positive integer"),
@@ -591,7 +583,7 @@ impl<'a> EnvelopeParser<'a> {
         };
         let value = value.parse::<u64>().map_err(|error| {
             resource_sql_error(
-                "CDF-D3-RESOURCE-DRAIN-NUMBER",
+                "CDF-RESOURCE-DRAIN-NUMBER",
                 self.file,
                 Some(&token.span),
                 format!("{label} is invalid: {error}"),
@@ -599,7 +591,7 @@ impl<'a> EnvelopeParser<'a> {
         })?;
         if value == 0 {
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-DRAIN-NUMBER",
+                "CDF-RESOURCE-DRAIN-NUMBER",
                 self.file,
                 Some(&token.span),
                 format!("{label} must be greater than zero"),
@@ -701,7 +693,7 @@ impl<'a> Lexer<'a> {
             loop {
                 let Some(next) = self.bytes.get(self.offset).copied() else {
                     return Err(resource_sql_error(
-                        "CDF-D3-RESOURCE-STRING",
+                        "CDF-RESOURCE-STRING",
                         self.file,
                         Some(&ProjectSqlSpan {
                             start_line,
@@ -726,7 +718,7 @@ impl<'a> Lexer<'a> {
                     .and_then(|remaining| remaining.chars().next())
                     .ok_or_else(|| {
                         resource_sql_error(
-                            "CDF-D3-RESOURCE-UTF8",
+                            "CDF-RESOURCE-UTF8",
                             self.file,
                             None,
                             "resource SQL is not valid UTF-8",
@@ -746,7 +738,7 @@ impl<'a> Lexer<'a> {
         } else {
             self.bump();
             return Err(resource_sql_error(
-                "CDF-D3-RESOURCE-TOKEN",
+                "CDF-RESOURCE-TOKEN",
                 self.file,
                 Some(&ProjectSqlSpan {
                     start_line,
@@ -794,7 +786,7 @@ impl<'a> Lexer<'a> {
                 loop {
                     if self.offset == self.bytes.len() {
                         return Err(resource_sql_error(
-                            "CDF-D3-RESOURCE-COMMENT",
+                            "CDF-RESOURCE-COMMENT",
                             self.file,
                             None,
                             "unterminated RESOURCE envelope comment",

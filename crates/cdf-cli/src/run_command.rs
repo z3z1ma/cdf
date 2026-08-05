@@ -9,19 +9,22 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_declarative::{
-    CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
+use arrow_schema::Schema;
+use cdf_declarative::CompiledResource;
+use cdf_kernel::{
+    CdfError, CheckpointId, CursorOrderingClaim, CursorSpec, PipelineId, PushdownFidelity,
+    ResourceDescriptor, ResourceId, RunEventSink, SchemaSource, ScopeKey, TargetName, TrustLevel,
+    WriteDisposition,
 };
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, ProjectResourceOrigin,
-    ProjectRunOutcome, ProjectRunRequest, RunTelemetryConfig, SchemaSnapshotStore,
-    publish_project_files_transactionally, run_project_with_scheduler_and_telemetry,
+    LOCK_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, ProjectRunOutcome, ProjectRunRequest,
+    RunTelemetryConfig, SchemaSnapshotStore, publish_project_files_transactionally,
+    run_project_with_scheduler_and_telemetry,
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
-    add_command::registered_source_resource_toml,
+    add_command::registered_source_resource_sql,
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
     destination_uri::{
@@ -415,11 +418,11 @@ fn synthesize_adhoc_source(
             CdfError::contract(format!(
                 "cdf run ad-hoc synthesized resource id `{resource_id}` conflicts with an already compiled project resource; rename or remove the conflicting project resource before retrying"
             )),
-            error_catalog::PROJECT_RESOURCE_MAPPING,
+            error_catalog::PROJECT_RESOURCE_ID,
         ));
     }
-    let config_path = format!(".cdf/adhoc/{resource_name}.toml");
-    let config_path_abs = context.root.join(&config_path);
+    let definition_path = format!(".cdf/adhoc/{resource_name}.cdf.sql");
+    let definition_path_abs = context.root.join(&definition_path);
 
     let (compiled_location, source_artifact_path, permanent_location) = if is_remote {
         (canonical_location.clone(), None, canonical_location.clone())
@@ -454,47 +457,58 @@ fn synthesize_adhoc_source(
             error_catalog::USAGE,
         ));
     }
-    let resource_toml = registered_source_resource_toml("adhoc", &resource_name, &add_plan)?;
-    let reused = read_adhoc_private_text(&context.root, &config_path_abs)?
-        .is_some_and(|existing| existing == resource_toml);
+    let resource_sql = registered_source_resource_sql("adhoc", &add_plan)?;
+    let reused = read_adhoc_private_text(&context.root, &definition_path_abs)?
+        .is_some_and(|existing| existing == resource_sql);
     if !reused {
-        let expectation = match fs::read(&config_path_abs) {
+        let expectation = match fs::read(&definition_path_abs) {
             Ok(existing) => ProjectFileExpectation::Exact(existing),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 ProjectFileExpectation::Absent
             }
             Err(error) => {
                 return Err(adhoc_private_path_error(
-                    "read ad-hoc resource config before publication",
-                    &config_path_abs,
+                    "read ad-hoc resource definition before publication",
+                    &definition_path_abs,
                     error,
                 ));
             }
         };
         publish_project_files_transactionally(
             &context.root,
-            &config_path,
+            &definition_path,
             vec![ProjectFileWrite::new(
-                &config_path,
-                resource_toml.as_bytes().to_vec(),
+                &definition_path,
+                resource_sql.as_bytes().to_vec(),
                 expectation,
             )],
         )?;
     }
 
-    let document = parse_declarative_toml(&resource_toml)?;
-    let mut resources =
-        compile_document_with_project_root(source_registry, &document, &context.root)?;
-    if resources.len() != 1 {
+    let authored = cdf_project::parse_resource_file(&resource_sql, &definition_path)?;
+    let parsed = cdf_engine::parse_project_query_at(
+        &authored.query_sql,
+        &definition_path,
+        authored.query_span.start_line,
+        authored.query_span.start_column,
+    )?;
+    if parsed.upstream.configured_source != "adhoc"
+        || parsed.upstream.resource_options != add_plan.proposal.resource_options
+    {
         return Err(CliError::mapped(
-            CdfError::internal(format!(
-                "generated ad-hoc TOML compiled {} resources instead of one",
-                resources.len()
-            )),
+            CdfError::internal("generated ad-hoc SQL changed its typed source proposal"),
             error_catalog::PROJECT_IO,
         ));
     }
-    let resource = hydrate_adhoc_locked_snapshot(context, resources.remove(0))?;
+    let resource = compile_adhoc_resource(
+        source_registry,
+        &context.root,
+        &resource_name,
+        &resource_id,
+        &add_plan,
+        parsed.upstream.resource_options,
+    )?;
+    let resource = hydrate_adhoc_locked_snapshot(context, resource)?;
     if resource.descriptor().resource_id.as_str() != resource_id {
         return Err(CliError::mapped(
             CdfError::internal("generated ad-hoc resource id did not match its stable identity"),
@@ -502,19 +516,13 @@ fn synthesize_adhoc_source(
         ));
     }
     context.resources.push(resource);
-    context.resource_origins.push(ProjectResourceOrigin {
-        source_name: "adhoc".to_owned(),
-        resource_name: resource_name.clone(),
-        source_file: Some(config_path.clone()),
-        mapping_pattern: resource_id.clone(),
-        mapping_status: "synthesized".to_owned(),
-    });
+    context.register_adhoc_resource(resource_id.clone());
 
     Ok(SynthesizedAdhoc {
         resource_id: resource_id.clone(),
         report: AdhocRunReport {
             resource_id: resource_id.clone(),
-            config_path,
+            definition_path,
             source_artifact_path,
             reused,
             make_permanent_command: format!(
@@ -523,6 +531,77 @@ fn synthesize_adhoc_source(
             ),
         },
     })
+}
+
+fn compile_adhoc_resource(
+    registry: &cdf_runtime::SourceRegistry,
+    project_root: &Path,
+    resource_name: &str,
+    resource_id: &str,
+    add_plan: &cdf_runtime::PlannedSourceAdd,
+    resource_options: std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<CompiledResource, CliError> {
+    let cursor = add_plan.proposal.cursor.as_ref().map(|cursor| CursorSpec {
+        field: cursor.field.clone(),
+        ordering: match cursor.ordering {
+            cdf_runtime::SourceAddCursorOrdering::Exact => CursorOrderingClaim::Exact,
+            cdf_runtime::SourceAddCursorOrdering::Inexact
+            | cdf_runtime::SourceAddCursorOrdering::BestEffort => CursorOrderingClaim::Inexact,
+            cdf_runtime::SourceAddCursorOrdering::Unordered => CursorOrderingClaim::Unordered,
+        },
+        lag_tolerance_ms: cursor.lag_tolerance_ms,
+    });
+    let descriptor = ResourceDescriptor {
+        resource_id: ResourceId::new(resource_id)?,
+        schema_source: SchemaSource::Discover,
+        primary_key: Vec::new(),
+        merge_key: Vec::new(),
+        cursor,
+        write_disposition: WriteDisposition::Append,
+        deduplication: None,
+        contract: None,
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Governed,
+    };
+    descriptor.validate()?;
+    let cursor_pushdown =
+        add_plan
+            .proposal
+            .cursor
+            .as_ref()
+            .map(|cursor| cdf_runtime::SourceCursorPushdown {
+                parameter: cursor.parameter.clone(),
+                fidelity: match cursor.ordering {
+                    cdf_runtime::SourceAddCursorOrdering::Exact => PushdownFidelity::Exact,
+                    cdf_runtime::SourceAddCursorOrdering::Inexact
+                    | cdf_runtime::SourceAddCursorOrdering::BestEffort => PushdownFidelity::Inexact,
+                    cdf_runtime::SourceAddCursorOrdering::Unordered => {
+                        PushdownFidelity::Unsupported
+                    }
+                },
+            });
+    let source_plan = registry.compile(cdf_runtime::SourceCompileRequest {
+        source_kind: add_plan.proposal.source_kind.clone(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "adhoc".to_owned(),
+            project_root: Some(project_root.to_path_buf()),
+            cursor_pushdown,
+        },
+        source_options: add_plan.proposal.source_options.clone(),
+        resource_options,
+        descriptor,
+        schema: Schema::empty(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    })?;
+    Ok(CompiledResource::from_compiled_source(
+        "adhoc",
+        resource_name,
+        Some(project_root.to_path_buf()),
+        source_plan,
+    )?)
 }
 
 fn hydrate_adhoc_locked_snapshot(

@@ -1,17 +1,11 @@
-use std::{collections::BTreeMap, env, fs, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, env, fs};
 
-use cdf_declarative::{
-    CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
-};
-use cdf_http::{SecretProvider, SecretUri, SecretValue};
-use cdf_kernel::{CdfError, SchemaSource};
+use cdf_kernel::CdfError;
 use cdf_project::{
-    LOCK_FILE_NAME, PROJECT_FILE_NAME, ProjectFileExpectation, ProjectFileWrite,
-    ResourceSchemaDiscoveryArtifacts, SchemaSnapshotArtifact, SchemaSnapshotDataType,
-    SchemaSnapshotField, freeze_contract_snapshots, lock_to_toml, parse_cdf_toml, parse_lock,
-    publish_project_files_transactionally,
+    PROJECT_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, parse_cdf_toml,
+    parse_resource_file, publish_project_files_transactionally,
 };
-use cdf_runtime::{PlannedSourceAdd, SourceAddPrivateFile, SourceAddRequest, SourceRegistry};
+use cdf_runtime::{PlannedSourceAdd, SourceAddRequest, SourceRegistry};
 use serde::Serialize;
 
 use crate::{
@@ -24,8 +18,8 @@ use crate::{
 pub(crate) fn add(
     cli: &Cli,
     args: AddArgs,
-    execution: &cdf_runtime::ExecutionServices,
-    destinations: &cdf_runtime::DestinationRegistry,
+    _execution: &cdf_runtime::ExecutionServices,
+    _destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = if args.dry_run {
         ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?
@@ -38,310 +32,23 @@ pub(crate) fn add(
     };
     let registry = crate::source_registry::builtin_source_registry()?;
     let request = AddResourceRequest::from_args(&context, registry, &args)?;
-    let proposed = build_proposed_resource(&context, registry, &request)?;
-    ensure_add_is_available(&context, &request, &proposed)?;
-
-    let add_secrets = AddSecretProvider {
-        fallback: context.secret_provider(),
-        private_files: request.plan.proposal.private_files.clone(),
-    };
-    let inspection_root = args
-        .dry_run
-        .then(|| {
-            tempfile::Builder::new()
-                .prefix("cdf-add-dry-run-")
-                .tempdir()
-        })
-        .transpose()
-        .map_err(|error| {
-            CdfError::environment(format!(
-                "create add dry-run artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
-            ))
-        })?;
-    let artifact_root = inspection_root
-        .as_ref()
-        .map_or(context.root.as_path(), tempfile::TempDir::path);
-    let artifacts = discover_for_add(
-        &context,
-        registry,
-        &proposed.resource,
-        add_secrets,
-        execution,
-        artifact_root,
-    )?;
-    let discovery = &artifacts.discovery;
-    let pinned_resource = proposed.resource.with_schema_source_and_schema(
-        SchemaSource::Discovered {
-            snapshot: discovery.snapshot.reference.clone(),
-        },
-        Arc::clone(&discovery.normalized_schema),
-    );
-    let report = AddReport::from_parts(&context, &request, &proposed, &discovery.snapshot.artifact);
-
+    ensure_add_is_available(&context, &request)?;
+    let proposal = ProposedResource::compile(&context, registry, &request)?;
+    let report = AddReport::from_parts(&context, &request, &proposal);
     if !args.dry_run {
-        write_add_artifacts(
-            destinations,
-            &context,
-            &request,
-            &proposed,
-            &pinned_resource,
-            &artifacts,
-        )?;
+        publish_add(&context, &request, &proposal)?;
     }
-
     CommandOutput::rendered("add", render::document(&report), report)
-}
-
-fn build_proposed_resource(
-    context: &ProjectContext,
-    registry: &SourceRegistry,
-    request: &AddResourceRequest,
-) -> Result<ProposedResource, CliError> {
-    let resource_toml = resource_toml(request)?;
-    let document = parse_declarative_toml(&resource_toml)?;
-    let mut resources = compile_document_with_project_root(registry, &document, &context.root)?;
-    if resources.len() != 1 {
-        return Err(CliError::mapped(
-            CdfError::internal(format!(
-                "cdf add expected one compiled resource from generated TOML, got {}",
-                resources.len()
-            )),
-            error_catalog::PROJECT_IO,
-        ));
-    }
-    let resource = resources.remove(0);
-    if resource.descriptor().resource_id.as_str() != request.resource_id {
-        return Err(CliError::mapped(
-            CdfError::internal(format!(
-                "generated resource id `{}` did not match requested id `{}`",
-                resource.descriptor().resource_id,
-                request.resource_id
-            )),
-            error_catalog::PROJECT_IO,
-        ));
-    }
-    if resource.source_plan().driver != request.plan.driver {
-        return Err(CliError::mapped(
-            CdfError::internal("generated resource compiled through a different source driver"),
-            error_catalog::PROJECT_IO,
-        ));
-    }
-    let (project_prior, project_toml) = appended_project_mapping(context, request)?;
-    Ok(ProposedResource {
-        resource,
-        resource_toml,
-        project_toml,
-        project_prior,
-    })
-}
-
-fn ensure_add_is_available(
-    context: &ProjectContext,
-    request: &AddResourceRequest,
-    proposed: &ProposedResource,
-) -> Result<(), CliError> {
-    if context
-        .resources
-        .iter()
-        .any(|resource| resource.descriptor().resource_id.as_str() == request.resource_id)
-    {
-        return Err(CliError::usage_with(
-            format!(
-                "resource `{}` is already compiled; use a new `<source>.<resource>` id",
-                request.resource_id
-            ),
-            error_catalog::USAGE,
-        ));
-    }
-    if context.config.resources.contains_key(&request.resource_id) {
-        return Err(CliError::usage_with(
-            format!(
-                "{} already contains [resources.\"{}\"]",
-                PROJECT_FILE_NAME, request.resource_id
-            ),
-            error_catalog::PROJECT_RESOURCE_MAPPING,
-        ));
-    }
-    if add_target_exists(&request.config_path_abs)? {
-        return Err(CliError::usage_with(
-            format!(
-                "cdf add would overwrite {}; choose a different source id or edit that file explicitly",
-                request.config_path_rel
-            ),
-            error_catalog::PROJECT_IO,
-        ));
-    }
-    for private_file in &request.plan.proposal.private_files {
-        if add_target_exists(&context.root.join(&private_file.relative_path))? {
-            return Err(CliError::usage_with(
-                format!(
-                    "cdf add would overwrite private source state for source `{}`",
-                    request.source
-                ),
-                error_catalog::PROJECT_IO,
-            ));
-        }
-    }
-    parse_cdf_toml(&proposed.project_toml)?;
-    Ok(())
-}
-
-fn discover_for_add(
-    context: &ProjectContext,
-    registry: &SourceRegistry,
-    resource: &CompiledResource,
-    secret_provider: AddSecretProvider,
-    execution: &cdf_runtime::ExecutionServices,
-    artifact_root: &std::path::Path,
-) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
-    let options = cdf_project::SchemaDiscoveryExecutionOptions::new();
-    let source_plan = resource.source_plan().clone();
-    let resolution = cdf_runtime::SourceResolutionContext::new(
-        &context.root,
-        Arc::new(secret_provider),
-        execution,
-        Arc::new(cdf_http::EgressAllowlist::allow_any()),
-    )
-    .with_artifact_root(artifact_root)
-    .with_driver_options(context.config.driver_options.clone());
-    Ok(cdf_project::discover_resource_schema_with_source_registry(
-        resource,
-        registry,
-        &source_plan,
-        &resolution,
-        options,
-    )?)
-}
-
-struct AddSecretProvider {
-    fallback: cdf_project::DefaultSecretProvider,
-    private_files: Vec<SourceAddPrivateFile>,
-}
-
-impl SecretProvider for AddSecretProvider {
-    fn resolve(&self, uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
-        if let Some(private_file) = self
-            .private_files
-            .iter()
-            .find(|private_file| &private_file.reference == uri)
-        {
-            return Ok(private_file.value.clone());
-        }
-        self.fallback.resolve(uri)
-    }
-}
-
-fn write_add_artifacts(
-    destinations: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
-    request: &AddResourceRequest,
-    proposed: &ProposedResource,
-    pinned_resource: &CompiledResource,
-    artifacts: &ResourceSchemaDiscoveryArtifacts,
-) -> Result<(), CliError> {
-    let lock_path = context.root.join(LOCK_FILE_NAME);
-    let lock_expectation = match (context.lock.as_ref(), fs::read(&lock_path)) {
-        (Some(expected), Ok(bytes)) => {
-            let text = std::str::from_utf8(&bytes).map_err(|error| {
-                CliError::mapped(
-                    CdfError::contract(format!("parse {LOCK_FILE_NAME} as UTF-8: {error}")),
-                    error_catalog::PROJECT_IO,
-                )
-            })?;
-            if &parse_lock(text)? != expected {
-                return Err(CliError::mapped(
-                    CdfError::contract(
-                        "cdf.lock changed after the add command loaded project authority; retry against the current project",
-                    ),
-                    error_catalog::PROJECT_IO,
-                ));
-            }
-            ProjectFileExpectation::Exact(bytes)
-        }
-        (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            ProjectFileExpectation::Absent
-        }
-        (Some(_), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CliError::mapped(
-                CdfError::contract(
-                    "cdf.lock disappeared after the add command loaded project authority; retry against the current project",
-                ),
-                error_catalog::PROJECT_IO,
-            ));
-        }
-        (None, Ok(_)) => {
-            return Err(CliError::mapped(
-                CdfError::contract(
-                    "cdf.lock appeared after the add command loaded project authority; retry against the current project",
-                ),
-                error_catalog::PROJECT_IO,
-            ));
-        }
-        (_, Err(error)) => return Err(add_project_read_error("read cdf.lock", &lock_path, error)),
-    };
-    let mut resources = context.resources.clone();
-    resources.push(pinned_resource.clone());
-    let updated_config = parse_cdf_toml(&proposed.project_toml)?;
-    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
-        destinations,
-        context,
-        &context.environment.destination,
-    )?;
-    let (lock, _) = freeze_contract_snapshots(
-        &updated_config,
-        &resources,
-        context.lock.as_ref(),
-        &destination_artifacts,
-        Some(request.resource_id.as_str()),
-        &context.semantic_catalog,
-    )?;
-    let lock_toml = lock_to_toml(&lock)?;
-
-    let mut writes = Vec::new();
-    for (path, bytes) in artifacts.canonical_artifact_files()? {
-        writes.push(ProjectFileWrite::new(
-            path,
-            bytes.clone(),
-            ProjectFileExpectation::AbsentOrExact(bytes),
-        ));
-    }
-    for private_file in &request.plan.proposal.private_files {
-        writes.push(
-            ProjectFileWrite::new(
-                private_file.relative_path.clone(),
-                private_file.value.as_str()?.as_bytes().to_vec(),
-                ProjectFileExpectation::Absent,
-            )
-            .owner_only(),
-        );
-    }
-    writes.push(ProjectFileWrite::new(
-        &request.config_path_rel,
-        proposed.resource_toml.as_bytes().to_vec(),
-        ProjectFileExpectation::Absent,
-    ));
-    writes.push(ProjectFileWrite::new(
-        PROJECT_FILE_NAME,
-        proposed.project_toml.as_bytes().to_vec(),
-        ProjectFileExpectation::Exact(proposed.project_prior.clone()),
-    ));
-    writes.push(ProjectFileWrite::new(
-        LOCK_FILE_NAME,
-        lock_toml.into_bytes(),
-        lock_expectation,
-    ));
-    publish_project_files_transactionally(&context.root, LOCK_FILE_NAME, writes)?;
-    Ok(())
 }
 
 #[derive(Clone, Debug)]
 struct AddResourceRequest {
     resource_id: String,
-    source: String,
+    namespace: String,
     resource: String,
+    configured_source: String,
     plan: PlannedSourceAdd,
-    config_path_rel: String,
-    config_path_abs: PathBuf,
+    resource_path: String,
     dry_run: bool,
 }
 
@@ -351,16 +58,16 @@ impl AddResourceRequest {
         registry: &SourceRegistry,
         args: &AddArgs,
     ) -> Result<Self, CliError> {
-        let (source, resource) = split_resource_id(&args.resource_id)?;
+        let (namespace, resource) = split_resource_id(&args.resource_id)?;
         let current_dir = env::current_dir().map_err(|error| {
-            CliError::from(CdfError::environment(format!(
+            CdfError::environment(format!(
                 "read current directory: {error}; change to an accessible directory before retrying"
-            )))
+            ))
         })?;
         let plan = registry
             .plan_add(
                 SourceAddRequest {
-                    source_name: source.clone(),
+                    source_name: namespace.clone(),
                     resource_name: resource.clone(),
                     location: args.location.clone(),
                     project_root: context.root.clone(),
@@ -371,25 +78,272 @@ impl AddResourceRequest {
                 &context.config.driver_options,
             )
             .map_err(|error| CliError::usage_with(error.message, error_catalog::USAGE))?;
-        let config_path_rel = format!("resources/{source}.toml");
-        let config_path_abs = context.root.join(&config_path_rel);
         Ok(Self {
             resource_id: args.resource_id.clone(),
-            source,
+            configured_source: namespace.clone(),
+            resource_path: format!("cdf/{namespace}/{resource}.cdf.sql"),
+            namespace,
             resource,
             plan,
-            config_path_rel,
-            config_path_abs,
             dry_run: args.dry_run,
         })
     }
 }
 
 struct ProposedResource {
-    resource: CompiledResource,
-    resource_toml: String,
+    resource_sql: String,
     project_toml: String,
     project_prior: Vec<u8>,
+    writes_source_config: bool,
+}
+
+impl ProposedResource {
+    fn compile(
+        context: &ProjectContext,
+        registry: &SourceRegistry,
+        request: &AddResourceRequest,
+    ) -> Result<Self, CliError> {
+        let project_path = context.root.join(PROJECT_FILE_NAME);
+        let project_prior = fs::read(&project_path).map_err(|error| {
+            add_project_read_error("read project configuration", &project_path, error)
+        })?;
+        let project_text = std::str::from_utf8(&project_prior).map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("parse {PROJECT_FILE_NAME} as UTF-8: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        let proposal = &request.plan.proposal;
+        registry.validate_source_configuration(&proposal.source_kind, &proposal.source_options)?;
+        registry
+            .validate_resource_configuration(&proposal.source_kind, &proposal.resource_options)?;
+        let (project_toml, writes_source_config) =
+            project_with_source(context, project_text, request)?;
+        parse_cdf_toml(&project_toml)?;
+        let resource_sql = resource_sql(request)?;
+        let authored = parse_resource_file(&resource_sql, &request.resource_path)?;
+        let parsed = cdf_engine::parse_project_query_at(
+            &authored.query_sql,
+            &request.resource_path,
+            authored.query_span.start_line,
+            authored.query_span.start_column,
+        )?;
+        if parsed.upstream.configured_source != request.configured_source
+            || parsed.upstream.resource_options != proposal.resource_options
+        {
+            return Err(CdfError::internal(
+                "generated query-first resource did not round-trip through the project SQL parser",
+            )
+            .into());
+        }
+        Ok(Self {
+            resource_sql,
+            project_toml,
+            project_prior,
+            writes_source_config,
+        })
+    }
+}
+
+fn ensure_add_is_available(
+    context: &ProjectContext,
+    request: &AddResourceRequest,
+) -> Result<(), CliError> {
+    if context.has_resource(&request.resource_id) {
+        return Err(CliError::usage_with(
+            format!(
+                "resource `{}` is already compiled; choose a new `<namespace>.<resource>` id",
+                request.resource_id
+            ),
+            error_catalog::USAGE,
+        ));
+    }
+    let resource_path = context.root.join(&request.resource_path);
+    if add_target_exists(&resource_path)? {
+        return Err(CliError::usage_with(
+            format!(
+                "cdf add would overwrite {}; choose a different resource id or edit that file explicitly",
+                request.resource_path
+            ),
+            error_catalog::PROJECT_IO,
+        ));
+    }
+    for private_file in &request.plan.proposal.private_files {
+        if add_target_exists(&context.root.join(&private_file.relative_path))? {
+            return Err(CliError::usage_with(
+                format!(
+                    "cdf add would overwrite private source state for configured source `{}`",
+                    request.configured_source
+                ),
+                error_catalog::PROJECT_IO,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn project_with_source(
+    context: &ProjectContext,
+    project_text: &str,
+    request: &AddResourceRequest,
+) -> Result<(String, bool), CliError> {
+    let proposal = &request.plan.proposal;
+    if let Some(existing) = context.config.sources.get(&request.configured_source) {
+        if existing.source_type != proposal.source_kind
+            || existing.options != proposal.source_options
+        {
+            return Err(CliError::usage_with(
+                format!(
+                    "configured source `{}` already exists with different type or options; choose a distinct namespace/resource id or edit its shared [sources.{}] configuration explicitly",
+                    request.configured_source, request.configured_source
+                ),
+                error_catalog::USAGE,
+            ));
+        }
+        return Ok((project_text.to_owned(), false));
+    }
+    let source = toml::to_string_pretty(&GeneratedSourceDocument {
+        sources: BTreeMap::from([(
+            request.configured_source.as_str(),
+            GeneratedConfiguredSource {
+                source_type: &proposal.source_kind,
+                options: &proposal.source_options,
+            },
+        )]),
+    })
+    .map_err(|error| CdfError::internal(format!("serialize configured source: {error}")))?;
+    let mut project = project_text.trim_end_matches(['\n', '\r']).to_owned();
+    project.push_str("\n\n");
+    project.push_str(source.trim());
+    project.push('\n');
+    Ok((project, true))
+}
+
+fn resource_sql(request: &AddResourceRequest) -> Result<String, CliError> {
+    registered_source_resource_sql(&request.configured_source, &request.plan)
+}
+
+pub(crate) fn registered_source_resource_sql(
+    configured_source: &str,
+    plan: &PlannedSourceAdd,
+) -> Result<String, CliError> {
+    validate_sql_name("configured source", configured_source)?;
+    let proposal = &plan.proposal;
+    let mut sql = String::from("RESOURCE\nDISPOSITION APPEND\n");
+    if let Some(cursor) = &proposal.cursor {
+        validate_sql_name("cursor field", &cursor.field)?;
+        sql.push_str("CURSOR ");
+        sql.push_str(&cursor.field);
+        sql.push('\n');
+    }
+    sql.push_str("TRUST GOVERNED\nEXECUTION BOUNDED\nAS\nSELECT *\nFROM upstream(\n  source => '");
+    sql.push_str(&sql_string(configured_source));
+    sql.push('\'');
+    for (name, value) in &proposal.resource_options {
+        validate_sql_name("resource option", name)?;
+        sql.push_str(",\n  ");
+        sql.push_str(name);
+        sql.push_str(" => ");
+        sql.push_str(&sql_value(value)?);
+    }
+    sql.push_str("\n);\n");
+    Ok(sql)
+}
+
+fn sql_value(value: &serde_json::Value) -> Result<String, CliError> {
+    Ok(match value {
+        serde_json::Value::Null => "NULL".to_owned(),
+        serde_json::Value::Bool(value) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => format!("'{}'", sql_string(value)),
+        serde_json::Value::Array(values) => format!(
+            "ARRAY [{}]",
+            values
+                .iter()
+                .map(sql_value)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        ),
+        serde_json::Value::Object(values) => {
+            let mut members = Vec::with_capacity(values.len());
+            for (name, value) in values {
+                validate_sql_name("object key", name)?;
+                members.push(format!("{name} => {}", sql_value(value)?));
+            }
+            format!("OBJECT({})", members.join(", "))
+        }
+    })
+}
+
+fn sql_string(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn validate_sql_name(label: &str, value: &str) -> Result<(), CliError> {
+    let mut bytes = value.bytes();
+    if value.len() > 128
+        || !bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        || bytes.any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    {
+        return Err(CliError::usage_with(
+            format!(
+                "{label} {value:?} cannot be represented by the project identifier grammar [a-z][a-z0-9_]{{0,127}}"
+            ),
+            error_catalog::USAGE,
+        ));
+    }
+    Ok(())
+}
+
+fn publish_add(
+    context: &ProjectContext,
+    request: &AddResourceRequest,
+    proposal: &ProposedResource,
+) -> Result<(), CliError> {
+    let mut writes = request
+        .plan
+        .proposal
+        .private_files
+        .iter()
+        .map(|file| {
+            Ok(ProjectFileWrite::new(
+                file.relative_path.clone(),
+                file.value.as_str()?.as_bytes().to_vec(),
+                ProjectFileExpectation::Absent,
+            )
+            .owner_only())
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    writes.push(ProjectFileWrite::new(
+        &request.resource_path,
+        proposal.resource_sql.as_bytes().to_vec(),
+        ProjectFileExpectation::Absent,
+    ));
+    let commit_point = if proposal.writes_source_config {
+        writes.push(ProjectFileWrite::new(
+            PROJECT_FILE_NAME,
+            proposal.project_toml.as_bytes().to_vec(),
+            ProjectFileExpectation::Exact(proposal.project_prior.clone()),
+        ));
+        PROJECT_FILE_NAME
+    } else {
+        request.resource_path.as_str()
+    };
+    publish_project_files_transactionally(&context.root, commit_point, writes)?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GeneratedSourceDocument<'a> {
+    sources: BTreeMap<&'a str, GeneratedConfiguredSource<'a>>,
+}
+
+#[derive(Serialize)]
+struct GeneratedConfiguredSource<'a> {
+    #[serde(rename = "type")]
+    source_type: &'a str,
+    #[serde(flatten)]
+    options: &'a BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -397,19 +351,15 @@ struct AddReport {
     project: String,
     environment: String,
     resource_id: String,
-    source: String,
+    namespace: String,
     resource: String,
+    configured_source: String,
     source_driver: String,
-    config_path: String,
-    schema_hash: String,
-    schema_snapshot_path: String,
+    resource_path: String,
     location: String,
     selection: String,
     write_disposition: &'static str,
-    schema_source: &'static str,
-    fields: Vec<AddFieldReport>,
     cursor: Option<String>,
-    cursor_candidates: Vec<String>,
     writes: AddWrites,
     next_command: String,
 }
@@ -418,262 +368,52 @@ impl AddReport {
     fn from_parts(
         context: &ProjectContext,
         request: &AddResourceRequest,
-        proposed: &ProposedResource,
-        snapshot: &SchemaSnapshotArtifact,
+        proposal: &ProposedResource,
     ) -> Self {
-        let cursor = proposed
-            .resource
-            .descriptor()
-            .cursor
-            .as_ref()
-            .map(|cursor| cursor.field.clone());
-        let cursor_candidates = snapshot
-            .schema
-            .fields
-            .iter()
-            .filter(|field| {
-                matches!(
-                    field.data_type,
-                    SchemaSnapshotDataType::Int { .. }
-                        | SchemaSnapshotDataType::Timestamp { .. }
-                        | SchemaSnapshotDataType::Date { .. }
-                ) && cursor.as_deref() != Some(field.name.as_str())
-            })
-            .map(|field| field.name.clone())
-            .collect();
         Self {
             project: context.root.display().to_string(),
             environment: context.environment.name.clone(),
             resource_id: request.resource_id.clone(),
-            source: request.source.clone(),
+            namespace: request.namespace.clone(),
             resource: request.resource.clone(),
+            configured_source: request.configured_source.clone(),
             source_driver: request.plan.driver.driver_id.as_str().to_owned(),
-            config_path: request.config_path_rel.clone(),
-            schema_hash: snapshot.schema_hash.to_string(),
-            schema_snapshot_path: snapshot.path.clone(),
+            resource_path: request.resource_path.clone(),
             location: request.plan.proposal.display_location.as_str().to_owned(),
             selection: request.plan.proposal.display_selection.clone(),
             write_disposition: "append",
-            schema_source: "discovered",
-            fields: snapshot
-                .schema
-                .fields
-                .iter()
-                .map(AddFieldReport::from_field)
-                .collect(),
-            cursor,
-            cursor_candidates,
+            cursor: request
+                .plan
+                .proposal
+                .cursor
+                .as_ref()
+                .map(|cursor| cursor.field.clone()),
             writes: AddWrites {
-                resource_config: !request.dry_run,
-                project_config: !request.dry_run,
-                schema_snapshot: !request.dry_run,
-                lockfile: !request.dry_run,
-                package: false,
-                destination: false,
-                checkpoint: false,
+                resource_sql: !request.dry_run,
+                configured_source: !request.dry_run && proposal.writes_source_config,
+                private_source_state: !request.dry_run
+                    && !request.plan.proposal.private_files.is_empty(),
+                lockfile: false,
             },
-            next_command: format!("cdf run {}", request.resource_id),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct AddFieldReport {
-    name: String,
-    data_type: SchemaSnapshotDataType,
-    nullable: bool,
-    source_name: Option<String>,
-}
-
-impl AddFieldReport {
-    fn from_field(field: &SchemaSnapshotField) -> Self {
-        Self {
-            name: field.name.clone(),
-            data_type: field.data_type.clone(),
-            nullable: field.nullable,
-            source_name: field.metadata.get("cdf:source_name").cloned(),
+            next_command: "cdf compile --refresh".to_owned(),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct AddWrites {
-    resource_config: bool,
-    project_config: bool,
-    schema_snapshot: bool,
+    resource_sql: bool,
+    configured_source: bool,
+    private_source_state: bool,
     lockfile: bool,
-    package: bool,
-    destination: bool,
-    checkpoint: bool,
-}
-
-#[derive(Serialize)]
-struct GeneratedResourceDocument<'a> {
-    source: BTreeMap<&'a str, GeneratedSource<'a>>,
-    resource: BTreeMap<&'a str, GeneratedResource<'a>>,
-}
-
-#[derive(Serialize)]
-struct GeneratedSource<'a> {
-    kind: &'a str,
-    #[serde(flatten)]
-    options: &'a BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(Serialize)]
-struct GeneratedResource<'a> {
-    #[serde(flatten)]
-    options: &'a BTreeMap<String, serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cursor: Option<GeneratedCursor>,
-    write_disposition: &'static str,
-    trust: &'static str,
-}
-
-#[derive(Serialize)]
-struct GeneratedCursor {
-    field: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    param: Option<String>,
-    ordering: &'static str,
-    lag: String,
-}
-
-fn resource_toml(request: &AddResourceRequest) -> Result<String, CliError> {
-    registered_source_resource_toml(&request.source, &request.resource, &request.plan)
-}
-
-pub(crate) fn registered_source_resource_toml(
-    source: &str,
-    resource: &str,
-    plan: &PlannedSourceAdd,
-) -> Result<String, CliError> {
-    let proposal = &plan.proposal;
-    let cursor = proposal.cursor.as_ref().map(|cursor| GeneratedCursor {
-        field: cursor.field.clone(),
-        param: cursor.parameter.clone(),
-        ordering: match cursor.ordering {
-            cdf_runtime::SourceAddCursorOrdering::Exact => "exact",
-            cdf_runtime::SourceAddCursorOrdering::Inexact => "inexact",
-            cdf_runtime::SourceAddCursorOrdering::BestEffort => "best_effort",
-            cdf_runtime::SourceAddCursorOrdering::Unordered => "unordered",
-        },
-        lag: format!("{}ms", cursor.lag_tolerance_ms),
-    });
-    toml::to_string_pretty(&GeneratedResourceDocument {
-        source: BTreeMap::from([(
-            source,
-            GeneratedSource {
-                kind: &proposal.source_kind,
-                options: &proposal.source_options,
-            },
-        )]),
-        resource: BTreeMap::from([(
-            resource,
-            GeneratedResource {
-                options: &proposal.resource_options,
-                cursor,
-                write_disposition: "append",
-                trust: "governed",
-            },
-        )]),
-    })
-    .map_err(|error| {
-        CliError::mapped(
-            CdfError::internal(format!("serialize registered source add proposal: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })
-}
-
-fn appended_project_mapping(
-    context: &ProjectContext,
-    request: &AddResourceRequest,
-) -> Result<(Vec<u8>, String), CliError> {
-    let project_path = context.root.join(PROJECT_FILE_NAME);
-    let mut project = fs::read_to_string(&project_path).map_err(|error| {
-        add_project_read_error("read project configuration", &project_path, error)
-    })?;
-    let prior = project.as_bytes().to_vec();
-    while project.ends_with(['\n', '\r']) {
-        project.pop();
-    }
-    project.push_str(&format!(
-        "\n\n[resources.\"{}\"]\nsource = {}\n",
-        request.resource_id,
-        toml_string(&request.config_path_rel)?
-    ));
-    Ok((prior, project))
 }
 
 fn add_target_exists(path: &std::path::Path) -> Result<bool, CliError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            validate_missing_add_target_ancestors(path)?;
-            Ok(false)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(add_project_read_error("inspect add target", path, error)),
     }
-}
-
-fn validate_missing_add_target_ancestors(path: &std::path::Path) -> Result<(), CliError> {
-    let mut cursor = path.parent();
-    while let Some(parent) = cursor {
-        if parent.as_os_str().is_empty() {
-            return Ok(());
-        }
-        match fs::metadata(parent) {
-            Ok(metadata) if metadata.is_dir() => return Ok(()),
-            Ok(_) => {
-                return Err(add_project_read_error(
-                    "inspect add target ancestor",
-                    parent,
-                    std::io::Error::from(std::io::ErrorKind::NotADirectory),
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::symlink_metadata(parent) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        return Err(CliError::mapped(
-                            CdfError::contract(format!(
-                                "add target ancestor {} is a dangling symlink",
-                                parent.display()
-                            )),
-                            error_catalog::PROJECT_IO,
-                        ));
-                    }
-                    Ok(_) => {
-                        return Err(CliError::mapped(
-                            CdfError::contract(format!(
-                                "add target ancestor {} changed filesystem shape during inspection",
-                                parent.display()
-                            )),
-                            error_catalog::PROJECT_IO,
-                        ));
-                    }
-                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
-                        cursor = parent.parent();
-                    }
-                    Err(link_error) => {
-                        return Err(add_project_read_error(
-                            "inspect add target ancestor",
-                            parent,
-                            link_error,
-                        ));
-                    }
-                }
-            }
-            Err(error) => {
-                return Err(add_project_read_error(
-                    "inspect add target ancestor",
-                    parent,
-                    error,
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn add_project_read_error(action: &str, path: &std::path::Path, error: std::io::Error) -> CliError {
@@ -686,33 +426,21 @@ fn add_project_read_error(action: &str, path: &std::path::Path, error: std::io::
 }
 
 fn split_resource_id(id: &str) -> Result<(String, String), CliError> {
-    let mut parts = id.split('.');
-    let source = parts.next().unwrap_or_default();
-    let resource = parts.next().unwrap_or_default();
-    if source.is_empty() || resource.is_empty() || parts.next().is_some() {
+    let Some((namespace, resource)) = id.split_once('.') else {
         return Err(CliError::usage_with(
-            "cdf add resource id must be exactly `<source>.<resource>`",
+            "cdf add resource id must be exactly `<namespace>.<resource>`",
+            error_catalog::USAGE,
+        ));
+    };
+    if resource.contains('.') {
+        return Err(CliError::usage_with(
+            "cdf add resource id must be exactly `<namespace>.<resource>`",
             error_catalog::USAGE,
         ));
     }
-    for (label, value) in [("source", source), ("resource", resource)] {
-        if !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            return Err(CliError::usage_with(
-                format!(
-                    "cdf add {label} component `{value}` must use only ASCII letters, digits, `_`, or `-`"
-                ),
-                error_catalog::USAGE,
-            ));
-        }
-    }
-    Ok((source.to_owned(), resource.to_owned()))
-}
-
-fn toml_string(value: &str) -> Result<String, CliError> {
-    serde_json::to_string(value).map_err(crate::commands::json_cli_error)
+    validate_sql_name("resource namespace", namespace)?;
+    validate_sql_name("resource", resource)?;
+    Ok((namespace.to_owned(), resource.to_owned()))
 }
 
 mod render;

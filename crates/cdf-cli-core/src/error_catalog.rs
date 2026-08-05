@@ -78,24 +78,12 @@ pub const PROJECT_IO: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
-    code: "CDF-PROJECT-RESOURCE-MAPPING",
+pub const PROJECT_RESOURCE_ID: ErrorMapping = ErrorMapping {
+    code: "CDF-PROJECT-RESOURCE-ID",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
-        summary: "Update the project resource mapping to a compiled resource id or source wildcard.",
-        steps: &["Run `cdf inspect resources` after correcting the `[resources]` key."],
-    }),
-};
-
-pub const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
-    code: "CDF-PROJECT-MERGE-KEY",
-    exit_code: 3,
-    remediation: Some(RemediationTemplate {
-        summary: "Choose append or declare the merge identity before contacting the source or destination.",
-        steps: &[
-            "Add `merge_key = [...]` when rows should merge by an explicit identity.",
-            "Otherwise use `write_disposition = \"append\"` to append rows without a key.",
-        ],
+        summary: "Choose a project resource id that does not collide with an existing resource.",
+        steps: &["Run `cdf inspect resources` to review current project resource ids."],
     }),
 };
 
@@ -114,10 +102,10 @@ pub const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
     code: "CDF-RESOURCE-NOT-COMPILED",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
-        summary: "Use one of the compiled resource ids or repair the project resource mapping.",
+        summary: "Use a compiled resource id or author the expected project SQL resource.",
         steps: &[
-            "Run `cdf inspect resources` to see compiled ids and their source files.",
-            "If the id is expected, update the `[resources]` mapping to `<source>.<resource>` or `<source>.*`.",
+            "Run `cdf inspect resources` to see compiled ids and their project SQL files.",
+            "If the id is expected, author `cdf/<namespace>/<resource>.cdf.sql` with an explicit configured-source binding.",
         ],
     }),
 };
@@ -323,8 +311,7 @@ pub fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
         ("CLI_ARTIFACTS_USAGE", CLI_ARTIFACTS_USAGE),
         ("PROJECT_INIT_ARGUMENT", PROJECT_INIT_ARGUMENT),
         ("PROJECT_IO", PROJECT_IO),
-        ("PROJECT_RESOURCE_MAPPING", PROJECT_RESOURCE_MAPPING),
-        ("PROJECT_MERGE_KEY", PROJECT_MERGE_KEY),
+        ("PROJECT_RESOURCE_ID", PROJECT_RESOURCE_ID),
         ("SOURCE_REFERENCE", SOURCE_REFERENCE),
         ("RESOURCE_NOT_COMPILED", RESOURCE_NOT_COMPILED),
         ("CONTRACT_ARGUMENT", CONTRACT_ARGUMENT),

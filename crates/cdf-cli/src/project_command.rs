@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, env};
 
 use cdf_kernel::CdfError;
 use cdf_project::{
-    FileResourceSourceResolver, LockDiff, LockedDestination, ProjectScaffoldOptions,
-    ProjectScaffoldReport, ProjectValidationReport, generate_lockfile_with_destination_artifacts,
-    validate_project, write_local_project_scaffold,
+    LockDiff, LockedDestination, ProjectScaffoldOptions, ProjectScaffoldReport,
+    ProjectValidationReport, generate_lockfile_with_destination_artifacts, validate_project,
+    write_local_project_scaffold,
 };
 use serde::Serialize;
 
@@ -58,14 +58,13 @@ pub(crate) fn validate(
     }
     let context =
         ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
-    let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     let validation = validate_project(
         source_registry,
         &context.config,
         Some(&context.environment.name),
-        &resolver,
+        &context.resources,
         &provider,
     )?;
     let report = ProjectValidationCliReport {

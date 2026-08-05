@@ -75,9 +75,9 @@ path never selects the configured source. SQL MUST NOT declare or override its c
 id. Renaming either identity token is a semantic identity change. Duplicate/colliding identities
 fail before publication.
 
-`sources/`, `resources/`, `pipelines/`, and every other root are not resource-authoring roots. The
-compiler MUST reject a retired SQL/declarative resource tree with focused `cdf/<namespace>/<resource>.cdf.sql`
-guidance; it MUST NOT scan, reinterpret, migrate, or publish from one.
+Only `cdf/` is compiler input for project resources. Every other project directory is outside that
+input surface and is ignored by resource enumeration. The compiler MUST NOT scan or reinterpret an
+unrelated directory as a resource tree.
 
 ### Shared configured-source authority
 

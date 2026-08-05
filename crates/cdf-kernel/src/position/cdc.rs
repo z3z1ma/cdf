@@ -933,17 +933,4 @@ mod tests {
         let empty_document = mongo(&[5, 0, 0, 0, 0], MongoResumeMode::ResumeAfter);
         assert!(empty_document.validate().is_err());
     }
-
-    #[test]
-    fn legacy_generic_log_shape_has_no_current_reader() {
-        let error = serde_json::from_value::<SourcePosition>(serde_json::json!({
-            "kind": "log",
-            "version": 1,
-            "log": "orders",
-            "offset": 42,
-            "sequence": "abc"
-        }))
-        .unwrap_err();
-        assert!(!error.to_string().is_empty());
-    }
 }

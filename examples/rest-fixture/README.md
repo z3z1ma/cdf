@@ -17,4 +17,6 @@ cdf run api.events
 cdf sql 'select * from package_files'
 ```
 
-The example is intentionally public and needs no auth token. A real authenticated REST source must put the token behind a `secret://` reference; never place the token in resource TOML.
+The example is intentionally public and needs no auth token. A real authenticated REST source
+must put the token behind a `secret://` reference in `cdf.toml`; never place the token in resource
+SQL.

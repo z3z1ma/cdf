@@ -44,14 +44,19 @@ pub(crate) struct PreparedSchemaForCli {
 impl PreparedSchemaForCli {
     fn new(
         resource: CompiledResource,
-        source_plan: cdf_runtime::CompiledSourcePlan,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
         prepared_payloads: cdf_runtime::PreparedSourcePayloads,
     ) -> Result<Self, CliError> {
+        let source_plan = resource.source_plan().clone();
         validate_resource_source_authority(&resource, &source_plan)?;
+        let source_schema = resource
+            .relational_expression_plan()
+            .map(|plan| plan.input_schema.to_arrow())
+            .transpose()?
+            .unwrap_or_else(|| resource.schema().as_ref().clone());
         let source_plan = source_plan.bind_schema_authority(
             resource.descriptor(),
-            resource.schema().as_ref(),
+            &source_schema,
             resource.effective_schema_runtime().cloned(),
             resource.baseline_observation_schema_catalog().to_vec(),
         )?;
@@ -254,9 +259,9 @@ pub(crate) fn prepare_resource_schema_for_cli(
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
         let (prepared, _) = prepared.into_parts();
+        let prepared = finalize_resource_query_for_cli(context, prepared)?;
         return PreparedSchemaForCli::new(
             prepared,
-            source_plan,
             Some(SchemaSnapshotActionReport {
                 outcome: "unchanged",
                 schema_hash: snapshot.schema_hash.to_string(),
@@ -290,7 +295,11 @@ pub(crate) fn prepare_resource_schema_for_cli(
         probe_resource.descriptor().schema_source,
         SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
     ) {
-        return PreparedSchemaForCli::new(resource.clone(), source_plan, None, prepared_payloads);
+        return PreparedSchemaForCli::new(
+            finalize_resource_query_for_cli(context, resource.clone())?,
+            None,
+            prepared_payloads,
+        );
     }
     let options = match resource.descriptor().schema_source.pinned_snapshot() {
         Some(snapshot) => {
@@ -323,6 +332,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
     )?;
     let prepared_resource =
         cdf_project::compile_discovered_schema_artifacts(&probe_resource, &mut artifacts)?;
+    let prepared_resource = finalize_resource_query_for_cli(context, prepared_resource)?;
     let discovery_coverage = artifacts
         .discovery_manifest
         .as_ref()
@@ -366,7 +376,6 @@ pub(crate) fn prepare_resource_schema_for_cli(
     };
     PreparedSchemaForCli::new(
         prepared_resource,
-        source_plan,
         Some(SchemaSnapshotActionReport {
             outcome,
             schema_hash: artifact.schema_hash.to_string(),
@@ -379,6 +388,31 @@ pub(crate) fn prepare_resource_schema_for_cli(
     )
 }
 
+fn finalize_resource_query_for_cli(
+    context: &ProjectContext,
+    resource: CompiledResource,
+) -> Result<CompiledResource, CliError> {
+    if resource.relational_expression_plan().is_some() || resource.schema().fields().is_empty() {
+        return Ok(resource);
+    }
+    let resource_id = resource.descriptor().resource_id.as_str();
+    let query = match context.resource_query(resource_id).cloned() {
+        Some(query) => query,
+        None if context.is_adhoc_resource(resource_id) => return Ok(resource),
+        None => {
+            return Err(CdfError::internal(format!(
+                "compiled resource {resource_id:?} lost its project query authority"
+            ))
+            .into());
+        }
+    };
+    Ok(cdf_project::finalize_query_project_resource(
+        cdf_project::CompiledProjectResource { resource, query },
+        &context.semantic_catalog,
+    )?
+    .resource)
+}
+
 pub(crate) fn build_engine_plan_for_resource(
     source: &crate::project_run_resource::CliProjectRunSource,
     args: &ScanArgs,
@@ -388,7 +422,12 @@ pub(crate) fn build_engine_plan_for_resource(
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
 ) -> Result<EnginePlan, CliError> {
     let resource = source.as_queryable();
-    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let logical_schema = source
+        .relational_expression_plan()
+        .map(|plan| plan.output_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| resource.schema().as_ref().clone());
+    let observed_schema = ObservedSchema::from_arrow(&logical_schema);
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     let allowances = resource.type_policy_allowances();
     policy.types.coerce_types = allowances.coerce_types;
@@ -407,6 +446,7 @@ pub(crate) fn build_engine_plan_for_resource(
         package_id: run_package_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
+        relational_expression_plan: source.relational_expression_plan().cloned(),
         committed_frontier,
     };
     let plan = Planner::new()

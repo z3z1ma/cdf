@@ -4,9 +4,7 @@ use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_p
 use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlanInput, Planner};
 use cdf_kernel::{ResourceDescriptor, ScanRequest, SchemaSource};
-use cdf_project::{
-    FileResourceSourceResolver, ProjectResourceOrigin, ResourceSchemaDiscovery, validate_project,
-};
+use cdf_project::{ProjectQueryCompilation, ResourceSchemaDiscovery, validate_project};
 use serde::Serialize;
 
 use crate::{
@@ -32,23 +30,22 @@ pub(super) fn run(
         cli.project.as_ref(),
         cli.env.as_deref(),
     )?;
-    let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     let validation = validate_project(
         source_registry,
         &context.config,
         Some(&context.environment.name),
-        &resolver,
+        &context.resources,
         &provider,
     )?;
     let mut resources = Vec::with_capacity(context.resources.len());
-    for (resource, origin) in context.resources.iter().zip(&context.resource_origins) {
+    for (resource, query) in context.resources.iter().zip(&context.resource_queries) {
         resources.push(deep_validate_resource(
             destinations,
             &context,
             resource,
-            origin,
+            query,
             execution,
         ));
     }
@@ -58,8 +55,7 @@ pub(super) fn run(
         mode: "deep".to_owned(),
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
-        declarative_resources: validation.declarative_resources,
-        external_resources: validation.external_resources,
+        resources_compiled: validation.resources,
         checked_secrets: validation.checked_secrets.len(),
         summary,
         resources,
@@ -72,7 +68,7 @@ fn deep_validate_resource(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
-    origin: &ProjectResourceOrigin,
+    query: &ProjectQueryCompilation,
     execution: &cdf_runtime::ExecutionServices,
 ) -> DeepValidateResourceReport {
     let mut diagnostics = Vec::new();
@@ -120,18 +116,58 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
-    let runtime_resource = source_plan.as_ref().and_then(|source_plan| {
+    if !working_resource.schema().fields().is_empty()
+        && working_resource.relational_expression_plan().is_none()
+    {
+        match cdf_project::finalize_query_project_resource(
+            cdf_project::CompiledProjectResource {
+                resource: working_resource.clone(),
+                query: query.clone(),
+            },
+            &context.semantic_catalog,
+        ) {
+            Ok(compiled) => working_resource = compiled.resource,
+            Err(error) => {
+                source_authority_ok = false;
+                diagnostics.push(diagnostic(
+                    "error",
+                    "query_compilation",
+                    redact_uri_userinfo(&error.message),
+                    "Fix the project query against the discovered source schema.",
+                ));
+            }
+        }
+    }
+    let runtime_resource = source_plan.as_ref().and_then(|_| {
         if !source_authority_ok {
             return None;
         }
-        let source_plan = match source_plan.clone().bind_schema_authority(
-            working_resource.descriptor(),
-            working_resource.schema().as_ref(),
-            working_resource.effective_schema_runtime().cloned(),
-            working_resource
-                .baseline_observation_schema_catalog()
-                .to_vec(),
-        ) {
+        let source_schema = match working_resource.relational_expression_plan() {
+            Some(plan) => match plan.input_schema.to_arrow() {
+                Ok(schema) => schema,
+                Err(error) => {
+                    diagnostics.push(diagnostic(
+                        "error",
+                        "source_schema_binding",
+                        redact_uri_userinfo(&error.message),
+                        "Fix query input schema authority before plan/run.",
+                    ));
+                    return None;
+                }
+            },
+            None => working_resource.schema().as_ref().clone(),
+        };
+        let source_plan = match working_resource
+            .source_plan()
+            .clone()
+            .bind_schema_authority(
+                working_resource.descriptor(),
+                &source_schema,
+                working_resource.effective_schema_runtime().cloned(),
+                working_resource
+                    .baseline_observation_schema_catalog()
+                    .to_vec(),
+            ) {
             Ok(source_plan) => source_plan,
             Err(error) => {
                 diagnostics.push(diagnostic(
@@ -193,11 +229,11 @@ fn deep_validate_resource(
 
     DeepValidateResourceReport {
         resource_id: resource.descriptor().resource_id.to_string(),
-        source_name: origin.source_name.clone(),
-        resource_name: origin.resource_name.clone(),
-        source_file: origin.source_file.clone(),
-        mapping_pattern: origin.mapping_pattern.clone(),
-        mapping_status: origin.mapping_status.clone(),
+        configured_source: query.configured_source.configured_source.clone(),
+        namespace: query.namespace.clone(),
+        resource_name: query.resource_name.clone(),
+        resource_file: query.relative_path.clone(),
+        target: query.effective.target.value.to_string(),
         source_kind: resource_kind_name(resource).to_owned(),
         execution_extent: execution_extent_name(working_resource.execution_extent()).to_owned(),
         schema_source: schema_source_name(&working_resource.descriptor().schema_source).to_owned(),
@@ -598,6 +634,9 @@ fn destination_check(
                         segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(
                         ),
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
+                        relational_expression_plan: compiled_resource
+                            .relational_expression_plan()
+                            .cloned(),
                         committed_frontier: None,
                     },
                 )
@@ -698,8 +737,7 @@ struct DeepValidateReport {
     mode: String,
     project: String,
     environment: String,
-    declarative_resources: usize,
-    external_resources: usize,
+    resources_compiled: usize,
     checked_secrets: usize,
     summary: DeepValidateSummary,
     resources: Vec<DeepValidateResourceReport>,
@@ -748,11 +786,11 @@ impl DeepValidateSummary {
 #[derive(Serialize)]
 struct DeepValidateResourceReport {
     resource_id: String,
-    source_name: String,
+    configured_source: String,
+    namespace: String,
     resource_name: String,
-    source_file: Option<String>,
-    mapping_pattern: String,
-    mapping_status: String,
+    resource_file: String,
+    target: String,
     source_kind: String,
     execution_extent: String,
     schema_source: String,

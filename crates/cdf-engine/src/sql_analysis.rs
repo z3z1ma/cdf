@@ -112,7 +112,7 @@ pub fn analyze_project_query_at(
     let rewritten_sql = query.to_string();
     let frame = block_on(context.sql(&rewritten_sql)).map_err(|error| {
         sql_error(
-            "CDF-D3-SQL-ANALYSIS",
+            "CDF-SQL-ANALYSIS",
             file,
             format!("DataFusion could not resolve the admitted query: {error}"),
         )
@@ -189,28 +189,28 @@ fn offset_span(
 fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRelation, String)> {
     if sql.trim().is_empty() {
         return Err(sql_error(
-            "CDF-D3-SQL-EMPTY",
+            "CDF-SQL-EMPTY",
             file,
             "resource file must contain one SELECT query",
         ));
     }
     let mut statements = DFParser::parse_sql(sql).map_err(|error| {
         sql_error(
-            "CDF-D3-SQL-PARSE",
+            "CDF-SQL-PARSE",
             file,
             format!("could not parse resource SQL: {error}"),
         )
     })?;
     if statements.len() != 1 {
         return Err(sql_error(
-            "CDF-D3-SQL-STATEMENT-COUNT",
+            "CDF-SQL-STATEMENT-COUNT",
             file,
             "resource file must contain exactly one statement",
         ));
     }
     let statement = statements.pop_front().ok_or_else(|| {
         sql_error(
-            "CDF-D3-SQL-STATEMENT-COUNT",
+            "CDF-SQL-STATEMENT-COUNT",
             file,
             "resource file must contain exactly one statement",
         )
@@ -218,16 +218,9 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
     let mut query = match statement {
         DataFusionStatement::Statement(statement) => match *statement {
             Statement::Query(query) => *query,
-            Statement::CreateTable(_) => {
-                return Err(sql_error(
-                    "CDF-D3-SQL-CREATE-RESOURCE",
-                    file,
-                    "CREATE RESOURCE is not current syntax; author a bare SELECT or RESOURCE ... AS SELECT",
-                ));
-            }
             _ => {
                 return Err(sql_error(
-                    "CDF-D3-SQL-STATEMENT",
+                    "CDF-SQL-STATEMENT",
                     file,
                     "resource file must contain a SELECT query",
                 ));
@@ -235,7 +228,7 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
         },
         _ => {
             return Err(sql_error(
-                "CDF-D3-SQL-STATEMENT",
+                "CDF-SQL-STATEMENT",
                 file,
                 "DataFusion extension statements are not resource queries",
             ));
@@ -247,7 +240,7 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
         SetExpr::Select(select) => select,
         _ => {
             return Err(sql_error(
-                "CDF-D3-SQL-SET-OPERATION",
+                "CDF-SQL-SET-OPERATION",
                 file,
                 "set operations, VALUES, and parenthesized query bodies are not admitted",
             ));
@@ -255,21 +248,21 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
     };
     if select.from.len() != 1 {
         return Err(sql_error(
-            "CDF-D3-SQL-UPSTREAM-COUNT",
+            "CDF-SQL-UPSTREAM-COUNT",
             file,
             "resource query requires exactly one FROM upstream(...) relation",
         ));
     }
     let from = select.from.get_mut(0).ok_or_else(|| {
         sql_error(
-            "CDF-D3-SQL-UPSTREAM-COUNT",
+            "CDF-SQL-UPSTREAM-COUNT",
             file,
             "resource query requires exactly one FROM upstream(...) relation",
         )
     })?;
     if !from.joins.is_empty() {
         return Err(sql_error(
-            "CDF-D3-SQL-JOIN",
+            "CDF-SQL-JOIN",
             file,
             "joins and multiple upstream relations are not admitted",
         ));
@@ -281,7 +274,7 @@ fn parse_and_rewrite(sql: &str, file: &str) -> Result<(Query, ParsedUpstreamRela
 fn validate_query_shape(query: &Query, file: &str) -> Result<()> {
     if query.with.is_some() {
         return Err(sql_error(
-            "CDF-D3-SQL-WITH",
+            "CDF-SQL-WITH",
             file,
             "WITH queries and subqueries are not admitted",
         ));
@@ -296,14 +289,14 @@ fn validate_query_shape(query: &Query, file: &str) -> Result<()> {
         || !query.pipe_operators.is_empty()
     {
         return Err(sql_error(
-            "CDF-D3-SQL-QUERY-CLAUSE",
+            "CDF-SQL-QUERY-CLAUSE",
             file,
             "ORDER/LIMIT/FETCH/LOCK/SETTINGS/FORMAT/pipe clauses are not admitted",
         ));
     }
     let SetExpr::Select(select) = query.body.as_ref() else {
         return Err(sql_error(
-            "CDF-D3-SQL-SET-OPERATION",
+            "CDF-SQL-SET-OPERATION",
             file,
             "set operations, VALUES, and parenthesized query bodies are not admitted",
         ));
@@ -332,7 +325,7 @@ fn validate_query_shape(query: &Query, file: &str) -> Result<()> {
         || select.value_table_mode.is_some()
     {
         return Err(sql_error(
-            "CDF-D3-SQL-RELATIONAL-SHAPE",
+            "CDF-SQL-RELATIONAL-SHAPE",
             file,
             "only projection, scalar expressions, one upstream relation, and an optional WHERE filter are admitted",
         ));
@@ -358,14 +351,14 @@ fn parse_upstream_relation(
     } = relation
     else {
         return Err(sql_error(
-            "CDF-D3-SQL-UPSTREAM-RELATION",
+            "CDF-SQL-UPSTREAM-RELATION",
             file,
             "FROM must contain exactly upstream(source => 'name', ...)",
         ));
     };
     if !is_unquoted_name(name, "upstream") || args.is_none() {
         return Err(sql_error(
-            "CDF-D3-SQL-UPSTREAM-RELATION",
+            "CDF-SQL-UPSTREAM-RELATION",
             file,
             "FROM must contain exactly upstream(source => 'name', ...)",
         ));
@@ -379,7 +372,7 @@ fn parse_upstream_relation(
         || !index_hints.is_empty()
     {
         return Err(sql_error(
-            "CDF-D3-SQL-UPSTREAM-MODIFIER",
+            "CDF-SQL-UPSTREAM-MODIFIER",
             file,
             "upstream(...) does not admit table hints, versions, partitions, ordinality, paths, samples, or index hints",
         ));
@@ -387,14 +380,14 @@ fn parse_upstream_relation(
     let relation_span = sql_span(name.span(), file)?;
     let table_args = args.take().ok_or_else(|| {
         sql_error(
-            "CDF-D3-SQL-UPSTREAM-RELATION",
+            "CDF-SQL-UPSTREAM-RELATION",
             file,
             "upstream requires named arguments",
         )
     })?;
     if table_args.settings.is_some() {
         return Err(sql_error(
-            "CDF-D3-SQL-UPSTREAM-MODIFIER",
+            "CDF-SQL-UPSTREAM-MODIFIER",
             file,
             "upstream arguments do not admit SETTINGS",
         ));
@@ -409,14 +402,14 @@ fn parse_upstream_relation(
         } = argument
         else {
             return Err(sql_error(
-                "CDF-D3-SQL-UPSTREAM-ARGUMENT",
+                "CDF-SQL-UPSTREAM-ARGUMENT",
                 file,
                 "upstream arguments must use unquoted name => value form",
             ));
         };
         if name.quote_style.is_some() || operator != FunctionArgOperator::RightArrow {
             return Err(sql_error(
-                "CDF-D3-SQL-UPSTREAM-ARGUMENT",
+                "CDF-SQL-UPSTREAM-ARGUMENT",
                 file,
                 "upstream arguments must use unquoted name => value form",
             ));
@@ -424,7 +417,7 @@ fn parse_upstream_relation(
         validate_token("upstream argument", &name.value, file)?;
         let FunctionArgExpr::Expr(expression) = arg else {
             return Err(sql_error(
-                "CDF-D3-SQL-UPSTREAM-VALUE",
+                "CDF-SQL-UPSTREAM-VALUE",
                 file,
                 "upstream arguments must be recursive data-only values",
             ));
@@ -432,21 +425,21 @@ fn parse_upstream_relation(
         if name.value == "source" {
             if configured_source.is_some() {
                 return Err(sql_error(
-                    "CDF-D3-SQL-SOURCE-DUPLICATE",
+                    "CDF-SQL-SOURCE-DUPLICATE",
                     file,
                     "upstream source must appear exactly once",
                 ));
             }
             let Expr::Value(value) = expression else {
                 return Err(sql_error(
-                    "CDF-D3-SQL-SOURCE-VALUE",
+                    "CDF-SQL-SOURCE-VALUE",
                     file,
                     "upstream source must be a single-quoted configured-source name",
                 ));
             };
             let Value::SingleQuotedString(source) = value.value else {
                 return Err(sql_error(
-                    "CDF-D3-SQL-SOURCE-VALUE",
+                    "CDF-SQL-SOURCE-VALUE",
                     file,
                     "upstream source must be a single-quoted configured-source name",
                 ));
@@ -457,7 +450,7 @@ fn parse_upstream_relation(
             let value = lower_data_value(expression, file)?;
             if resource_options.insert(name.value.clone(), value).is_some() {
                 return Err(sql_error(
-                    "CDF-D3-SQL-UPSTREAM-DUPLICATE",
+                    "CDF-SQL-UPSTREAM-DUPLICATE",
                     file,
                     format!("upstream argument {:?} appears more than once", name.value),
                 ));
@@ -466,7 +459,7 @@ fn parse_upstream_relation(
     }
     let configured_source = configured_source.ok_or_else(|| {
         sql_error(
-            "CDF-D3-SQL-SOURCE-MISSING",
+            "CDF-SQL-SOURCE-MISSING",
             file,
             "upstream requires source => '<configured_source>' exactly once",
         )
@@ -552,7 +545,7 @@ fn lower_object(arguments: FunctionArguments, file: &str) -> Result<serde_json::
         let value = lower_data_value(expression, file)?;
         if object.insert(name.value.clone(), value).is_some() {
             return Err(sql_error(
-                "CDF-D3-SQL-OBJECT-DUPLICATE",
+                "CDF-SQL-OBJECT-DUPLICATE",
                 file,
                 format!("OBJECT key {:?} appears more than once", name.value),
             ));
@@ -584,7 +577,7 @@ fn admitted_relational_nodes<'a>(
     };
     if scan.table_name.table() != UPSTREAM_TABLE {
         return Err(sql_error(
-            "CDF-D3-SQL-INTERNAL-RELATION",
+            "CDF-SQL-INTERNAL-RELATION",
             file,
             "analyzed query did not bind the isolated upstream relation",
         ));
@@ -606,7 +599,7 @@ fn unqualify_columns(expression: LogicalExpr) -> Result<LogicalExpr> {
 
 fn relational_plan_error(plan: &LogicalPlan, file: &str) -> CdfError {
     sql_error(
-        "CDF-D3-SQL-RELATIONAL-PLAN",
+        "CDF-SQL-RELATIONAL-PLAN",
         file,
         format!(
             "DataFusion resolved a {} plan; only projection, optional filter, and one upstream scan are admitted",
@@ -621,7 +614,7 @@ fn parse_number(value: &str, file: &str) -> Result<Number> {
         .and_then(|value| value.as_number().cloned())
         .ok_or_else(|| {
             sql_error(
-                "CDF-D3-SQL-NUMBER",
+                "CDF-SQL-NUMBER",
                 file,
                 format!("numeric resource argument {value:?} is outside the canonical JSON number domain"),
             )
@@ -644,7 +637,7 @@ fn validate_token(kind: &str, value: &str, file: &str) -> Result<()> {
         || bytes.any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
     {
         return Err(sql_error(
-            "CDF-D3-SQL-NAME",
+            "CDF-SQL-NAME",
             file,
             format!("{kind} {value:?} must match [a-z][a-z0-9_]{{0,127}}"),
         ));
@@ -666,7 +659,7 @@ fn sql_span(
 
 fn span_error(file: &str) -> CdfError {
     sql_error(
-        "CDF-D3-SQL-SPAN",
+        "CDF-SQL-SPAN",
         file,
         "SQL source location exceeds the supported one-based span domain",
     )
@@ -674,14 +667,14 @@ fn span_error(file: &str) -> CdfError {
 
 fn data_value_error(file: &str) -> CdfError {
     sql_error(
-        "CDF-D3-SQL-UPSTREAM-VALUE",
+        "CDF-SQL-UPSTREAM-VALUE",
         file,
         "resource arguments admit only single-quoted strings, numbers, Boolean, NULL, ARRAY [...], and OBJECT(name => value, ...)",
     )
 }
 
 fn datafusion_error(error: datafusion::error::DataFusionError) -> CdfError {
-    CdfError::contract(format!("[CDF-D3-SQL-ANALYSIS] {error}"))
+    CdfError::contract(format!("[CDF-SQL-ANALYSIS] {error}"))
 }
 
 fn sql_error(code: &str, file: &str, message: impl std::fmt::Display) -> CdfError {

@@ -239,6 +239,7 @@ fn write_compiled_plan_artifacts(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: "conformance-prepared-package".to_owned(),
+            relational_expression_plan: None,
             committed_frontier: None,
         },
     )?;

@@ -16,7 +16,6 @@ use crate::{
 };
 
 const CDF_DIRECTORY: &str = "cdf";
-const REJECTED_RESOURCE_DIRECTORIES: [&str; 3] = ["sources", "resources", "pipelines"];
 const RESOURCE_SUFFIX: &str = ".cdf.sql";
 const PROJECT_TOKEN_GRAMMAR: &str = "[a-z][a-z0-9_]{0,127}";
 
@@ -129,7 +128,6 @@ pub fn inventory_project_resources(
     })?;
     let configured_sources = validate_source_configuration_shape(config)?;
     let canonical_root = canonical_project_root(project_root)?;
-    reject_non_current_resource_roots(&canonical_root)?;
     let cdf_path = canonical_root.join(CDF_DIRECTORY);
 
     let Some(cdf_metadata) = optional_symlink_metadata(&cdf_path)? else {
@@ -284,12 +282,24 @@ pub fn inventory_project_resources(
     ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
 
     let mut sources = BTreeMap::new();
+    let default_environment = config
+        .environments
+        .get(&config.project.default_environment)
+        .ok_or_else(|| CdfError::internal("validated project lost its default environment"))?;
     for (source_name, base) in &configured_sources {
-        let overlay = selected_environment
+        let mut overlay = default_environment
             .sources
             .get(source_name.as_str())
             .cloned()
             .unwrap_or_default();
+        if environment != config.project.default_environment {
+            let selected_overlay = selected_environment
+                .sources
+                .get(source_name.as_str())
+                .cloned()
+                .unwrap_or_default();
+            overlay.options.extend(selected_overlay.options);
+        }
         let mut effective_options = base.options.clone();
         effective_options.extend(overlay.options.clone());
         add_serialized_size(
@@ -359,19 +369,6 @@ pub fn inventory_project_resources(
         resources,
         total_authored_bytes,
     })
-}
-
-fn reject_non_current_resource_roots(project_root: &Path) -> Result<()> {
-    for directory in REJECTED_RESOURCE_DIRECTORIES {
-        let path = project_root.join(directory);
-        if optional_symlink_metadata(&path)?.is_some() {
-            return Err(CdfError::contract(format!(
-                "{} is not a current CDF resource root; move query-first resources to cdf/<namespace>/<resource>.cdf.sql and remove the retired root",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_source_configuration_shape(

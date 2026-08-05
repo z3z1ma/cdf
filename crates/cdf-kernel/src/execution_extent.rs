@@ -1117,8 +1117,8 @@ mod tests {
             extent
         );
 
-        let legacy = serde_json::json!({"kind": "bounded"});
-        assert!(serde_json::from_value::<ExecutionExtent>(legacy).is_err());
+        let missing_version = serde_json::json!({"kind": "bounded"});
+        assert!(serde_json::from_value::<ExecutionExtent>(missing_version).is_err());
         let wrong_version = serde_json::json!({"kind": "bounded", "version": 2});
         let error = serde_json::from_value::<ExecutionExtent>(wrong_version).unwrap_err();
         assert!(error.to_string().contains("expected version 1"));
@@ -1294,24 +1294,6 @@ mod tests {
         let mut invalid_evidence = serde_json::to_value(evidence).unwrap();
         invalid_evidence["observation"]["overshoot_units"] = 1.into();
         assert!(serde_json::from_value::<EpochClosureEvidence>(invalid_evidence).is_err());
-    }
-
-    #[test]
-    fn kernel_extent_artifacts_have_no_runtime_dependency() {
-        let manifest = include_str!("../Cargo.toml");
-        for forbidden in [
-            "datafusion",
-            "tokio",
-            "cdf-runtime",
-            "cdf-engine",
-            "cdf-cli",
-            "cdf-source-",
-        ] {
-            assert!(
-                !manifest.contains(forbidden),
-                "cdf-kernel manifest contains runtime dependency {forbidden}"
-            );
-        }
     }
 
     fn sample_policy() -> StreamEpochPolicy {

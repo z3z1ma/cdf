@@ -1651,8 +1651,6 @@ state = ".cdf/state.db"
 packages = ".cdf/packages"
 destination = "mock://user:quasar-secret@example.invalid/database"
 
-[resources."mock.*"]
-source = "resources/mock.toml"
 "#,
     )
     .unwrap();

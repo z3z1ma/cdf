@@ -28,7 +28,7 @@ use datafusion::{
     optimizer::simplify_expressions::ExprSimplifier,
 };
 
-/// Child ordinals from the analyzed expression root. D3 records explicit SQL `CAST` nodes here;
+/// Child ordinals from the analyzed expression root. CDF records explicit SQL `CAST` nodes here;
 /// every unmarked DataFusion `Cast` is an analyzer-inserted implicit coercion.
 pub type ExpressionPath = Vec<usize>;
 

@@ -8,7 +8,6 @@ description = "SQLite destination adapter for cdf."
 
 [dependencies]
 arrow-array = "58.3.0"
-arrow-buffer = "58.3.0"
 arrow-schema = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-dest-sql = { path = "../cdf-dest-sql" }

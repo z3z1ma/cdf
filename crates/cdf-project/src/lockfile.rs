@@ -1,13 +1,10 @@
-use std::{collections::BTreeMap, env, path::Path};
+use std::{collections::BTreeMap, env};
 
 use cdf_contract::{
     ContractPolicy, ObservedSchema, compile_resource_validation_program,
     compile_resource_validation_program_with_semantic_catalog,
 };
-use cdf_declarative::{
-    CompiledResource, compile_document_with_project_root_and_semantic_catalog,
-    compile_document_with_semantic_catalog,
-};
+use cdf_declarative::CompiledResource;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, DestinationProtocolCapabilities, DestinationSheet, DestinationSheetArtifact,
@@ -21,36 +18,19 @@ use crate::{
     LOCK_FILE_NAME, LOCKFILE_VERSION,
     internal::{
         collect_secret_refs_from_declarative, collect_secret_refs_from_environment,
-        dedupe_secret_refs, parse_resolved_declarative_source, schema_hash_from_source,
-        semantic_hash, validate_environment_uri_fields, validate_project_shape,
+        dedupe_secret_refs, schema_hash_from_source, semantic_hash,
+        validate_environment_uri_fields, validate_project_shape,
     },
-    models::{EffectiveEnvironment, ProjectConfig, ResourceSourceKind},
+    models::{EffectiveEnvironment, ProjectConfig},
     secrets::SecretRef,
     semantic_uses::semantic_pins_for_resources,
-    sources::ResourceSourceResolver,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectValidationReport {
     pub environment: EffectiveEnvironment,
-    pub declarative_resources: usize,
-    pub external_resources: usize,
+    pub resources: usize,
     pub checked_secrets: Vec<SecretCheck>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CompiledProjectResource {
-    pub resource: CompiledResource,
-    pub origin: ProjectResourceOrigin,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ProjectResourceOrigin {
-    pub source_name: String,
-    pub resource_name: String,
-    pub source_file: Option<String>,
-    pub mapping_pattern: String,
-    pub mapping_status: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,240 +295,21 @@ fn validate_sha256(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn compile_project_declarative_resources(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        None,
-        cdf_semantic::builtin_catalog()?,
-    )
-    .map(resource_entries)
-}
-
-pub fn compile_project_declarative_resources_with_semantic_catalog(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-    semantic_catalog: &SemanticCatalog,
-) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        None,
-        semantic_catalog,
-    )
-    .map(resource_entries)
-}
-
-pub fn compile_project_declarative_resources_with_root(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-    project_root: impl AsRef<Path>,
-) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        Some(project_root.as_ref()),
-        cdf_semantic::builtin_catalog()?,
-    )
-    .map(resource_entries)
-}
-
-pub fn compile_project_declarative_resource_entries_with_root(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-    project_root: impl AsRef<Path>,
-) -> Result<Vec<CompiledProjectResource>> {
-    compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        Some(project_root.as_ref()),
-        cdf_semantic::builtin_catalog()?,
-    )
-}
-
-pub fn compile_project_declarative_resource_entries_with_root_and_semantic_catalog(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-    project_root: impl AsRef<Path>,
-    semantic_catalog: &SemanticCatalog,
-) -> Result<Vec<CompiledProjectResource>> {
-    compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        Some(project_root.as_ref()),
-        semantic_catalog,
-    )
-}
-
-fn compile_project_declarative_resource_entries_inner(
-    registry: &SourceRegistry,
-    config: &ProjectConfig,
-    resolver: &dyn ResourceSourceResolver,
-    project_root: Option<&Path>,
-    semantic_catalog: &SemanticCatalog,
-) -> Result<Vec<CompiledProjectResource>> {
-    let mut entries = Vec::new();
-    for (pattern, mapping) in &config.resources {
-        let ResourceSourceKind::DeclarativeFile { path } = mapping.source_kind() else {
-            continue;
-        };
-        let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
-        let compiled = match project_root {
-            Some(project_root) => compile_document_with_project_root_and_semantic_catalog(
-                registry,
-                &document,
-                project_root,
-                semantic_catalog,
-            )?,
-            None => compile_document_with_semantic_catalog(registry, &document, semantic_catalog)?,
-        };
-        validate_mapping_pattern(pattern, &path, &compiled)?;
-        entries.extend(
-            compiled
-                .into_iter()
-                .filter(|resource| resource_id_matches_pattern(resource, pattern))
-                .map(|resource| CompiledProjectResource {
-                    origin: ProjectResourceOrigin {
-                        source_name: resource.source_name().to_owned(),
-                        resource_name: resource.resource_name().to_owned(),
-                        source_file: Some(path.clone()),
-                        mapping_pattern: pattern.clone(),
-                        mapping_status: "matched".to_owned(),
-                    },
-                    resource,
-                }),
-        );
-    }
-    Ok(entries)
-}
-
-fn resource_entries(entries: Vec<CompiledProjectResource>) -> Vec<CompiledResource> {
-    entries.into_iter().map(|entry| entry.resource).collect()
-}
-
-fn validate_mapping_pattern(
-    pattern: &str,
-    source_file: &str,
-    resources: &[CompiledResource],
-) -> Result<()> {
-    if resources
-        .iter()
-        .any(|resource| resource_id_matches_pattern(resource, pattern))
-    {
-        return Ok(());
-    }
-    let compiled_ids = resources
-        .iter()
-        .map(|resource| resource.descriptor().resource_id.as_str().to_owned())
-        .collect::<Vec<_>>();
-    let examples = resources
-        .first()
-        .map(|resource| {
-            format!(
-                "[resources.\"{}\"] or [resources.\"{}.*\"]",
-                resource.descriptor().resource_id,
-                resource.source_name()
-            )
-        })
-        .unwrap_or_else(|| "[resources.\"<source>.<resource>\"]".to_owned());
-    Err(CdfError::contract(format!(
-        "resource mapping pattern `{pattern}` for source `{source_file}` matched zero compiled resources; compiled resource ids from that file: {}; declarative resource ids compile as `<source>.<resource>`, so update the cdf.toml mapping to {examples}",
-        list_or_none(compiled_ids)
-    )))
-}
-
-fn resource_id_matches_pattern(resource: &CompiledResource, pattern: &str) -> bool {
-    wildcard_pattern_matches(pattern, resource.descriptor().resource_id.as_str())
-}
-
-fn wildcard_pattern_matches(pattern: &str, candidate: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let candidate = candidate.as_bytes();
-    let mut table = vec![vec![false; candidate.len() + 1]; pattern.len() + 1];
-    table[0][0] = true;
-    for index in 1..=pattern.len() {
-        if pattern[index - 1] == b'*' {
-            table[index][0] = table[index - 1][0];
-        }
-    }
-    for pattern_index in 1..=pattern.len() {
-        for candidate_index in 1..=candidate.len() {
-            table[pattern_index][candidate_index] = match pattern[pattern_index - 1] {
-                b'*' => {
-                    table[pattern_index - 1][candidate_index]
-                        || table[pattern_index][candidate_index - 1]
-                }
-                byte => {
-                    byte == candidate[candidate_index - 1]
-                        && table[pattern_index - 1][candidate_index - 1]
-                }
-            };
-        }
-    }
-    table[pattern.len()][candidate.len()]
-}
-
-fn list_or_none(items: Vec<String>) -> String {
-    if items.is_empty() {
-        "none".to_owned()
-    } else {
-        items.join(", ")
-    }
-}
-
 pub fn validate_project(
     registry: &SourceRegistry,
     config: &ProjectConfig,
     env_name: Option<&str>,
-    resolver: &dyn ResourceSourceResolver,
+    resources: &[CompiledResource],
     provider: &dyn SecretProvider,
 ) -> Result<ProjectValidationReport> {
     validate_project_shape(config)?;
     registry.validate_project_options(&config.driver_options)?;
-    for mapping in config.resources.values() {
-        if let ResourceSourceKind::Reference { uri } = mapping.source_kind() {
-            registry.validate_reference_project_options(&uri, &config.driver_options)?;
-        }
-    }
     let env_name = env_name.unwrap_or(&config.project.default_environment);
     let environment = config.effective_environment(env_name)?;
     validate_environment_uri_fields(&environment)?;
 
     let mut secret_refs = collect_secret_refs_from_environment(&environment)?;
-    let compiled_entries = compile_project_declarative_resource_entries_inner(
-        registry,
-        config,
-        resolver,
-        None,
-        cdf_semantic::builtin_catalog()?,
-    )?;
-    let declarative_resources = compiled_entries.len();
-    let mut external_resources = 0;
-
-    for mapping in config.resources.values() {
-        match mapping.source_kind() {
-            ResourceSourceKind::DeclarativeFile { .. } => {}
-            ResourceSourceKind::Reference { .. } => external_resources += 1,
-        }
-    }
-    let compiled = compiled_entries
-        .iter()
-        .map(|entry| entry.resource.clone())
-        .collect::<Vec<_>>();
-    secret_refs.extend(collect_secret_refs_from_declarative(&compiled)?);
+    secret_refs.extend(collect_secret_refs_from_declarative(resources)?);
 
     let mut checked_secrets = Vec::new();
     for secret in dedupe_secret_refs(secret_refs) {
@@ -561,8 +322,7 @@ pub fn validate_project(
 
     Ok(ProjectValidationReport {
         environment,
-        declarative_resources,
-        external_resources,
+        resources: resources.len(),
         checked_secrets,
     })
 }
@@ -776,7 +536,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
 
     let selected_id = pinned_resource.descriptor().resource_id.as_str();
     let mut found = false;
-    let mut resources = resources
+    let resources = resources
         .iter()
         .map(|resource| {
             if resource.descriptor().resource_id.as_str() == selected_id {
@@ -788,15 +548,9 @@ pub fn pin_schema_snapshot_in_project_lockfile(
         })
         .collect::<Vec<_>>();
     if !found {
-        let configured_reference = config.resources.get(selected_id).is_some_and(|mapping| {
-            matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
-        });
-        if !configured_reference {
-            return Err(CdfError::contract(format!(
-                "cannot pin schema snapshot for resource `{selected_id}` because it is not configured in the project"
-            )));
-        }
-        resources.push(pinned_resource.clone());
+        return Err(CdfError::contract(format!(
+            "cannot pin schema snapshot for resource `{selected_id}` because it is not compiled from cdf/<namespace>/<resource>.cdf.sql"
+        )));
     }
     generate_lockfile_with_destination_artifacts(
         config,
@@ -947,7 +701,7 @@ pub fn current_dependency_tuple() -> DependencyTuple {
     DependencyTuple {
         cdf: env!("CARGO_PKG_VERSION").to_owned(),
         arrow_rs: "58.3.0".to_owned(),
-        datafusion: None,
+        datafusion: Some("54.0.0".to_owned()),
         object_store: None,
         duckdb_rs: None,
         rust: None,

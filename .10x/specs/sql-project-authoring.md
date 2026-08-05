@@ -500,7 +500,7 @@ No DataFusion plan or debug representation is durable authority. Manifest detail
 
 The compiler MUST produce focused stable diagnostics for:
 
-- retired `CREATE RESOURCE`, identifier after `RESOURCE`, or retired project layout;
+- invalid initial form or identifier after the no-identifier `RESOURCE` keyword;
 - missing, duplicate, positional, non-literal, or unknown configured `source`;
 - source type, URI, credential, secret, environment, or source-level config in SQL;
 - positional, duplicate, unknown, missing, wrong-type, or executable driver arguments;
@@ -525,11 +525,10 @@ itself invalid.
 
 ## Current-only cutover and tooling
 
-D3 atomically replaces the spike-era project resource reader and every earlier Foundation D
-authoring prototype. It updates parser/compiler wiring, project loading, lock/manifest binding,
-run/preview/plan/validate/inspect selection, `cdf init`, `cdf add`/generation, fixtures, examples,
-and docs in one current model. It deletes retired fields/readers and does not retain legacy enums,
-fallback detection, migration code, aliases, feature flags, or compatibility tests.
+D3 updates parser/compiler wiring, project loading, lock/manifest binding, run/preview/plan/
+validate/inspect selection, `cdf init`, `cdf add`/generation, fixtures, examples, and docs in one
+current model. The implementation contains exactly one project-resource reader and no detection,
+migration, alias, feature-flag, or compatibility-test machinery for other models.
 
 Generation writes explicit SQL files. D3 includes no Jinja/template runtime or macro language. A
 future macro system requires render-and-pin semantics, canonical output hashes/diffs, and a separate
@@ -547,39 +546,37 @@ ratified contract. Runtime interpolation remains forbidden.
    fails rather than selecting `APPEND`.
 5. Given no trust clause/project override, effective trust is `EXPERIMENTAL` with built-in origin.
 6. Given `RESOURCE ... AS SELECT`, explicit clauses override project and built-in defaults.
-7. Given `CREATE RESOURCE`, compile rejects it with exact current-form guidance.
-8. Given `RESOURCE analytics.userdata`, compile rejects the SQL-declared id.
-9. Given omitted `source`, compile fails at `upstream(...)`.
-10. Given `source => 'github'`, compile resolves `[sources.github]`, selects its immutable driver,
+7. Given `RESOURCE analytics.userdata`, compile rejects the SQL-declared id.
+8. Given omitted `source`, compile fails at `upstream(...)`.
+9. Given `source => 'github'`, compile resolves `[sources.github]`, selects its immutable driver,
     and validates only remaining arguments through that driver's resource schema.
-11. Given resource namespace and configured-source name differ, compile succeeds.
-12. Given equivalent structured relation args in different orders, canonical relation identity is
+10. Given resource namespace and configured-source name differ, compile succeeds.
+11. Given equivalent structured relation args in different orders, canonical relation identity is
     equal and authored SQL hashes differ.
-13. Given `DISPOSITION MERGE(user_id)`, the key resolves against the final output schema.
-14. Given empty, duplicate, ambiguous, or unknown merge keys, compile fails at their locations.
-15. Given valid `SEMANTICS (...)`, exact field binding, definition, version, parameters, and hash
+12. Given `DISPOSITION MERGE(user_id)`, the key resolves against the final output schema.
+13. Given empty, duplicate, ambiguous, or unknown merge keys, compile fails at their locations.
+14. Given valid `SEMANTICS (...)`, exact field binding, definition, version, parameters, and hash
     are recorded and Arrow compatibility is enforced.
-16. Given a join, compile fails before external I/O or native plan publication.
-17. Given `UNION ALL`, compile fails as unsupported in D3.
-18. Given equivalent bare and expanded resources, effective execution identity matches only when
+15. Given a join, compile fails before external I/O or native plan publication.
+16. Given `UNION ALL`, compile fails because set operations are outside the admitted language.
+17. Given equivalent bare and expanded resources, effective execution identity matches only when
     all resolved metadata/policy/dependencies match; authored hashes remain distinct.
-19. Given successful compilation, no DataFusion plan appears in any durable public, manifest,
+18. Given successful compilation, no DataFusion plan appears in any durable public, manifest,
     package, receipt, checkpoint, or destination type.
-20. Given any defaulted value, the manifest records effective value and exact origin.
-21. Given projection/filter/cast/alias expressions, pinned DataFusion analysis and native CDF
+19. Given any defaulted value, the manifest records effective value and exact origin.
+20. Given projection/filter/cast/alias expressions, pinned DataFusion analysis and native CDF
     execution agree on schema, values, nulls, and errors over differential/property fixtures.
-22. Given inexact pushdown, manifest records the decision and native residual evaluation preserves
+21. Given inexact pushdown, manifest records the decision and native residual evaluation preserves
     results.
-23. Given a non-immutable, ambient, UDF, table, aggregate, window, opaque, or otherwise inadmissible
+22. Given a non-immutable, ambient, UDF, table, aggregate, window, opaque, or otherwise inadmissible
     function, compile fails at the expression and publishes no plan.
-24. Given SQL attempts to alter a protected CDF operation/key field, compile fails as control-
+23. Given SQL attempts to alter a protected CDF operation/key field, compile fails as control-
     critical.
-25. Given a complete DRAIN policy, it lowers exactly to native stream policy; an incomplete or
+24. Given a complete DRAIN policy, it lowers exactly to native stream policy; an incomplete or
     inapplicable policy fails.
-26. Given `TRUST GOVERNED`, the governed contract preset and required review/validation/quarantine/
+25. Given `TRUST GOVERNED`, the governed contract preset and required review/validation/quarantine/
     retention evidence are compiled and exposed consistently.
-27. Given any retired project resource map/declaration/root, validation rejects it and current
-    scaffolding never emits it.
+26. Given unrelated project directories outside `cdf/`, resource enumeration ignores them.
 
 ## Performance requirements
 

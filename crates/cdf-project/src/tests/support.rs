@@ -195,13 +195,10 @@ interpreter = ".venv/bin/python"
 [defaults]
 contract = "governed"
 
-[resources."github.*"]
-source = "resources/github.toml"
-
-[resources."events.raw"]
-source = "python://src/events.py#raw_events"
-trust = "serving"
-freshness = { expect_every = "15m", alert_after = "45m" }
+[sources.github]
+type = "rest"
+base_url = "https://api.github.com"
+auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
 "#;
 
 pub(super) const GITHUB_RESOURCE: &str = r#"
@@ -223,6 +220,24 @@ schema = { fields = [
   { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
 ] }
 "#;
+
+pub(super) fn compile_declarative_fixture(
+    registry: &cdf_runtime::SourceRegistry,
+    input: &str,
+) -> cdf_kernel::Result<Vec<cdf_declarative::CompiledResource>> {
+    let document = cdf_declarative::parse_toml(input)?;
+    cdf_declarative::compile_document(registry, &document)
+}
+
+pub(super) fn compile_declarative_fixture_with_root(
+    registry: &cdf_runtime::SourceRegistry,
+    input: &str,
+    project_root: &std::path::Path,
+) -> cdf_kernel::Result<Vec<cdf_declarative::CompiledResource>> {
+    let document = cdf_declarative::parse_toml(input)?;
+    cdf_declarative::compile_document_with_project_root(registry, &document, project_root)
+}
+
 pub(super) struct RecordingResponse {
     pub(super) response: HttpResponse,
     pub(super) body: Vec<u8>,

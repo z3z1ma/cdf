@@ -262,8 +262,8 @@ fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", "orders"),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql("orders", true),
     )
     .unwrap();
 
@@ -361,8 +361,8 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", "orders"),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql("orders", true),
     )
     .unwrap();
 

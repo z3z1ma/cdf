@@ -10,7 +10,7 @@ if ! cargo nextest --version >/dev/null 2>&1; then
 fi
 
 cargo nextest run -p cdf-cli --locked -E \
-  'test(p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields) |
+  'test(add_local_parquet_writes_query_resource_and_shared_source_configuration) |
    test(pinned_multi_file_parquet_preview_attests_unopened_observed_partitions) |
    test(run_local_parquet_discover_autopins_and_commits_pinned_schema) |
    test(package_verify_uses_lower_package_reader) |
@@ -21,7 +21,7 @@ cargo nextest run -p cdf-project --locked -E \
    test(general_project_run_commits_file_resource_to_parquet_with_ledger_order)'
 
 cargo nextest run -p cdf-conformance --locked -E \
-  'test(p2_preview_run_parity_law_covers_supported_archetypes)'
+  'test(preview_run_parity_covers_supported_archetypes)'
 
 cargo nextest run -p cdf-source-iceberg --locked -E \
   'test(projection_passes_only_top_level_field_ids_to_the_arrow_reader) |

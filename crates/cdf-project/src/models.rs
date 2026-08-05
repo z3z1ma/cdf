@@ -12,8 +12,6 @@ pub struct ProjectConfig {
     pub sources: BTreeMap<String, ProjectSourceConfig>,
     #[serde(default)]
     pub defaults: DefaultsConfig,
-    #[serde(default)]
-    pub resources: BTreeMap<String, ProjectResource>,
     #[serde(default, flatten)]
     pub driver_options: BTreeMap<String, serde_json::Value>,
 }
@@ -167,40 +165,6 @@ pub struct DefaultsConfig {
     pub write_disposition: Option<WriteDispositionPreset>,
     pub execution: Option<cdf_declarative::ExecutionDeclaration>,
     pub retention: Option<RetentionPolicy>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectResource {
-    pub source: String,
-    pub trust: Option<TrustPreset>,
-    pub freshness: Option<ProjectFreshness>,
-    pub execution: Option<cdf_declarative::ExecutionDeclaration>,
-}
-
-impl ProjectResource {
-    pub fn source_kind(&self) -> ResourceSourceKind {
-        if self.source.contains("://") {
-            ResourceSourceKind::Reference {
-                uri: self.source.clone(),
-            }
-        } else {
-            ResourceSourceKind::DeclarativeFile {
-                path: self.source.clone(),
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResourceSourceKind {
-    DeclarativeFile { path: String },
-    Reference { uri: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectFreshness {
-    pub expect_every: Option<DurationSpec>,
-    pub alert_after: Option<DurationSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

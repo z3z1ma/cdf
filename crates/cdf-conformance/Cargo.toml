@@ -25,6 +25,7 @@ cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
 cdf-source-clickhouse = { path = "../cdf-source-clickhouse" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
@@ -52,7 +53,6 @@ parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "modern_sqlite"] }
-syn = { version = "2.0.117", features = ["full"] }
 tempfile = "3.27.0"
 url = "2.5.8"
 

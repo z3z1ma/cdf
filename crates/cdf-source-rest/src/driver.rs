@@ -146,10 +146,23 @@ impl SourceDriver for RestSourceDriver {
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
         let source_name = request.context.source_name.clone();
-        let cursor_pushdown = request.context.cursor_pushdown.clone();
+        let mut cursor_pushdown = request.context.cursor_pushdown.clone();
         let source: RestSourceOptions = decode_options("REST source", request.source_options)?;
         let resource: RestResourceOptions =
             decode_options("REST resource", request.resource_options)?;
+        if resource.cursor_param.is_some() && cursor_pushdown.is_none() {
+            return Err(CdfError::contract(
+                "REST cursor_param requires an authored CURSOR field",
+            ));
+        }
+        if let Some(cursor) = &mut cursor_pushdown {
+            if cursor.parameter.is_none() {
+                cursor.parameter.clone_from(&resource.cursor_param);
+            }
+            if let Some(fidelity) = &resource.cursor_filter_fidelity {
+                cursor.fidelity.clone_from(fidelity);
+            }
+        }
         let physical = RestPhysicalPlan {
             source_name,
             cursor_pushdown,
@@ -302,6 +315,14 @@ impl SourceAddPlanner for RestSourceDriver {
             resource_options: BTreeMap::from([
                 ("path".to_owned(), serde_json::Value::String(path.clone())),
                 ("records".to_owned(), serde_json::Value::String(records)),
+                (
+                    "cursor_param".to_owned(),
+                    serde_json::Value::String(cursor_param.clone()),
+                ),
+                (
+                    "cursor_filter_fidelity".to_owned(),
+                    serde_json::Value::String("inexact".to_owned()),
+                ),
             ]),
             cursor: Some(SourceAddCursor {
                 field: cursor,
@@ -532,7 +553,9 @@ fn option_schema() -> serde_json::Value {
                 "path": {"type": "string"},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
                 "paginate": pagination,
-                "records": {"type": "string", "minLength": 1}
+                "records": {"type": "string", "minLength": 1},
+                "cursor_param": {"type": "string", "minLength": 1},
+                "cursor_filter_fidelity": {"enum": ["exact", "inexact"]}
             }
         }
     })
@@ -559,6 +582,10 @@ struct RestResourceOptions {
     #[serde(default)]
     paginate: Option<PaginationOptions>,
     records: String,
+    #[serde(default)]
+    cursor_param: Option<String>,
+    #[serde(default)]
+    cursor_filter_fidelity: Option<PushdownFidelity>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -972,60 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn records_transform_is_rejected_instead_of_silently_ignored() {
-        let driver =
-            RestSourceDriver::new(|| Err(CdfError::internal("compile-only transport"))).unwrap();
-        assert!(
-            driver.option_schema()["resource"]["properties"]
-                .get("records_transform")
-                .is_none()
-        );
-        let mut registry = SourceRegistry::new();
-        registry.register(driver).unwrap();
-        let error = registry
-            .compile(SourceCompileRequest {
-                source_kind: "rest".to_owned(),
-                context: SourceCompileContext {
-                    source_name: "api".to_owned(),
-                    project_root: None,
-                    cursor_pushdown: None,
-                },
-                source_options: BTreeMap::new(),
-                resource_options: BTreeMap::from([(
-                    "records_transform".to_owned(),
-                    serde_json::json!("python://./src/hooks.py#transform"),
-                )]),
-                descriptor: ResourceDescriptor {
-                    resource_id: ResourceId::new("api.items").unwrap(),
-                    schema_source: SchemaSource::Declared {
-                        schema_hash: SchemaHash::new("schema-rest-transform").unwrap(),
-                        source: "test".to_owned(),
-                    },
-                    primary_key: Vec::new(),
-                    merge_key: Vec::new(),
-                    cursor: None,
-                    write_disposition: WriteDisposition::Append,
-                    deduplication: None,
-                    contract: None,
-                    state_scope: ScopeKey::Resource,
-                    freshness: None,
-                    trust_level: TrustLevel::Governed,
-                },
-                schema: Schema::empty(),
-                type_policy_allowances: Default::default(),
-                effective_schema_runtime: None,
-                baseline_observation_schema_catalog: Vec::new(),
-            })
-            .unwrap_err();
-        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
-        assert_eq!(
-            error.message,
-            "REST resource option `records_transform` is not supported; remove it because previous releases accepted but did not execute it"
-        );
-    }
-
-    #[test]
-    fn common_context_owns_source_name_and_cursor_pushdown() {
+    fn resource_options_complete_the_typed_cursor_pushdown() {
         let driver =
             RestSourceDriver::new(|| Err(CdfError::internal("compile-only transport"))).unwrap();
         assert!(
@@ -1036,7 +1010,7 @@ mod tests {
         assert!(
             driver.option_schema()["resource"]["properties"]
                 .get("cursor_param")
-                .is_none()
+                .is_some()
         );
 
         let descriptor = ResourceDescriptor {
@@ -1066,8 +1040,8 @@ mod tests {
                     source_name: "api".to_owned(),
                     project_root: None,
                     cursor_pushdown: Some(SourceCursorPushdown {
-                        parameter: Some("since".to_owned()),
-                        fidelity: PushdownFidelity::Exact,
+                        parameter: None,
+                        fidelity: PushdownFidelity::Inexact,
                     }),
                 },
                 source_options: BTreeMap::from([
@@ -1085,6 +1059,11 @@ mod tests {
                     ("path".to_owned(), serde_json::json!("/items")),
                     ("params".to_owned(), serde_json::json!({})),
                     ("records".to_owned(), serde_json::json!("$.items")),
+                    ("cursor_param".to_owned(), serde_json::json!("since")),
+                    (
+                        "cursor_filter_fidelity".to_owned(),
+                        serde_json::json!("exact"),
+                    ),
                 ]),
                 descriptor,
                 schema: Schema::empty(),

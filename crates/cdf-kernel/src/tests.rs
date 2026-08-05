@@ -85,7 +85,7 @@ fn external_task_authority_is_a_closed_alternative_to_inline_partitions() {
 }
 
 #[test]
-fn scan_plan_serialization_has_one_partition_authority_and_rejects_the_retired_shape() {
+fn scan_plan_serialization_has_one_partition_authority() {
     let scan = ScanPlan::from_partition_authority(
         PlanId::new("external-task-plan").unwrap(),
         ScanRequest {
@@ -107,13 +107,6 @@ fn scan_plan_serialization_has_one_partition_authority_and_rejects_the_retired_s
     assert!(encoded.get("partition_authority").is_some());
     assert!(encoded.get("partitions").is_none());
     assert!(encoded.get("planned_task_set").is_none());
-
-    let mut retired = encoded;
-    let object = retired.as_object_mut().unwrap();
-    object.remove("partition_authority");
-    object.insert("partitions".to_owned(), serde_json::json!([]));
-    object.insert("planned_task_set".to_owned(), serde_json::Value::Null);
-    assert!(serde_json::from_value::<ScanPlan>(retired).is_err());
 }
 
 #[test]
@@ -1083,7 +1076,7 @@ fn batch_wraps_arrow_record_batch_and_reports_counts() {
 #[test]
 fn batch_header_serde_defaults_missing_optional_evidence_fields() {
     let header = BatchHeader::new(
-        BatchId::new("batch-legacy").unwrap(),
+        BatchId::new("batch-evidence").unwrap(),
         ResourceId::new("orders").unwrap(),
         PartitionId::new("p0").unwrap(),
         SchemaHash::new("schema-sha256").unwrap(),

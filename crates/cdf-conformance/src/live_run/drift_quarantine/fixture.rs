@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
     ContractPolicy, DedupKeep, IdentifierPolicy, ObservedSchema, RowRule,
     compile_validation_program,
@@ -15,46 +16,10 @@ use cdf_kernel::{
     Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey, TargetName, WriteDisposition,
 };
 use cdf_project::{
-    InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig,
-    compile_project_declarative_resources_with_root, parse_cdf_toml, run_project_with_telemetry,
+    ProjectRunReport, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
+    RunTelemetryConfig, run_project_with_telemetry,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
-
-const PROJECT_TOML: &str = r#"
-[project]
-name = "drift_quarantine_conformance"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.sqlite"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."local.events"]
-source = "resources/live.toml"
-"#;
-
-const RESOURCE_TOML: &str = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-merge_key = ["id"]
-write_disposition = "merge"
-trust = "governed"
-partition = { by = "file" }
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "event_type", type = "string", nullable = false },
-  { name = "name", type = "string", nullable = true },
-] }
-"#;
 
 const RESOURCE_ID: &str = "local.events";
 const SOURCE_FILE: &str = "data/events.ndjson";
@@ -106,9 +71,9 @@ pub(super) fn run_scenario(
 ) -> Result<ProjectRunReport> {
     write_source(&spec.project_root, source)?;
     let resource = compile_resource(&spec.project_root)?;
-    let package_id = format!("pkg-e6-drift-quarantine-{run_label}");
-    let checkpoint_id = CheckpointId::new(format!("checkpoint-e6-drift-quarantine-{run_label}"))?;
-    let run_id = RunId::new(format!("run-e6-drift-quarantine-{run_label}"))?;
+    let package_id = format!("pkg-drift-quarantine-{run_label}");
+    let checkpoint_id = CheckpointId::new(format!("checkpoint-drift-quarantine-{run_label}"))?;
+    let run_id = RunId::new(format!("run-drift-quarantine-{run_label}"))?;
     let identifier_policy = destination.column_identifier_policy()?;
     let plan = drift_quarantine_plan(
         resource.queryable(),
@@ -182,26 +147,20 @@ fn write_source(project_root: &Path, source: &str) -> Result<()> {
 }
 
 fn compile_resource(project_root: &Path) -> Result<crate::source_fixture::ResolvedSourceFixture> {
-    let config = parse_cdf_toml(PROJECT_TOML)?;
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", RESOURCE_TOML);
-    let source_registry = crate::source_fixture::local_file_registry()?;
-    let mut resources = compile_project_declarative_resources_with_root(
-        &source_registry,
-        &config,
-        &resolver,
+    let resource = crate::source_fixture::compile_local_file_project_resource(
         project_root,
+        "drift_quarantine_conformance",
+        "events.ndjson",
+        WriteDisposition::Merge,
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("event_type", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
     )?;
-    if resources.len() != 1 {
-        return Err(CdfError::contract(format!(
-            "E6 drift-quarantine fixture expected one resource, found {}",
-            resources.len()
-        )));
-    }
-    let resource = resources.remove(0);
     if resource.descriptor().resource_id.as_str() != RESOURCE_ID {
         return Err(CdfError::contract(format!(
-            "E6 drift-quarantine compiled unexpected resource {}",
+            "drift-quarantine fixture compiled unexpected resource {}",
             resource.descriptor().resource_id
         )));
     }
@@ -249,6 +208,7 @@ fn drift_quarantine_plan(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
+            relational_expression_plan: None,
             committed_frontier: None,
         },
     )

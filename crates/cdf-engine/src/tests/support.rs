@@ -796,6 +796,7 @@ pub(super) fn plan_input_for_schema(
         execution_extent,
         segmentation: CanonicalSegmentationPolicy::performance_default(),
         package_id: "pkg-engine-test".to_owned(),
+        relational_expression_plan: None,
         committed_frontier: None,
     }
 }

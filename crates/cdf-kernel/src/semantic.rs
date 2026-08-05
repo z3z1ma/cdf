@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_and_legacy_references_fail() {
+    fn invalid_semantic_references_fail() {
         for value in [
             "json",
             "pii:email",

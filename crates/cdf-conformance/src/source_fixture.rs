@@ -1,11 +1,10 @@
-use std::{path::Path, sync::Arc};
-
-#[cfg(test)]
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use cdf_declarative::CompiledResource;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
-use cdf_kernel::{CdfError, QueryableResource, Result};
+use cdf_kernel::{
+    CdfError, DestinationProtocol, QueryableResource, Result, SchemaSource, WriteDisposition,
+};
 use cdf_object_access::FileTransportFacade;
 use cdf_runtime::{
     ByteTransformRegistry, CompiledSourcePlan, FormatRegistry, SourceRegistry,
@@ -113,4 +112,84 @@ pub(crate) fn local_file_registry() -> Result<SourceRegistry> {
         },
     )?)?;
     Ok(registry)
+}
+
+pub(crate) fn compile_local_file_project_resource(
+    project_root: &Path,
+    project_name: &str,
+    glob: &str,
+    disposition: WriteDisposition,
+    input_schema: &arrow_schema::Schema,
+) -> Result<CompiledResource> {
+    let resource_directory = project_root.join("cdf/local");
+    fs::create_dir_all(&resource_directory).map_err(|error| {
+        crate::conformance_private_io_error("create query-first resource directory", error)
+    })?;
+    let project_toml = format!(
+        r#"[project]
+name = "{project_name}"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.sqlite"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[sources.local]
+type = "files"
+root = "data"
+"#
+    );
+    fs::write(project_root.join("cdf.toml"), &project_toml).map_err(|error| {
+        crate::conformance_private_io_error("write query-first project configuration", error)
+    })?;
+    let disposition = match disposition {
+        WriteDisposition::Append => "APPEND",
+        WriteDisposition::Replace => "REPLACE",
+        WriteDisposition::Merge => "MERGE(id)",
+        WriteDisposition::CdcApply => {
+            return Err(CdfError::contract(
+                "local file conformance fixture does not support CDC apply",
+            ));
+        }
+    };
+    let sql = format!(
+        "RESOURCE\nDISPOSITION {disposition}\nTRUST GOVERNED\nEXECUTION BOUNDED\nAS\nSELECT * FROM upstream(source => 'local', glob => '{glob}', format => 'ndjson');\n"
+    );
+    fs::write(resource_directory.join("events.cdf.sql"), sql).map_err(|error| {
+        crate::conformance_private_io_error("write query-first resource SQL", error)
+    })?;
+
+    let config = cdf_project::parse_cdf_toml(&project_toml)?;
+    let registry = local_file_registry()?;
+    let destination =
+        cdf_dest_duckdb::DuckDbDestination::new(project_root.join(".cdf/compile-only.duckdb"))?;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(input_schema)?;
+    let input_schemas = BTreeMap::from([(
+        "local.events".to_owned(),
+        cdf_project::ProjectInputSchemaAuthority::new(
+            SchemaSource::Declared {
+                schema_hash,
+                source: "conformance-fixture".to_owned(),
+            },
+            input_schema.clone(),
+        )?,
+    )]);
+    let mut resources = cdf_project::compile_query_project_resources(
+        &registry,
+        &config,
+        project_root,
+        "dev",
+        destination.sheet(),
+        &cdf_semantic::SemanticCatalog::builtins()?,
+        &input_schemas,
+    )?;
+    if resources.len() != 1 {
+        return Err(CdfError::contract(format!(
+            "file conformance fixture expected one resource, found {}",
+            resources.len()
+        )));
+    }
+    Ok(resources.remove(0).resource)
 }

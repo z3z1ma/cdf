@@ -573,7 +573,7 @@ impl RunNoOpCliReport {
 fn adhoc_resource_panel(adhoc: &AdhocRunReport) -> KeyValuePanel {
     let panel = KeyValuePanel::new("Ad-hoc Resource")
         .row("resource", adhoc.resource_id.clone())
-        .row("config", adhoc.config_path.clone())
+        .row("definition", adhoc.definition_path.clone())
         .row("reused", yes_no(adhoc.reused))
         .row("make permanent", adhoc.make_permanent_command.clone());
     match &adhoc.source_artifact_path {
@@ -653,7 +653,7 @@ impl RunMemoryReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct AdhocRunReport {
     pub(crate) resource_id: String,
-    pub(crate) config_path: String,
+    pub(crate) definition_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) source_artifact_path: Option<String>,
     pub(crate) reused: bool,

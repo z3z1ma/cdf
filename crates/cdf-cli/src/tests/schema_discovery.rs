@@ -452,7 +452,7 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
         let compressed = TestProject::new();
         write_arrow_ipc_discover_resource(&compressed, "events.arrow");
         if let Some(compression) = compression_override {
-            let resource_path = compressed.root.join("resources/files.toml");
+            let resource_path = compressed.root.join("cdf/local/events.cdf.sql");
             let resource = fs::read_to_string(&resource_path).unwrap().replace(
                 "format = \"arrow_ipc\"",
                 &format!("format = \"arrow_ipc\"\ncompression = \"{compression}\""),
@@ -559,7 +559,7 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
     let (base_url, _requests) = serve_parquet_file(remote_bytes, 16);
     let remote = TestProject::new();
     fs::write(
-        remote.root.join("resources/files.toml"),
+        remote.root.join("cdf/local/events.cdf.sql"),
         format!(
             r#"
 [source.local]
@@ -697,7 +697,7 @@ fn declared_arrow_ipc_lossless_widening_records_physical_and_coercion_evidence()
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         r#"
 [source.local]
 kind = "files"
@@ -772,7 +772,7 @@ fn hints_schema_discovers_pins_and_constrains_observed_parquet() {
     let project = TestProject::new();
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         r#"
 [source.local]
 kind = "files"
@@ -883,8 +883,8 @@ fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_l
         "secret://file/rest-token",
     );
     fs::write(
-        project.root.join("resources/api.toml"),
-        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+        project.root.join("cdf/api/items.cdf.sql"),
+        rest_resource_sql("exact"),
     )
     .unwrap();
 
@@ -982,8 +982,8 @@ fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_discover_resource("secret://file/postgres-dsn", &table),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql(&table, false),
     )
     .unwrap();
 

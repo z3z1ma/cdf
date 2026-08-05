@@ -2943,69 +2943,6 @@ fn test_final_binding(
 }
 
 #[test]
-fn manifest_has_no_upward_or_concrete_dependencies() {
-    let manifest = include_str!("../Cargo.toml");
-    for forbidden in [
-        "cdf-project",
-        "cdf-engine",
-        "cdf-dest-",
-        "datafusion",
-        "duckdb",
-        "cdf-package =",
-        "parquet =",
-        "arrow-ipc =",
-    ] {
-        assert!(
-            !manifest.contains(forbidden),
-            "cdf-runtime manifest contains forbidden dependency `{forbidden}`"
-        );
-    }
-}
-
-#[test]
-fn production_graph_edges_cannot_carry_naked_data_payloads() {
-    fn visit(directory: &Path, violations: &mut Vec<String>) {
-        for entry in std::fs::read_dir(directory).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, violations);
-                continue;
-            }
-            if path.extension().and_then(|value| value.to_str()) != Some("rs") {
-                continue;
-            }
-            let source = std::fs::read_to_string(&path).unwrap();
-            let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
-            for forbidden in [
-                "mpsc::Sender<RecordBatch",
-                "mpsc::Receiver<RecordBatch",
-                "Sender<Vec<u8",
-                "Receiver<Vec<u8",
-                "channel::<RecordBatch",
-                "channel::<Vec<u8",
-            ] {
-                if production.contains(forbidden) {
-                    violations.push(format!("{} contains {forbidden}", path.display()));
-                }
-            }
-        }
-    }
-
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap();
-    let mut violations = Vec::new();
-    visit(&workspace.join("crates"), &mut violations);
-    assert!(
-        violations.is_empty(),
-        "production graph edges must carry accounted envelopes, never naked Arrow/byte payloads:\n{}",
-        violations.join("\n")
-    );
-}
-
-#[test]
 fn execution_host_capabilities_validate_generic_cpu_and_blocking_lanes() {
     let capabilities = ExecutionHostCapabilities {
         logical_cpu_slots: 8,

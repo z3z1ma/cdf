@@ -7,7 +7,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -56,8 +56,6 @@ use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 use sha2::{Digest, Sha256};
-use syn::visit::Visit;
-
 mod discovery_schema;
 mod manifest;
 mod project_files;

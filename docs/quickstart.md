@@ -34,7 +34,12 @@ The project defaults to local SQLite state, local packages, and DuckDB. `cdf ini
   https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
 ```
 
-`cdf add` performs bounded Parquet-footer discovery, normalizes source field names, writes `resources/tlc.toml`, stores a hash-addressed snapshot under `.cdf/schemas/`, and references it from `cdf.lock`. It does not download Parquet data pages or write a package, destination, or checkpoint.
+`cdf add` writes `cdf/tlc/yellow.cdf.sql` and the shared `[sources.tlc]`
+connection in `cdf.toml`. `cdf compile --refresh` then performs bounded
+Parquet-footer discovery, normalizes source field names, stores a hash-addressed
+snapshot under `.cdf/schemas/`, and references it from `cdf.lock`. Neither
+command downloads Parquet data pages or writes a package, destination, or
+checkpoint.
 
 Inspect what was pinned:
 
@@ -60,25 +65,31 @@ Run it:
 
 The successful run panel identifies the package, verified destination receipt, and committed checkpoint. CDF advances file state only after that receipt crosses the commit gate.
 
-If the public CDN denies a request, verify the same URL with another HTTP client. CDF reports an upstream authorization/transport failure rather than treating it as schema drift. The deterministic S1 fixture is always available with:
+If the public CDN denies a request, verify the same URL with another HTTP client. CDF reports an upstream authorization/transport failure rather than treating it as schema drift. The deterministic local add/compiler fixture is always available with:
 
 ```bash
-cargo test -p cdf-cli p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields --locked
+cargo test -p cdf-cli add_local_parquet_writes_query_resource_and_shared_source_configuration --locked
 ```
 
 ## 3. Expand to every 2024 month
 
-Open `resources/tlc.toml` and change only the resource glob:
+Open `cdf/tlc/yellow.cdf.sql` and change only the `glob` argument:
 
-```toml
-[resource.yellow]
-glob = "yellow_tripdata_2024-*.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
+```sql
+RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'tlc',
+  glob => 'yellow_tripdata_2024-*.parquet',
+  format => 'parquet'
+);
 ```
 
-The generated `[source.tlc]` block already points at the public `trip-data` prefix and contains the host egress allowlist.
+The generated `[sources.tlc]` block already points at the public `trip-data` prefix and contains the host egress allowlist.
 
 Refresh the intentional schema authority and review its diff:
 
@@ -100,7 +111,7 @@ The state view summarizes the committed `FileManifest`. Running the same command
 The deterministic multi-file/no-op/new-file proof is:
 
 ```bash
-cargo test -p cdf-cli p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop --locked
+cargo test -p cdf-project file_manifest_append_run_skips_unchanged_files_and_loads_only_changes --locked
 ```
 
 ## 4. What happens when a later file drifts
@@ -151,18 +162,13 @@ REPLAY_WORKDIR="$(mktemp -d)"
 
 Replay verifies the stored package and manifest, writes through the destination protocol, records a new receipt, and commits the package's checkpoint delta without contacting the TLC source.
 
-## 6. Verify the complete P2 contract
+## 6. Run focused conformance checks
 
-The P2 registry and conformance-owned laws cover all eight data-onramp golden paths. Run them with:
-
-```bash
-cargo test -p cdf-conformance p2_ --locked
-```
-
-Run every source-owned fixture named by that registry with the workspace suite:
+Run the query-first preview/run parity and multi-file partition laws with:
 
 ```bash
-cargo test --workspace --locked
+cargo test -p cdf-conformance preview_run_parity_covers_supported_archetypes --locked
+cargo test -p cdf-conformance multifile_preview_traverses_the_same_planned_partitions_as_run --locked
 ```
 
 Clean up when finished:

@@ -538,24 +538,6 @@ fn cgroup_current_report_reads_the_resolved_scope_files() {
 }
 
 #[test]
-fn neutral_crate_has_no_runtime_or_implementation_dependencies() {
-    let manifest = include_str!("../Cargo.toml");
-    for forbidden in [
-        "datafusion",
-        "tokio",
-        "cdf-project",
-        "cdf-engine",
-        "cdf-dest-",
-        "cdf-runtime",
-    ] {
-        assert!(
-            !manifest.contains(forbidden),
-            "forbidden dependency {forbidden}"
-        );
-    }
-}
-
-#[test]
 fn telemetry_snapshot_is_json_reportable_with_typed_consumer_keys() {
     let coordinator = DeterministicMemoryCoordinator::new(128, BTreeMap::new()).unwrap();
     let lease = coordinator

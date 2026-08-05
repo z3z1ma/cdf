@@ -734,7 +734,7 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
 }
 
 #[test]
-fn receipt_preserves_legacy_lexicographic_segment_ack_order_from_typed_segments() {
+fn receipt_orders_segment_acks_lexicographically_from_typed_segments() {
     let destination = PostgresDestination::new();
     let mut plan_input = input(WriteDisposition::Append);
     plan_input.segments = vec![segment("z-segment", 3), segment("a-segment", 2)];

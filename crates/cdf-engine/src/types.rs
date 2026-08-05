@@ -29,6 +29,8 @@ pub struct EnginePlanInput {
     pub execution_extent: ExecutionExtent,
     pub segmentation: crate::CanonicalSegmentationPolicy,
     pub package_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
     /// Checkpoint frontier resolved before source task authority is materialized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed_frontier: Option<SourcePosition>,
@@ -52,11 +54,15 @@ pub struct EnginePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
+    pub final_limit: Option<u64>,
     pub residual_predicates: Vec<ScanPredicate>,
     /// Parsed, resolved, optimized, and frozen expressions consumed by execution and replay.
     pub compiled_expression_plan: CompiledExpressionPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
     /// The sole schema-admission program consumed by extraction and replay.
     pub compiled_schema_admission: CompiledSchemaAdmissionPlan,
+    pub schema_admission_program: ValidationProgram,
     pub execution_extent: ExecutionExtent,
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
@@ -78,6 +84,16 @@ impl EnginePlan {
     }
 
     pub fn validate_compiled_expression_plan(&self) -> Result<()> {
+        if let Some(relational) = &self.relational_expression_plan {
+            relational.validate_recorded()?;
+            if cdf_kernel::canonical_arrow_schema_hash(&relational.input_schema.to_arrow()?)?
+                != self.compiled_schema_admission.resource_schema_hash
+            {
+                return Err(CdfError::data(
+                    "relational expression input schema differs from compiled schema-admission authority",
+                ));
+            }
+        }
         let compiled = &self.compiled_expression_plan;
         compiled.validate_program_binding(&self.validation_program)?;
         compiled.validate_predicate_bindings(self.scan.request.filters.iter().map(
@@ -145,7 +161,7 @@ impl EnginePlan {
     {
         self.compiled_schema_admission.validate(
             &self.schema_authority,
-            &self.validation_program,
+            &self.schema_admission_program,
             resource,
         )
     }

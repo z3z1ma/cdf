@@ -171,8 +171,9 @@ destination = "duckdb://.cdf/dev.duckdb"
 [environments.prod]
 destination = "duckdb://.cdf/prod.duckdb"
 
-[resources."local.*"]
-source = "resources/files.toml"
+[sources.local]
+type = "files"
+root = "data"
 "#,
     )
     .unwrap();

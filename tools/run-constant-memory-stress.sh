@@ -56,7 +56,7 @@ root="$(cd "$root" && pwd)"
 if find "$root" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
   die "stress root must be empty: $root"
 fi
-mkdir -p "$root/data" "$root/resources"
+mkdir -p "$root/data" "$root/cdf/stress"
 
 cat >"$root/cdf.toml" <<'TOML'
 [project]
@@ -69,26 +69,24 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "parquet://.cdf/destination"
 
-[resources."stress.rows"]
-source = "resources/stress.toml"
-TOML
-
-cat >"$root/resources/stress.toml" <<'TOML'
-[source.stress]
-kind = "files"
+[sources.stress]
+type = "files"
 root = "data"
-
-[resource.rows]
-source = "stress"
-glob = "part-*.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "row_id", type = "int64", nullable = false },
-  { name = "payload", type = "utf8", nullable = false },
-] }
 TOML
+
+cat >"$root/cdf/stress/rows.cdf.sql" <<'SQL'
+RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'stress',
+  glob => 'part-*.parquet',
+  format => 'parquet'
+);
+SQL
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   /usr/bin/time -lp "$lab" generate-constant-memory-parquet \

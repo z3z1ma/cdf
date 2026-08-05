@@ -135,7 +135,7 @@ fn drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion() {
 #[test]
 fn drift_quarantine_postgres_conformance_asserts_supported_mirror() {
     let postgres = LivePostgres::start().expect(
-        "E6 drift-quarantine Postgres conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+        "drift-quarantine Postgres conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let temp = tempfile::tempdir().unwrap();
     let spec = ScenarioSpec::new(temp.path(), "postgres").unwrap();

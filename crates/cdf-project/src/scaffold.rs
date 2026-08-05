@@ -9,10 +9,11 @@ use serde::Serialize;
 
 use crate::PROJECT_FILE_NAME;
 
-const RESOURCES_DIR: &str = "resources";
+const CDF_DIR: &str = "cdf";
+const CDF_NAMESPACE_DIR: &str = "cdf/local";
 const README_FILE: &str = "README.md";
 const GITIGNORE_FILE: &str = ".gitignore";
-const RESOURCE_FILE: &str = "resources/files.toml";
+const RESOURCE_FILE: &str = "cdf/local/events.cdf.sql";
 const DATA_DIR: &str = "data";
 
 const README_SCAFFOLD: &str = r#"# CDF project
@@ -35,19 +36,17 @@ cdf sql "select * from manifest_resources"
 Add newline-delimited JSON files under `data/` before running the resource.
 "#;
 
-const RESOURCE_SCAFFOLD: &str = r#"[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "int64", nullable = false },
-] }
+const RESOURCE_SCAFFOLD: &str = r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'local',
+  glob => '*.ndjson',
+  format => 'ndjson'
+);
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,7 +107,8 @@ pub fn write_local_project_scaffold(
         options.force,
         &mut report,
     )?;
-    ensure_scaffold_directory(&options.root, RESOURCES_DIR, options.force, &mut report)?;
+    ensure_scaffold_directory(&options.root, CDF_DIR, options.force, &mut report)?;
+    ensure_scaffold_directory(&options.root, CDF_NAMESPACE_DIR, options.force, &mut report)?;
     write_scaffold_file(
         &options.root,
         RESOURCE_FILE,
@@ -142,8 +142,9 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."local.*"]
-source = "resources/files.toml"
+[sources.local]
+type = "files"
+root = "data"
 "#
     ))
 }
@@ -165,10 +166,10 @@ fn ensure_no_unforced_overwrites(root: &Path, force: bool) -> Result<()> {
             conflicts.push(relative);
         }
     }
-    if let Some(metadata) = symlink_metadata(root.join(RESOURCES_DIR))?
+    if let Some(metadata) = symlink_metadata(root.join(CDF_DIR))?
         && !metadata.is_dir()
     {
-        conflicts.push(RESOURCES_DIR);
+        conflicts.push(CDF_DIR);
     }
     if conflicts.is_empty() {
         Ok(())

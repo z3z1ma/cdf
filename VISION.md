@@ -515,37 +515,45 @@ A Rust kernel with no story for non-Rust authorship is a niche tool; a kernel th
 
 | Tier | Form | Runs | Data crossing | Editor story | Ships |
 |---|---|---|---|---|---|
-| 0 | Declarative TOML/YAML | in-process, compiled to native resources | none | published JSON Schema → completion and validation in any editor | MVP |
+| 0 | Query-first CDF SQL | compile-time DataFusion analysis, lowered to native resources | none | SQL tooling plus typed CDF resource envelopes | MVP |
 | 1 | Rust | in-process, statically linked | none | rust-analyzer, full types | MVP |
 | 2 | Python | embedded interpreter (PyO3) | Arrow PyCapsule / C Data Interface, zero-copy | fully typed `cdf-sdk`; pyright-clean is a release gate | MVP |
 | 3 | WASM Component (WASI 0.3) | wasmtime, sandboxed | native `stream<u8>` of Arrow IPC (one copy) | language-native tooling + published WIT world | post-MVP |
 | 4 | Subprocess | external process over stdio | Arrow IPC (preferred) / NDJSON / Singer / Airbyte | whatever the foreign tool has | MVP (IPC + NDJSON); Singer/Airbyte fast-follow |
 
-### 9.2 Tier 0 — declarative resources
+### 9.2 Tier 0 — query-first resources
 
-Most ingestion is not novel logic; it is a REST endpoint with pagination and auth, a SQL table with a cursor column, or a glob of files. The field proved this from two directions at once — dlt's declarative REST source and Sling's replication YAML — and the LLM era added a third argument: a constrained, schema-validated format is the safest artifact to let an agent write, and agents are now writing thousands of them. Tier 0 makes the declarative layer primary rather than a convenience:
+Most ingestion is not novel logic; it is a REST endpoint with pagination and auth, a SQL table with a cursor column, or a glob of files. Tier 0 gives each resource one explicit, query-first file at `cdf/<namespace>/<resource>.cdf.sql`. The path defines the resource identity and default target, the resource envelope declares operational semantics, and DataFusion analyzes the relational query at compile time before CDF lowers it into its native execution plan. Connections and credentials remain shared, typed source configuration in `cdf.toml`:
 
 ```toml
-# resources/github.toml
-[source.github]
-kind = "rest"
+# cdf.toml
+[sources.github]
+type = "rest"
 base_url = "https://api.github.com"
 auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
-rate_limit = { requests_per_minute = 300, respect_headers = ["Retry-After", "X-RateLimit-Reset"] }
-
-[resource.issues]
-path = "/repos/{owner}/{repo}/issues"
-params = { state = "all", per_page = 100 }
-paginate = { kind = "link_header" }            # or cursor_param | page_number | offset | next_token
-records = "$"                                   # JSONPath to the record array
-primary_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "merge"
-contract = "governed"
-partition = { by = "cursor_window", width = "7d" }
+egress_allowlist = ["api.github.com"]
 ```
 
-`cdf-declarative` compiles this into real `QueryableResource` implementations backed by `cdf-http`, which is why declarative resources get pushdown (the `since` param *is* the cursor filter, fidelity `Inexact`), partitioning, retries, and rate limiting without their authors learning those words. `kind = "sql"` and `kind = "files"` receive equivalent treatment: a SQL resource's cursor column becomes a real `WHERE` pushdown at fidelity `Exact` when the dialect permits, and a files resource's prefix layout becomes partition pruning. The JSON Schema for the format ships with every release and registers with SchemaStore, so VS Code, JetBrains, Zed, and Neovim validate and complete it with zero setup; `cdf validate` runs the same schema plus semantic probes — does the cursor field exist in a sample response? does the paginator's shape match the API's? — in CI.
+```sql
+-- cdf/github/issues.cdf.sql
+RESOURCE
+TARGET warehouse.github_issues
+DISPOSITION MERGE(id)
+CURSOR updated_at
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT id, state, updated_at
+FROM upstream(
+  source => 'github',
+  path => '/repos/acme/cdf/issues',
+  records => '$',
+  cursor_param => 'since',
+  cursor_filter_fidelity => 'inexact'
+);
+```
+
+The compiler resolves `source => 'github'` against `[sources.github]`, validates every driver-owned argument, asks DataFusion to bind the relational surface against the discovered or pinned input schema, and emits a typed native `QueryableResource` plan. REST cursor parameters become real pushdown; SQL cursor columns become dialect-native predicates when supported; file globs become partition pruning. `cdf validate` checks the same typed source and query contracts used by compilation.
 
 The escape-hatch gradient matters as much as the format. The planned hook tier will let a
 declarative resource name a content-pinned, batch-level transform for exactly the fragment that
@@ -1084,16 +1092,14 @@ interpreter = ".venv/bin/python"       # cdf doctor reports whether it is free-t
 [defaults]
 contract = "governed"
 
-[resources."github.*"]
-source = "resources/github.toml"
-
-[resources."events.raw"]
-source = "python://src/events.py#raw_events"
-trust = "serving"
-freshness = { expect_every = "15m", alert_after = "45m" }
+[sources.github]
+type = "rest"
+base_url = "https://api.github.com"
+auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
+egress_allowlist = ["api.github.com"]
 ```
 
-TOML for the project file — comments, no indentation traps, the Rust ecosystem's grain; Tier-0 resource files accept TOML or YAML, since the declarative schema is format-agnostic JSON Schema underneath.
+`cdf.toml` owns shared project, environment, destination, and configured-source bindings. Resource behavior lives only in `cdf/<namespace>/<resource>.cdf.sql`; the filesystem path is the canonical resource id, so no second mapping table can disagree with it.
 
 ### 19.2 Environments and secrets
 

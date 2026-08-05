@@ -1852,17 +1852,4 @@ fn protocol_contains_no_payload_secret_or_coordinator_commit_authority() {
     assert!(!result_json.contains("checkpoint_id"));
     assert!(!result_json.contains("processed_observations"));
     assert!(result_json.len() < 2_048);
-
-    let mut legacy_inline = serde_json::to_value(result).unwrap();
-    legacy_inline["processed_observations"] = serde_json::json!([
-        {
-            "observation_id": "partition-00000003",
-            "outcome": "admitted",
-            "source_position": {
-                "kind": "inline",
-                "position": position(150),
-            },
-        }
-    ]);
-    assert!(serde_json::from_value::<PartitionWorkerResult>(legacy_inline).is_err());
 }

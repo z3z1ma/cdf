@@ -36,21 +36,20 @@ pub(super) fn resources_document(report: &InspectResourcesReport) -> RenderDocum
     let table = report.0.iter().fold(
         Table::new([
             "compiled id",
-            "source",
+            "configured source",
+            "namespace",
             "resource",
-            "source file",
-            "mapping",
+            "resource file",
+            "target",
         ]),
         |table, resource| {
             table.row([
                 resource.descriptor.resource_id.to_string(),
-                resource.source_name.clone(),
+                resource.configured_source.clone(),
+                resource.namespace.clone(),
                 resource.resource_name.clone(),
-                resource
-                    .source_file
-                    .clone()
-                    .unwrap_or_else(|| "n/a".to_owned()),
-                mapping_display(resource),
+                resource.resource_file.clone(),
+                resource.target.clone(),
             ])
         },
     );
@@ -76,16 +75,11 @@ pub(super) fn resource_document(resource: &ResourceSummary) -> RenderDocument {
         .push(
             KeyValuePanel::new("Resource")
                 .row("id", resource.descriptor.resource_id.to_string())
-                .row("source", resource.source_name.clone())
+                .row("configured source", resource.configured_source.clone())
+                .row("namespace", resource.namespace.clone())
                 .row("resource", resource.resource_name.clone())
-                .row(
-                    "source file",
-                    resource
-                        .source_file
-                        .clone()
-                        .unwrap_or_else(|| "n/a".to_owned()),
-                )
-                .row("mapping", mapping_display(resource))
+                .row("resource file", resource.resource_file.clone())
+                .row("target", resource.target.clone())
                 .row(
                     "trust",
                     format!("{:?}", resource.descriptor.trust_level).to_lowercase(),
@@ -117,15 +111,6 @@ pub(super) fn resource_document(resource: &ResourceSummary) -> RenderDocument {
             "cdf plan {}",
             resource.descriptor.resource_id
         )))
-}
-
-fn mapping_display(resource: &ResourceSummary) -> String {
-    match (&resource.mapping_status, &resource.mapping_pattern) {
-        (Some(status), Some(pattern)) => format!("{status} {pattern}"),
-        (Some(status), None) => status.clone(),
-        (None, Some(pattern)) => pattern.clone(),
-        (None, None) => "n/a".to_owned(),
-    }
 }
 
 pub(super) fn lock_document(report: &InspectLockReport) -> RenderDocument {

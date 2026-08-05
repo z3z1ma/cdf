@@ -21,11 +21,11 @@ fn rest_fixture_example_executes_as_a_project() {
     let fixture = fs::read_to_string(example_root("rest-fixture").join("fixtures/events")).unwrap();
     let server = JsonServer::start(fixture);
     let project = copy_example("rest-fixture");
-    let resource_path = project.path().join("resources/api.toml");
-    let resource = fs::read_to_string(&resource_path)
+    let config_path = project.path().join("cdf.toml");
+    let config = fs::read_to_string(&config_path)
         .unwrap()
         .replace("http://127.0.0.1:8765", &server.base_url());
-    fs::write(resource_path, resource).unwrap();
+    fs::write(config_path, config).unwrap();
 
     for args in [
         vec!["validate", "--deep"],
@@ -44,7 +44,7 @@ fn postgres_example_executes_as_a_project() {
         .create_source_events_table("cdf_example_orders")
         .unwrap();
     let project = copy_example("postgres");
-    let resource_path = project.path().join("resources/warehouse.toml");
+    let resource_path = project.path().join("cdf/warehouse/orders.cdf.sql");
     let resource = fs::read_to_string(&resource_path)
         .unwrap()
         .replace("public.cdf_example_orders", &table);

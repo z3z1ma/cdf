@@ -174,7 +174,7 @@ fn offline_compile_requires_lock_and_names_refresh_without_publishing() {
 fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_authority() {
     let project = TestProject::new();
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         r#"
 [source.local]
 kind = "files"
@@ -281,7 +281,7 @@ fn sql_mounts_manifest_tables_then_rejects_stale_authored_inputs() {
     );
 
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         "this input changed after compilation",
     )
     .unwrap();

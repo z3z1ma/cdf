@@ -107,7 +107,12 @@ connection = "secret://vault/prod/warehouse"
 #[test]
 fn project_input_inventory_validates_only_source_options_before_relation_parsing() {
     let root = tempfile::tempdir().unwrap();
-    write_resource(root.path(), "warehouse", "orders", "not parsed in D1.5a");
+    write_resource(
+        root.path(),
+        "warehouse",
+        "orders",
+        "query intentionally opaque to inventory",
+    );
     let config = project_config(
         r#"
 [sources.warehouse]
@@ -118,7 +123,10 @@ connection = "secret://env/WAREHOUSE_DSN"
 
     let inventory =
         inventory_project_resources(root.path(), &config, "dev", &test_source_registry()).unwrap();
-    assert_eq!(inventory.resources[0].sql, "not parsed in D1.5a");
+    assert_eq!(
+        inventory.resources[0].sql,
+        "query intentionally opaque to inventory"
+    );
 
     let invalid = project_config(
         r#"
@@ -358,27 +366,4 @@ fn project_input_inventory_allows_a_completely_empty_project() {
     assert!(inventory.sources.is_empty());
     assert!(inventory.resources.is_empty());
     assert_eq!(inventory.total_authored_bytes, 0);
-}
-
-#[test]
-fn project_input_inventory_rejects_every_non_current_resource_root_without_scanning_it() {
-    for retired in ["sources", "resources", "pipelines"] {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join(retired).join("analytics")).unwrap();
-        fs::write(
-            root.path().join(retired).join("analytics/orders.cdf.sql"),
-            "SELECT 1",
-        )
-        .unwrap();
-        let error = inventory_project_resources(
-            root.path(),
-            &project_config(""),
-            "dev",
-            &test_source_registry(),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Contract);
-        assert!(error.message.contains("is not a current CDF resource root"));
-        assert!(error.message.contains("cdf/<namespace>/<resource>.cdf.sql"));
-    }
 }

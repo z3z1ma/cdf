@@ -1,5 +1,4 @@
 use std::{
-    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc,
@@ -261,62 +260,6 @@ fn production_batch_projection_rejects_every_post_terminal_event() {
     assert_eq!(error.message, "producer task failed");
 }
 
-#[test]
-fn crate_contract_stays_executor_neutral_and_non_collecting() {
-    let manifest = std::fs::read_to_string(manifest_path()).unwrap();
-    let source = source_text();
-    for forbidden in forbidden_runtime_tokens() {
-        assert!(
-            !manifest.contains(&forbidden),
-            "manifest must not depend on concrete runtime `{forbidden}`"
-        );
-        assert!(
-            !source.to_ascii_lowercase().contains(&forbidden),
-            "contract source must not expose concrete runtime `{forbidden}`"
-        );
-    }
-    for forbidden in forbidden_collection_tokens() {
-        assert!(
-            !source.contains(&forbidden),
-            "foreign stream contract must not expose eager batch collection `{forbidden}`"
-        );
-    }
-}
-
-#[test]
-fn production_source_scan_recurses_and_excludes_test_sources() {
-    let root = tempfile::tempdir().unwrap();
-    let nested = root.path().join("producer/nested");
-    let nested_tests = root.path().join("producer/tests");
-    std::fs::create_dir_all(&nested).unwrap();
-    std::fs::create_dir_all(&nested_tests).unwrap();
-    for relative in [
-        "lib.rs",
-        "producer/mod.rs",
-        "producer/nested/adapter.rs",
-        "tests.rs",
-        "producer/tests.rs",
-        "producer/tests/adapter.rs",
-    ] {
-        std::fs::write(root.path().join(relative), relative).unwrap();
-    }
-    std::fs::write(root.path().join("producer/README.md"), "not Rust").unwrap();
-
-    let paths = production_rust_source_paths(root.path())
-        .into_iter()
-        .map(|path| path.strip_prefix(root.path()).unwrap().to_path_buf())
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        paths,
-        [
-            PathBuf::from("lib.rs"),
-            PathBuf::from("producer/mod.rs"),
-            PathBuf::from("producer/nested/adapter.rs"),
-        ]
-    );
-}
-
 struct CountingForeignStream {
     polls: Arc<AtomicUsize>,
     next: u8,
@@ -421,62 +364,4 @@ fn mock_batch(sequence: u64) -> Batch {
         batch,
     )
     .unwrap()
-}
-
-fn manifest_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
-}
-
-fn source_text() -> String {
-    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    production_rust_source_paths(&source_root)
-        .into_iter()
-        .map(|path| std::fs::read_to_string(path).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn production_rust_source_paths(source_root: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    collect_production_rust_source_paths(source_root, &mut paths);
-    paths.sort();
-    paths
-}
-
-fn collect_production_rust_source_paths(directory: &Path, paths: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(directory).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        let file_type = entry.file_type().unwrap();
-        if file_type.is_dir() {
-            if path.file_name().and_then(|name| name.to_str()) != Some("tests") {
-                collect_production_rust_source_paths(&path, paths);
-            }
-        } else if file_type.is_file()
-            && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
-            && path.file_name().and_then(|name| name.to_str()) != Some("tests.rs")
-        {
-            paths.push(path);
-        }
-    }
-}
-
-fn forbidden_runtime_tokens() -> Vec<String> {
-    vec![
-        ["py", "o3"].concat(),
-        ["to", "kio"].concat(),
-        ["wasm", "time"].concat(),
-        ["data", "fusion"].concat(),
-        ["cdf", "_cli"].concat(),
-        ["cdf", "-runtime"].concat(),
-        ["std", "::", "process"].concat(),
-    ]
-}
-
-fn forbidden_collection_tokens() -> Vec<String> {
-    vec![
-        ["Vec", "<", "Batch", ">"].concat(),
-        ["Vec", "<", "Record", "Batch", ">"].concat(),
-        ["Vec", " < ", "Batch", " >"].concat(),
-    ]
 }

@@ -3595,7 +3595,7 @@ mod tests {
         build_availability_package(
             root,
             "canonical",
-            "resource.one",
+            "sales.orders",
             canonical.clone(),
             true,
             true,
@@ -3603,7 +3603,7 @@ mod tests {
         build_availability_package(
             root,
             "unreceipted",
-            "resource.one",
+            "sales.orders",
             canonical.clone(),
             true,
             false,
@@ -3611,7 +3611,7 @@ mod tests {
         build_availability_package(
             root,
             "malformed",
-            "resource.two",
+            "sales.customers",
             vec!["{\"x\":1}".to_owned()],
             true,
             true,
@@ -3619,7 +3619,7 @@ mod tests {
         build_availability_package(
             root,
             "noncanonical-field",
-            "resource.two",
+            "sales.customers",
             canonical.clone(),
             false,
             true,
@@ -3627,7 +3627,7 @@ mod tests {
         let tombstone = build_availability_package(
             root,
             "tombstone",
-            "resource.three",
+            "sales.refunds",
             canonical.clone(),
             true,
             true,
@@ -3636,7 +3636,7 @@ mod tests {
         let invalid_receipt = build_availability_package(
             root,
             "invalid-receipt",
-            "resource.four",
+            "sales.payments",
             canonical,
             true,
             true,
@@ -3658,7 +3658,7 @@ mod tests {
         let corrupt = build_availability_package(
             root,
             "corrupt",
-            "resource.five",
+            "sales.invoices",
             canonical_residual_values(),
             true,
             true,
@@ -3735,7 +3735,7 @@ mod tests {
         let item = |package: &str| LocalPackagePromotionAvailability {
             artifact_location: package.to_owned(),
             package_hash: Some(format!("sha256:{package}")),
-            resource_id: Some("resource.one".to_owned()),
+            resource_id: Some("sales.orders".to_owned()),
             contains_local_residual_bytes: true,
             locally_promotable: true,
             local_residual_bytes: 10,

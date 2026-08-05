@@ -1,30 +1,12 @@
 use std::{fs, path::Path};
 
+use arrow_schema::{DataType, Field, Schema};
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result, SourcePosition};
-use cdf_project::{
-    InMemoryResourceSourceResolver, ProjectRunReport,
-    compile_project_declarative_resources_with_root, parse_cdf_toml,
-};
+use cdf_kernel::{Result, SourcePosition};
+use cdf_project::ProjectRunReport;
 
 use super::MatrixDisposition;
 
-const CDF_PROJECT_TOML: &str = r#"
-[project]
-name = "run_matrix_file_conformance"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.sqlite"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."local.events"]
-source = "resources/live.toml"
-"#;
-
-pub(crate) const RESOURCE_ID: &str = "local.events";
 pub(crate) const SOURCE_PATH: &str = "data/events.ndjson";
 pub(crate) const SOURCE_POSITION_PATH: &str = "events.ndjson";
 pub(crate) const SOURCE_CONTENTS: &str =
@@ -78,31 +60,16 @@ fn compile_resource(
     disposition: MatrixDisposition,
     glob: &str,
 ) -> Result<CompiledResource> {
-    let config = parse_cdf_toml(CDF_PROJECT_TOML)?;
-    let resource_toml = resource_toml(disposition, glob);
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", resource_toml);
-    let source_registry = crate::source_fixture::local_file_registry()?;
-    let mut resources = compile_project_declarative_resources_with_root(
-        &source_registry,
-        &config,
-        &resolver,
+    crate::source_fixture::compile_local_file_project_resource(
         project_root,
-    )?;
-    if resources.len() != 1 {
-        return Err(CdfError::contract(format!(
-            "run matrix expected one file resource, found {}",
-            resources.len()
-        )));
-    }
-    let resource = resources.remove(0);
-    if resource.descriptor().resource_id.as_str() != RESOURCE_ID {
-        return Err(CdfError::contract(format!(
-            "run matrix compiled unexpected resource {}",
-            resource.descriptor().resource_id
-        )));
-    }
-    Ok(resource)
+        "run_matrix_file_conformance",
+        glob,
+        disposition.to_write_disposition(),
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
+    )
 }
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {
@@ -119,36 +86,4 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     );
     assert_eq!(file.size_bytes, SOURCE_SIZE_BYTES);
     assert_eq!(file.sha256.as_deref(), Some(SOURCE_SHA256));
-}
-
-fn resource_toml(disposition: MatrixDisposition, glob: &str) -> String {
-    let keys = merge_keys(disposition);
-    format!(
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-format = "ndjson"
-{keys}
-write_disposition = "{}"
-trust = "governed"
-partition = {{ by = "file" }}
-schema = {{ fields = [
-  {{ name = "id", type = "int64", nullable = false }},
-  {{ name = "name", type = "string", nullable = true }},
-] }}
-"#,
-        disposition.as_str()
-    )
-}
-
-fn merge_keys(disposition: MatrixDisposition) -> &'static str {
-    if disposition == MatrixDisposition::Merge {
-        "primary_key = [\"id\"]\nmerge_key = [\"id\"]"
-    } else {
-        ""
-    }
 }

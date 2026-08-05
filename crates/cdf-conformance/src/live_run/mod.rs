@@ -5,6 +5,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_engine::{EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
@@ -15,9 +16,8 @@ use cdf_kernel::{
 use cdf_package::PackageReader;
 use cdf_package_contract::PackageStatus;
 use cdf_project::{
-    InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig,
-    compile_project_declarative_resources_with_root, parse_cdf_toml, run_project_with_telemetry,
+    ProjectRunReport, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
+    RunTelemetryConfig, run_project_with_telemetry,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,39 +59,6 @@ pub const LIVE_LOCAL_FILE_V1_SOURCE_SHA256: &str =
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES: u64 = 46;
 pub const LIVE_LOCAL_FILE_V1_ROW_COUNT: u64 = 2;
 pub const LIVE_LOCAL_FILE_V1_SEGMENT_COUNT: u64 = 1;
-
-const CDF_PROJECT_TOML: &str = r#"
-[project]
-name = "live_local_file_conformance"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.sqlite"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."local.events"]
-source = "resources/live.toml"
-"#;
-
-const LIVE_RESOURCE_TOML: &str = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-partition = { by = "file" }
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "name", type = "string", nullable = true },
-] }
-"#;
 
 const LIVE_SOURCE_CONTENTS: &str = "{\"id\":1,\"name\":\"ada\"}\n{\"id\":2,\"name\":\"grace\"}\n";
 const LIVE_SOURCE_MODIFIED_SECS: u64 = 1_700_000_000;
@@ -276,23 +243,16 @@ pub async fn run_live_local_file_fixture_with_destination(
             .map_err(|error| crate::conformance_private_io_error("create state parent", error))?;
     }
 
-    let config = parse_cdf_toml(CDF_PROJECT_TOML)?;
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", LIVE_RESOURCE_TOML);
-    let source_registry = crate::source_fixture::local_file_registry()?;
-    let mut resources = compile_project_declarative_resources_with_root(
-        &source_registry,
-        &config,
-        &resolver,
+    let resource = crate::source_fixture::compile_local_file_project_resource(
         &spec.project_root,
+        "live_local_file_conformance",
+        "events.ndjson",
+        WriteDisposition::Append,
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
     )?;
-    if resources.len() != 1 {
-        return Err(CdfError::contract(format!(
-            "live conformance fixture expected one resource, found {}",
-            resources.len()
-        )));
-    }
-    let resource = resources.remove(0);
     if resource.descriptor().resource_id.as_str() != LIVE_LOCAL_FILE_V1_RESOURCE_ID {
         return Err(CdfError::contract(format!(
             "live conformance fixture compiled unexpected resource {}",
@@ -339,6 +299,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: spec.package_id.clone(),
+            relational_expression_plan: resource.relational_expression_plan().cloned(),
             committed_frontier: None,
         },
     )?;

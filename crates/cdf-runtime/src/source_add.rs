@@ -152,7 +152,7 @@ fn portable_path(path: &Path) -> Result<String> {
         .ok_or_else(|| CdfError::contract("source add private file path must be valid UTF-8"))
 }
 
-/// Declarative input proposed by one registered source driver.
+/// Typed source and resource options proposed by one registered source driver.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceAddProposal {
     pub source_kind: String,

@@ -1,6 +1,6 @@
 use cdf_declarative::CompiledResource;
 use cdf_kernel::QueryableResource;
-use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
+use cdf_project::ProjectRunSource;
 use std::{path::Path, sync::Arc};
 
 use crate::{context::ProjectContext, output::CliError};
@@ -14,6 +14,7 @@ pub(crate) struct CliProjectRunSource {
     resource: Arc<dyn QueryableResource>,
     source_plan: cdf_runtime::CompiledSourcePlan,
     execution_extent: cdf_kernel::ExecutionExtent,
+    relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
 }
 
 impl CliProjectRunSource {
@@ -21,11 +22,13 @@ impl CliProjectRunSource {
         resource: Arc<dyn QueryableResource>,
         source_plan: cdf_runtime::CompiledSourcePlan,
         execution_extent: cdf_kernel::ExecutionExtent,
+        relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
     ) -> Self {
         Self {
             resource,
             source_plan,
             execution_extent,
+            relational_expression_plan,
         }
     }
 
@@ -44,77 +47,12 @@ impl CliProjectRunSource {
     pub(crate) fn execution_extent(&self) -> &cdf_kernel::ExecutionExtent {
         &self.execution_extent
     }
-}
 
-fn compile_project_source_reference(
-    context: &ProjectContext,
-    resource_id: &str,
-) -> Result<Option<CompiledResource>, CliError> {
-    let Some(mapping) = context.source_reference_mapping(resource_id) else {
-        return Ok(None);
-    };
-    if resource_id.contains('*') {
-        return Err(source_reference_error(cdf_kernel::CdfError::contract(
-            "source reference mappings must use one exact resource id, not a wildcard",
-        )));
+    pub(crate) fn relational_expression_plan(
+        &self,
+    ) -> Option<&cdf_contract::RelationalExpressionPlan> {
+        self.relational_expression_plan.as_ref()
     }
-    let ResourceSourceKind::Reference { uri } = mapping.source_kind() else {
-        unreachable!("source_reference_mapping returned a declarative mapping");
-    };
-    let registry = crate::source_registry::builtin_source_registry()?;
-    let driver = registry.driver_for_uri(&uri)?;
-    let project_options = context
-        .config
-        .driver_options
-        .get(driver.descriptor().driver_id.as_str())
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    let trust = mapping
-        .trust
-        .as_ref()
-        .or(context.config.defaults.trust.as_ref())
-        .map(trust_level)
-        .unwrap_or(cdf_kernel::TrustLevel::Experimental);
-    let source_plan = registry
-        .compile_reference(cdf_runtime::SourceReferenceCompileRequest {
-            uri,
-            resource_id: cdf_kernel::ResourceId::new(resource_id)?,
-            project_root: context.root.clone(),
-            trust_level: trust,
-            freshness: mapping
-                .freshness
-                .as_ref()
-                .and_then(|freshness| freshness.alert_after)
-                .map(|alert_after| cdf_kernel::FreshnessSpec {
-                    max_age_ms: alert_after.millis(),
-                }),
-            project_options,
-        })
-        .map_err(source_reference_error)?;
-    let (source_name, resource_name) = resource_id.split_once('.').ok_or_else(|| {
-        source_reference_error(cdf_kernel::CdfError::contract(
-            "source reference resource ids must use `<source>.<resource>`",
-        ))
-    })?;
-    let resource = CompiledResource::from_compiled_source_with_execution(
-        source_name,
-        resource_name,
-        Some(context.root.clone()),
-        source_plan,
-        cdf_declarative::compile_execution_extent(mapping.execution.as_ref())?,
-    )?;
-    Ok(Some(crate::context::hydrate_locked_schema_snapshot(
-        &context.root,
-        resource,
-        context.lock.as_ref(),
-    )?))
-}
-
-pub(crate) fn build_project_resource_for_inspection(
-    context: &ProjectContext,
-    resource_id: &str,
-) -> Result<Option<CompiledResource>, CliError> {
-    compile_project_source_reference(context, resource_id)
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
@@ -143,11 +81,7 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
     execution: Option<&cdf_runtime::ExecutionServices>,
     artifact_root: &Path,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
-    let referenced = compile_project_source_reference(context, resource_id)?;
-    let compiled = match referenced.as_ref() {
-        Some(resource) => resource,
-        None => context.resource(resource_id)?,
-    };
+    let compiled = context.resource(resource_id)?;
     let prepared = crate::scan_command::prepare_resource_schema_for_cli(
         destinations,
         context,
@@ -167,22 +101,6 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
         )?,
         schema_snapshot: prepared.schema_snapshot,
     })
-}
-
-fn trust_level(trust: &TrustPreset) -> cdf_kernel::TrustLevel {
-    match trust {
-        TrustPreset::Experimental => cdf_kernel::TrustLevel::Experimental,
-        TrustPreset::Governed => cdf_kernel::TrustLevel::Governed,
-    }
-}
-
-fn source_reference_error(mut error: cdf_kernel::CdfError) -> CliError {
-    if !error.message.contains("cdf doctor") {
-        error
-            .message
-            .push_str("; run `cdf doctor` for source-driver diagnostics");
-    }
-    CliError::mapped(error, cdf_cli_core::error_catalog::SOURCE_REFERENCE)
 }
 
 pub(crate) fn build_project_run_resource(
@@ -215,9 +133,14 @@ fn build_project_run_resource_with_artifact_root(
         cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
     })?;
     let registry = crate::source_registry::builtin_source_registry()?;
+    let source_schema = resource
+        .relational_expression_plan()
+        .map(|plan| plan.input_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| resource.schema().as_ref().clone());
     source_plan.validate_schema_authority(
         resource.descriptor(),
-        resource.schema().as_ref(),
+        &source_schema,
         resource.effective_schema_runtime(),
         resource.baseline_observation_schema_catalog(),
     )?;
@@ -235,6 +158,7 @@ fn build_project_run_resource_with_artifact_root(
         registry.resolve(&source_plan, &resolution)?,
         source_plan,
         resource.execution_extent().clone(),
+        resource.relational_expression_plan().cloned(),
     ))
 }
 

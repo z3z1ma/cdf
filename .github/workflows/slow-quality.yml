@@ -386,10 +386,10 @@ jobs:
       - name: Duplication check
         if: always()
         run: |
-          npx --yes jscpd@5 . \
+          npx --yes jscpd@5 crates examples tools \
             --reporters json,console \
             --output target/quality/reports/jscpd-slow \
-            --ignore "**/target/**,**/.git/**,**/reports/**,**/generated/**" \
+            --ignore "**/target/**,**/reports/**,**/generated/**" \
             --min-lines 12 \
             --min-tokens 80 \
             --threshold 10 \

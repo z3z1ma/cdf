@@ -8,5 +8,6 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/example.duckdb"
 
-[resources."warehouse.*"]
-source = "resources/warehouse.toml"
+[sources.warehouse]
+type = "postgres"
+connection = "secret://file/postgres-dsn"

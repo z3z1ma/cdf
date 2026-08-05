@@ -333,6 +333,40 @@ Coverage and mutation testing are test-quality signals. They guide attention tow
 
 ---
 
+## Maintainability and Dependency Hygiene Loop
+
+Run these periodically, for large integrations, and whenever repeated connector or fixture work
+suggests copy-paste growth. Scope duplication analysis to first-party implementation and tooling;
+evidence archives, generated artifacts, and vendored upstream sources are not refactoring inputs.
+
+```bash
+jscpd crates examples tools \
+  --reporters json,console \
+  --output target/quality/reports/jscpd \
+  --ignore "**/target/**,**/reports/**,**/generated/**" \
+  --min-lines 12 \
+  --min-tokens 80 \
+  --threshold 10 \
+  --no-colors
+cargo machete --with-metadata
+rust-code-analysis-cli -m -p crates -O json -o target/quality/reports/rust-code-analysis
+```
+
+`clippy::cognitive_complexity` is an allow-by-default restriction lint, so ordinary strict
+Clippy with `-D warnings` does not run it. Use it explicitly as a focused diagnostic for changed
+production code:
+
+```bash
+cargo clippy -p <package> --lib --locked -- \
+  -W clippy::cognitive_complexity
+```
+
+Source-text tests are not a substitute for these tools. Unit and integration tests MUST exercise
+behavior or a real serialized/generated artifact contract; they MUST NOT read Rust source files
+to assert token presence, line counts, function names, import strings, or module layout.
+
+---
+
 ## Performance/Size Loop
 
 Use when the change set touches hot paths, allocation behavior, binary size, build footprint, benchmarked code, CLIs, WASM, embedded targets, serverless artifacts, or performance-sensitive runtime behavior.

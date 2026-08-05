@@ -88,7 +88,7 @@ fn project_query_rejects_non_data_arguments_and_relational_expansion() {
         let error =
             analyze_project_query(sql, "cdf/analytics/orders.cdf.sql", &schema(), Vec::new())
                 .unwrap_err();
-        assert!(error.message.contains("CDF-D3-SQL"), "{error:?}");
+        assert!(error.message.contains("CDF-SQL"), "{error:?}");
     }
 }
 
@@ -103,18 +103,18 @@ fn project_query_requires_one_literal_source_and_named_arrow_arguments() {
         "SELECT id FROM upstream(source => \"warehouse\")",
     ] {
         let error = parse_project_query(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
-        assert!(error.message.contains("CDF-D3-SQL"), "{error:?}");
+        assert!(error.message.contains("CDF-SQL"), "{error:?}");
     }
 }
 
 #[test]
-fn project_query_rejects_multiple_statements_and_retired_wrappers() {
+fn project_query_rejects_multiple_statements_and_non_query_statements() {
     for sql in [
         "SELECT id FROM upstream(source => 'warehouse'); SELECT 1",
         "CREATE TABLE resource AS SELECT id FROM upstream(source => 'warehouse')",
         "DELETE FROM orders",
     ] {
         let error = parse_project_query(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
-        assert!(error.message.contains("CDF-D3-SQL"), "{error:?}");
+        assert!(error.message.contains("CDF-SQL"), "{error:?}");
     }
 }

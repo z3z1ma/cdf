@@ -103,6 +103,3 @@ version = "0.9.3"
 
 [dev-dependencies.tempfile]
 version = "3.3"
-
-[dev-dependencies.tokio]
-version = "1.43.0"

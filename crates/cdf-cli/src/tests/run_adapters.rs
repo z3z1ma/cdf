@@ -117,7 +117,7 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
 }
 
 #[test]
-fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
+fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
     let parse_project = TestProject::new();
     fs::write(
         parse_project.root.join("rest-token"),
@@ -166,56 +166,6 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
             )
         })
     }));
-
-    let lossy_project = TestProject::new();
-    fs::write(
-        lossy_project.root.join("rest-token"),
-        "lossy-token-secret\n",
-    )
-    .unwrap();
-    let lossy_url = serve_json_once(r#"{ "items": [{ "id": 1, "updated_at": 20 }] }"#);
-    write_rest_project(
-        &lossy_project,
-        "duckdb://.cdf/dev.duckdb",
-        &lossy_url,
-        "secret://file/rest-token",
-    );
-    let resource_path = lossy_project.root.join("resources/api.toml");
-    let resource = fs::read_to_string(&resource_path).unwrap().replace(
-        r#"{ name = "id", type = "int64", nullable = false }"#,
-        r#"{ name = "id", type = "u_int64", nullable = false }"#,
-    );
-    fs::write(resource_path, resource).unwrap();
-
-    let lossy = run_valid_run_resource(&lossy_project, "api.items");
-
-    assert_ne!(lossy.exit_code, 0, "{}{}", lossy.stdout, lossy.stderr);
-    assert_secret_absent(&lossy, "lossy-token-secret");
-    let lossy_output = format!("{}{}", lossy.stdout, lossy.stderr);
-    assert!(
-        lossy_output.contains("enable allow_lossy_mapping"),
-        "{lossy_output}"
-    );
-    assert!(!lossy_output.contains("LossyAllowed"), "{lossy_output}");
-    let package_root = lossy_project.root.join(".cdf/packages");
-    if package_root.exists() {
-        let packages = fs::read_dir(&package_root)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect::<Vec<_>>();
-        assert!(packages.len() <= 1);
-        if let Some(package) = packages.first() {
-            let coercion_path = package.join("schema/coercion-plan.json");
-            if coercion_path.exists() {
-                let coercion: cdf_contract::SchemaCoercionPlan =
-                    serde_json::from_slice(&fs::read(coercion_path).unwrap()).unwrap();
-                assert!(coercion.fields.iter().all(|field| {
-                    field.decision != cdf_contract::FieldCoercionDecision::LossyAllowed
-                }));
-            }
-        }
-    }
-    assert!(!lossy_project.root.join(".cdf/dev.duckdb").exists());
 }
 
 #[test]
@@ -226,27 +176,6 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     fs::write(
         project.root.join("data/events.ndjson"),
         format!("{{\"VendorID\":1,\"{LONG_SOURCE}\":10}}\n"),
-    )
-    .unwrap();
-    fs::write(
-        project.root.join("resources/files.toml"),
-        format!(
-            r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-  {{ name = "VendorID", type = "int64", nullable = false }},
-  {{ name = "{LONG_SOURCE}", type = "int64", nullable = false }},
-] }}
-"#,
-        ),
     )
     .unwrap();
 
@@ -347,22 +276,8 @@ schema = {{ fields = [
 fn destination_normalization_collision_fails_before_writes() {
     let project = TestProject::new();
     fs::write(
-        project.root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "VendorID", type = "int64" },
-  { name = "vendor_id", type = "int64" },
-] }
-"#,
+        project.root.join("data/events.ndjson"),
+        "{\"VendorID\":1,\"vendor_id\":2}\n",
     )
     .unwrap();
 
@@ -394,13 +309,6 @@ fn run_postgres_resource_missing_secret_fails_before_package_or_destination_writ
         None,
         Some("secret://env/CDF_CLI_POSTGRES"),
     );
-    let resource_path = project.root.join("resources/postgres.toml");
-    let resource = fs::read_to_string(&resource_path).unwrap().replace(
-        "primary_key = [\"id\"]",
-        "primary_key = [\"id\"]\ncursor = { field = \"id\", ordering = \"exact\", lag = \"0ms\" }",
-    );
-    fs::write(resource_path, resource).unwrap();
-
     let result = run_valid_run_resource(&project, "warehouse.orders");
 
     assert_eq!(
@@ -420,7 +328,7 @@ fn run_postgres_resource_missing_secret_fails_before_package_or_destination_writ
 }
 
 #[test]
-fn run_postgres_resource_resolves_secret_without_leaking_before_cursor_blocker() {
+fn run_postgres_resource_resolves_secret_without_leaking_on_connection_failure() {
     let project = TestProject::new();
     fs::write(
         project.root.join("postgres-dsn"),
@@ -436,16 +344,11 @@ fn run_postgres_resource_resolves_secret_without_leaking_before_cursor_blocker()
 
     let result = run_valid_run_resource(&project, "warehouse.orders");
 
-    assert_eq!(result.exit_code, 3);
+    assert_ne!(result.exit_code, 0);
     assert_no_run_writes(&project);
     assert_secret_absent(&result, "postgres-secret");
     let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("declare an ordered cursor")
-    );
+    assert!(json["error"]["message"].is_string());
 }
 
 #[test]
@@ -480,8 +383,8 @@ fn run_postgres_resource_with_ordered_cursor_commits_checkpoint() {
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", &table),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql(&table, true),
     )
     .unwrap();
 

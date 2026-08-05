@@ -8,12 +8,11 @@ use super::{
     DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
     DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
     DiscoveryWithinFileCoverage, Duration, EnginePlan, EnginePlanInput, EnvSecretProvider,
-    ExecutionExtent, Field, Fields, FileIdentityMetadata, FileResourceSourceResolver,
-    FileRuntimeDependencies, FileSourceDriver, FileTransportFacade, FileTransportLocation,
-    FileTransportResource, FileWriter, GenerationStrength, GzEncoder, HashMap, HttpFileRequest,
-    HttpFileResponse, HttpFileTransport, HttpMethod, HttpResponse, InMemory,
-    InMemoryResourceSourceResolver, Int32Array, Int64Array, IntervalUnit, MemoryClass,
-    MemoryCoordinator, Mutex, NORMALIZER_NAMECASE_V1, ObjectPath, ObjectStoreExt,
+    ExecutionExtent, Field, Fields, FileIdentityMetadata, FileRuntimeDependencies,
+    FileSourceDriver, FileTransportFacade, FileTransportLocation, FileTransportResource,
+    FileWriter, GenerationStrength, GzEncoder, HashMap, HttpFileRequest, HttpFileResponse,
+    HttpFileTransport, HttpMethod, HttpResponse, InMemory, Int32Array, Int64Array, IntervalUnit,
+    MemoryClass, MemoryCoordinator, Mutex, NORMALIZER_NAMECASE_V1, ObjectPath, ObjectStoreExt,
     ObservationCacheStore, ObservedSchema, Path, PipelineId, Planner, ProjectRunRequest,
     ProjectRunSource, PutPayload, QueryableResource, RecordBatch, ReservationRequest, ResourceId,
     ResourceSchemaDiscovery, ResourceSchemaDiscoveryArtifacts, Result, RunCancellation, RunId,
@@ -22,12 +21,12 @@ use super::{
     SchemaSnapshotStore, SchemaSource, SecretProvider, SecretUri, SecretValue,
     SequentialReadRequest, Sha256, SourcePosition, StringArray, TargetName, TimeUnit, UnionFields,
     UnionMode, apply_discovered_schema, compile_discovered_schema_artifacts,
-    compile_project_declarative_resources, compile_project_declarative_resources_with_root,
     compile_validation_program, discover_resource_schema_with_source_registry, fs, mpsc,
-    parse_cdf_toml, plan_discovery_selection, prepare_pinned_resource_schema,
+    plan_discovery_selection, prepare_pinned_resource_schema,
     prepare_pinned_resource_schema_artifacts, reserve, run_project, source_name, stream,
     support::{
-        RecordingResponse, RecordingTransport, test_execution_services, test_format_registry,
+        RecordingResponse, RecordingTransport, compile_declarative_fixture,
+        compile_declarative_fixture_with_root, test_execution_services, test_format_registry,
         test_source_registry,
     },
     thread, write_schema_discovery_artifacts,
@@ -972,7 +971,7 @@ pub(super) fn vendor_parquet_bytes_with_rows(row_count: i32) -> Vec<u8> {
 }
 
 pub(super) fn write_http_discover_project(root: &Path, source_extra: &str) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("driver-fixtures")).unwrap();
     fs::write(
         root.join("cdf.toml"),
         r#"
@@ -986,13 +985,11 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."remote.*"]
-source = "resources/files.toml"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
+        root.join("driver-fixtures/files.toml"),
         format!(
             r#"
 [source.remote]
@@ -1012,7 +1009,7 @@ trust = "governed"
 }
 
 pub(super) fn write_http_external_mock_project(root: &Path) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("driver-fixtures")).unwrap();
     fs::write(
         root.join("cdf.toml"),
         r#"
@@ -1026,13 +1023,11 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."external.*"]
-source = "resources/files.toml"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
+        root.join("driver-fixtures/files.toml"),
         r#"
 [source.external]
 kind = "files"
@@ -1049,7 +1044,7 @@ trust = "governed"
 }
 
 pub(super) fn write_object_store_discover_project(root: &Path) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("driver-fixtures")).unwrap();
     fs::write(
         root.join("cdf.toml"),
         r#"
@@ -1063,13 +1058,11 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."remote.*"]
-source = "resources/files.toml"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
+        root.join("driver-fixtures/files.toml"),
         r#"
 [source.remote]
 kind = "files"
@@ -1086,7 +1079,7 @@ trust = "governed"
 }
 
 pub(super) fn write_object_store_ndjson_discover_project(root: &Path) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("driver-fixtures")).unwrap();
     fs::write(
         root.join("cdf.toml"),
         r#"
@@ -1100,13 +1093,11 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."events.*"]
-source = "resources/files.toml"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
+        root.join("driver-fixtures/files.toml"),
         r#"
 [source.events]
 kind = "files"
@@ -1158,6 +1149,7 @@ pub(super) fn live_plan_for_stream(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                relational_expression_plan: None,
                 committed_frontier: None,
             },
         )
@@ -1245,7 +1237,7 @@ impl SecretProvider for StaticSecretProvider {
 }
 
 pub(super) fn write_discover_project(root: &Path, format: &str, glob: &str) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("driver-fixtures")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("cdf.toml"),
@@ -1260,13 +1252,11 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."local.*"]
-source = "resources/files.toml"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
+        root.join("driver-fixtures/files.toml"),
         format!(
             r#"
 [source.local]
@@ -1291,7 +1281,7 @@ pub(super) fn write_sampled_discover_project(
     sample_files: u64,
 ) {
     write_discover_project(root, format, glob);
-    let path = root.join("resources/files.toml");
+    let path = root.join("driver-fixtures/files.toml");
     let input = fs::read_to_string(&path).unwrap();
     fs::write(
         path,
@@ -1304,15 +1294,9 @@ pub(super) fn write_sampled_discover_project(
 }
 
 pub(super) fn compile_single_project_resource(root: &Path) -> cdf_declarative::CompiledResource {
-    let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
-    let resolver = FileResourceSourceResolver::new(root);
-    let mut resources = compile_project_declarative_resources_with_root(
-        &test_source_registry(),
-        &config,
-        &resolver,
-        root,
-    )
-    .unwrap();
+    let input = fs::read_to_string(root.join("driver-fixtures/files.toml")).unwrap();
+    let mut resources =
+        compile_declarative_fixture_with_root(&test_source_registry(), &input, root).unwrap();
     assert_eq!(resources.len(), 1);
     resources.remove(0)
 }
@@ -2052,13 +2036,10 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
     write_http_external_mock_project(temp.path());
     let transport = RecordingHttpFileTransport::new(b"MOCK\n".to_vec());
     let registry = external_mock_source_registry(transport.clone());
-    let config =
-        parse_cdf_toml(&fs::read_to_string(temp.path().join("cdf.toml")).unwrap()).unwrap();
-    let resolver = FileResourceSourceResolver::new(temp.path());
-    let resource =
-        compile_project_declarative_resources_with_root(&registry, &config, &resolver, temp.path())
-            .unwrap()
-            .remove(0);
+    let input = fs::read_to_string(temp.path().join("driver-fixtures/files.toml")).unwrap();
+    let resource = compile_declarative_fixture_with_root(&registry, &input, temp.path())
+        .unwrap()
+        .remove(0);
     let execution = test_execution_services();
     let secrets = Arc::new(EnvSecretProvider::from_map(
         std::iter::empty::<(&str, &str)>(),
@@ -2396,7 +2377,7 @@ fn declared_multi_file_parquet_defers_physical_admission_to_the_stream() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     fs::write(
-        temp.path().join("resources/files.toml"),
+        temp.path().join("driver-fixtures/files.toml"),
         r#"
 [source.local]
 kind = "files"
@@ -2522,7 +2503,7 @@ fn http_gzip_ndjson_backpressures_and_cancels_before_download_completion() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
     fs::write(
-        temp.path().join("resources/files.toml"),
+        temp.path().join("driver-fixtures/files.toml"),
         r#"
 [source.remote]
 kind = "files"
@@ -2677,11 +2658,11 @@ schema = { fields = [
 fn http_numeric_template_discovers_and_plans_every_file() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
-    let resource_path = temp.path().join("resources/files.toml");
-    let resource_toml = fs::read_to_string(&resource_path)
+    let resource_path = temp.path().join("driver-fixtures/files.toml");
+    let driver_fixture = fs::read_to_string(&resource_path)
         .unwrap()
         .replace("vendors.parquet", "yellow_tripdata_2024-{01..03}.parquet");
-    fs::write(resource_path, resource_toml).unwrap();
+    fs::write(resource_path, driver_fixture).unwrap();
     let parquet = vendor_parquet_bytes();
     let transport = RecordingHttpFileTransport::new(parquet);
     let dependencies = http_file_dependencies(transport.clone());
@@ -2735,11 +2716,11 @@ fn http_numeric_template_discovers_and_plans_every_file() {
 fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
-    let resource_path = temp.path().join("resources/files.toml");
-    let resource_toml = fs::read_to_string(&resource_path)
+    let resource_path = temp.path().join("driver-fixtures/files.toml");
+    let driver_fixture = fs::read_to_string(&resource_path)
         .unwrap()
         .replace("vendors.parquet", "yellow_tripdata_2024-*.parquet");
-    fs::write(resource_path, resource_toml).unwrap();
+    fs::write(resource_path, driver_fixture).unwrap();
     let missing = (3..=12).map(|month| {
         format!("https://data.example.test/trip-data/yellow_tripdata_2024-{month:02}.parquet")
     });
@@ -2875,7 +2856,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     );
     assert_eq!(planned_file.size_bytes, parquet.len() as u64);
     assert_eq!(planned_file.etag.as_deref(), Some("\"fixture-etag\""));
-    for legacy_key in [
+    for forbidden_inline_key in [
         "path",
         "bytes",
         "etag",
@@ -2883,7 +2864,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         "sha256",
         "source_generation",
     ] {
-        assert!(!partition.metadata.contains_key(legacy_key));
+        assert!(!partition.metadata.contains_key(forbidden_inline_key));
     }
     assert!(!partition.metadata.contains_key("bytes_loaded"));
 
@@ -3231,7 +3212,7 @@ schema = { fields = [
   { name = "VendorID", type = "int32", nullable = false },
 ] }
 "#;
-    fs::write(temp.path().join("resources/files.toml"), declared).unwrap();
+    fs::write(temp.path().join("driver-fixtures/files.toml"), declared).unwrap();
     let resource = compile_single_project_resource(temp.path());
 
     let prepared = prepare_file_discover_resource(
@@ -4038,20 +4019,6 @@ fn all_files_local_binary_discovery_detects_normalizer_collision_before_artifact
 #[test]
 fn generic_schema_discovery_dispatch_samples_rest_without_snapshot_write() {
     let temp = tempfile::tempdir().unwrap();
-    let project = r#"
-[project]
-name = "api"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."api.*"]
-source = "resources/api.toml"
-"#;
     let rest = r#"
 [source.api]
 kind = "rest"
@@ -4066,10 +4033,7 @@ cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms
 write_disposition = "append"
 trust = "governed"
 "#;
-    let config = parse_cdf_toml(project).unwrap();
-    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
-    let mut resources =
-        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let mut resources = compile_declarative_fixture(&test_source_registry(), rest).unwrap();
     let resource = resources.remove(0);
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
@@ -4168,20 +4132,6 @@ trust = "governed"
 #[test]
 fn generic_discover_prepare_autopins_rest_snapshot() {
     let temp = tempfile::tempdir().unwrap();
-    let project = r#"
-[project]
-name = "api"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."api.*"]
-source = "resources/api.toml"
-"#;
     let rest = r#"
 [source.api]
 kind = "rest"
@@ -4194,10 +4144,7 @@ cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms
 write_disposition = "append"
 trust = "governed"
 "#;
-    let config = parse_cdf_toml(project).unwrap();
-    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
-    let mut resources =
-        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let mut resources = compile_declarative_fixture(&test_source_registry(), rest).unwrap();
     let resource = resources.remove(0);
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
@@ -4317,20 +4264,6 @@ fn pinned_schema_preparation_requires_verified_snapshot_before_source_contact() 
 
 #[test]
 fn postgres_schema_discovery_fails_closed_for_non_postgres_dialect() {
-    let project = r#"
-[project]
-name = "warehouse"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."warehouse.*"]
-source = "resources/postgres.toml"
-"#;
     let postgres_toml = r#"
 [source.warehouse]
 kind = "postgres"
@@ -4342,11 +4275,7 @@ table = "orders"
 write_disposition = "append"
 trust = "governed"
 "#;
-    let config = parse_cdf_toml(project).unwrap();
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/postgres.toml", postgres_toml);
-    let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
-        .unwrap_err();
+    let error = compile_declarative_fixture(&test_source_registry(), postgres_toml).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("$.source.dialect"), "{message}");
     assert!(
@@ -4360,7 +4289,7 @@ fn recorded_http_multifile_packages_are_jobs_invariant() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
     fs::write(
-        temp.path().join("resources/files.toml"),
+        temp.path().join("driver-fixtures/files.toml"),
         r#"
 [source.remote]
 kind = "files"

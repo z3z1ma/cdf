@@ -1565,7 +1565,7 @@ mod tests {
         fs::write(root.path().join("cdf.toml"), b"before-project").unwrap();
         let writes = vec![
             ProjectFileWrite::new(
-                "resources/events.toml",
+                "cdf/local/events.cdf.sql",
                 b"resource".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
@@ -1591,7 +1591,7 @@ mod tests {
             b"after-project"
         );
         assert_eq!(
-            fs::read(root.path().join("resources/events.toml")).unwrap(),
+            fs::read(root.path().join("cdf/local/events.cdf.sql")).unwrap(),
             b"resource"
         );
         assert!(!root.path().join("cdf.lock").exists());
@@ -2021,7 +2021,7 @@ mod tests {
 
         assert_eq!(generation, 1);
         assert_eq!(
-            fs::read(root.path().join("resources/events.toml")).unwrap(),
+            fs::read(root.path().join("cdf/local/events.cdf.sql")).unwrap(),
             b"resource\n"
         );
         assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit\n");
@@ -2036,7 +2036,7 @@ mod tests {
             "cdf.lock",
             vec![
                 ProjectFileWrite::new(
-                    "resources/events.toml",
+                    "cdf/local/events.cdf.sql",
                     b"resource\n".to_vec(),
                     ProjectFileExpectation::AbsentOrExact(b"resource\n".to_vec()),
                 ),
@@ -2124,7 +2124,7 @@ mod tests {
     fn crash_transaction_writes() -> Vec<ProjectFileWrite> {
         vec![
             ProjectFileWrite::new(
-                "resources/events.toml",
+                "cdf/local/events.cdf.sql",
                 b"resource\n".to_vec(),
                 ProjectFileExpectation::Absent,
             ),

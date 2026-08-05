@@ -8,5 +8,7 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/example.duckdb"
 
-[resources."api.*"]
-source = "resources/api.toml"
+[sources.api]
+type = "rest"
+base_url = "http://127.0.0.1:8765"
+egress_allowlist = ["127.0.0.1"]

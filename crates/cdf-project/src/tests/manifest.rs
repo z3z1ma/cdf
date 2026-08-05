@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use cdf_kernel::{ErrorKind, SemanticParameterValue, TypeMappingFidelity};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use cdf_kernel::{ErrorKind, SchemaSource, SemanticParameterValue, TypeMappingFidelity};
 use cdf_semantic::{
     ArrowPattern, ArrowTypeFamily, DEFINITION_SCHEMA_VERSION, ParameterDefinition, ParameterFormat,
     ParameterKind, PrivacyClassification, SemanticCatalog, SemanticDefinition, SemanticNullability,
@@ -8,15 +9,25 @@ use cdf_semantic::{
 };
 
 use super::{
-    CompiledProjectResource, DependencyTuple, DestinationProtocolCapabilities,
-    DestinationSheetArtifact, InMemoryResourceSourceResolver, ManifestInputKind,
-    ManifestSemanticSource, ProjectCompilationMode, ProjectManifestAuthoredInput,
-    ProjectManifestCompileRequest, ProjectResourceOrigin,
-    compile_project_declarative_resources_with_semantic_catalog, compile_project_manifest,
-    generate_lockfile_with_destination_artifacts, lock_to_toml, parse_cdf_toml,
-    parse_project_manifest, publish_project_manifest, publish_project_manifest_and_lock,
-    support::{BOOK_PROJECT, GITHUB_RESOURCE, destination_sheet, test_source_registry},
+    DependencyTuple, DestinationProtocolCapabilities, DestinationSheetArtifact, ManifestInputKind,
+    ManifestSemanticSource, ProjectCompilationMode, ProjectInputSchemaAuthority,
+    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, compile_project_manifest,
+    compile_query_project_resources, generate_lockfile_with_destination_artifacts, lock_to_toml,
+    parse_cdf_toml, parse_project_manifest, publish_project_manifest,
+    publish_project_manifest_and_lock,
+    support::{BOOK_PROJECT, destination_sheet, test_source_registry},
 };
+
+const RESOURCE_PATH: &str = "cdf/github/issues.cdf.sql";
+const RESOURCE_SQL: &str = r#"RESOURCE
+DISPOSITION MERGE(id)
+TRUST GOVERNED
+SEMANTICS (amount => 'finance.currency@1(code="USD")')
+EXECUTION BOUNDED
+AS
+SELECT id, updated_at, amount
+FROM upstream(source => 'github', path => '/repos/acme/cdf/issues', records => '$');
+"#;
 
 fn currency_definition() -> SemanticDefinition {
     SemanticDefinition {
@@ -67,43 +78,50 @@ fn manifest_fixture(
     super::ProjectManifest,
 ) {
     let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("cdf/github")).unwrap();
+    std::fs::write(root.path().join(RESOURCE_PATH), RESOURCE_SQL).unwrap();
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
-    let resource_text = GITHUB_RESOURCE.replace(
-        "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },",
-        concat!(
-            "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },\n",
-            "  { name = \"amount\", type = \"decimal(38,9)\", nullable = false, semantic = 'finance.currency@1(code=\"USD\")' },"
-        ),
-    );
     let catalog = SemanticCatalog::with_builtins(vec![currency_definition()]).unwrap();
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", &resource_text);
-    let resources = compile_project_declarative_resources_with_semantic_catalog(
-        &test_source_registry(),
-        &config,
-        &resolver,
-        &catalog,
-    )
-    .unwrap();
-    let entries = resources
-        .iter()
-        .cloned()
-        .map(|resource| CompiledProjectResource {
-            origin: ProjectResourceOrigin {
-                source_name: resource.source_name().to_owned(),
-                resource_name: resource.resource_name().to_owned(),
-                source_file: Some("resources/github.toml".to_owned()),
-                mapping_pattern: "github.*".to_owned(),
-                mapping_status: "matched".to_owned(),
+    let input_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "updated_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        ),
+        Field::new("amount", DataType::Decimal128(38, 9), false),
+    ]);
+    let input_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&input_schema).unwrap();
+    let schemas = BTreeMap::from([(
+        "github.issues".to_owned(),
+        ProjectInputSchemaAuthority::new(
+            SchemaSource::Declared {
+                schema_hash: input_schema_hash,
+                source: "manifest-test".to_owned(),
             },
-            resource,
-        })
-        .collect::<Vec<_>>();
+            input_schema,
+        )
+        .unwrap(),
+    )]);
     let destination = DestinationSheetArtifact::new(
         destination_sheet("duckdb", TypeMappingFidelity::Lossless),
         DestinationProtocolCapabilities::default(),
     )
     .unwrap();
+    let entries = compile_query_project_resources(
+        &test_source_registry(),
+        &config,
+        root.path(),
+        "dev",
+        &destination.sheet,
+        &catalog,
+        &schemas,
+    )
+    .unwrap();
+    let resources = entries
+        .iter()
+        .map(|entry| entry.resource.clone())
+        .collect::<Vec<_>>();
     let lock = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,
@@ -138,10 +156,10 @@ fn manifest_fixture(
             )
             .unwrap(),
             ProjectManifestAuthoredInput::explicit_file(
-                "resources/github.toml",
-                ManifestInputKind::Declarative,
-                resource_text.as_bytes(),
-                "cdf-declarative-toml",
+                RESOURCE_PATH,
+                ManifestInputKind::ResourceSql,
+                RESOURCE_SQL.as_bytes(),
+                "cdf-resource-sql",
                 1,
             )
             .unwrap(),
@@ -208,7 +226,7 @@ fn manifest_parser_rejects_unknown_fields_and_hash_tampering() {
     unknown
         .as_object_mut()
         .unwrap()
-        .insert("legacy".to_owned(), serde_json::json!(true));
+        .insert("unexpected".to_owned(), serde_json::json!(true));
     let error = parse_project_manifest(&serde_json::to_vec(&unknown).unwrap()).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Data);
 

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cdf_contract::{
-    CompiledExpressionPlan, ContractPolicy, ExpressionUse, TransformDescription, ValidationProgram,
-    assert_verdict_lattice_total, bind_validation_program_to_resource, reconcile_schema,
+    CompiledExpressionPlan, ContractPolicy, ExpressionUse, ObservedSchema, TransformDescription,
+    ValidationProgram, assert_verdict_lattice_total, bind_validation_program_to_resource,
+    compile_validation_program, reconcile_schema,
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, CompiledScanIntent, DeliveryGuarantee, EstimateSupport,
@@ -37,6 +38,7 @@ struct PlanFinishContext {
     schema_admission_constraint: arrow_schema::Schema,
     type_policy: cdf_contract::TypePolicy,
     expression_schema: arrow_schema::Schema,
+    schema_admission_program: ValidationProgram,
     cursor_field: Option<String>,
     source_boundary: Option<cdf_kernel::SourceBoundaryCapabilities>,
 }
@@ -58,15 +60,19 @@ impl Planner {
         validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
+        let logical_schema = relational_output_schema(resource, &input)?;
+        let schema_admission_program = source_schema_admission_program(resource)?;
+        let physical_request =
+            relational_source_scan_request(&input)?.unwrap_or_else(|| input.request.clone());
 
-        let partitions = resource.plan_partitions(&input.request)?;
+        let partitions = resource.plan_partitions(&physical_request)?;
         validate_tier_a_partition_intents(&partitions)?;
         let mut scan = ScanPlan::from_partition_authority(
             PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
-            input.request.clone(),
+            physical_request,
             PartitionAuthority::Inline(partitions),
             Vec::new(),
-            input.request.filters.clone(),
+            Vec::new(),
             None,
             None,
             delivery_guarantee(write_disposition.clone()),
@@ -78,7 +84,7 @@ impl Planner {
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
-                resource.schema().as_ref(),
+                &logical_schema,
                 &input.validation_program,
                 input.request.projection.as_deref(),
                 effective_schema_evidence.is_some(),
@@ -102,7 +108,8 @@ impl Planner {
                 resource_schema: resource_schema.clone(),
                 schema_admission_constraint: resource_schema.clone(),
                 type_policy,
-                expression_schema: resource_schema,
+                expression_schema: logical_schema,
+                schema_admission_program,
                 cursor_field: resource
                     .descriptor()
                     .cursor
@@ -134,18 +141,24 @@ impl Planner {
         validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
+        let logical_schema = relational_output_schema(resource, &input)?;
+        let schema_admission_program = source_schema_admission_program(resource)?;
+        let has_relational_plan = input.relational_expression_plan.is_some();
 
         let mut required_fields = resource.descriptor().primary_key.clone();
         required_fields.extend(resource.descriptor().merge_key.iter().cloned());
         if let Some(cursor) = resource.descriptor().cursor.as_ref() {
             required_fields.push(cursor.field.clone());
         }
-        let physical_request = physical_scan_request(
-            &input.request,
-            resource.schema().as_ref(),
-            &input.validation_program,
-            &required_fields,
-        )?;
+        let physical_request = match relational_source_scan_request(&input)? {
+            Some(request) => request,
+            None => physical_scan_request(
+                &input.request,
+                resource.schema().as_ref(),
+                &input.validation_program,
+                &required_fields,
+            )?,
+        };
         let mut scan = resource.negotiate_with_committed_frontier(
             &physical_request,
             input.committed_frontier.as_ref(),
@@ -155,7 +168,7 @@ impl Planner {
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
-                resource.schema().as_ref(),
+                &logical_schema,
                 &input.validation_program,
                 input.request.projection.as_deref(),
                 effective_schema_evidence.is_some(),
@@ -176,16 +189,18 @@ impl Planner {
             input,
             PlanFinishContext {
                 write_disposition,
-                projection_pushed: resource.capabilities().projection
-                    == CapabilitySupport::Supported,
-                limit_pushed: resource.capabilities().limits == CapabilitySupport::Supported,
+                projection_pushed: !has_relational_plan
+                    && resource.capabilities().projection == CapabilitySupport::Supported,
+                limit_pushed: !has_relational_plan
+                    && resource.capabilities().limits == CapabilitySupport::Supported,
                 estimate_support: resource.capabilities().estimates.clone(),
                 output_schema,
                 schema_authority,
                 resource_schema: resource_schema.clone(),
                 schema_admission_constraint,
                 type_policy,
-                expression_schema: resource_schema,
+                expression_schema: logical_schema,
+                schema_admission_program,
                 cursor_field: resource
                     .descriptor()
                     .cursor
@@ -218,7 +233,11 @@ impl Planner {
         input: EnginePlanInput,
         finish: PlanFinishContext,
     ) -> Result<EnginePlan> {
-        let residual_predicates = residual_predicates(&scan);
+        let residual_predicates = if input.relational_expression_plan.is_some() {
+            input.request.filters.clone()
+        } else {
+            residual_predicates(&scan)
+        };
         let mut predicate_expressions = scan
             .request
             .filters
@@ -289,15 +308,20 @@ impl Planner {
             &finish.schema_authority,
             &finish.resource_schema,
             &finish.schema_admission_constraint,
-            &validation_program,
+            &finish.schema_admission_program,
             finish.type_policy,
         )?;
         let final_projection = input.request.projection.clone();
+        let final_limit = input
+            .relational_expression_plan
+            .is_some()
+            .then_some(input.request.limit)
+            .flatten();
         let operator_chain = operator_chain(
             &scan.request.resource_id,
             &final_projection,
             &residual_predicates,
-            scan.request.limit,
+            final_limit.or(scan.request.limit),
             &validation_program,
             &input.segmentation,
             &input.package_id,
@@ -321,9 +345,12 @@ impl Planner {
             compiled_stream_policy: None,
             effective_schema_evidence: None,
             final_projection,
+            final_limit,
             residual_predicates,
             compiled_expression_plan,
+            relational_expression_plan: input.relational_expression_plan,
             compiled_schema_admission,
+            schema_admission_program: finish.schema_admission_program,
             execution_extent: input.execution_extent,
             write_disposition: finish.write_disposition,
             validation_program,
@@ -334,6 +361,58 @@ impl Planner {
             package_id: input.package_id,
         })
     }
+}
+
+fn relational_source_scan_request(input: &EnginePlanInput) -> Result<Option<ScanRequest>> {
+    if input.relational_expression_plan.is_none() {
+        return Ok(None);
+    }
+    if !input.request.order_by.is_empty() {
+        return Err(CdfError::contract(
+            "ordering a query-first resource after SQL analysis is not supported by the current native plan",
+        ));
+    }
+    Ok(Some(ScanRequest {
+        resource_id: input.request.resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: input.request.scope.clone(),
+    }))
+}
+
+fn relational_output_schema<R>(
+    resource: &R,
+    input: &EnginePlanInput,
+) -> Result<arrow_schema::Schema>
+where
+    R: ResourceStream + ?Sized,
+{
+    let Some(plan) = &input.relational_expression_plan else {
+        return Ok(resource.schema().as_ref().clone());
+    };
+    plan.validate_recorded()?;
+    if plan.input_schema.to_arrow()?.as_ref() != resource.schema().as_ref() {
+        return Err(CdfError::contract(
+            "relational expression input schema differs from the resolved source schema; run `cdf compile --refresh`",
+        ));
+    }
+    Ok(plan.output_schema.to_arrow()?.as_ref().clone())
+}
+
+fn source_schema_admission_program<R>(resource: &R) -> Result<ValidationProgram>
+where
+    R: ResourceStream + ?Sized,
+{
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
 }
 
 fn validate_tier_a_partition_intents(partitions: &[PartitionPlan]) -> Result<()> {
@@ -990,9 +1069,17 @@ where
             "engine plan schema authority does not match the execution resource",
         ));
     }
+    let relational_output = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(|relational| relational.output_schema.to_arrow())
+        .transpose()?;
+    let resource_schema = resource.schema();
     let expected_output = CompiledArrowSchema::from_arrow(
         compile_output_schema(
-            resource.schema().as_ref(),
+            relational_output
+                .as_ref()
+                .unwrap_or(resource_schema.as_ref()),
             &plan.validation_program,
             plan.final_projection.as_deref(),
             plan.effective_schema_evidence.is_some(),

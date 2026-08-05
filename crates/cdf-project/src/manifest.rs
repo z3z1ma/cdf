@@ -4,6 +4,7 @@ use std::{
     path::{Component, Path},
 };
 
+use cdf_contract::RelationalExpressionPlan;
 use cdf_kernel::{
     CanonicalArrowField, CanonicalArrowSchema, CdfError, DestinationSheetArtifact, ExecutionExtent,
     ResourceCapabilities, ResourceDescriptor, Result, SchemaHash, SemanticParameterValue,
@@ -14,11 +15,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CdfLock, CompiledProjectResource, ContractSnapshot, DependencyTuple, EffectiveEnvironment,
-    LOCK_FILE_NAME, LockedDestination, PROJECT_FILE_NAME, ProjectConfig, ProjectFileExpectation,
-    ProjectFileTransactionReport, ProjectFileWrite, ProjectResourceOrigin, lock_to_toml,
-    parse_cdf_toml, parse_lock, project_file_transaction_generation,
-    publish_project_files_transactionally, publish_project_files_transactionally_without_recovery,
+    AuthoredResourceForm, CdfLock, CompiledProjectResource, ContractSnapshot, DependencyTuple,
+    EffectiveEnvironment, EffectiveResourceEnvelope, LOCK_FILE_NAME, LockedDestination,
+    PROJECT_FILE_NAME, ProjectConfig, ProjectConfiguredSourceIdentity, ProjectFileExpectation,
+    ProjectFileTransactionReport, ProjectFileWrite, lock_to_toml, parse_cdf_toml, parse_lock,
+    project_file_transaction_generation, publish_project_files_transactionally,
+    publish_project_files_transactionally_without_recovery,
     semantic_uses::{compiled_fields, semantic_pins_for_resources},
 };
 
@@ -189,11 +191,14 @@ impl ProjectManifestAuthoredInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestResourceOrigin {
-    pub source_name: String,
+    pub relative_path: String,
+    pub namespace: String,
     pub resource_name: String,
-    pub source_file: Option<String>,
-    pub mapping_pattern: String,
-    pub mapping_status: String,
+    pub default_target: String,
+    pub authored_form: AuthoredResourceForm,
+    pub authored_sql: String,
+    pub authored_content_hash: String,
+    pub authored_ast_hash: String,
     pub authored_input_ids: Vec<String>,
 }
 
@@ -223,6 +228,11 @@ pub struct ManifestResource {
     pub resource_id: String,
     pub compilation_hash: ResourceCompilationHash,
     pub origin: ManifestResourceOrigin,
+    pub configured_source: ProjectConfiguredSourceIdentity,
+    pub canonical_arguments_hash: String,
+    pub source_node_id: String,
+    pub effective: EffectiveResourceEnvelope,
+    pub relational_plan: RelationalExpressionPlan,
     pub descriptor: ResourceDescriptor,
     pub capabilities: ResourceCapabilities,
     pub execution_extent: ExecutionExtent,
@@ -389,6 +399,17 @@ struct ResourceExecutionIdentity<'a> {
     output_schema_hash: &'a SchemaHash,
     contract: &'a Option<ContractSnapshot>,
     destination_sheet_hash: &'a str,
+    configured_source: &'a ProjectConfiguredSourceIdentity,
+    canonical_arguments_hash: &'a str,
+    source_node_id: &'a str,
+    effective_target: &'a cdf_kernel::TargetName,
+    effective_disposition: &'a cdf_kernel::WriteDisposition,
+    effective_merge_keys: &'a [String],
+    effective_cursor: &'a Option<String>,
+    effective_trust: &'a cdf_kernel::TrustLevel,
+    effective_semantics: &'a BTreeMap<String, String>,
+    effective_execution: &'a ExecutionExtent,
+    relational_plan: &'a RelationalExpressionPlan,
 }
 
 #[derive(Clone, Copy)]
@@ -971,10 +992,15 @@ fn compile_manifest_resource(
         destination_id: selected_destination.0.to_owned(),
         sheet_hash: selected_destination.1.sheet_hash.clone(),
         sheet: selected_destination.1.sheet_artifact()?,
-        target: None,
+        target: Some(entry.query.effective.target.value.to_string()),
         compiled_plan_hash: None,
     };
-    let origin = compile_origin(&entry.origin, inputs, project_input_id)?;
+    let origin = compile_origin(entry, inputs, project_input_id)?;
+    let relational_plan = entry.query.relational_plan.clone().ok_or_else(|| {
+        CdfError::contract(format!(
+            "[CDF-SCHEMA-UNRESOLVED] resource {resource_id:?} has no finalized relational plan; run `cdf compile --refresh`"
+        ))
+    })?;
     let compiled_stream_policy = (!resource.execution_extent().is_bounded())
         .then(|| {
             cdf_runtime::CompiledStreamPolicy::compile(
@@ -987,6 +1013,16 @@ fn compile_manifest_resource(
         resource_id,
         compilation_hash: ResourceCompilationHash::new(bytes_hash(&[]))?,
         origin,
+        configured_source: entry.query.configured_source.clone(),
+        canonical_arguments_hash: entry
+            .query
+            .parsed_query
+            .upstream
+            .canonical_arguments_hash
+            .clone(),
+        source_node_id: entry.query.source_node_id.clone(),
+        effective: entry.query.effective.clone(),
+        relational_plan,
         descriptor: resource.descriptor().clone(),
         capabilities: resource.capabilities().clone(),
         execution_extent: resource.execution_extent().clone(),
@@ -1004,36 +1040,38 @@ fn compile_manifest_resource(
 }
 
 fn compile_origin(
-    origin: &ProjectResourceOrigin,
+    entry: &CompiledProjectResource,
     inputs: &[ProjectManifestAuthoredInput],
     project_input_id: &str,
 ) -> Result<ManifestResourceOrigin> {
-    let mut input_ids = vec![project_input_id.to_owned()];
-    if let Some(source_file) = &origin.source_file {
-        validate_relative_manifest_path(source_file, ManifestErrorAuthority::Compiler)?;
-        let input = inputs
-            .iter()
-            .find(|input| {
-                matches!(
-                    &input.location,
-                    ManifestInputLocation::ProjectRelativePath { path } if path == source_file
-                )
-            })
-            .ok_or_else(|| {
-                CdfError::contract(format!(
-                    "compiled resource origin `{source_file}` has no authored manifest input"
-                ))
-            })?;
-        input_ids.push(input.input_id.clone());
-    }
+    let query = &entry.query;
+    validate_relative_manifest_path(&query.relative_path, ManifestErrorAuthority::Compiler)?;
+    let input = inputs
+        .iter()
+        .find(|input| {
+            matches!(
+                &input.location,
+                ManifestInputLocation::ProjectRelativePath { path } if path == &query.relative_path
+            )
+        })
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "compiled resource origin {:?} has no authored manifest input",
+                query.relative_path
+            ))
+        })?;
+    let mut input_ids = vec![project_input_id.to_owned(), input.input_id.clone()];
     input_ids.sort();
     input_ids.dedup();
     Ok(ManifestResourceOrigin {
-        source_name: origin.source_name.clone(),
-        resource_name: origin.resource_name.clone(),
-        source_file: origin.source_file.clone(),
-        mapping_pattern: origin.mapping_pattern.clone(),
-        mapping_status: origin.mapping_status.clone(),
+        relative_path: query.relative_path.clone(),
+        namespace: query.namespace.clone(),
+        resource_name: query.resource_name.clone(),
+        default_target: query.default_target.to_string(),
+        authored_form: query.authored_form,
+        authored_sql: query.authored_sql.clone(),
+        authored_content_hash: query.authored_content_hash.clone(),
+        authored_ast_hash: query.parsed_query.authored_ast_hash.clone(),
         authored_input_ids: input_ids,
     })
 }
@@ -1155,7 +1193,7 @@ fn compile_lineage(resources: &[ManifestResource]) -> Result<Vec<ManifestLineage
         push_lineage(
             &mut edges,
             ManifestLineageNode::Source {
-                source_name: resource.origin.source_name.clone(),
+                source_name: resource.configured_source.configured_source.clone(),
             },
             ManifestLineageNode::Resource {
                 resource_id: resource.resource_id.clone(),
@@ -1240,6 +1278,34 @@ fn push_lineage(
 }
 
 fn validate_resource(resource: &ManifestResource, authority: ManifestErrorAuthority) -> Result<()> {
+    let expected_path = format!(
+        "cdf/{}/{}.cdf.sql",
+        resource.origin.namespace, resource.origin.resource_name
+    );
+    let expected_resource_id = format!(
+        "{}.{}",
+        resource.origin.namespace, resource.origin.resource_name
+    );
+    if resource.origin.relative_path != expected_path
+        || resource.resource_id != expected_resource_id
+        || resource.origin.default_target != expected_resource_id
+        || resource.origin.authored_content_hash
+            != bytes_hash(resource.origin.authored_sql.as_bytes())
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` contains inconsistent path-derived or authored identity",
+                resource.resource_id
+            ),
+        );
+    }
+    validate_sha256(
+        "canonical resource arguments",
+        &resource.canonical_arguments_hash,
+        authority,
+    )?;
+    validate_sha256("source node", &resource.source_node_id, authority)?;
     resource
         .descriptor
         .validate()
@@ -1264,6 +1330,52 @@ fn validate_resource(resource: &ManifestResource, authority: ManifestErrorAuthor
             ),
         );
     }
+    let configured = &resource.configured_source;
+    let source_driver = &resource.source_plan.driver;
+    let expected_driver_hash =
+        cdf_runtime::artifact_hash(source_driver).map_err(|error| remap(error, authority))?;
+    let expected_source_node = cdf_runtime::artifact_hash(&(
+        resource.resource_id.as_str(),
+        configured.configured_source.as_str(),
+        configured.effective_configuration_hash.as_str(),
+        configured.driver_descriptor_hash.as_str(),
+        resource.canonical_arguments_hash.as_str(),
+    ))
+    .map_err(|error| remap(error, authority))?;
+    if configured.driver_id != source_driver.driver_id.as_str()
+        || configured.driver_version != source_driver.driver_version
+        || configured.driver_option_schema_hash != source_driver.option_schema_hash
+        || configured.driver_descriptor_hash != expected_driver_hash
+        || resource.source_node_id != expected_source_node
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` contains inconsistent configured-source identity",
+                resource.resource_id
+            ),
+        );
+    }
+    let descriptor_cursor = resource
+        .descriptor
+        .cursor
+        .as_ref()
+        .map(|cursor| cursor.field.as_str());
+    if resource.effective.disposition.value != resource.descriptor.write_disposition
+        || resource.effective.merge_keys.value != resource.descriptor.merge_key
+        || resource.effective.cursor.value.as_deref() != descriptor_cursor
+        || resource.effective.trust.value != resource.descriptor.trust_level
+        || resource.effective.execution.value != resource.execution_extent
+        || resource.destination.target.as_deref() != Some(resource.effective.target.value.as_str())
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` contains inconsistent effective metadata",
+                resource.resource_id
+            ),
+        );
+    }
     let binding = CompiledSourceCompilerBinding::compile(&resource.source_plan)
         .map_err(|error| remap(error, authority))?;
     if binding != resource.source_binding {
@@ -1275,10 +1387,18 @@ fn validate_resource(resource: &ManifestResource, authority: ManifestErrorAuthor
             ),
         );
     }
+    resource
+        .relational_plan
+        .validate_recorded()
+        .map_err(|error| remap(error, authority))?;
     if CanonicalArrowSchema::from_arrow(&resource.source_plan.schema)
         .map_err(|error| remap(error, authority))?
-        != resource.output_schema
-        || cdf_kernel::canonical_arrow_schema_hash(&resource.source_plan.schema)
+        != resource.relational_plan.input_schema
+        || resource.relational_plan.output_schema != resource.output_schema
+        || resource
+            .output_schema
+            .to_arrow()
+            .and_then(|schema| cdf_kernel::canonical_arrow_schema_hash(&schema))
             .map_err(|error| remap(error, authority))?
             != resource.output_schema_hash
     {
@@ -1333,6 +1453,17 @@ fn resource_hash(resource: &ManifestResource) -> Result<String> {
         output_schema_hash: &resource.output_schema_hash,
         contract: &resource.contract,
         destination_sheet_hash: &resource.destination.sheet_hash,
+        configured_source: &resource.configured_source,
+        canonical_arguments_hash: &resource.canonical_arguments_hash,
+        source_node_id: &resource.source_node_id,
+        effective_target: &resource.effective.target.value,
+        effective_disposition: &resource.effective.disposition.value,
+        effective_merge_keys: &resource.effective.merge_keys.value,
+        effective_cursor: &resource.effective.cursor.value,
+        effective_trust: &resource.effective.trust.value,
+        effective_semantics: &resource.effective.semantics.value,
+        effective_execution: &resource.effective.execution.value,
+        relational_plan: &resource.relational_plan,
     })
 }
 
@@ -1486,7 +1617,7 @@ fn validate_lineage(
                 ManifestLineageNode::Input { input_id } => input_ids.contains(input_id.as_str()),
                 ManifestLineageNode::Source { source_name } => resources
                     .iter()
-                    .any(|resource| resource.origin.source_name == *source_name),
+                    .any(|resource| resource.configured_source.configured_source == *source_name),
                 ManifestLineageNode::Resource { resource_id } => {
                     resource_ids.contains(resource_id.as_str())
                 }

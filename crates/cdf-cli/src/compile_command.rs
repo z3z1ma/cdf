@@ -1,7 +1,7 @@
 mod render;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -11,8 +11,8 @@ use cdf_project::{
     CompiledProjectResource, LOCK_FILE_NAME, ManifestInputKind, ManifestSemanticSource,
     PROJECT_FILE_NAME, PROJECT_MANIFEST_RELATIVE_PATH, ProjectCompilationMode,
     ProjectFileExpectation, ProjectFileTransactionReport, ProjectFileWrite,
-    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, ProjectResourceOrigin,
-    ResourceSourceKind, compile_project_manifest, current_dependency_tuple,
+    ProjectManifestAuthoredInput, ProjectManifestCompileRequest, compile_project_manifest,
+    current_dependency_tuple, finalize_query_project_resource,
     generate_lockfile_with_destination_artifacts, lock_to_toml,
     publish_project_files_transactionally, publish_project_manifest,
 };
@@ -131,6 +131,7 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         entry.resource = entry
             .resource
             .with_schema_source_and_schema(schema_source, artifacts.discovery.normalized_schema);
+        *entry = finalize_query_project_resource(entry.clone(), &context.semantic_catalog)?;
     }
 
     let resources = entries
@@ -194,29 +195,9 @@ fn compiled_project_entries(
         .resources
         .iter()
         .cloned()
-        .zip(context.resource_origins.iter().cloned())
-        .map(|(resource, origin)| CompiledProjectResource { resource, origin })
+        .zip(context.resource_queries.iter().cloned())
+        .map(|(resource, query)| CompiledProjectResource { resource, query })
         .collect::<Vec<_>>();
-    for (resource_id, mapping) in &context.config.resources {
-        if !matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. }) {
-            continue;
-        }
-        let resource = crate::project_run_resource::build_project_resource_for_inspection(
-            context,
-            resource_id,
-        )?
-        .ok_or_else(|| CdfError::internal("source reference did not compile"))?;
-        entries.push(CompiledProjectResource {
-            origin: ProjectResourceOrigin {
-                source_name: resource.source_name().to_owned(),
-                resource_name: resource.resource_name().to_owned(),
-                source_file: None,
-                mapping_pattern: resource_id.clone(),
-                mapping_status: "matched".to_owned(),
-            },
-            resource,
-        });
-    }
     entries.sort_by(|left, right| {
         left.resource
             .descriptor()
@@ -246,24 +227,14 @@ fn authored_inputs(
         "cdf-project-toml",
         1,
     )?];
-    let source_files = entries
-        .iter()
-        .filter_map(|entry| entry.origin.source_file.as_deref())
-        .collect::<BTreeSet<_>>();
-    for source_file in source_files {
+    for entry in entries {
+        let source_file = &entry.query.relative_path;
         let bytes = read_project_input(root, source_file)?;
-        let parser = match Path::new(source_file)
-            .extension()
-            .and_then(|extension| extension.to_str())
-        {
-            Some("yaml" | "yml") => "cdf-declarative-yaml",
-            _ => "cdf-declarative-toml",
-        };
         inputs.push(ProjectManifestAuthoredInput::explicit_file(
             source_file,
-            ManifestInputKind::Declarative,
+            ManifestInputKind::ResourceSql,
             &bytes,
-            parser,
+            "cdf-resource-sql",
             1,
         )?);
     }

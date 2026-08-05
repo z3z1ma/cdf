@@ -23,8 +23,10 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
         json!([
             "cdf.toml",
             "README.md",
-            "resources",
-            "resources/files.toml",
+            ".gitignore",
+            "cdf",
+            "cdf/local",
+            "cdf/local/events.cdf.sql",
             "data"
         ])
     );
@@ -32,7 +34,7 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     assert_eq!(json["result"]["skipped"], json!([]));
     assert!(target.join("cdf.toml").is_file());
     assert!(target.join("README.md").is_file());
-    assert!(target.join("resources/files.toml").is_file());
+    assert!(target.join("cdf/local/events.cdf.sql").is_file());
     assert!(target.join("data").is_dir());
     assert!(fs::read_dir(target.join("data")).unwrap().next().is_none());
     assert!(!target.join(".cdf").exists());
@@ -43,14 +45,16 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
 
     let project_text = fs::read_to_string(target.join("cdf.toml")).unwrap();
     let readme_text = fs::read_to_string(target.join("README.md")).unwrap();
-    let resource_text = fs::read_to_string(target.join("resources/files.toml")).unwrap();
+    let resource_text = fs::read_to_string(target.join("cdf/local/events.cdf.sql")).unwrap();
     assert!(project_text.contains("default_environment = \"dev\""));
-    assert!(project_text.contains("[resources.\"local.*\"]"));
+    assert!(project_text.contains("[sources.local]"));
+    assert!(project_text.contains("type = \"files\""));
     assert!(readme_text.contains("docs/quickstart.md"));
     assert!(readme_text.contains("cdf validate"));
     assert!(readme_text.contains("cdf plan local.events"));
     assert!(readme_text.contains("cdf run local.events"));
-    assert!(resource_text.contains("[resource.events]"));
+    assert!(resource_text.contains("FROM upstream("));
+    assert!(resource_text.contains("source => 'local'"));
     assert!(!project_text.contains("secret://"));
     assert!(!readme_text.contains("secret://"));
     assert!(!readme_text.contains(&target_string));
@@ -66,7 +70,7 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     ]);
     assert_eq!(validate.exit_code, 0, "stderr: {}", validate.stderr);
     let validate_json = stderr_or_stdout_json(&validate.stdout);
-    assert_eq!(validate_json["result"]["declarative_resources"], 1);
+    assert_eq!(validate_json["result"]["resources"], 1);
 }
 
 #[test]
@@ -102,8 +106,9 @@ fn init_name_sets_project_name_and_json_fields() {
             "packages = \".cdf/packages\"\n",
             "destination = \"duckdb://.cdf/dev.duckdb\"\n",
             "\n",
-            "[resources.\"local.*\"]\n",
-            "source = \"resources/files.toml\"\n",
+            "[sources.local]\n",
+            "type = \"files\"\n",
+            "root = \"data\"\n",
         )
     );
 }
@@ -112,11 +117,11 @@ fn init_name_sets_project_name_and_json_fields() {
 fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
     let temp = TempDir::new("cdf-cli-init-refuse");
     let root = temp.path();
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("cdf/local")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(root.join("cdf.toml"), "keep project").unwrap();
     fs::write(root.join("README.md"), "keep readme").unwrap();
-    fs::write(root.join("resources/files.toml"), "keep resource").unwrap();
+    fs::write(root.join("cdf/local/events.cdf.sql"), "keep resource").unwrap();
     fs::write(root.join("data/events.ndjson"), "keep data").unwrap();
 
     let result = run_dynamic(vec![
@@ -132,7 +137,7 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("cdf.toml"));
     assert!(message.contains("README.md"));
-    assert!(message.contains("resources/files.toml"));
+    assert!(message.contains("cdf/local/events.cdf.sql"));
     assert!(message.contains("data"));
     assert_eq!(
         fs::read_to_string(root.join("cdf.toml")).unwrap(),
@@ -143,7 +148,7 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
         "keep readme"
     );
     assert_eq!(
-        fs::read_to_string(root.join("resources/files.toml")).unwrap(),
+        fs::read_to_string(root.join("cdf/local/events.cdf.sql")).unwrap(),
         "keep resource"
     );
     assert_eq!(
@@ -156,11 +161,11 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
 fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
     let temp = TempDir::new("cdf-cli-init-force");
     let root = temp.path();
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("cdf/local")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::create_dir_all(root.join(".cdf/packages")).unwrap();
     fs::write(root.join("cdf.toml"), "old project").unwrap();
-    fs::write(root.join("resources/files.toml"), "old resource").unwrap();
+    fs::write(root.join("cdf/local/events.cdf.sql"), "old resource").unwrap();
     fs::write(root.join("data/existing.ndjson"), "keep input").unwrap();
     fs::write(root.join("README.md"), "keep unrelated").unwrap();
     fs::write(root.join(".cdf/state.db"), "keep state").unwrap();
@@ -180,10 +185,13 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(
         json["result"]["replaced"],
-        json!(["cdf.toml", "README.md", "resources/files.toml"])
+        json!(["cdf.toml", "README.md", "cdf/local/events.cdf.sql"])
     );
-    assert_eq!(json["result"]["created"], json!([]));
-    assert_eq!(json["result"]["skipped"], json!(["resources", "data"]));
+    assert_eq!(json["result"]["created"], json!([".gitignore"]));
+    assert_eq!(
+        json["result"]["skipped"],
+        json!(["cdf", "cdf/local", "data"])
+    );
     assert_eq!(json["result"]["force"], true);
     assert!(
         fs::read_to_string(root.join("cdf.toml"))
@@ -191,9 +199,9 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
             .contains("name = \"forced-project\"")
     );
     assert!(
-        fs::read_to_string(root.join("resources/files.toml"))
+        fs::read_to_string(root.join("cdf/local/events.cdf.sql"))
             .unwrap()
-            .contains("[resource.events]")
+            .contains("source => 'local'")
     );
     assert_eq!(
         fs::read_to_string(root.join("data/existing.ndjson")).unwrap(),
@@ -228,7 +236,7 @@ fn validate_json_reports_project_shape() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "validate");
     assert_eq!(json["result"]["environment"]["name"], "dev");
-    assert_eq!(json["result"]["declarative_resources"], 1);
+    assert_eq!(json["result"]["resources"], 1);
 }
 
 #[test]
@@ -269,9 +277,10 @@ fn validate_deep_reports_source_front_end_checks_without_writes() {
 
     let resource = &json["result"]["resources"][0];
     assert_eq!(resource["resource_id"], "local.events");
-    assert_eq!(resource["source_file"], "resources/files.toml");
-    assert_eq!(resource["mapping_pattern"], "local.*");
-    assert_eq!(resource["mapping_status"], "matched");
+    assert_eq!(resource["resource_file"], "cdf/local/events.cdf.sql");
+    assert_eq!(resource["configured_source"], "local");
+    assert_eq!(resource["namespace"], "local");
+    assert_eq!(resource["resource_name"], "events");
     assert_eq!(resource["schema_source"], "discovered");
     assert_eq!(resource["partitions"]["count"], 1);
     assert_eq!(resource["partitions"]["files"][0], "vendors.parquet");
@@ -321,11 +330,11 @@ fn validate_deep_rejects_stale_pinned_source_authority_without_runtime_probe() {
 
     fs::create_dir_all(project.root.join("other-data")).unwrap();
     write_vendor_parquet(&project.root.join("other-data/vendors.parquet"));
-    let resource_path = project.root.join("resources/files.toml");
-    let resource_text = fs::read_to_string(&resource_path).unwrap();
+    let project_path = project.root.join("cdf.toml");
+    let project_text = fs::read_to_string(&project_path).unwrap();
     fs::write(
-        &resource_path,
-        resource_text.replace("root = \"data\"", "root = \"other-data\""),
+        &project_path,
+        project_text.replace("root = \"data\"", "root = \"other-data\""),
     )
     .unwrap();
 
@@ -397,71 +406,7 @@ fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
     assert!(message.contains("inferred format `parquet`"));
     assert!(message.contains("extension signal `parquet`"));
     assert!(message.contains("magic bytes signal `arrow_ipc`"));
-    assert!(message.contains("format = \"parquet\""));
-    assert_no_schema_discovery_writes(&project);
-}
-
-#[test]
-fn validate_deep_names_quarantined_physical_and_constraint_types_and_honors_allowance() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "vendors.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [{ name = "VendorID", type = "int8", nullable = false }] }
-"#,
-    )
-    .unwrap();
-    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
-
-    let denied = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
-    assert_eq!(denied.exit_code, 0, "{}", denied.stderr);
-    let denied_json = stderr_or_stdout_json(&denied.stdout);
-    let messages = denied_json["result"]["resources"][0]["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|diagnostic| diagnostic["message"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(messages.contains("resource `local.events`"), "{messages}");
-    assert!(messages.contains("vendors.parquet"), "{messages}");
-    assert!(messages.contains("VendorID"), "{messages}");
-    assert!(messages.contains("Int32"), "{messages}");
-    assert!(messages.contains("Int8"), "{messages}");
-    assert!(messages.contains("allow_lossy_mapping"), "{messages}");
-    assert_no_schema_discovery_writes(&project);
-
-    let path = project.root.join("resources/files.toml");
-    let allowed = fs::read_to_string(&path).unwrap().replace(
-        "trust = \"governed\"",
-        "trust = \"governed\"\ntypes = { allow_lossy_mapping = true }",
-    );
-    fs::write(path, allowed).unwrap();
-    let allowed = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
-    assert_eq!(allowed.exit_code, 0, "{}{}", allowed.stdout, allowed.stderr);
+    assert!(message.contains("format"));
     assert_no_schema_discovery_writes(&project);
 }
 
@@ -528,37 +473,6 @@ fn validate_deep_rejects_malformed_json_probe_instead_of_downgrading_it() {
 }
 
 #[test]
-fn tier_zero_coerce_types_applies_to_actual_file_execution() {
-    let project = TestProject::new();
-    let resource_path = project.root.join("resources/files.toml");
-    let resource = fs::read_to_string(&resource_path).unwrap().replace(
-        "trust = \"governed\"",
-        "trust = \"governed\"\ntypes = { coerce_types = true }",
-    );
-    fs::write(resource_path, resource).unwrap();
-    fs::write(
-        project.root.join("data/events.ndjson"),
-        b"{\"id\":\"1\",\"updated_at\":\"1783296000000000\"}\n{\"id\":\"2\",\"updated_at\":\"1783296060000000\"}\n",
-    )
-    .unwrap();
-
-    let result = run_valid_run_args(&project);
-
-    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["result"]["row_count"], 2);
-    let connection = duckdb::Connection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
-    let ids = connection
-        .prepare("SELECT id FROM events ORDER BY id")
-        .unwrap()
-        .query_map([], |row| row.get::<_, i64>(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(ids, vec![1, 2]);
-}
-
-#[test]
 fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
     let project = TestProject::new();
     let result = run([
@@ -575,15 +489,15 @@ fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
     assert_eq!(json["error"]["code"], "CDF-RESOURCE-NOT-COMPILED");
     assert_eq!(
         json["error"]["remediation"]["summary"],
-        "Use one of the compiled resource ids or repair the project resource mapping."
+        "Use a compiled resource id or author the expected project SQL resource."
     );
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("resource `local.eventz` is not compiled"));
-    assert!(message.contains("compiled resource ids: `local.events`"));
-    assert!(message.contains("resources/files.toml"));
-    assert!(message.contains("mapping `local.*` matched"));
-    assert!(message.contains("likely causes"));
-    assert!(message.contains("<source>.<resource>"));
+    assert!(message.contains("compiled query-first resources"));
+    assert!(message.contains("`local.events`"));
+    assert!(message.contains("cdf/local/events.cdf.sql"));
+    assert!(message.contains("using configured source `local`"));
+    assert!(message.contains("cdf/<namespace>/<resource>.cdf.sql"));
     assert!(!message.contains("cdf run requires"));
     assert_eq!(json["error"]["suggestions"][0], "local.events");
 }

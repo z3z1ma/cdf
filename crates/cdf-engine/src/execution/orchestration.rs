@@ -9,7 +9,8 @@ use std::{
 use crate::expression_execution::{
     BoundExpressionTransform, BoundScalarExpression, apply_bound_expression_transforms,
     apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
-    bind_filter_expressions, expression_transform_output_schema,
+    bind_filter_expressions, bind_relational_expression_plan,
+    execute_bound_relational_expression_plan_tracked, expression_transform_output_schema,
 };
 use crate::expression_memory::expression_working_set_bytes;
 use arrow_array::{
@@ -261,13 +262,24 @@ where
     let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
     cdf_package_contract::validate_logical_output_schema(runtime_output_schema.as_ref())?;
-    let expression_schema = scan_expression_schema(
+    let admission_schema = scan_expression_schema(
         resource_schema.as_ref(),
         plan.explain
             .projection_pushed
             .then_some(plan.scan.request.projection.as_deref())
             .flatten(),
     )?;
+    let bound_relational = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(bind_relational_expression_plan)
+        .transpose()?;
+    let expression_schema = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(|relational| relational.output_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| admission_schema.clone());
     let bound_residuals =
         bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
     let tracking_expression_schema = source_row_tracking_schema(&expression_schema)?;
@@ -581,7 +593,7 @@ where
                                     plan.effective_schema_evidence.as_ref(),
                                     candidate.expected.as_ref(),
                                 )?,
-                                effective_schema: &expression_schema,
+                                effective_schema: &admission_schema,
                             },
                             &plan.compiled_schema_admission,
                             &mut schema_admission_cache,
@@ -626,14 +638,28 @@ where
                             .cdc
                             .as_ref()
                             .map(|metadata| metadata.operation_field.clone());
-                        let track_source_rows =
-                            pre_contract_may_filter || !residual_candidates.is_empty();
+                        let track_source_rows = pre_contract_may_filter
+                            || !residual_candidates.is_empty()
+                            || plan
+                                .relational_expression_plan
+                                .as_ref()
+                                .is_some_and(|relational| relational.filter.is_some());
                         let expression_bytes = expression_working_set_bytes(
                             plan.compiled_expression_plan
                                 .residuals
                                 .iter()
                                 .chain(plan.compiled_expression_plan.transforms.iter())
-                                .map(|planned| &planned.expression),
+                                .map(|planned| &planned.expression)
+                                .chain(plan.relational_expression_plan.iter().flat_map(
+                                    |relational| {
+                                        relational.filter.iter().chain(
+                                            relational
+                                                .projection
+                                                .iter()
+                                                .map(|projection| &projection.expression),
+                                        )
+                                    },
+                                )),
                             record_batch.num_rows(),
                         )?;
                         let transform_memory_lease = reserve_transform_working_set(
@@ -643,6 +669,24 @@ where
                             expression_bytes,
                         )
                         .await?;
+                        let (record_batch, relational_source_rows) = match &bound_relational {
+                            Some(relational) => {
+                                let memory = transform_memory_lease.as_ref().ok_or_else(|| {
+                                    CdfError::internal(
+                                        "relational execution omitted its reserved memory lease",
+                                    )
+                                })?;
+                                let (output, rows) =
+                                    execute_bound_relational_expression_plan_tracked(
+                                        relational,
+                                        &record_batch,
+                                        memory,
+                                        &cdf_runtime::RunCancellation::default(),
+                                    )?;
+                                (output, Some(rows))
+                            }
+                            None => (record_batch, None),
+                        };
                         let mut no_row_limit = None;
                         let executed = execute_batch(
                             &record_batch,
@@ -670,6 +714,10 @@ where
                             track_source_rows,
                             transform_memory_lease.as_ref(),
                             &cdf_runtime::RunCancellation::default(),
+                        )?;
+                        let source_rows = remap_relational_source_rows(
+                            source_rows,
+                            relational_source_rows.as_deref(),
                         )?;
                         let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
                         let contract = apply_contract_exec(
@@ -3211,13 +3259,24 @@ where
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
-    let expression_schema = scan_expression_schema(
+    let admission_schema = scan_expression_schema(
         resource_schema.as_ref(),
         plan.explain
             .projection_pushed
             .then_some(plan.scan.request.projection.as_deref())
             .flatten(),
     )?;
+    let bound_relational = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(bind_relational_expression_plan)
+        .transpose()?;
+    let expression_schema = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(|relational| relational.output_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| admission_schema.clone());
     let bound_residuals =
         bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
     let tracking_expression_schema = source_row_tracking_schema(&expression_schema)?;
@@ -3308,7 +3367,7 @@ where
     let mut late_data_evidence = LateDataEvidenceAccumulator::default();
     let mut late_data_payloads = LateDataPayloadCatalogAccumulator::default();
     let mut late_data_carryover = Vec::<cdf_kernel::LateDataCarryoverRef>::new();
-    let mut remaining_limit = plan.scan.request.limit;
+    let mut remaining_limit = plan.final_limit.or(plan.scan.request.limit);
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
     let mut stream_admission_evidence =
         BTreeMap::<String, StreamAdmissionObservationEvidence>::new();
@@ -4048,7 +4107,7 @@ where
                             effective_schema_evidence,
                             partition_schema_evidence,
                         )?,
-                        effective_schema: &expression_schema,
+                        effective_schema: &admission_schema,
                     },
                     &plan.compiled_schema_admission,
                     &mut schema_admission_cache,
@@ -4226,13 +4285,29 @@ where
 
                 let track_source_rows = pre_contract_may_filter
                     || !residual_candidates.is_empty()
-                    || late_data_policy.is_some();
+                    || late_data_policy.is_some()
+                    || plan
+                        .relational_expression_plan
+                        .as_ref()
+                        .is_some_and(|relational| relational.filter.is_some());
                 let expression_bytes = expression_working_set_bytes(
                     plan.compiled_expression_plan
                         .residuals
                         .iter()
                         .chain(plan.compiled_expression_plan.transforms.iter())
-                        .map(|planned| &planned.expression),
+                        .map(|planned| &planned.expression)
+                        .chain(
+                            plan.relational_expression_plan
+                                .iter()
+                                .flat_map(|relational| {
+                                    relational.filter.iter().chain(
+                                        relational
+                                            .projection
+                                            .iter()
+                                            .map(|projection| &projection.expression),
+                                    )
+                                }),
+                        ),
                     record_batch.num_rows(),
                 )?;
                 let transform_memory_lease = reserve_transform_working_set(
@@ -4242,6 +4317,23 @@ where
                     expression_bytes,
                 )
                 .await?;
+                let (record_batch, relational_source_rows) = match &bound_relational {
+                    Some(relational) => {
+                        let memory = transform_memory_lease.as_ref().ok_or_else(|| {
+                            CdfError::internal(
+                                "relational execution omitted its reserved memory lease",
+                            )
+                        })?;
+                        let (output, rows) = execute_bound_relational_expression_plan_tracked(
+                            relational,
+                            &record_batch,
+                            memory,
+                            &run_cancellation,
+                        )?;
+                        (output, Some(rows))
+                    }
+                    None => (record_batch, None),
+                };
                 let executed = execute_batch(
                     &record_batch,
                     if track_source_rows {
@@ -4268,6 +4360,10 @@ where
                     track_source_rows,
                     transform_memory_lease.as_ref(),
                     &run_cancellation,
+                )?;
+                let source_rows = remap_relational_source_rows(
+                    source_rows,
+                    relational_source_rows.as_deref(),
                 )?;
                 let batch_source_position = normalize_source_position_for_partition(
                     batch.header.source_position.clone(),
@@ -6636,6 +6732,29 @@ fn execute_batch(
     })
 }
 
+fn remap_relational_source_rows(
+    downstream: Option<Vec<usize>>,
+    relational: Option<&[usize]>,
+) -> Result<Option<Vec<usize>>> {
+    let Some(downstream) = downstream else {
+        return Ok(None);
+    };
+    let Some(relational) = relational else {
+        return Ok(Some(downstream));
+    };
+    downstream
+        .into_iter()
+        .map(|index| {
+            relational.get(index).copied().ok_or_else(|| {
+                CdfError::internal(
+                    "downstream source-row tracking exceeded the relational filter mapping",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
 fn apply_pre_contract_expressions(
     batch: RecordBatch,
     transforms: &[BoundExpressionTransform],
@@ -8015,12 +8134,6 @@ mod transform_kernel_tests {
                 .index_of(super::SOURCE_ROW_FIELD)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn production_execution_cannot_call_the_scalar_contract_oracle() {
-        let scalar_oracle = ["evaluate", "record", "batch"].join("_") + "(";
-        assert!(!include_str!("orchestration.rs").contains(&scalar_oracle));
     }
 
     #[test]

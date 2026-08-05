@@ -102,13 +102,18 @@ fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
     );
     let old_project = fs::read(project.root.join("cdf.toml")).unwrap();
     let old_lock = fs::read(project.root.join("cdf.lock")).unwrap();
-    let extra_resource = RESOURCE.replace("[source.local]", "[source.extra]");
+    let extra_resource = RESOURCE.replace("source => 'local'", "source => 'extra'");
     let new_project = format!(
-        "{}\n[resources.\"extra.*\"]\nsource = \"resources/extra.toml\"\n",
+        "{}\n[sources.extra]\ntype = \"files\"\nroot = \"data\"\n",
         String::from_utf8(old_project.clone()).unwrap()
     )
     .into_bytes();
-    fs::write(project.root.join("resources/extra.toml"), &extra_resource).unwrap();
+    fs::create_dir_all(project.root.join("cdf/extra")).unwrap();
+    fs::write(
+        project.root.join("cdf/extra/events.cdf.sql"),
+        &extra_resource,
+    )
+    .unwrap();
     fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
     let new_freeze = run([
         "cdf",
@@ -124,11 +129,15 @@ fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
 
     fs::write(project.root.join("cdf.toml"), &old_project).unwrap();
     fs::write(project.root.join("cdf.lock"), &old_lock).unwrap();
-    fs::remove_file(project.root.join("resources/extra.toml")).unwrap();
+    fs::remove_file(project.root.join("cdf/extra/events.cdf.sql")).unwrap();
 
     let lock_temporary = ".cdf.lock.999.3.project-txn.tmp";
     fs::write(project.root.join(lock_temporary), &new_lock).unwrap();
-    fs::write(project.root.join("resources/extra.toml"), &extra_resource).unwrap();
+    fs::write(
+        project.root.join("cdf/extra/events.cdf.sql"),
+        &extra_resource,
+    )
+    .unwrap();
     fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
     let marker = json!({
         "version": 1,
@@ -137,8 +146,8 @@ fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
         "commit_relative_path": "cdf.lock",
         "entries": [
             {
-                "relative_path": "resources/extra.toml",
-                "temporary_relative_path": "resources/.extra.toml.999.1.project-txn.tmp",
+                "relative_path": "cdf/extra/events.cdf.sql",
+                "temporary_relative_path": "cdf/extra/.events.cdf.sql.999.1.project-txn.tmp",
                 "prior": { "kind": "absent" },
                 "new_len": extra_resource.len(),
                 "new_sha256": format!("sha256:{:x}", Sha256::digest(extra_resource.as_bytes())),

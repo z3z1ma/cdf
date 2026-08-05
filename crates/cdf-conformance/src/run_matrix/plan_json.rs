@@ -62,6 +62,7 @@ where
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
+            relational_expression_plan: None,
             committed_frontier: None,
         },
     )

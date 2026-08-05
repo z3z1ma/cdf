@@ -39,9 +39,9 @@ compatibility policy.
 project surface. `semantics/` exists when project-defined semantic types are authored.
 `.cdf/manifest.json` is generated local compiler state, not authored source authority.
 
-The `cdf/` root marks CDF ownership and contributes no component to resource identity. `sources/`,
-generic `resources/`, and `pipelines/` resource roots are rejected with focused current-layout
-guidance; D3 MUST NOT reinterpret, scan, merge, or prefer them.
+The `cdf/` root marks CDF ownership and contributes no component to resource identity. It is the
+only directory enumerated for project resources. Other project directories are unrelated inputs
+and MUST NOT be scanned or interpreted as resource declarations.
 
 ## Identity model
 
@@ -220,16 +220,15 @@ The manifest and human/JSON inspection expose, without recompilation:
   driver id/version/schema hashes, and canonical structured relation args;
 - source node id, native source/operator/contract/semantic/destination identities, schema,
   lineage, and pushdown/residual decisions;
-- diagnostics for invalid paths, missing/unknown/repeated bindings, unreferenced configured sources,
-  and retired project shapes.
+- diagnostics for invalid paths, missing/unknown/repeated bindings, and unreferenced configured
+  sources.
 
 Inspection never calls a resource namespace a source, a driver a configured source, or
 `SourceRegistry` a project catalog.
 
 ## Publication and tooling
 
-- `cdf init` creates `cdf/`, never `sources/`, generic `resources/`, `pipelines/`, a wildcard resource map, or declarative
-  resource file.
+- `cdf init` creates `cdf/` and one explicit query-first resource file.
 - `cdf add`/generation plans one explicit source-config change when needed and one or more
   `cdf/<namespace>/<resource>.cdf.sql` files whose queries contain the source binding.
 - Config, SQL, lock, and manifest mutations use the existing crash-safe multi-file publication
@@ -238,9 +237,8 @@ Inspection never calls a resource namespace a source, a driver a configured sour
   manifest/lock effects, and diagnostics without writing.
 - Read-only commands treat changed authored inputs as stale manifest data and do not compile,
   publish, or recover.
-- D3 changes all authoring/scaffold/example/inspection surfaces atomically and deletes the retired
-  reader. No legacy parser, detection fallback, migration warning mode, or compatibility shim is
-  allowed.
+- All authoring, scaffold, example, and inspection surfaces use this one model. There is no second
+  project-resource reader or alternate input root.
 
 ## Error behavior
 
@@ -274,9 +272,7 @@ Inspection never calls a resource namespace a source, a driver a configured sour
 8. Given filesystem enumeration order changes, manifest semantic bytes and hashes are unchanged.
 9. Given relation arguments are reordered, canonical typed argument identity is unchanged while
    authored SQL identity changes.
-10. Given a retired `sources/`, generic `resources/`, or `pipelines/` SQL tree, wildcard project mapping, declarative resource file, or
-    SQL-declared resource id, current validation rejects it with regeneration guidance and no
-    compatibility reader.
+10. Given unrelated project directories outside `cdf/`, resource enumeration ignores them.
 11. Given uppercase, hyphenated, Unicode, leading-digit, or overlength identity tokens, compile
     rejects rather than normalizes.
 12. Given `cdf/finance/transactions.cdf.sql` binds `source => 'flolake'`, compile succeeds

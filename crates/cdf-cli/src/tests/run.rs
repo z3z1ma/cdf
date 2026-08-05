@@ -208,11 +208,12 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(resource_id.starts_with("adhoc.parquet_"));
     assert_eq!(report["adhoc"]["resource_id"], resource_id);
     assert_eq!(report["adhoc"]["reused"], false);
-    let config_path = report["adhoc"]["config_path"].as_str().unwrap();
+    let definition_path = report["adhoc"]["definition_path"].as_str().unwrap();
     let staged_path = report["adhoc"]["source_artifact_path"].as_str().unwrap();
-    assert!(config_path.starts_with(".cdf/adhoc/parquet_"));
+    assert!(definition_path.starts_with(".cdf/adhoc/parquet_"));
+    assert!(definition_path.ends_with(".cdf.sql"));
     assert!(staged_path.starts_with(".cdf/adhoc/data/parquet_"));
-    assert!(project.root.join(config_path).is_file());
+    assert!(project.root.join(definition_path).is_file());
     assert!(project.root.join(staged_path).is_file());
     assert_eq!(
         report["schema_hash"],
@@ -234,10 +235,10 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
             .starts_with(&format!("cdf add {resource_id} .cdf/adhoc/data/"))
     );
 
-    let resource_toml = fs::read_to_string(project.root.join(config_path)).unwrap();
-    let staged_root = Path::new(staged_path).parent().unwrap().to_str().unwrap();
-    assert!(resource_toml.contains(&format!("root = {staged_root:?}")));
-    assert!(!resource_toml.contains(PATH_SECRET));
+    let resource_sql = fs::read_to_string(project.root.join(definition_path)).unwrap();
+    assert!(resource_sql.contains("FROM upstream("));
+    assert!(resource_sql.contains("source => 'adhoc'"));
+    assert!(!resource_sql.contains(PATH_SECRET));
     let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     let locked = &lock.resources[resource_id];
     assert_eq!(
@@ -288,7 +289,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
             .unwrap()
             .filter_map(Result::ok)
             .filter(
-                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("toml")
+                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("sql")
             )
             .count(),
         1
@@ -307,7 +308,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
     assert_secret_absent(&human, PATH_SECRET);
     assert!(human.stdout.contains("Ad-hoc Resource"));
-    assert!(human.stdout.contains(config_path));
+    assert!(human.stdout.contains(definition_path));
     assert!(human.stdout.contains(&format!("cdf add {resource_id}")));
 }
 
@@ -474,14 +475,14 @@ fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
     );
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
-    let config = fs::read_to_string(
+    let definition = fs::read_to_string(
         project
             .root
-            .join(report["adhoc"]["config_path"].as_str().unwrap()),
+            .join(report["adhoc"]["definition_path"].as_str().unwrap()),
     )
     .unwrap();
-    assert!(config.contains(&format!("root = \"{base_url}\"")));
-    assert!(config.contains("glob = \"yellow.parquet\""));
+    assert!(definition.contains("source => 'adhoc'"));
+    assert!(definition.contains("glob => 'yellow.parquet'"));
     assert!(
         observed_requests
             .iter()
@@ -643,31 +644,17 @@ fn run_adhoc_synthetic_resource_id_collision_fails_before_mutation() {
         .collect::<String>();
     let resource_name = format!("parquet_{}", &digest[..24]);
     let resource_id = format!("adhoc.{resource_name}");
+    fs::create_dir_all(project.root.join("cdf/adhoc")).unwrap();
     fs::write(
-        project.root.join("resources/collision.toml"),
-        format!(
-            r#"
-[source.adhoc]
-kind = "files"
-root = "data"
-
-[resource.{resource_name}]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-  {{ name = "id", type = "int64", nullable = false }},
-  {{ name = "updated_at", type = "int64", nullable = false }},
-] }}
-"#
-        ),
+        project
+            .root
+            .join("cdf/adhoc")
+            .join(format!("{resource_name}.cdf.sql")),
+        RESOURCE.replace("source => 'local'", "source => 'adhoc'"),
     )
     .unwrap();
     let mut project_toml = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
-    project_toml.push_str(&format!(
-        "\n[resources.\"{resource_id}\"]\nsource = \"resources/collision.toml\"\n"
-    ));
+    project_toml.push_str("\n[sources.adhoc]\ntype = \"files\"\nroot = \"data\"\n");
     fs::write(project.root.join("cdf.toml"), project_toml).unwrap();
     let before = project_tree_snapshot(&project.root);
 

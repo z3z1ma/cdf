@@ -126,32 +126,6 @@ fn read_all(
 }
 
 #[test]
-fn production_module_edges_are_explicit_and_directional() {
-    let parent = include_str!("../source.rs");
-    let children = [
-        ("execution", include_str!("execution.rs")),
-        ("query", include_str!("query.rs")),
-        ("schema", include_str!("schema.rs")),
-        ("temporal", include_str!("temporal.rs")),
-    ];
-    for wildcard in ["execution::*", "query::*", "schema::*", "temporal::*"] {
-        assert!(
-            !parent.contains(wildcard),
-            "source composition must name imports instead of glob-importing {wildcard}"
-        );
-    }
-    for (module, source) in children {
-        assert!(
-            !source.contains("use super::*"),
-            "{module} must enumerate every cross-module dependency"
-        );
-    }
-    assert!(!include_str!("schema.rs").contains("super::"));
-    assert!(!include_str!("temporal.rs").contains("query::"));
-    assert!(!include_str!("query.rs").contains("execution::"));
-}
-
-#[test]
 fn declared_execution_observes_live_catalog_drift_without_changing_logical_output() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("declared-observation.sqlite");

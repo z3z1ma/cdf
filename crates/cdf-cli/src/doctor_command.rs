@@ -1,4 +1,4 @@
-use cdf_project::{FileResourceSourceResolver, ResourceSourceKind, validate_project};
+use cdf_project::validate_project;
 use serde::Serialize;
 use serde_json::json;
 
@@ -19,19 +19,18 @@ pub(crate) fn doctor(
         DoctorCheck::passed("project_file", "cdf.toml parsed and environment resolved")
             .with_details(project_health_details(&context)),
         DoctorCheck::passed(
-            "declarative_resources",
+            "query_resources",
             format!("{} resource(s) compiled", context.resources.len()),
         ),
     ];
 
-    let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     match validate_project(
         source_registry,
         &context.config,
         Some(&context.environment.name),
-        &resolver,
+        &context.resources,
         &provider,
     ) {
         Ok(report) => checks.push(
@@ -146,20 +145,15 @@ fn source_driver_health_checks(
         .map(|resource| resource.source_plan().clone())
         .collect::<Vec<_>>();
     let configured_resources = context
-        .config
-        .resources
+        .resource_queries
         .iter()
-        .filter_map(|(resource_id, mapping)| match mapping.source_kind() {
-            ResourceSourceKind::Reference { uri } => Some(
-                cdf_kernel::ResourceId::new(resource_id.clone()).and_then(|resource_id| {
-                    let driver = registry.driver_for_uri(&uri)?;
-                    Ok(cdf_runtime::SourceHealthTarget::new(
-                        resource_id,
-                        driver.descriptor().driver_id.clone(),
-                    ))
-                }),
-            ),
-            ResourceSourceKind::DeclarativeFile { .. } => None,
+        .map(|query| {
+            cdf_kernel::ResourceId::new(query.resource_id.clone()).and_then(|resource_id| {
+                Ok(cdf_runtime::SourceHealthTarget::new(
+                    resource_id,
+                    cdf_runtime::SourceDriverId::new(query.configured_source.driver_id.clone())?,
+                ))
+            })
         })
         .collect::<Result<Vec<_>, _>>();
     let configured_resources = match configured_resources {

@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn destination_policy_is_identity_bearing_and_old_versions_fail_closed() {
+    fn destination_policy_is_identity_bearing() {
         let plan = DestinationCommitPlanPreimage::package_hash_token(
             TargetName::new("events").unwrap(),
             WriteDisposition::Merge,
@@ -591,12 +591,5 @@ mod tests {
             encoded["destination_policy"]["merge_mode"],
             "replacing_merge_tree"
         );
-
-        let mut legacy = encoded;
-        legacy["version"] = serde_json::json!(1);
-        legacy.as_object_mut().unwrap().remove("destination_policy");
-        let legacy: DestinationCommitPlanPreimage = serde_json::from_value(legacy).unwrap();
-        assert!(legacy.destination_policy.is_empty());
-        assert!(legacy.validate().is_err());
     }
 }

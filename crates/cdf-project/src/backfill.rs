@@ -107,6 +107,7 @@ pub fn plan_backfill(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: request.segmentation.clone(),
                 package_id: package_id.clone(),
+                relational_expression_plan: None,
                 committed_frontier: None,
             },
         )?;

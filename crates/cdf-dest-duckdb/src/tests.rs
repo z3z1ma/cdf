@@ -2473,17 +2473,17 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
 #[test]
 fn preexisting_targets_without_current_provenance_fail_without_mutation() {
     let temp = tempfile::tempdir().unwrap();
-    let package = temp.path().join("pkg-legacy");
+    let package = temp.path().join("pkg-unmanaged-target");
     let package_hash = build_package(
         &package,
-        "pkg-legacy",
+        "pkg-unmanaged-target",
         &[sample_batch(vec![2], vec![Some("new")])],
     );
-    let db_path = temp.path().join("legacy.duckdb");
+    let db_path = temp.path().join("unmanaged.duckdb");
     let conn = Connection::open(&db_path).unwrap();
     conn.execute_batch("CREATE TABLE orders (id BIGINT NOT NULL, name VARCHAR)")
         .unwrap();
-    conn.execute("INSERT INTO orders VALUES (1, 'legacy')", [])
+    conn.execute("INSERT INTO orders VALUES (1, 'existing')", [])
         .unwrap();
     drop(conn);
 
@@ -2514,16 +2514,16 @@ fn preexisting_targets_without_current_provenance_fail_without_mutation() {
         .unwrap()
         .map(|row| row.unwrap())
         .collect();
-    assert_eq!(rows, vec![(1, "legacy".to_owned())]);
+    assert_eq!(rows, vec![(1, "existing".to_owned())]);
 }
 
 #[test]
 fn compact_provenance_requires_exact_non_null_types_and_unique_address() {
     let temp = tempfile::tempdir().unwrap();
-    let package = temp.path().join("pkg-legacy-provenance-shape");
+    let package = temp.path().join("pkg-invalid-provenance-shape");
     let package_hash = build_package(
         &package,
-        "pkg-legacy-provenance-shape",
+        "pkg-invalid-provenance-shape",
         &[sample_batch(vec![1], vec![Some("row")])],
     );
 

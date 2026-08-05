@@ -317,6 +317,60 @@ pub fn execute_bound_relational_expression_plan(
     execute_bound_relational_expression_plan_inner(plan, batch, memory, cancellation)
 }
 
+pub(crate) fn execute_bound_relational_expression_plan_tracked(
+    plan: &BoundRelationalExpressionPlan,
+    batch: &RecordBatch,
+    memory: &MemoryLease,
+    cancellation: &RunCancellation,
+) -> Result<(RecordBatch, Vec<usize>)> {
+    let expression_bytes = bound_expression_working_set_bytes(
+        plan.filter.iter().chain(plan.projection.iter()),
+        batch.num_rows(),
+    )?;
+    validate_expression_memory(batch, expression_bytes, memory)?;
+    cancellation.check()?;
+    if batch.schema().as_ref() != &plan.input_schema {
+        return Err(CdfError::contract(
+            "relational expression input schema differs from its compiled authority; run `cdf compile`",
+        ));
+    }
+    let (filtered, source_rows) = match &plan.filter {
+        Some(filter) => {
+            let values = evaluate_bound_scalar(batch, filter, Some(memory), cancellation)?;
+            let predicate = values
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| {
+                    CdfError::contract("bound relational filter did not produce Boolean")
+                })?;
+            let source_rows = predicate
+                .iter()
+                .enumerate()
+                .filter_map(|(index, keep)| keep.unwrap_or(false).then_some(index))
+                .collect::<Vec<_>>();
+            (
+                filter_record_batch(batch, predicate).map_err(CdfError::from)?,
+                source_rows,
+            )
+        }
+        None => (batch.clone(), (0..batch.num_rows()).collect()),
+    };
+    let mut columns = Vec::with_capacity(plan.projection.len());
+    for projection in &plan.projection {
+        cancellation.check()?;
+        columns.push(evaluate_bound_scalar(
+            &filtered,
+            projection,
+            Some(memory),
+            cancellation,
+        )?);
+    }
+    let output = RecordBatch::try_new(Arc::new(plan.output_schema.clone()), columns)
+        .map_err(CdfError::from)?;
+    validate_expression_output_memory(batch, output.get_array_memory_size(), memory)?;
+    Ok((output, source_rows))
+}
+
 fn execute_bound_relational_expression_plan_inner(
     plan: &BoundRelationalExpressionPlan,
     batch: &RecordBatch,

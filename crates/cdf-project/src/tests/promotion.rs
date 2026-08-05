@@ -1,19 +1,18 @@
 use super::{
     BTreeMap, DependencyTuple, DestinationProtocolCapabilities, DestinationSheetArtifact,
-    InMemoryResourceSourceResolver, SemanticCatalog, TypeMappingFidelity,
-    compile_project_declarative_resources, freeze_contract_snapshots,
+    SemanticCatalog, TypeMappingFidelity, freeze_contract_snapshots,
     generate_lockfile_with_destination_artifacts, parse_cdf_toml,
-    support::{BOOK_PROJECT, GITHUB_RESOURCE, destination_sheet, test_source_registry},
+    support::{
+        BOOK_PROJECT, GITHUB_RESOURCE, compile_declarative_fixture, destination_sheet,
+        test_source_registry,
+    },
     test_contract_snapshots,
 };
 
 #[test]
 fn contract_freeze_preserves_existing_dependency_and_destination_data() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
-    let resources =
-        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let resources = compile_declarative_fixture(&test_source_registry(), GITHUB_RESOURCE).unwrap();
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
     let sheet_artifact =
         DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default()).unwrap();
@@ -68,10 +67,7 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
 #[test]
 fn contract_test_reports_field_level_snapshot_drift() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
-    let resources =
-        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let resources = compile_declarative_fixture(&test_source_registry(), GITHUB_RESOURCE).unwrap();
     let artifact = cdf_kernel::DestinationSheetArtifact::new(
         destination_sheet("duckdb", TypeMappingFidelity::Lossless),
         cdf_kernel::DestinationProtocolCapabilities::default(),
@@ -93,11 +89,8 @@ fn contract_test_reports_field_level_snapshot_drift() {
             "  { name = \"ingested_at\", type = \"int64\", nullable = true },"
         ),
     );
-    let changed_resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", &changed_resource);
     let changed_resources =
-        compile_project_declarative_resources(&test_source_registry(), &config, &changed_resolver)
-            .unwrap();
+        compile_declarative_fixture(&test_source_registry(), &changed_resource).unwrap();
 
     let report = test_contract_snapshots(&lock, &changed_resources, Some("github.issues")).unwrap();
 

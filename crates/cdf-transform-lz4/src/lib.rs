@@ -14,7 +14,6 @@ use futures_util::stream;
 use twox_hash::XxHash32;
 
 const LZ4_MAGIC: [u8; 4] = 0x184d_2204_u32.to_le_bytes();
-const LZ4_LEGACY_MAGIC: u32 = 0x184c_2102;
 const SKIPPABLE_MAGIC_START: u32 = 0x184d_2a50;
 const SKIPPABLE_MAGIC_END: u32 = 0x184d_2a5f;
 const MAX_BLOCK_BYTES: usize = 4 * 1024 * 1024;
@@ -165,11 +164,6 @@ impl Lz4State {
                     .skip_exact(length, "LZ4 skippable frame payload")
                     .await?;
                 continue;
-            }
-            if magic == LZ4_LEGACY_MAGIC {
-                return Err(CdfError::data(
-                    "legacy LZ4 framing is not accepted; select an explicit legacy framing transform",
-                ));
             }
             if magic.to_le_bytes() != LZ4_MAGIC {
                 return Err(CdfError::data(

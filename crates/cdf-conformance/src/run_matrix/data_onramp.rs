@@ -26,29 +26,6 @@ use super::{
     destinations::ConformanceEnvironment, file_fixture, plan_json, source_catalog,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CoverageStatus {
-    Covered,
-    Excluded,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct P2Scenario {
-    id: &'static str,
-    title: &'static str,
-    status: CoverageStatus,
-    rationale: &'static str,
-    tests: &'static [&'static str],
-    tickets: &'static [&'static str],
-}
-
-#[derive(Clone, Copy, Debug)]
-struct P2FrictionRow {
-    id: u8,
-    closed_tests: &'static [&'static str],
-    open_tickets: &'static [&'static str],
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct PreviewFingerprint {
     source: SourceArchetype,
@@ -85,427 +62,9 @@ fn planned_partitions(
     Ok(partitions)
 }
 
-const P2_SCENARIOS: &[P2Scenario] = &[
-    P2Scenario {
-        id: "S1",
-        title: "Public HTTPS Parquet single file, zero typed schema fields, through cdf add and run",
-        status: CoverageStatus::Covered,
-        rationale: "deterministic HTTP Parquet conformance runs cdf add, pins the ranged-footer schema, plans, and commits through the ordinary package/receipt/checkpoint path with zero typed fields; public TLC remains separately recorded live evidence",
-        tests: &[
-            "crates/cdf-cli/src/tests/add.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S2",
-        title: "Public HTTPS Parquet monthly glob with default FileManifest incrementality and no-change no-op rerun",
-        status: CoverageStatus::Covered,
-        rationale: "deterministic production HTTP conformance expands the canonical year-month glob, skips typed 404 absences, previews the exact partition set, loads present months, performs a no-change no-op, and loads only a newly present month",
-        tests: &[
-            "crates/cdf-cli/src/tests/add.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S3",
-        title: "S3 compressed NDJSON recursive glob with transparent gzip and drift governed by contract policy",
-        status: CoverageStatus::Covered,
-        rationale: "the object-store fixture recursively resolves, bounded-discovers, pins, previews, streams gzip NDJSON, preserves remote FileManifest identity, and executes 10,000 rows; recorded HTTP fixtures additionally prove bounded transform/decode backpressure, cancellation before download completion, and jobs-invariant multi-file packages; drift quarantine remains covered by the shared file-contract conformance",
-        tests: &[
-            "crates/cdf-project/src/tests/discovery_schema.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
-            "crates/cdf-project/src/tests/discovery_schema.rs::recorded_http_multifile_packages_are_jobs_invariant",
-            "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S4",
-        title: "Postgres table discovery with optional schema block and cursor candidates",
-        status: CoverageStatus::Covered,
-        rationale: "standalone local-Postgres conformance runs cdf add from a direct table DSN, persists only a private secret reference, pins catalog discovery, reports cursor suggestions without selecting one, then plans, previews, and runs after explicit cursor selection",
-        tests: &[
-            "crates/cdf-cli/src/tests/source_planning.rs::p2_s4_postgres_add_pins_private_secret_and_runs_discovered_table",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S5",
-        title: "REST API in discover mode with a recorded sample page and pinned snapshot",
-        status: CoverageStatus::Covered,
-        rationale: "standalone deterministic conformance pins one recorded REST sample page, previews, packages, verifies the receipt, and commits the pinned schema/cursor identity",
-        tests: &[
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S6",
-        title: "Drift quarantines with accepted stream unblocked and file/column remediation rendered",
-        status: CoverageStatus::Covered,
-        rationale: "deterministic governed and financial fixtures complete with incompatible files quarantined, preserve accepted-stream and manifest advancement, and now expose typed file/field/type/rule/remediation verdicts in JSON and P1 human run output",
-        tests: &[
-            "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
-            "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_postgres_conformance_asserts_supported_mirror",
-            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
-            "crates/cdf-cli/src/tests/run_adapters.rs::financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest",
-            "crates/cdf-cli/src/tests/run_adapters.rs::governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S7",
-        title: "Append requires no key; merge without key fails with precise remediation",
-        status: CoverageStatus::Covered,
-        rationale: "standalone deterministic conformance exercises keyless append through the operator path and merge-without-key failure before source contact or project mutation",
-        tests: &[
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s7_keyless_append_and_precontact_merge_failure_conformance",
-        ],
-        tickets: &[],
-    },
-    P2Scenario {
-        id: "S8",
-        title: "Preview/run parity per source archetype",
-        status: CoverageStatus::Covered,
-        rationale: "the shared preview engine covers local multi-file, REST, Postgres, dated HTTP Parquet, and recursive object-store gzip NDJSON through the same partition, discovery, reconciliation, normalization, and bounded payload paths used by run",
-        tests: &[
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests/run_adapters.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
-            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
-            "crates/cdf-cli/src/tests/schema_promotion.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
-            "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
-            "crates/cdf-project/src/tests/discovery_schema.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
-            "crates/cdf-cli/src/tests/add.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
-            "crates/cdf-project/src/tests/discovery_schema.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
-        ],
-        tickets: &[],
-    },
-];
-
-const P2_EXCLUSIONS: &[P2Scenario] = &[P2Scenario {
-    id: "live-public-network",
-    title: "Live public-network S1/S2 smoke evidence in ordinary focused conformance",
-    status: CoverageStatus::Excluded,
-    rationale: "ordinary conformance uses deterministic fixtures; public-network terminal-session evidence is required before final P2 closure but excluded from this matrix foundation",
-    tests: &[],
-    tickets: &[],
-}];
-
-const P2_FRICTIONS: &[P2FrictionRow] = &[
-    P2FrictionRow {
-        id: 1,
-        closed_tests: &[
-            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
-            "crates/cdf-cli/src/tests/run_adapters.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 2,
-        closed_tests: &[
-            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
-            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak",
-            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
-            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference",
-            "crates/cdf-cli/src/tests/add.rs::add_local_parquet_pins_schema_and_writes_resource_config",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 3,
-        closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::arrow_type_vocabulary_covers_widths_decimal_temporal_binary_and_nested_types",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 4,
-        closed_tests: &[
-            "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
-            "crates/cdf-contract/src/tests.rs::schema_coercion_plan_from_reconciled_schema_records_widened_and_preserved_fields",
-            "crates/cdf-contract/src/tests.rs::shared_coercion_materializer_widens_projects_and_materializes_missing_nulls",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 5,
-        closed_tests: &[
-            "crates/cdf-contract/src/tests.rs::schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields",
-            "crates/cdf-contract/src/tests.rs::schema_reconciliation_rejects_lossy_casts_until_policy_allows_them",
-            "crates/cdf-contract/src/tests.rs::reconciled_schema_metadata_preserves_extra_field_decisions_for_package_evidence",
-            "crates/cdf-source-files/src/runtime/tests.rs::local_parquet_uses_registered_native_driver_as_bounded_stream",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 6,
-        closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
-            "crates/cdf-contract/src/tests.rs::destination_identifier_policy_preserves_postgres_max_length",
-            "crates/cdf-cli/src/tests/run_adapters.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
-            "crates/cdf-cli/src/tests/run_adapters.rs::destination_normalization_collision_fails_before_writes",
-            "crates/cdf-project/src/runtime_tests/live_adapters.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 7,
-        closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
-            "crates/cdf-cli/src/tests/run_adapters.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
-            "crates/cdf-project/src/runtime_tests/live_adapters.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 8,
-        closed_tests: &[
-            "crates/cdf-source-files/src/runtime/tests.rs::object_store_recursive_glob_resolves_stable_multi_file_partitions",
-            "crates/cdf-project/src/runtime_tests/orchestration.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
-            "crates/cdf-project/src/runtime_tests/orchestration.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 9,
-        closed_tests: &[
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests/run_adapters.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
-            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 10,
-        closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::registry_compilation_produces_one_compiled_source_plan_and_canonical_id",
-            "crates/cdf-project/src/tests/project_files.rs::declarative_resource_mapping_pattern_must_match_compiled_id",
-            "crates/cdf-cli/src/tests/surface.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 11,
-        closed_tests: &[
-            "crates/cdf-cli/src/tests/init_validate.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 12,
-        closed_tests: &[
-            "crates/cdf-cli/src/scan_command.rs::render_tests::plan_error_wording_uses_plan_command_name",
-            "crates/cdf-cli/src/tests/surface.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 13,
-        closed_tests: &[
-            "crates/cdf-cli/src/tests/init_validate.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 14,
-        closed_tests: &[
-            "crates/cdf-cli/src/tests/init_validate.rs::validate_deep_reports_source_front_end_checks_without_writes",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 15,
-        closed_tests: &[
-            "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_uses_headers_only_client",
-            "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 16,
-        closed_tests: &[
-            "crates/cdf-source-files/src/runtime/tests.rs::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
-            "crates/cdf-transform-gzip/src/lib.rs::tests::streams_concatenated_members_across_single_byte_input_chunks",
-            "crates/cdf-transform-zstd/src/lib.rs::tests::streams_concatenated_frames_across_single_byte_input_chunks",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 17,
-        closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::append_is_keyless_by_default_and_merge_names_both_fixes",
-            "crates/cdf-declarative/src/tests.rs::merge_and_exact_row_dedup_compile_only_for_their_valid_dispositions",
-            "crates/cdf-project/src/tests/project_files.rs::local_project_scaffold_writes_valid_project_without_runtime_artifacts",
-            "crates/cdf-cli/src/tests/source_planning.rs::keyless_append_file_validate_plan_preview_run_has_no_key_nudge",
-            "crates/cdf-cli/src/tests/source_planning.rs::keyless_append_rest_validate_plan_preview_run_has_no_key_nudge",
-            "crates/cdf-cli/src/tests/source_planning.rs::merge_without_key_fails_all_entry_commands_before_contact_or_writes",
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s7_keyless_append_and_precontact_merge_failure_conformance",
-        ],
-        open_tickets: &[],
-    },
-    P2FrictionRow {
-        id: 18,
-        closed_tests: &[
-            "crates/cdf-source-files/src/runtime/tests.rs::local_parquet_uses_registered_native_driver_as_bounded_stream",
-            "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
-            "crates/cdf-cli/src/tests/run_adapters.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
-            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-            "crates/cdf-cli/src/tests/add.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
-        ],
-        open_tickets: &[],
-    },
-];
-
 #[test]
-fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
-    assert_eq!(
-        P2_SCENARIOS
-            .iter()
-            .map(|scenario| scenario.id)
-            .collect::<Vec<_>>(),
-        vec!["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"]
-    );
-
-    for scenario in P2_SCENARIOS {
-        assert!(!scenario.title.is_empty(), "{} title", scenario.id);
-        assert!(!scenario.rationale.is_empty(), "{} rationale", scenario.id);
-        match scenario.status {
-            CoverageStatus::Covered => {
-                assert!(
-                    !scenario.tests.is_empty(),
-                    "{} covered scenarios must name tests",
-                    scenario.id
-                );
-                assert!(
-                    scenario.tickets.is_empty(),
-                    "{} covered scenarios must not carry active-ticket blockers",
-                    scenario.id
-                );
-            }
-            CoverageStatus::Excluded => {
-                assert!(
-                    !scenario.rationale.is_empty(),
-                    "{} exclusions must explain the boundary",
-                    scenario.id
-                );
-            }
-        }
-    }
-    for exclusion in P2_EXCLUSIONS {
-        assert_eq!(exclusion.status, CoverageStatus::Excluded);
-        assert!(!exclusion.title.is_empty(), "{} title", exclusion.id);
-        assert!(
-            !exclusion.rationale.is_empty(),
-            "{} rationale",
-            exclusion.id
-        );
-        assert!(
-            exclusion.tests.is_empty(),
-            "{} excluded tests",
-            exclusion.id
-        );
-    }
-
-    assert_eq!(scenario("S1").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S2").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S3").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S4").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S5").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S6").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S7").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S8").status, CoverageStatus::Covered);
-}
-
-#[test]
-fn p2_friction_registry_maps_closed_slices_to_tests_and_open_rows_to_tickets() {
-    assert_eq!(
-        P2_FRICTIONS.iter().map(|row| row.id).collect::<Vec<_>>(),
-        (1..=18).collect::<Vec<_>>()
-    );
-
-    for row in P2_FRICTIONS {
-        assert!(
-            !row.closed_tests.is_empty() || !row.open_tickets.is_empty(),
-            "friction {} must have a closed test or active owner",
-            row.id
-        );
-        for test in row.closed_tests {
-            assert!(
-                test.contains("::"),
-                "friction {} closed slice must name a concrete test: {test}",
-                row.id
-            );
-        }
-        if !row.open_tickets.is_empty() {
-            assert_active_tickets(&format!("friction {}", row.id), row.open_tickets);
-        }
-    }
-
-    assert!(friction(4).closed_tests.iter().any(|test| {
-        test.contains("schema_reconciliation_records_lossless_widenings_and_physical_type")
-    }));
-    assert!(
-        friction(5)
-            .closed_tests
-            .iter()
-            .any(|test| test.contains("schema_reconciliation_preserves_constraint_names"))
-    );
-    assert!(
-        friction(9)
-            .closed_tests
-            .contains(&"crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes")
-    );
-    assert!(friction(11).closed_tests.iter().any(|test| {
-        test.contains("resource_not_compiled_error_names_compiled_ids_origins_and_fix")
-    }));
-    assert!(friction(14).closed_tests.iter().any(|test| {
-        test.contains("validate_deep_reports_source_front_end_checks_without_writes")
-    }));
-    assert!(
-        friction(16)
-            .closed_tests
-            .iter()
-            .any(|test| test.contains("cdf-transform-gzip"))
-    );
-    assert!(
-        friction(16)
-            .closed_tests
-            .iter()
-            .any(|test| test.contains("cdf-transform-zstd"))
-    );
-}
-
-#[test]
-fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
-    let s5 = scenario("S5");
-    assert_eq!(s5.status, CoverageStatus::Covered);
-    assert!(s5.tickets.is_empty());
-    assert_eq!(
-        s5.tests,
-        &[
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance"
-        ]
-    );
-
-    let s7 = scenario("S7");
-    let standalone = "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s7_keyless_append_and_precontact_merge_failure_conformance";
-    assert_eq!(s7.status, CoverageStatus::Covered);
-    assert!(s7.tickets.is_empty());
-    assert_eq!(s7.tests, &[standalone]);
-    assert!(friction(17).closed_tests.contains(&standalone));
-    assert!(friction(17).open_tickets.is_empty());
-}
-
-#[test]
-fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
-    const SECRET: &str = "s5-recorded-rest-secret";
+fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
+    const SECRET: &str = "recorded-rest-secret";
     const BODY: &str = r#"{ "items": [
         { "VendorID": 1, "updated_at": 10 },
         { "VendorID": 2, "updated_at": 20 }
@@ -611,12 +170,12 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
             &ScopeKey::Resource,
         )
         .unwrap()
-        .expect("S5 committed checkpoint head");
+        .expect("committed REST checkpoint head");
     assert_eq!(head.delta.checkpoint_id.as_str(), checkpoint_id);
     assert_eq!(head.delta.schema_hash.as_str(), pinned_hash);
     assert!(receipt.covers_state_delta(&head.delta));
     let SourcePosition::Cursor(cursor) = &head.delta.output_position else {
-        panic!("S5 checkpoint must carry the declared REST cursor");
+        panic!("REST checkpoint must carry the declared cursor");
     };
     assert_eq!(cursor.field, "updated_at");
     assert_eq!(cursor.value, CursorValue::I64(20));
@@ -631,9 +190,7 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
 }
 
 #[test]
-fn p2_s7_keyless_append_and_precontact_merge_failure_conformance() {
-    const MISSING_SECRET_SENTINEL: &str = "missing-merge-secret-must-not-resolve";
-
+fn keyless_append_runs_without_key_remediation() {
     let append = tempfile::tempdir().unwrap();
     write_s7_append_project(append.path());
     let validate = invoke_cli(append.path(), &["validate"]);
@@ -650,128 +207,12 @@ fn p2_s7_keyless_append_and_precontact_merge_failure_conformance() {
     let run_json = success_json(&run);
     assert_eq!(run_json["result"]["receipt"]["disposition"], "append");
     assert_eq!(run_json["result"]["row_count"], 2);
-
-    let merge_server = RecordedHttpServer::new([r#"{ "items": [] }"#]);
-    let merge = tempfile::tempdir().unwrap();
-    write_s7_merge_project(
-        merge.path(),
-        merge_server.base_url(),
-        MISSING_SECRET_SENTINEL,
-    );
-    assert!(!merge.path().join(MISSING_SECRET_SENTINEL).exists());
-    let before = project_tree_snapshot(merge.path());
-    let rejected = invoke_cli(merge.path(), &["plan", "api.items"]);
-    assert_eq!(rejected.exit_code, 3, "{}", rejected.stderr);
-    assert!(rejected.stdout.is_empty());
-    assert!(!rejected.stderr.contains(MISSING_SECRET_SENTINEL));
-    assert!(
-        !rejected
-            .stderr
-            .contains(&format!("secret://file/{MISSING_SECRET_SENTINEL}"))
-    );
-    let error: Value = serde_json::from_str(&rejected.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "CDF-PROJECT-MERGE-KEY");
-    let message = error["error"]["message"].as_str().unwrap();
-    assert_eq!(message.matches("missing merge_key").count(), 1);
-    assert!(message.contains("cdf plan"));
-    assert!(message.contains("resource `api.items`"));
-    assert!(message.contains("add `merge_key = [...]`"));
-    assert!(message.contains("use `write_disposition = \"append\"`"));
-    let steps = error["error"]["remediation"]["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 2);
-    assert!(steps[0].as_str().unwrap().contains("merge_key = [...]"));
-    assert!(
-        steps[1]
-            .as_str()
-            .unwrap()
-            .contains("write_disposition = \"append\"")
-    );
-    assert_eq!(merge_server.requests().unwrap(), Vec::<String>::new());
-    assert_eq!(project_tree_snapshot(merge.path()), before);
 }
 
 #[test]
-fn p2_registry_named_tests_resolve_to_test_functions() {
-    for scenario in P2_SCENARIOS {
-        for test in scenario.tests {
-            assert_named_test_exists(scenario.id, test);
-        }
-    }
-    for row in P2_FRICTIONS {
-        for test in row.closed_tests {
-            assert_named_test_exists(&format!("friction {}", row.id), test);
-        }
-    }
-}
-
-#[test]
-fn p2_registry_test_parser_rejects_decoys_non_tests_and_duplicates() {
-    let decoys = r##"
-        // #[test] fn registry_target() {}
-        const DECOY: &str = "#[test] fn registry_target() {}";
-        fn registry_target() {}
-    "##;
-    assert_eq!(
-        actual_test_function_count(decoys, &[], "registry_target"),
-        0
-    );
-
-    let one_test = r#"
-        // fn registry_target() {}
-        const DECOY: &str = "fn registry_target() {}";
-        fn same_named_non_test() {}
-        mod nested {
-            #[test]
-            fn registry_target() {}
-        }
-    "#;
-    assert_eq!(
-        actual_test_function_count(one_test, &[], "registry_target"),
-        1
-    );
-    assert_eq!(
-        actual_test_function_count(one_test, &["nested"], "registry_target"),
-        1
-    );
-
-    let duplicate_tests = r#"
-        #[test]
-        fn registry_target() {}
-        #[test]
-        fn registry_target() {}
-    "#;
-    assert_eq!(
-        actual_test_function_count(duplicate_tests, &[], "registry_target"),
-        2
-    );
-}
-
-#[test]
-fn p2_closed_registry_has_no_open_owners_and_rejects_terminal_ones_as_active() {
-    assert!(
-        P2_FRICTIONS.iter().all(|row| row.open_tickets.is_empty()),
-        "closed P2 friction rows must not retain open owners"
-    );
-
-    let missing = ticket_owner_status(".10x/tickets/2099-01-01-missing.md").unwrap_err();
-    assert!(missing.contains("cannot be read"), "{missing}");
-
-    let terminal =
-        ticket_owner_status(".10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md")
-            .unwrap_err();
-    assert!(terminal.contains("terminal status `done`"), "{terminal}");
-
-    let not_a_ticket = ticket_owner_status(".10x/specs/data-onramp-conformance.md").unwrap_err();
-    assert!(
-        not_a_ticket.contains("not a ticket record"),
-        "{not_a_ticket}"
-    );
-}
-
-#[test]
-fn p2_preview_run_parity_law_covers_supported_archetypes() {
+fn preview_run_parity_covers_supported_archetypes() {
     let environment = ConformanceEnvironment::start().expect(
-        "P2 S8 parity conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+        "preview/run parity conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let cases = source_catalog::archetypes().into_iter().map(|source| {
         RunMatrixCell::new(
@@ -816,7 +257,7 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
 }
 
 #[test]
-fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
+fn multifile_preview_traverses_the_same_planned_partitions_as_run() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = file_fixture::multi_resource(temp.path(), MatrixDisposition::Append).unwrap();
     let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path()).unwrap();
@@ -879,189 +320,12 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
         .unwrap();
 }
 
-fn scenario(id: &str) -> &'static P2Scenario {
-    P2_SCENARIOS
-        .iter()
-        .find(|scenario| scenario.id == id)
-        .unwrap_or_else(|| panic!("missing P2 scenario {id}"))
-}
-
-fn friction(id: u8) -> &'static P2FrictionRow {
-    P2_FRICTIONS
-        .iter()
-        .find(|row| row.id == id)
-        .unwrap_or_else(|| panic!("missing P2 friction {id}"))
-}
-
-fn assert_active_tickets(label: &str, tickets: &[&str]) {
-    assert!(
-        !tickets.is_empty(),
-        "{label} must name active ticket owners"
-    );
-    for ticket in tickets {
-        ticket_owner_status(ticket)
-            .unwrap_or_else(|error| panic!("{label} must name an active ticket owner: {error}"));
-    }
-}
-
-fn ticket_owner_status(ticket: &str) -> std::result::Result<String, String> {
-    if !ticket.starts_with(".10x/tickets/") {
-        return Err(format!("`{ticket}` is not a ticket record"));
-    }
-
-    let contents = fs::read_to_string(workspace_root().join(ticket))
-        .map_err(|error| format!("ticket owner `{ticket}` cannot be read: {error}"))?;
-    let status = contents
-        .lines()
-        .find_map(|line| line.strip_prefix("Status: "))
-        .ok_or_else(|| format!("ticket owner `{ticket}` has no Status header"))?;
-
-    match status {
-        "open" | "active" | "blocked" => Ok(status.to_owned()),
-        "done" | "cancelled" => Err(format!(
-            "ticket owner `{ticket}` has terminal status `{status}`"
-        )),
-        other => Err(format!(
-            "ticket owner `{ticket}` has unsupported status `{other}`"
-        )),
-    }
-}
-
-fn assert_named_test_exists(label: &str, test: &str) {
-    let (path, qualified_function) = test
-        .split_once("::")
-        .unwrap_or_else(|| panic!("{label} test must name a source path and function: {test}"));
-    let mut function_path = qualified_function.split("::").collect::<Vec<_>>();
-    let function = function_path
-        .pop()
-        .unwrap_or_else(|| panic!("{label} test must name a function: {test}"));
-    let contents = fs::read_to_string(workspace_root().join(path))
-        .unwrap_or_else(|error| panic!("{label} test source `{path}` cannot be read: {error}"));
-    assert_eq!(
-        actual_test_function_count(&contents, &function_path, function),
-        1,
-        "{label} must name exactly one actual `#[test]` function `{function}` in `{path}`"
-    );
-
-    if path.starts_with("crates/cdf-cli/src/tests/") {
-        let cli_tests_dir = workspace_root().join("crates/cdf-cli/src/tests");
-        let mut matching_sources = fs::read_dir(&cli_tests_dir)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{label} cannot enumerate CLI test sources in `{}`: {error}",
-                    cli_tests_dir.display()
-                )
-            })
-            .map(|entry| {
-                entry
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{label} cannot read a CLI test source entry in `{}`: {error}",
-                            cli_tests_dir.display()
-                        )
-                    })
-                    .path()
-            })
-            .filter(|candidate| {
-                candidate
-                    .extension()
-                    .is_some_and(|extension| extension == "rs")
-            })
-            .filter(|candidate| {
-                let source = fs::read_to_string(candidate).unwrap_or_else(|error| {
-                    panic!(
-                        "{label} CLI test source `{}` cannot be read: {error}",
-                        candidate.display()
-                    )
-                });
-                actual_test_function_count(&source, &[], function) > 0
-            })
-            .collect::<Vec<_>>();
-        matching_sources.sort();
-        assert_eq!(
-            matching_sources,
-            vec![workspace_root().join(path)],
-            "{label} must resolve CLI test function `{function}` uniquely to `{path}`"
-        );
-    }
-}
-
-fn actual_test_function_count(source: &str, module_path: &[&str], function: &str) -> usize {
-    let syntax = syn::parse_file(source)
-        .unwrap_or_else(|error| panic!("cannot parse registry test source as Rust: {error}"));
-    if module_path.is_empty() {
-        actual_test_function_count_anywhere_in_items(&syntax.items, function)
-    } else {
-        actual_test_function_count_in_items(&syntax.items, module_path, function)
-    }
-}
-
-fn actual_test_function_count_in_items(
-    items: &[syn::Item],
-    module_path: &[&str],
-    function: &str,
-) -> usize {
-    if let Some((module, remaining_path)) = module_path.split_first() {
-        return items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Mod(item) if item.ident == module => item.content.as_ref(),
-                _ => None,
-            })
-            .map(|(_, items)| actual_test_function_count_in_items(items, remaining_path, function))
-            .sum();
-    }
-
-    items
-        .iter()
-        .filter(|item| match item {
-            syn::Item::Fn(item) => {
-                item.sig.ident == function
-                    && item
-                        .attrs
-                        .iter()
-                        .any(|attribute| attribute.path().is_ident("test"))
-            }
-            _ => false,
-        })
-        .count()
-}
-
-fn actual_test_function_count_anywhere_in_items(items: &[syn::Item], function: &str) -> usize {
-    items
-        .iter()
-        .map(|item| match item {
-            syn::Item::Fn(item)
-                if item.sig.ident == function
-                    && item
-                        .attrs
-                        .iter()
-                        .any(|attribute| attribute.path().is_ident("test")) =>
-            {
-                1
-            }
-            syn::Item::Mod(item) => item.content.as_ref().map_or(0, |(_, items)| {
-                actual_test_function_count_anywhere_in_items(items, function)
-            }),
-            _ => 0,
-        })
-        .sum()
-}
-
-fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("cdf-conformance must be located under <workspace>/crates")
-}
-
 fn preview_fingerprint(
     cell: RunMatrixCell,
     environment: &ConformanceEnvironment,
 ) -> Result<PreviewFingerprint> {
-    let temp = tempfile::tempdir().map_err(|error| {
-        crate::conformance_host_error("create P2 parity preview tempdir", error)
-    })?;
+    let temp = tempfile::tempdir()
+        .map_err(|error| crate::conformance_host_error("create parity preview tempdir", error))?;
     let package_id = format!(
         "p2-preview-parity-{}-{}",
         cell.source_archetype.as_str(),
@@ -1087,14 +351,15 @@ fn preview_fingerprint(
 }
 
 fn write_s5_project(root: &Path, base_url: &str, secret: &str) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("cdf/api")).unwrap();
     fs::create_dir_all(root.join(".cdf")).unwrap();
     fs::write(root.join("rest-token"), format!("{secret}\n")).unwrap();
     fs::write(
         root.join("cdf.toml"),
-        r#"
+        format!(
+            r#"
 [project]
-name = "p2_s5_conformance"
+name = "rest_discovery_conformance"
 default_environment = "dev"
 normalizer = "namecase-v1"
 
@@ -1103,42 +368,45 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/s5.duckdb"
 
-[resources."api.*"]
-source = "resources/api.toml"
-"#,
-    )
-    .unwrap();
-    fs::write(
-        root.join("resources/api.toml"),
-        format!(
-            r#"
-[source.api]
-kind = "rest"
+[sources.api]
+type = "rest"
 base_url = "{base_url}"
 auth = {{ kind = "bearer", token = "secret://file/rest-token" }}
 egress_allowlist = ["127.0.0.1"]
-
-[resource.items]
-path = "/items"
-records = "$.items"
-cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
 "#
         ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("cdf/api/items.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+CURSOR updated_at
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'api',
+  path => '/items',
+  records => '$.items',
+  cursor_param => 'since',
+  cursor_filter_fidelity => 'exact'
+);
+"#,
     )
     .unwrap();
 }
 
 fn write_s7_append_project(root: &Path) {
-    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("cdf/local")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::create_dir_all(root.join(".cdf")).unwrap();
     fs::write(
         root.join("cdf.toml"),
         r#"
 [project]
-name = "p2_s7_append_conformance"
+name = "keyless_append_conformance"
 default_environment = "dev"
 normalizer = "namecase-v1"
 
@@ -1147,75 +415,27 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/s7.duckdb"
 
-[resources."local.*"]
-source = "resources/files.toml"
+[sources.local]
+type = "files"
+root = "data"
 "#,
     )
     .unwrap();
     fs::write(
-        root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "int64", nullable = false },
-] }
+        root.join("cdf/local/events.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'local', glob => 'events.ndjson', format => 'ndjson');
 "#,
     )
     .unwrap();
     fs::write(
         root.join("data/events.ndjson"),
         "{\"id\":1,\"updated_at\":10}\n{\"id\":2,\"updated_at\":20}\n",
-    )
-    .unwrap();
-}
-
-fn write_s7_merge_project(root: &Path, base_url: &str, missing_secret: &str) {
-    fs::create_dir_all(root.join("resources")).unwrap();
-    fs::create_dir_all(root.join(".cdf")).unwrap();
-    fs::write(
-        root.join("cdf.toml"),
-        r#"
-[project]
-name = "p2_s7_merge_conformance"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/s7-merge.duckdb"
-
-[resources."api.*"]
-source = "resources/api.toml"
-"#,
-    )
-    .unwrap();
-    fs::write(
-        root.join("resources/api.toml"),
-        format!(
-            r#"
-[source.api]
-kind = "rest"
-base_url = "{base_url}"
-auth = {{ kind = "bearer", token = "secret://file/{missing_secret}" }}
-egress_allowlist = ["127.0.0.1"]
-
-[resource.items]
-path = "/items"
-records = "$.items"
-write_disposition = "merge"
-trust = "governed"
-"#
-        ),
     )
     .unwrap();
 }

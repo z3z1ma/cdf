@@ -1,10 +1,7 @@
 use std::collections::BTreeSet;
 
 use cdf_contract::NORMALIZER_NAMECASE_V1;
-use cdf_declarative::{
-    CompiledResource, DeclarativeDocument, parse_toml as parse_declarative_toml,
-    parse_yaml as parse_declarative_yaml,
-};
+use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, Result, SchemaSource};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -12,7 +9,6 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{EffectiveEnvironment, ProjectConfig},
     secrets::SecretRef,
-    sources::ResolvedResourceSource,
 };
 
 pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
@@ -44,9 +40,9 @@ pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
             config.project.default_environment
         )));
     }
-    if config.resources.is_empty() {
+    if config.sources.is_empty() {
         return Err(CdfError::contract(
-            "cdf.toml must declare at least one resource source mapping",
+            "cdf.toml must declare at least one configured source",
         ));
     }
     for (environment_name, environment) in &config.environments {
@@ -61,15 +57,6 @@ pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn parse_resolved_declarative_source(
-    source: &ResolvedResourceSource,
-) -> Result<DeclarativeDocument> {
-    match source {
-        ResolvedResourceSource::Toml(input) => parse_declarative_toml(input),
-        ResolvedResourceSource::Yaml(input) => parse_declarative_yaml(input),
-    }
 }
 
 pub(crate) fn validate_environment_uri_fields(environment: &EffectiveEnvironment) -> Result<()> {

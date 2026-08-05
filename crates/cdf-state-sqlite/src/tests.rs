@@ -1223,32 +1223,6 @@ fn sqlite_state_components_reject_incomplete_current_schema() {
 }
 
 #[test]
-fn sqlite_checkpoint_store_rejects_version_one_without_migration() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.db");
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "
-        CREATE TABLE cdf_sqlite_schema_versions (
-            component TEXT PRIMARY KEY,
-            version INTEGER NOT NULL,
-            recorded_at_ms INTEGER NOT NULL
-        );
-        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
-        VALUES ('checkpoint_store', 1, 1);
-        ",
-    )
-    .unwrap();
-    drop(conn);
-
-    let error = match SqliteCheckpointStore::open(&path) {
-        Ok(_) => panic!("checkpoint store migrated obsolete version one"),
-        Err(error) => error,
-    };
-    assert!(error.message.contains("recreate"));
-}
-
-#[test]
 fn scope_lease_stores_pass_shared_conformance() {
     assert_scope_lease_store_send_sync::<InMemoryScopeLeaseStore>();
     assert_scope_lease_store_send_sync::<SqliteScopeLeaseStore>();

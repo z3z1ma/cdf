@@ -33,6 +33,7 @@ pub enum ResolutionOrigin {
     ProjectDefault,
     BuiltInDefault,
     ResourcePathDefault,
+    Absent,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -96,6 +97,7 @@ pub struct ProjectQueryCompilation {
     pub resource_name: String,
     pub resource_id: String,
     pub default_target: TargetName,
+    pub authored_sql: String,
     pub authored_content_hash: String,
     pub authored_form: AuthoredResourceForm,
     pub authored_file: AuthoredResourceFile,
@@ -107,7 +109,7 @@ pub struct ProjectQueryCompilation {
 }
 
 #[derive(Clone, Debug)]
-pub struct CompiledQueryProjectResource {
+pub struct CompiledProjectResource {
     pub resource: CompiledResource,
     pub query: ProjectQueryCompilation,
 }
@@ -140,7 +142,7 @@ pub fn compile_query_project_resources(
     destination: &DestinationSheet,
     semantic_catalog: &SemanticCatalog,
     input_schemas: &BTreeMap<String, ProjectInputSchemaAuthority>,
-) -> Result<Vec<CompiledQueryProjectResource>> {
+) -> Result<Vec<CompiledProjectResource>> {
     let inventory = inventory_project_resources(project_root, config, environment, registry)?;
     compile_inventory(
         registry,
@@ -161,7 +163,7 @@ fn compile_inventory(
     semantic_catalog: &SemanticCatalog,
     input_schemas: &BTreeMap<String, ProjectInputSchemaAuthority>,
     inventory: ProjectResourceInventory,
-) -> Result<Vec<CompiledQueryProjectResource>> {
+) -> Result<Vec<CompiledProjectResource>> {
     let mut referenced_sources = BTreeSet::new();
     let mut compiled = Vec::with_capacity(inventory.resources.len());
     for input in &inventory.resources {
@@ -178,7 +180,7 @@ fn compile_inventory(
         )?;
         let source = inventory.sources.get(&source_name).ok_or_else(|| {
             CdfError::contract(format!(
-                "[CDF-D3-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+                "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
                 input.relative_path,
                 parsed.upstream.span.start_line,
                 parsed.upstream.span.start_column,
@@ -193,7 +195,7 @@ fn compile_inventory(
                 CdfError::new(
                     error.kind,
                     format!(
-                        "[CDF-D3-SOURCE-RESOURCE-OPTIONS] {}:{}:{}: {}",
+                        "[CDF-SOURCE-RESOURCE-OPTIONS] {}:{}:{}: {}",
                         input.relative_path,
                         parsed.upstream.span.start_line,
                         parsed.upstream.span.start_column,
@@ -222,7 +224,7 @@ fn compile_inventory(
         .collect::<Vec<_>>();
     if !unreferenced.is_empty() {
         return Err(CdfError::contract(format!(
-            "[CDF-D3-SOURCE-UNREFERENCED] configured source(s) {} are not referenced by any accepted cdf/<namespace>/<resource>.cdf.sql query",
+            "[CDF-SOURCE-UNREFERENCED] configured source(s) {} are not referenced by any accepted cdf/<namespace>/<resource>.cdf.sql query",
             unreferenced.join(", ")
         )));
     }
@@ -241,7 +243,7 @@ fn compile_input(
     parsed: ParsedProjectQuery,
     source: &ProjectSourceBinding,
     input_schema: Option<&ProjectInputSchemaAuthority>,
-) -> Result<CompiledQueryProjectResource> {
+) -> Result<CompiledProjectResource> {
     let effective = resolve_envelope(config, &authored.envelope, &input.default_target)?;
     let schema_source = input_schema
         .map(|authority| authority.schema_source.clone())
@@ -301,8 +303,9 @@ fn compile_input(
     let source_node_id = cdf_runtime::artifact_hash(&(
         input.resource_id.as_str(),
         source.name.as_str(),
+        source.effective_hash.as_str(),
+        source.driver_descriptor_hash.as_str(),
         parsed.upstream.canonical_arguments_hash.as_str(),
-        parsed.authored_ast_hash.as_str(),
     ))?;
     let query = ProjectQueryCompilation {
         relative_path: input.relative_path.clone(),
@@ -310,6 +313,7 @@ fn compile_input(
         resource_name: input.resource_name.as_str().to_owned(),
         resource_id: input.resource_id.as_str().to_owned(),
         default_target: input.default_target.clone(),
+        authored_sql: input.sql.clone(),
         authored_content_hash: input.content_hash.as_str().to_owned(),
         authored_form: authored.form,
         authored_file: authored.clone(),
@@ -319,7 +323,7 @@ fn compile_input(
         effective,
         relational_plan: None,
     };
-    let pending = CompiledQueryProjectResource { resource, query };
+    let pending = CompiledProjectResource { resource, query };
     if pending.resource.source_plan().schema.fields().is_empty() {
         Ok(pending)
     } else {
@@ -328,13 +332,13 @@ fn compile_input(
 }
 
 pub fn finalize_query_project_resource(
-    mut compiled: CompiledQueryProjectResource,
+    mut compiled: CompiledProjectResource,
     semantic_catalog: &SemanticCatalog,
-) -> Result<CompiledQueryProjectResource> {
+) -> Result<CompiledProjectResource> {
     let input_schema = compiled.resource.source_plan().schema.clone();
     if input_schema.fields().is_empty() {
         return Err(CdfError::contract(format!(
-            "[CDF-D3-SCHEMA-UNRESOLVED] resource {:?} requires a pinned/discovered input schema before SQL analysis",
+            "[CDF-SCHEMA-UNRESOLVED] resource {:?} requires a pinned/discovered input schema before SQL analysis",
             compiled.query.resource_id
         )));
     }
@@ -423,7 +427,7 @@ fn resolve_envelope(
             ResolutionOrigin::Authored,
             Some(value.span.clone()),
         )?,
-        None => ResolvedResourceValue::new(None::<String>, ResolutionOrigin::BuiltInDefault, None)?,
+        None => ResolvedResourceValue::new(None::<String>, ResolutionOrigin::Absent, None)?,
     };
     let (trust, trust_origin, trust_span) = match &authored.trust {
         Some(value) => (
@@ -451,7 +455,7 @@ fn resolve_envelope(
         .first()
         .map(|binding| binding.field.span.clone());
     let semantics_origin = if semantics.is_empty() {
-        ResolutionOrigin::BuiltInDefault
+        ResolutionOrigin::Absent
     } else {
         ResolutionOrigin::Authored
     };
@@ -497,7 +501,7 @@ fn validate_effective_applicability(
         .contains(&effective.disposition.value)
     {
         return Err(CdfError::contract(format!(
-            "[CDF-D3-DISPOSITION-DESTINATION] destination {} does not support {:?}",
+            "[CDF-DISPOSITION-DESTINATION] destination {} does not support {:?}",
             destination.destination, effective.disposition.value
         )));
     }
@@ -506,12 +510,12 @@ fn validate_effective_applicability(
             || source.resource_capabilities.replay == cdf_kernel::ReplaySupport::None)
     {
         return Err(CdfError::contract(
-            "[CDF-D3-DISPOSITION-DEFAULT] built-in REPLACE requires a proven bounded replayable source; author DISPOSITION or an applicable [defaults].write_disposition",
+            "[CDF-DISPOSITION-DEFAULT] built-in REPLACE requires a proven bounded replayable source; author DISPOSITION or an applicable [defaults].write_disposition",
         ));
     }
     if effective.execution.value.is_bounded() && !source.execution_capabilities.bounded {
         return Err(CdfError::contract(
-            "[CDF-D3-EXECUTION-BOUNDED] bounded execution requires a source that truthfully advertises bounded completion",
+            "[CDF-EXECUTION-BOUNDED] bounded execution requires a source that truthfully advertises bounded completion",
         ));
     }
     Ok(())
@@ -534,7 +538,7 @@ fn validate_output_bindings(
                 .count();
             if matches != 1 {
                 return Err(CdfError::contract(format!(
-                    "[CDF-D3-OUTPUT-BINDING] {label} {field:?} must resolve exactly once against the final output schema; matched {matches} fields"
+                    "[CDF-OUTPUT-BINDING] {label} {field:?} must resolve exactly once against the final output schema; matched {matches} fields"
                 )));
             }
         }
@@ -559,7 +563,7 @@ fn apply_semantics(
     for (name, reference) in semantics {
         if name.starts_with("_cdf_") {
             return Err(CdfError::contract(format!(
-                "[CDF-D3-SEMANTIC-CONTROL] protected CDF field {name:?} cannot receive an authored semantic annotation"
+                "[CDF-SEMANTIC-CONTROL] protected CDF field {name:?} cannot receive an authored semantic annotation"
             )));
         }
         let matches = fields
@@ -570,7 +574,7 @@ fn apply_semantics(
             .collect::<Vec<_>>();
         let [index] = matches.as_slice() else {
             return Err(CdfError::contract(format!(
-                "[CDF-D3-SEMANTIC-FIELD] semantic field {name:?} must resolve exactly once against the final output schema; matched {} fields",
+                "[CDF-SEMANTIC-FIELD] semantic field {name:?} must resolve exactly once against the final output schema; matched {} fields",
                 matches.len()
             )));
         };

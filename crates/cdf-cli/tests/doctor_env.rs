@@ -61,7 +61,8 @@ fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
 }
 
 fn write_project(project: &TestProject) {
-    fs::create_dir_all(project.root.join("resources")).unwrap();
+    fs::create_dir_all(project.root.join("cdf/api")).unwrap();
+    fs::create_dir_all(project.root.join("cdf/warehouse")).unwrap();
     fs::write(
         project.root.join("cdf.toml"),
         r#"
@@ -75,49 +76,38 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "postgres://secret://env/CDF_CLI_ENV_DESTINATION_DSN"
 
-[resources."api.*"]
-source = "resources/api.toml"
-
-[resources."warehouse.*"]
-source = "resources/postgres.toml"
-"#,
-    )
-    .unwrap();
-    fs::write(
-        project.root.join("resources/api.toml"),
-        r#"
-[source.api]
-kind = "rest"
+[sources.api]
+type = "rest"
 base_url = "https://api.example.test"
 auth = { kind = "bearer", token = "secret://env/CDF_CLI_ENV_AUTH_TOKEN" }
 
-[resource.items]
-path = "/items"
-records = "$"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-] }
+[sources.warehouse]
+type = "postgres"
+connection = "secret://file/postgres-dsn"
 "#,
     )
     .unwrap();
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "secret://file/postgres-dsn"
-
-[resource.orders]
-table = "orders"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-] }
+        project.root.join("cdf/api/items.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'api', path => '/items', records => '$');
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'warehouse', table => 'orders');
 "#,
     )
     .unwrap();

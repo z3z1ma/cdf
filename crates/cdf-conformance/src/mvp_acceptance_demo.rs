@@ -1,11 +1,13 @@
 use std::{
     cell::Cell,
+    collections::BTreeMap,
     ffi::OsString,
     fs,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
 };
 
+use arrow_schema::{DataType, Field, Schema};
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
@@ -97,7 +99,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(contract_test_json["result"]["counts"]["passed"], 1);
     let contract_human = invoke_human(project.root(), ["contract", "test", RESOURCE_ID]);
 
-    let (resource, transport) = github_issues_resource().unwrap();
+    let (resource, transport) = github_issues_resource(project.root()).unwrap();
     let destination = crate::destination_catalog::resolve(
         &crate::destination_catalog::local_uri("duckdb", &project.destination_path()),
         project.root(),
@@ -464,8 +466,8 @@ impl DemoProject {
     }
 
     fn write_files(&self) -> Result<()> {
-        fs::create_dir_all(self.root.join("resources")).map_err(|error| {
-            crate::conformance_private_io_error("create demo resources dir", error)
+        fs::create_dir_all(self.root.join("cdf/github")).map_err(|error| {
+            crate::conformance_private_io_error("create demo query resource directory", error)
         })?;
         fs::create_dir_all(self.root.join(".cdf"))
             .map_err(|error| crate::conformance_private_io_error("create demo .cdf dir", error))?;
@@ -474,8 +476,11 @@ impl DemoProject {
         })?;
         fs::write(self.root.join("cdf.toml"), self.project_toml())
             .map_err(|error| crate::conformance_private_io_error("write demo cdf.toml", error))?;
-        fs::write(self.root.join("resources/github.toml"), GITHUB_ISSUES_TOML)
-            .map_err(|error| crate::conformance_private_io_error("write demo resource TOML", error))
+        fs::write(
+            self.root.join("cdf/github/issues.cdf.sql"),
+            GITHUB_ISSUES_SQL,
+        )
+        .map_err(|error| crate::conformance_private_io_error("write demo resource SQL", error))
     }
 
     fn project_toml(&self) -> String {
@@ -491,22 +496,59 @@ state = "sqlite://.cdf/state.sqlite"
 packages = ".cdf/packages"
 destination = "duckdb://{}"
 
-[resources."{RESOURCE_ID}"]
-source = "resources/github.toml"
+[sources.github]
+type = "rest"
+base_url = "https://api.github.test"
+auth = {{ kind = "bearer", token = "secret://file/github-token" }}
+egress_allowlist = ["api.github.test"]
 "#,
             self.destination_path.display()
         )
     }
 }
 
-fn github_issues_resource() -> Result<(
+fn github_issues_resource(
+    project_root: &Path,
+) -> Result<(
     crate::source_fixture::ResolvedSourceFixture,
     RecordingTransport,
 )> {
     let transport = RecordingTransport::new([json_response(GITHUB_ISSUES_RESPONSE)]);
     let registry = crate::test_rest_source_registry(transport.clone())?;
-    let document = cdf_declarative::parse_toml(GITHUB_ISSUES_TOML)?;
-    let mut resources = cdf_declarative::compile_document(&registry, &document)?;
+    let config = cdf_project::parse_cdf_toml(
+        &fs::read_to_string(project_root.join("cdf.toml"))
+            .map_err(|error| crate::conformance_private_io_error("read demo cdf.toml", error))?,
+    )?;
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("number", DataType::Int64, false),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("state", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Int64, false),
+        Field::new("html_url", DataType::Utf8, false),
+        Field::new("user_login", DataType::Utf8, false),
+    ]);
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
+    let schemas = BTreeMap::from([(
+        RESOURCE_ID.to_owned(),
+        cdf_project::ProjectInputSchemaAuthority::new(
+            cdf_kernel::SchemaSource::Declared {
+                schema_hash,
+                source: "mvp-acceptance-fixture".to_owned(),
+            },
+            schema,
+        )?,
+    )]);
+    let destination = DuckDbDestination::new(project_root.join(".cdf/compile-only.duckdb"))?;
+    let mut resources = cdf_project::compile_query_project_resources(
+        &registry,
+        &config,
+        project_root,
+        "dev",
+        destination.sheet(),
+        &cdf_semantic::SemanticCatalog::builtins()?,
+        &schemas,
+    )?;
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
             "MVP acceptance proof expected one GitHub issues resource, found {}",
@@ -514,10 +556,10 @@ fn github_issues_resource() -> Result<(
         )));
     }
     let compiled = resources.remove(0);
-    if compiled.descriptor().resource_id.as_str() != RESOURCE_ID {
+    if compiled.resource.descriptor().resource_id.as_str() != RESOURCE_ID {
         return Err(CdfError::contract(format!(
             "MVP acceptance proof compiled unexpected resource {}",
-            compiled.descriptor().resource_id
+            compiled.resource.descriptor().resource_id
         )));
     }
     let execution = crate::test_execution_services();
@@ -527,8 +569,11 @@ fn github_issues_resource() -> Result<(
         &execution,
         std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
-    let resource =
-        crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)?;
+    let resource = crate::source_fixture::ResolvedSourceFixture::resolve(
+        &compiled.resource,
+        &registry,
+        &context,
+    )?;
     Ok((resource, transport))
 }
 
@@ -559,6 +604,7 @@ fn engine_plan(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
+            relational_expression_plan: None,
             committed_frontier: None,
         },
     )
@@ -664,31 +710,21 @@ where
     format!("{}{}", result.stderr, result.stdout)
 }
 
-const GITHUB_ISSUES_TOML: &str = r#"
-[source.github]
-kind = "rest"
-base_url = "https://api.github.test"
-auth = { kind = "bearer", token = "secret://file/github-token" }
-egress_allowlist = ["api.github.test"]
-
-[resource.issues]
-path = "/repos/acme/cdf/issues"
-params = { state = "all", per_page = 100 }
-records = "$"
-primary_key = ["id"]
-merge_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "number", type = "int64", nullable = false },
-  { name = "title", type = "string", nullable = false },
-  { name = "state", type = "string", nullable = false },
-  { name = "updated_at", type = "int64", nullable = false },
-  { name = "html_url", type = "string", nullable = false },
-  { name = "user_login", type = "string", nullable = false },
-] }
+const GITHUB_ISSUES_SQL: &str = r#"RESOURCE
+DISPOSITION APPEND
+CURSOR updated_at
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'github',
+  path => '/repos/acme/cdf/issues',
+  params => OBJECT(state => 'all', per_page => 100),
+  records => '$',
+  cursor_param => 'since',
+  cursor_filter_fidelity => 'exact'
+);
 "#;
 
 const GITHUB_ISSUES_RESPONSE: &str = r#"[

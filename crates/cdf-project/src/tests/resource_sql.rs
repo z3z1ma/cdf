@@ -83,15 +83,14 @@ fn resource_file_parses_complete_drain_policy() {
 }
 
 #[test]
-fn resource_file_rejects_ids_repeated_out_of_order_and_retired_ddl() {
+fn resource_file_rejects_ids_and_repeated_or_out_of_order_clauses() {
     for sql in [
         "RESOURCE analytics.orders AS SELECT * FROM upstream(source => 'warehouse')",
         "RESOURCE TRUST GOVERNED TARGET warehouse.orders AS SELECT * FROM upstream(source => 'warehouse')",
         "RESOURCE TRUST GOVERNED TRUST EXPERIMENTAL AS SELECT * FROM upstream(source => 'warehouse')",
-        "CREATE RESOURCE analytics.orders AS SELECT * FROM upstream(source => 'warehouse')",
     ] {
         let error = parse_resource_file(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
-        assert!(error.message.contains("CDF-D3-RESOURCE"), "{error:?}");
+        assert!(error.message.contains("CDF-RESOURCE"), "{error:?}");
     }
 }
 
@@ -104,7 +103,7 @@ fn resource_file_rejects_empty_duplicate_merge_and_semantic_bindings() {
         "RESOURCE SEMANTICS (id => 'a@1', id => 'b@1') AS SELECT * FROM upstream(source => 'warehouse')",
     ] {
         let error = parse_resource_file(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
-        assert!(error.message.contains("CDF-D3-RESOURCE"), "{error:?}");
+        assert!(error.message.contains("CDF-RESOURCE"), "{error:?}");
     }
 }
 
@@ -115,6 +114,6 @@ fn resource_file_rejects_incomplete_or_zero_drain_policy() {
         "RESOURCE EXECUTION DRAIN (CHECKPOINT ROWS 1, PACKAGE BYTES 1, UNTIL QUIESCENT, LATE DATA QUARANTINE, SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION) AS SELECT * FROM upstream(source => 'events')",
     ] {
         let error = parse_resource_file(sql, "cdf/analytics/activity.cdf.sql").unwrap_err();
-        assert!(error.message.contains("CDF-D3-RESOURCE"), "{error:?}");
+        assert!(error.message.contains("CDF-RESOURCE"), "{error:?}");
     }
 }

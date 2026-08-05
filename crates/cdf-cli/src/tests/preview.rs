@@ -120,8 +120,8 @@ fn preview_rest_resource_uses_local_http_runtime_without_writes() {
         "secret://file/rest-token",
     );
     fs::write(
-        project.root.join("resources/api.toml"),
-        rest_resource_with_exact_cursor_base_url(&base_url, "secret://file/rest-token"),
+        project.root.join("cdf/api/items.cdf.sql"),
+        rest_resource_sql("exact"),
     )
     .unwrap();
 
@@ -179,8 +179,8 @@ fn preview_postgres_table_resource_uses_postgres_runtime_without_writes() {
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", &table),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql(&table, true),
     )
     .unwrap();
 
@@ -217,21 +217,14 @@ fn preview_postgres_query_resource_fails_closed_without_writes() {
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "secret://file/postgres-dsn"
-dialect = "postgres"
-
-[resource.orders]
-query = "SELECT * FROM public.orders"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-] }
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'warehouse', query => 'SELECT * FROM public.orders');
 "#,
     )
     .unwrap();

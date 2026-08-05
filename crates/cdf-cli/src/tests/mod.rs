@@ -44,10 +44,10 @@ use cdf_package_contract::{
 };
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
-    ResolvedProjectDestination, STRATIFIED_HASH_SELECTOR_V1, SchemaPromotionExecutionFailpoint,
-    SchemaPromotionExecutionPhase, SchemaPromotionExecutionRequest, SchemaPromotionPlanReport,
-    execute_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
-    parse_project_manifest, replay_package_from_artifacts,
+    ResolvedProjectDestination, SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionPhase,
+    SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, execute_schema_promotion,
+    load_schema_promotion_recovery_status, parse_lock, parse_project_manifest,
+    replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -120,40 +120,23 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."local.*"]
-source = "resources/files.toml"
+[sources.local]
+type = "files"
+root = "data"
 "#;
 
 const RESOURCE: &str = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "int64", nullable = false },
-] }
-"#;
-
-const PYTHON_RESOURCE_PROJECT: &str = r#"
-[project]
-name = "cli_test"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/dev.duckdb"
-
-[resources."events.raw"]
-source = "python://src/events.py#raw_events"
+RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'local',
+  glob => '*.ndjson',
+  format => 'ndjson'
+);
 "#;
 
 struct SystemSqlFixture {
@@ -177,11 +160,11 @@ impl TestProject {
     fn new() -> Self {
         let temp = TempDir::new("cdf-cli-project");
         let root = temp.path().to_path_buf();
-        fs::create_dir_all(root.join("resources")).unwrap();
+        fs::create_dir_all(root.join("cdf/local")).unwrap();
         fs::create_dir_all(root.join("data")).unwrap();
         fs::create_dir_all(root.join(".cdf")).unwrap();
         fs::write(root.join("cdf.toml"), PROJECT).unwrap();
-        fs::write(root.join("resources/files.toml"), RESOURCE).unwrap();
+        fs::write(root.join("cdf/local/events.cdf.sql"), RESOURCE).unwrap();
         fs::write(
             root.join("data/events.ndjson"),
             concat!(
@@ -875,22 +858,7 @@ fn write_project_destination(project: &TestProject, destination: &str) {
 }
 
 fn write_discovered_schema_resource(project: &TestProject) {
-    fs::write(
-        project.root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-"#,
-    )
-    .unwrap();
+    fs::write(project.root.join("cdf/local/events.cdf.sql"), RESOURCE).unwrap();
 }
 
 fn write_parquet_discover_resource(project: &TestProject, glob: &str) {
@@ -898,18 +866,15 @@ fn write_parquet_discover_resource(project: &TestProject, glob: &str) {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         format!(
-            r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
+            r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'local', glob => '{glob}', format => 'parquet');
 "#
         ),
     )
@@ -917,25 +882,14 @@ trust = "governed"
 }
 
 fn set_file_resource_trust(project: &TestProject, trust: &str) {
-    let path = project.root.join("resources/files.toml");
+    let path = project.root.join("cdf/local/events.cdf.sql");
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("trust = \"governed\""));
-    fs::write(
-        path,
-        text.replacen("trust = \"governed\"", &format!("trust = \"{trust}\""), 1),
-    )
-    .unwrap();
-}
-
-fn set_file_resource_sample_files(project: &TestProject, sample_files: u64) {
-    let path = project.root.join("resources/files.toml");
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(!text.contains("sample_files ="));
+    assert!(text.contains("TRUST GOVERNED"));
     fs::write(
         path,
         text.replacen(
-            "write_disposition = \"append\"",
-            &format!("sample_files = {sample_files}\nwrite_disposition = \"append\""),
+            "TRUST GOVERNED",
+            &format!("TRUST {}", trust.to_uppercase()),
             1,
         ),
     )
@@ -947,18 +901,15 @@ fn write_arrow_ipc_discover_resource(project: &TestProject, glob: &str) {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         format!(
-            r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-format = "arrow_ipc"
-write_disposition = "append"
-trust = "governed"
+            r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'local', glob => '{glob}', format => 'arrow_ipc');
 "#
         ),
     )
@@ -970,18 +921,23 @@ fn write_protobuf_resource(project: &TestProject) {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
     fs::write(
-        project.root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.rows]
-glob = "rows.pb"
-format = "protobuf"
-write_disposition = "append"
-trust = "governed"
-format_options = { descriptor_set_base64 = "CkQKCWRldi9zdGRpbhIEdGVzdCIpCgNSb3cSDgoCaWQYASABKANSAmlkEhIKBG5hbWUYAiABKAlSBG5hbWViBnByb3RvMw==", message = "test.Row", framing = "length_delimited" }
+        project.root.join("cdf/local/events.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'local',
+  glob => 'rows.pb',
+  format => 'protobuf',
+  format_options => OBJECT(
+    descriptor_set_base64 => 'CkQKCWRldi9zdGRpbhIEdGVzdCIpCgNSb3cSDgoCaWQYASABKANSAmlkEhIKBG5hbWUYAiABKAlSBG5hbWViBnByb3RvMw==',
+    message => 'test.Row',
+    framing => 'length_delimited'
+  )
+);
 "#,
     )
     .unwrap();
@@ -996,9 +952,9 @@ format_options = { descriptor_set_base64 = "CkQKCWRldi9zdGRpbhIEdGVzdCIpCgNSb3cS
 }
 
 fn remove_resource_format(project: &TestProject, format: &str) {
-    let path = project.root.join("resources/files.toml");
+    let path = project.root.join("cdf/local/events.cdf.sql");
     let text = fs::read_to_string(&path).unwrap();
-    let explicit = format!("format = \"{format}\"\n");
+    let explicit = format!("  format => '{format}'\n");
     assert!(text.contains(&explicit));
     fs::write(path, text.replacen(&explicit, "", 1)).unwrap();
 }
@@ -1282,6 +1238,7 @@ fn write_current_replay_artifacts(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "cli-current-fixture-package".to_owned(),
+                relational_expression_plan: None,
                 committed_frontier: None,
             },
         )
@@ -1593,32 +1550,29 @@ fn read_snapshot_json(project: &TestProject, relative_path: &str) -> Value {
 
 fn write_resource_glob(project: &TestProject, glob: &str) {
     fs::write(
-        project.root.join("resources/files.toml"),
-        RESOURCE.replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\"")),
+        project.root.join("cdf/local/events.cdf.sql"),
+        RESOURCE.replace("glob => '*.ndjson'", &format!("glob => '{glob}'")),
     )
     .unwrap();
 }
 
 fn write_resource_disposition(project: &TestProject, disposition: &str) {
-    let mut resource = RESOURCE.replace(
-        "write_disposition = \"append\"",
-        &format!("write_disposition = \"{disposition}\""),
-    );
-    if disposition == "merge" {
-        resource = resource.replace("primary_key = [\"id\"]", "merge_key = [\"id\"]");
-    }
-    fs::write(project.root.join("resources/files.toml"), resource).unwrap();
+    let disposition = match disposition {
+        "append" => "APPEND",
+        "replace" => "REPLACE",
+        "merge" => "MERGE(id)",
+        other => panic!("unsupported disposition fixture {other}"),
+    };
+    let resource = RESOURCE.replace("DISPOSITION APPEND", &format!("DISPOSITION {disposition}"));
+    fs::write(project.root.join("cdf/local/events.cdf.sql"), resource).unwrap();
 }
 
 fn write_resource_with_extra_contract_field(project: &TestProject) {
     fs::write(
-        project.root.join("resources/files.toml"),
+        project.root.join("cdf/local/events.cdf.sql"),
         RESOURCE.replace(
-            "  { name = \"updated_at\", type = \"int64\", nullable = false },",
-            concat!(
-                "  { name = \"updated_at\", type = \"int64\", nullable = false },\n",
-                "  { name = \"ingested_at\", type = \"int64\", nullable = true },"
-            ),
+            "SELECT *\nFROM upstream",
+            "SELECT *, CAST(NULL AS BIGINT) AS ingested_at\nFROM upstream",
         ),
     )
     .unwrap();
@@ -1635,9 +1589,9 @@ fn write_format_fixture(project: &TestProject, format: &str) {
     };
     let glob = format!("events.{extension}");
     let resource = RESOURCE
-        .replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\""))
-        .replace("format = \"ndjson\"", &format!("format = \"{format}\""));
-    fs::write(project.root.join("resources/files.toml"), resource).unwrap();
+        .replace("glob => '*.ndjson'", &format!("glob => '{glob}'"))
+        .replace("format => 'ndjson'", &format!("format => '{format}'"));
+    fs::write(project.root.join("cdf/local/events.cdf.sql"), resource).unwrap();
 
     match format {
         "csv" => fs::write(
@@ -1682,66 +1636,6 @@ fn preview_fixture_batch() -> RecordBatch {
         ],
     )
     .unwrap()
-}
-
-fn write_status_resource(project: &TestProject, trust: &str, max_age: &str) {
-    let status_resource = RESOURCE.replace(
-        "trust = \"governed\"",
-        &format!("trust = \"{trust}\"\nfreshness = {{ max_age = \"{max_age}\" }}"),
-    );
-    fs::write(project.root.join("resources/files.toml"), status_resource).unwrap();
-}
-
-fn initialize_status_state(project: &TestProject) {
-    SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
-}
-
-fn write_status_package(project: &TestProject, package_id: &str) -> (PathBuf, String) {
-    let package_dir = project.root.join(".cdf/packages").join(package_id);
-    fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
-    let builder = package_builder!(&package_dir, package_id).unwrap();
-    let manifest = builder
-        .finish_with_status(PackageStatus::Checkpointed)
-        .unwrap();
-    (package_dir, manifest.package_hash)
-}
-
-fn write_status_package_receipt(
-    project: &TestProject,
-    package_id: &str,
-    receipt_id: &str,
-    committed_at_ms: i64,
-) -> (PathBuf, String) {
-    let (package_dir, package_hash) = write_status_package(project, package_id);
-    PackageReader::open(&package_dir)
-        .unwrap()
-        .append_receipt(status_receipt(&package_hash, receipt_id, committed_at_ms))
-        .unwrap();
-    (package_dir, package_hash)
-}
-
-fn record_status_receipt_event(
-    project: &TestProject,
-    run_id: &str,
-    package_dir: &Path,
-    package_hash: &str,
-    receipt_id: &str,
-) {
-    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
-    let run_id = RunId::new(run_id).unwrap();
-    ledger.create_run(Some(run_id.clone())).unwrap();
-    let mut event = RunEventAppend::new(RunEventKind::DestinationReceiptRecorded);
-    event.resource_id = Some(ResourceId::new("local.events").unwrap());
-    event.scope = Some(ScopeKey::Resource);
-    event.package_id = package_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(ToOwned::to_owned);
-    event.package_hash = Some(PackageHash::new(package_hash).unwrap());
-    event.package_path = Some(package_dir.display().to_string());
-    event.receipt_id = Some(ReceiptId::new(receipt_id).unwrap());
-    event.destination_id = Some(DestinationId::new("local-test").unwrap());
-    ledger.append_event(&run_id, event).unwrap();
 }
 
 fn commit_status_head(
@@ -1885,16 +1779,26 @@ fn write_secret_project(
     rest_token: Option<&str>,
     sql_connection: Option<&str>,
 ) {
-    let mut resources = String::new();
-    if rest_token.is_some() {
-        resources.push_str("\n[resources.\"api.*\"]\nsource = \"resources/api.toml\"\n");
-    }
-    if sql_connection.is_some() {
-        resources.push_str("\n[resources.\"warehouse.*\"]\nsource = \"resources/postgres.toml\"\n");
-    }
-    if rest_token.is_none() && sql_connection.is_none() {
-        resources.push_str("\n[resources.\"local.*\"]\nsource = \"resources/files.toml\"\n");
-    }
+    let (source, namespace, resource_sql) = match (rest_token, sql_connection) {
+        (Some(token), None) => (
+            format!(
+                "[sources.api]\ntype = \"rest\"\nbase_url = \"https://api.example.test\"\nauth = {{ kind = \"bearer\", token = {token:?} }}\n"
+            ),
+            "api",
+            rest_resource_sql("exact"),
+        ),
+        (None, Some(connection)) => (
+            format!("[sources.warehouse]\ntype = \"postgres\"\nconnection = {connection:?}\n"),
+            "warehouse",
+            postgres_resource_sql("orders", true),
+        ),
+        (None, None) => (
+            "[sources.local]\ntype = \"files\"\nroot = \"data\"\n".to_owned(),
+            "local",
+            RESOURCE.to_owned(),
+        ),
+        (Some(_), Some(_)) => panic!("secret fixture configures exactly one source"),
+    };
 
     fs::write(
         project.root.join("cdf.toml"),
@@ -1909,26 +1813,28 @@ normalizer = "namecase-v1"
 state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "{destination}"
-{resources}
+
+{source}
 "#
         ),
     )
     .unwrap();
-
-    if let Some(token) = rest_token {
-        fs::write(
-            project.root.join("resources/api.toml"),
-            rest_resource(token),
-        )
-        .unwrap();
+    let cdf = project.root.join("cdf");
+    if cdf.exists() {
+        fs::remove_dir_all(&cdf).unwrap();
     }
-    if let Some(connection) = sql_connection {
-        fs::write(
-            project.root.join("resources/postgres.toml"),
-            postgres_resource(connection),
-        )
-        .unwrap();
-    }
+    fs::create_dir_all(cdf.join(namespace)).unwrap();
+    let resource = match namespace {
+        "api" => "items",
+        "warehouse" => "orders",
+        "local" => "events",
+        _ => unreachable!(),
+    };
+    fs::write(
+        cdf.join(namespace).join(format!("{resource}.cdf.sql")),
+        resource_sql,
+    )
+    .unwrap();
 }
 
 fn write_rest_project(project: &TestProject, destination: &str, base_url: &str, token: &str) {
@@ -1946,70 +1852,39 @@ state = "sqlite://.cdf/state.db"
 packages = ".cdf/packages"
 destination = "{destination}"
 
-[resources."api.*"]
-source = "resources/api.toml"
+[sources.api]
+type = "rest"
+base_url = {base_url:?}
+auth = {{ kind = "bearer", token = {token:?} }}
 "#
         ),
     )
     .unwrap();
-    fs::write(
-        project.root.join("resources/api.toml"),
-        rest_resource_with_base_url(base_url, token),
-    )
-    .unwrap();
+    let cdf = project.root.join("cdf");
+    if cdf.exists() {
+        fs::remove_dir_all(&cdf).unwrap();
+    }
+    fs::create_dir_all(cdf.join("api")).unwrap();
+    fs::write(cdf.join("api/items.cdf.sql"), rest_resource_sql("exact")).unwrap();
 }
 
-fn rest_resource(token: &str) -> String {
-    rest_resource_with_base_url("https://api.example.test", token)
-}
-
-fn rest_resource_with_base_url(base_url: &str, token: &str) -> String {
+fn rest_resource_sql(cursor_filter_fidelity: &str) -> String {
     format!(
-        r#"
-[source.api]
-kind = "rest"
-base_url = "{base_url}"
-auth = {{ kind = "bearer", token = "{token}" }}
-
-[resource.items]
-path = "/items"
-records = "$.items"
-primary_key = ["id"]
-cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-  {{ name = "id", type = "int64", nullable = false }},
-  {{ name = "updated_at", type = "int64", nullable = false }},
-] }}
+        r#"RESOURCE
+DISPOSITION APPEND
+CURSOR updated_at
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(
+  source => 'api',
+  path => '/items',
+  records => '$.items',
+  cursor_param => 'since',
+  cursor_filter_fidelity => '{cursor_filter_fidelity}'
+);
 "#
-    )
-}
-
-fn rest_discover_resource_with_base_url(base_url: &str, token: &str) -> String {
-    format!(
-        r#"
-[source.api]
-kind = "rest"
-base_url = "{base_url}"
-auth = {{ kind = "bearer", token = "{token}" }}
-egress_allowlist = ["127.0.0.1"]
-
-[resource.items]
-path = "/items"
-records = "$.items"
-primary_key = ["vendor_id"]
-cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
-"#
-    )
-}
-
-fn rest_resource_with_exact_cursor_base_url(base_url: &str, token: &str) -> String {
-    rest_resource_with_base_url(base_url, token).replace(
-        r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }"#,
-        r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms", filter_fidelity = "exact" }"#,
     )
 }
 
@@ -2144,68 +2019,6 @@ fn serve_parquet_file(bytes: Vec<u8>, max_requests: usize) -> (String, Arc<Mutex
     (format!("http://{address}"), requests)
 }
 
-type ServedParquetFiles = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
-
-fn serve_parquet_files(
-    initial: BTreeMap<String, Vec<u8>>,
-    max_requests: usize,
-) -> (String, ServedParquetFiles, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let files = Arc::new(Mutex::new(initial));
-    let thread_files = Arc::clone(&files);
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let thread_requests = Arc::clone(&requests);
-    thread::spawn(move || {
-        for _ in 0..max_requests {
-            let Ok((mut stream, _)) = listener.accept() else {
-                break;
-            };
-            let mut request = [0_u8; 8192];
-            let bytes_read = stream.read(&mut request).unwrap_or(0);
-            let request_text = String::from_utf8_lossy(&request[..bytes_read]).into_owned();
-            thread_requests.lock().unwrap().push(request_text.clone());
-            let mut request_line = request_text
-                .lines()
-                .next()
-                .unwrap_or("GET / HTTP/1.1")
-                .split_whitespace();
-            let method = request_line.next().unwrap_or("GET");
-            let path = request_line.next().unwrap_or("/");
-            let bytes = thread_files.lock().unwrap().get(path).cloned();
-            let range = request_text.lines().find_map(parse_range_header);
-            let response = match (method, bytes, range) {
-                (_, None, _) => b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
-                ("HEAD", Some(bytes), _) => format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
-                    bytes.len(), path
-                ).into_bytes(),
-                (_, Some(bytes), Some((start, end))) => {
-                    let end = end.min(bytes.len().saturating_sub(1));
-                    let body = &bytes[start..=end];
-                    let mut response = format!(
-                        "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes {start}-{end}/{}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
-                        body.len(), bytes.len(), path
-                    ).into_bytes();
-                    response.extend_from_slice(body);
-                    response
-                }
-                (_, Some(bytes), None) => {
-                    let mut response = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
-                        bytes.len(), path
-                    ).into_bytes();
-                    response.extend_from_slice(&bytes);
-                    response
-                }
-            };
-            stream.write_all(&response).unwrap();
-            stream.flush().unwrap();
-        }
-    });
-    (format!("http://{address}"), files, requests)
-}
-
 fn parse_range_header(line: &str) -> Option<(usize, usize)> {
     let (name, value) = line.split_once(':')?;
     if !name.eq_ignore_ascii_case("range") {
@@ -2216,76 +2029,34 @@ fn parse_range_header(line: &str) -> Option<(usize, usize)> {
     Some((start.parse().ok()?, end.parse().ok()?))
 }
 
-fn postgres_resource(connection: &str) -> String {
+fn postgres_resource_sql(table: &str, ordered_cursor: bool) -> String {
+    let cursor = if ordered_cursor {
+        "CURSOR updated_at\n"
+    } else {
+        ""
+    };
     format!(
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "{connection}"
-
-[resource.orders]
-table = "orders"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-  {{ name = "id", type = "int64", nullable = false }},
-] }}
+        r#"RESOURCE
+DISPOSITION APPEND
+{cursor}TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'warehouse', table => '{table}');
 "#
     )
 }
 
-fn postgres_discover_resource(connection: &str, table: &str) -> String {
+fn postgres_resource_sql_with_vendor_cursor(table: &str) -> String {
     format!(
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "{connection}"
-dialect = "postgres"
-
-[resource.orders]
-table = "{table}"
-write_disposition = "append"
-trust = "governed"
-"#
-    )
-}
-
-fn postgres_discover_resource_with_vendor_cursor(connection: &str, table: &str) -> String {
-    format!(
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "{connection}"
-dialect = "postgres"
-
-[resource.orders]
-table = "{table}"
-cursor = {{ field = "vendor_id", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
-"#
-    )
-}
-
-fn postgres_resource_with_ordered_cursor(connection: &str, table: &str) -> String {
-    format!(
-        r#"
-[source.warehouse]
-kind = "postgres"
-connection = "{connection}"
-dialect = "postgres"
-
-[resource.orders]
-table = "{table}"
-primary_key = ["id"]
-cursor = {{ field = "updated_at", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-  {{ name = "id", type = "int64", nullable = false }},
-  {{ name = "updated_at", type = "int64", nullable = false }},
-] }}
+        r#"RESOURCE
+DISPOSITION APPEND
+CURSOR vendor_id
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT *
+FROM upstream(source => 'warehouse', table => '{table}');
 "#
     )
 }
@@ -2329,8 +2100,8 @@ fn write_postgres_project_with_secret(
         Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/postgres.toml"),
-        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", table),
+        project.root.join("cdf/warehouse/orders.cdf.sql"),
+        postgres_resource_sql(table, true),
     )
     .unwrap();
     source_dsn
@@ -2943,154 +2714,10 @@ fn write_python_config_project(
     fs::write(project.root.join("cdf.toml"), text).unwrap();
 }
 
-fn write_python_resource_config_project(project: &TestProject, interpreter: &str) {
-    let mut text = PYTHON_RESOURCE_PROJECT.to_owned();
-    text.push_str("\n[python]\ninterpreter = ");
-    text.push_str(&serde_json::to_string(interpreter).unwrap());
-    text.push('\n');
-    fs::write(project.root.join("cdf.toml"), text).unwrap();
-}
-
-fn write_python_frontdoor_project(project: &TestProject, interpreter: &Path, marker: &Path) {
-    fs::create_dir_all(project.root.join("src")).unwrap();
-    fs::write(
-        project.root.join("cdf.toml"),
-        format!(
-            r#"
-[project]
-name = "python_frontdoor"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/python.duckdb"
-
-[python]
-interpreter = {}
-
-[resources."events.raw"]
-source = "python://src/events.py#raw_events"
-trust = "governed"
-freshness = {{ expect_every = "15m", alert_after = "45m" }}
-"#,
-            serde_json::to_string(interpreter.to_str().unwrap()).unwrap()
-        ),
-    )
-    .unwrap();
-    fs::write(
-        project.root.join("src/events.py"),
-        format!(
-            r#"
-def raw_events():
-    with open({}, "a", encoding="utf-8") as marker:
-        marker.write("called\n")
-    yield {{"id": 1, "name": "ada", "updated_at": 10}}
-    yield {{"id": 2, "name": "grace", "updated_at": 20}}
-
-raw_events.__cdf_resource__ = True
-raw_events.__cdf_primary_key__ = ()
-raw_events.__cdf_merge_key__ = ()
-raw_events.__cdf_cursor__ = "updated_at"
-raw_events.__cdf_bounded__ = True
-raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))
-raw_events.__cdf_write_disposition__ = "append"
-"#,
-            serde_json::to_string(marker.to_str().unwrap()).unwrap()
-        ),
-    )
-    .unwrap();
-}
-
-fn write_python_bootstrap_project(project: &TestProject, interpreter: &Path, marker: &Path) {
-    fs::create_dir_all(project.root.join("src")).unwrap();
-    fs::write(
-        project.root.join("cdf.toml"),
-        format!(
-            r#"
-[project]
-name = "python_bootstrap"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = "sqlite://.cdf/state.db"
-packages = ".cdf/packages"
-destination = "duckdb://.cdf/python.duckdb"
-
-[python]
-interpreter = {}
-
-[resources."events.raw"]
-source = "python://src/events.py#raw_events"
-trust = "governed"
-"#,
-            serde_json::to_string(interpreter.to_str().unwrap()).unwrap()
-        ),
-    )
-    .unwrap();
-    fs::write(
-        project.root.join("src/events.py"),
-        format!(
-            r#"
-def raw_events():
-    with open({}, "a", encoding="utf-8") as marker:
-        marker.write("called\n")
-    yield {{"id": 1, "name": "ada", "updated_at": 10}}
-    yield {{"id": 2, "name": "grace", "updated_at": 20}}
-
-raw_events.__cdf_resource__ = True
-raw_events.__cdf_primary_key__ = ()
-raw_events.__cdf_merge_key__ = ()
-raw_events.__cdf_cursor__ = "updated_at"
-raw_events.__cdf_bounded__ = True
-raw_events.__cdf_schema__ = ()
-raw_events.__cdf_write_disposition__ = "append"
-"#,
-            serde_json::to_string(marker.to_str().unwrap()).unwrap()
-        ),
-    )
-    .unwrap();
-}
-
 fn write_fake_interpreter(path: &Path, stdout: &str) {
     fs::write(
         path,
         format!("#!/bin/sh\ncat <<'CDF_FAKE_PYTHON_JSON'\n{stdout}\nCDF_FAKE_PYTHON_JSON\n"),
-    )
-    .unwrap();
-    make_executable(path);
-}
-
-fn write_probe_validating_interpreter(path: &Path, stdout: &str) {
-    fs::write(
-        path,
-        format!(
-            r#"#!/bin/sh
-if [ "$#" -ne 3 ]; then exit 10; fi
-if [ "$1" != "-I" ]; then exit 11; fi
-if [ "$2" != "-c" ]; then exit 12; fi
-
-case "$3" in
-  *"sysconfig.get_config_var"*) ;;
-  *) exit 13 ;;
-esac
-
-case "$3" in
-  *"_is_gil_enabled"*) ;;
-  *) exit 14 ;;
-esac
-
-case "$3" in
-  *"src/events.py"*|*"raw_events"*|*"python://"*) exit 15 ;;
-esac
-
-cat <<'CDF_FAKE_PYTHON_JSON'
-{stdout}
-CDF_FAKE_PYTHON_JSON
-"#
-        ),
     )
     .unwrap();
     make_executable(path);
@@ -3176,7 +2803,6 @@ mod inspect;
 mod package;
 mod planning;
 mod preview;
-mod python;
 mod recovery;
 mod replay;
 mod run;

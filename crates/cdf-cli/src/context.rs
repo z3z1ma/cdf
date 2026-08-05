@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     result::Result as StdResult,
@@ -8,10 +9,10 @@ use std::{
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, Result as CdfResult};
 use cdf_project::{
-    CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
-    FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
-    PROJECT_FILE_NAME, ProjectConfig, ProjectManifest, ProjectResource, ProjectResourceOrigin,
-    ResourceSourceKind, SchemaSnapshotStore, parse_cdf_toml, parse_lock,
+    CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider, FileSecretProvider,
+    LOCK_FILE_NAME, LockFileAuthority, PROJECT_FILE_NAME, ProjectConfig, ProjectManifest,
+    ProjectQueryCompilation, SchemaSnapshotStore, compile_query_project_resources,
+    finalize_query_project_resource, parse_cdf_toml, parse_lock,
     project_file_transaction_generation, read_lock_file_authority,
     recover_project_file_transaction,
 };
@@ -27,7 +28,8 @@ pub struct ProjectContext {
     pub config: ProjectConfig,
     pub environment: EffectiveEnvironment,
     pub resources: Vec<CompiledResource>,
-    pub resource_origins: Vec<ProjectResourceOrigin>,
+    pub resource_queries: Vec<ProjectQueryCompilation>,
+    adhoc_resource_ids: BTreeSet<String>,
     pub lock: Option<CdfLock>,
     pub lock_authority: Option<LockFileAuthority>,
     pub semantic_catalog: SemanticCatalog,
@@ -111,32 +113,29 @@ impl ProjectContext {
                         "compile" | "plan" | "explain" | "preview" | "run" | "validate --deep"
                     )
                 {
-                    context.resources = hydrate_locked_schema_snapshots(
+                    let entries = context
+                        .resources
+                        .into_iter()
+                        .zip(context.resource_queries)
+                        .map(|(resource, query)| cdf_project::CompiledProjectResource {
+                            resource,
+                            query,
+                        })
+                        .collect();
+                    let entries = hydrate_and_finalize_query_resources(
                         &context.root,
-                        context.resources,
+                        entries,
                         context.lock.as_ref(),
+                        &context.semantic_catalog,
                     )?;
+                    (context.resources, context.resource_queries) = entries
+                        .into_iter()
+                        .map(|entry| (entry.resource, entry.query))
+                        .unzip();
                 }
                 Ok(context)
             })
-            .map_err(|error| {
-                if error.message.contains("missing merge_key") {
-                    return CliError::mapped(
-                        CdfError::contract(format!(
-                            "cdf {command} cannot compile the selected resource: {}",
-                            error.message
-                        )),
-                        error_catalog::PROJECT_MERGE_KEY,
-                    );
-                }
-                if error.message.contains("resource mapping pattern") {
-                    return CliError::usage_with(
-                        format!("cdf {command} cannot load project: {}", error.message),
-                        error_catalog::PROJECT_RESOURCE_MAPPING,
-                    );
-                }
-                CliError::from(error)
-            })
+            .map_err(CliError::from)
     }
 
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
@@ -189,19 +188,30 @@ impl ProjectContext {
         let config = parse_cdf_toml(&project_text)?;
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
-        let resolver = FileResourceSourceResolver::new(root);
         let source_registry = crate::source_registry::builtin_source_registry()?;
         let semantic_catalog = SemanticCatalog::builtins()?;
-        let entries = cdf_project::compile_project_declarative_resource_entries_with_root_and_semantic_catalog(
+        let destinations = crate::destination_registry::builtin_destination_registry()?;
+        let destination = destinations
+            .inspect(
+                &environment.destination,
+                &cdf_runtime::DestinationResolutionContext::for_project_inspection(root)
+                    .with_environment_name(&environment.name)
+                    .with_destination_policy(&environment.destination_policy),
+            )?
+            .sheet_artifact
+            .sheet;
+        let entries = compile_query_project_resources(
             source_registry,
             &config,
-            &resolver,
             root,
+            env_name,
+            &destination,
             &semantic_catalog,
+            &Default::default(),
         )?;
-        let (resources, resource_origins) = entries
+        let (resources, resource_queries) = entries
             .into_iter()
-            .map(|entry| (entry.resource, entry.origin))
+            .map(|entry| (entry.resource, entry.query))
             .unzip();
         let (lock, lock_authority) = load_lock(root)?;
         Ok(Self {
@@ -209,7 +219,8 @@ impl ProjectContext {
             config,
             environment,
             resources,
-            resource_origins,
+            resource_queries,
+            adhoc_resource_ids: BTreeSet::new(),
             lock,
             lock_authority,
             semantic_catalog,
@@ -223,26 +234,26 @@ impl ProjectContext {
             .ok_or_else(|| self.resource_not_compiled_error(id))
     }
 
-    pub fn resource_origin(&self, id: &str) -> Option<&ProjectResourceOrigin> {
+    pub fn resource_query(&self, id: &str) -> Option<&ProjectQueryCompilation> {
         self.resources
             .iter()
-            .zip(&self.resource_origins)
+            .zip(&self.resource_queries)
             .find(|(resource, _)| resource.descriptor().resource_id.as_str() == id)
-            .map(|(_, origin)| origin)
+            .map(|(_, query)| query)
     }
 
-    pub fn source_reference_mapping(&self, id: &str) -> Option<&ProjectResource> {
-        self.config
-            .resources
-            .get(id)
-            .filter(|mapping| matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. }))
+    pub fn register_adhoc_resource(&mut self, id: String) {
+        self.adhoc_resource_ids.insert(id);
+    }
+
+    pub fn is_adhoc_resource(&self, id: &str) -> bool {
+        self.adhoc_resource_ids.contains(id)
     }
 
     pub fn has_resource(&self, id: &str) -> bool {
         self.resources
             .iter()
             .any(|resource| resource.descriptor().resource_id.as_str() == id)
-            || self.source_reference_mapping(id).is_some()
     }
 
     pub fn resource_ids(&self) -> Vec<String> {
@@ -250,15 +261,6 @@ impl ProjectContext {
             .resources
             .iter()
             .map(|resource| resource.descriptor().resource_id.to_string())
-            .chain(
-                self.config
-                    .resources
-                    .iter()
-                    .filter(|(_, mapping)| {
-                        matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
-                    })
-                    .map(|(id, _)| id.clone()),
-            )
             .collect::<Vec<_>>();
         ids.sort();
         ids.dedup();
@@ -333,16 +335,7 @@ impl ProjectContext {
             id,
             self.resources
                 .iter()
-                .map(|resource| resource.descriptor().resource_id.to_string())
-                .chain(
-                    self.config
-                        .resources
-                        .iter()
-                        .filter(|(_, mapping)| {
-                            matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
-                        })
-                        .map(|(id, _)| id.clone()),
-                ),
+                .map(|resource| resource.descriptor().resource_id.to_string()),
         )
     }
 
@@ -351,8 +344,7 @@ impl ProjectContext {
             CdfError::contract(resource_not_compiled_message(
                 id,
                 &self.resources,
-                &self.resource_origins,
-                &self.config,
+                &self.resource_queries,
             )),
             error_catalog::RESOURCE_NOT_COMPILED,
         )
@@ -394,14 +386,22 @@ impl ProjectManifestContext {
     }
 }
 
-fn hydrate_locked_schema_snapshots(
+fn hydrate_and_finalize_query_resources(
     root: &Path,
-    resources: Vec<CompiledResource>,
+    entries: Vec<cdf_project::CompiledProjectResource>,
     lock: Option<&CdfLock>,
-) -> CdfResult<Vec<CompiledResource>> {
-    resources
+    semantic_catalog: &SemanticCatalog,
+) -> CdfResult<Vec<cdf_project::CompiledProjectResource>> {
+    entries
         .into_iter()
-        .map(|resource| hydrate_locked_schema_snapshot(root, resource, lock))
+        .map(|mut entry| {
+            entry.resource = hydrate_locked_schema_snapshot(root, entry.resource, lock)?;
+            if entry.resource.schema().fields().is_empty() {
+                Ok(entry)
+            } else {
+                finalize_query_project_resource(entry, semantic_catalog)
+            }
+        })
         .collect()
 }
 
@@ -458,43 +458,27 @@ pub(crate) fn hydrate_locked_schema_snapshot(
 fn resource_not_compiled_message(
     id: &str,
     resources: &[CompiledResource],
-    origins: &[ProjectResourceOrigin],
-    config: &ProjectConfig,
+    queries: &[ProjectQueryCompilation],
 ) -> String {
-    let mut compiled = resources
+    let compiled = resources
         .iter()
-        .zip(origins)
-        .map(|(resource, origin)| {
+        .zip(queries)
+        .map(|(resource, query)| {
             format!(
-                "`{}` from {} (mapping `{}` {})",
+                "`{}` from {} using configured source `{}`",
                 resource.descriptor().resource_id,
-                origin
-                    .source_file
-                    .as_deref()
-                    .unwrap_or("<external or unknown source>"),
-                origin.mapping_pattern,
-                origin.mapping_status
+                query.relative_path,
+                query.configured_source.configured_source,
             )
         })
         .collect::<Vec<_>>();
-    compiled.extend(
-        config
-            .resources
-            .iter()
-            .filter(|(_, mapping)| {
-                matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
-            })
-            .map(|(id, mapping)| {
-                format!("`{id}` from {} (source reference matched)", mapping.source)
-            }),
-    );
     let compiled = if compiled.is_empty() {
         "none".to_owned()
     } else {
         compiled.join(", ")
     };
     format!(
-        "resource `{id}` is not compiled; compiled resource ids: {compiled}; likely causes: the resource id does not use `<source>.<resource>`, the `[resources]` mapping did not select the source file, the source file failed to parse, or the glob/resource declaration matched nothing"
+        "resource `{id}` is not compiled; compiled query-first resources: {compiled}; resource ids derive exactly from cdf/<namespace>/<resource>.cdf.sql"
     )
 }
 

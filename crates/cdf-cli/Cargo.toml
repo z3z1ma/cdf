@@ -15,6 +15,7 @@ bundled-duckdb = ["cdf-builtin-drivers/bundled-duckdb"]
 
 [dependencies]
 arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
 cdf-builtin-drivers = { path = "../cdf-builtin-drivers" }
 cdf-cli-core = { path = "../cdf-cli-core" }
 cdf-contract = { path = "../cdf-contract" }
@@ -42,9 +43,7 @@ url = "2.5.8"
 
 [dev-dependencies]
 arrow-ipc = "58.3.0"
-arrow-schema = "58.3.0"
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
-cdf-python = { path = "../cdf-python" }
 duckdb.workspace = true
 flate2 = "1.1.9"
 postgres = "0.19"

@@ -136,11 +136,11 @@ struct InspectPackageReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ResourceSummary {
     descriptor: cdf_kernel::ResourceDescriptor,
-    source_name: String,
+    configured_source: String,
+    namespace: String,
     resource_name: String,
-    source_file: Option<String>,
-    mapping_pattern: Option<String>,
-    mapping_status: Option<String>,
+    resource_file: String,
+    target: String,
     capabilities: cdf_kernel::ResourceCapabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_capabilities: Option<cdf_runtime::SourceStreamCapabilities>,
@@ -149,19 +149,15 @@ struct ResourceSummary {
 impl ResourceSummary {
     fn from_compiled(
         resource: &cdf_declarative::CompiledResource,
-        source_name: &str,
-        resource_name: &str,
-        source_file: Option<String>,
-        mapping_pattern: Option<String>,
-        mapping_status: Option<String>,
+        query: &cdf_project::ProjectQueryCompilation,
     ) -> Self {
         Self {
             descriptor: resource.descriptor().clone(),
-            source_name: source_name.to_owned(),
-            resource_name: resource_name.to_owned(),
-            source_file: source_file.map(|value| redact_uri_userinfo(&value)),
-            mapping_pattern: mapping_pattern.map(|value| redact_uri_userinfo(&value)),
-            mapping_status: mapping_status.map(|value| redact_uri_userinfo(&value)),
+            configured_source: query.configured_source.configured_source.clone(),
+            namespace: query.namespace.clone(),
+            resource_name: query.resource_name.clone(),
+            resource_file: query.relative_path.clone(),
+            target: query.effective.target.value.to_string(),
             capabilities: resource.capabilities().clone(),
             stream_capabilities: resource.source_plan().stream_capabilities.clone(),
         }
@@ -208,45 +204,11 @@ fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn resource_summary(context: &ProjectContext, id: &str) -> Result<ResourceSummary, CliError> {
-    let origin = context.resource_origin(id);
-    let mapping = context.config.resources.get(id);
-    let (default_source, default_resource) = id.split_once('.').unwrap_or((id, id));
-    let source_name = origin
-        .map(|origin| origin.source_name.clone())
-        .unwrap_or_else(|| default_source.to_owned());
-    let resource_name = origin
-        .map(|origin| origin.resource_name.clone())
-        .unwrap_or_else(|| default_resource.to_owned());
-    let source_file = origin
-        .and_then(|origin| origin.source_file.clone())
-        .or_else(|| mapping.map(|mapping| mapping.source.clone()));
-    let mapping_pattern = origin
-        .map(|origin| origin.mapping_pattern.clone())
-        .or_else(|| mapping.map(|_| id.to_owned()));
-    let mapping_status = origin
-        .map(|origin| origin.mapping_status.clone())
-        .or_else(|| mapping.map(|_| "matched".to_owned()));
-    if let Some(resource) =
-        crate::project_run_resource::build_project_resource_for_inspection(context, id)?
-    {
-        return Ok(ResourceSummary::from_compiled(
-            &resource,
-            &source_name,
-            &resource_name,
-            source_file,
-            mapping_pattern,
-            mapping_status,
-        ));
-    }
     let resource = context.resource(id)?;
-    Ok(ResourceSummary::from_compiled(
-        resource,
-        &source_name,
-        &resource_name,
-        source_file,
-        mapping_pattern,
-        mapping_status,
-    ))
+    let query = context
+        .resource_query(id)
+        .ok_or_else(|| cdf_kernel::CdfError::internal("resource lost its query compilation"))?;
+    Ok(ResourceSummary::from_compiled(resource, query))
 }
 
 fn resource_summaries(context: &ProjectContext) -> Result<Vec<ResourceSummary>, CliError> {
