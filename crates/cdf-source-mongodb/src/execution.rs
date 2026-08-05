@@ -196,23 +196,14 @@ pub(crate) async fn execute_mongodb_collection(
             ))
             .await?;
         let decoded = decode_batch_with_evidence(
-            Arc::clone(&input.schema),
+            Arc::clone(&input.decoder_schema),
             Arc::clone(&output_schema),
             &documents,
             source_row_offset,
         )?;
-        let evidence_bytes = decoded.pre_contract_evidence_bytes;
+        let progressive_evidence_bytes = decoded.pre_contract_evidence_bytes;
         let record_batch = decoded.record_batch;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-        let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
-            CdfError::internal("MongoDB decoded batch retained-memory accounting overflow")
-        })?;
-        if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
-            return Err(CdfError::data(format!(
-                "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
-            )));
-        }
-        output_lease.reconcile(retained_total)?;
         batch_index = batch_index.saturating_add(1);
         let source_position =
             batch_cursor_position(&input.descriptor, &scan.projection, &record_batch)?;
@@ -225,11 +216,7 @@ pub(crate) async fn execute_mongodb_collection(
             input.partition.partition_id.clone(),
             cdf_kernel::canonical_arrow_schema_hash(&decoded.physical_schema)?,
             record_batch,
-        )?
-        .with_retention(PayloadRetention::new(
-            Arc::new(output_lease),
-            retained_total,
-        )?)?;
+        )?;
         batch
             .header
             .mark_materialized_output(&decoded.physical_schema)?;
@@ -241,6 +228,21 @@ pub(crate) async fn execute_mongodb_collection(
             .extend_physical_reconciliations(decoded.physical_reconciliations);
         batch.header.mark_materialized_residuals_complete();
         batch.header.source_position = source_position;
+        let evidence_bytes =
+            progressive_evidence_bytes.max(batch.header.pre_contract_evidence_retained_bytes()?);
+        let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
+            CdfError::internal("MongoDB decoded batch retained-memory accounting overflow")
+        })?;
+        if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
+            return Err(CdfError::data(format!(
+                "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
+            )));
+        }
+        output_lease.reconcile(retained_total)?;
+        let batch = batch.with_retention(PayloadRetention::new(
+            Arc::new(output_lease),
+            retained_total,
+        )?)?;
         sender.send(batch).await?;
         source_row_offset = source_row_offset.saturating_add(documents.len() as u64);
     }

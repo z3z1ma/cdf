@@ -176,6 +176,52 @@ pub(crate) fn make_lifecycle_runtime_cursor_physically_narrower(
     })
 }
 
+#[cfg(test)]
+pub(super) fn assert_physical_reconciliation_stays_out_of_residual_variant(
+    package: &std::path::Path,
+) {
+    use arrow_array::Array;
+
+    let evidence_path = package.join("schema/physical-reconciliations.json");
+    assert!(
+        evidence_path.is_file(),
+        "physical reconciliation evidence was not published"
+    );
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence_path).unwrap()).unwrap();
+    let reconciliations = evidence["reconciliations"].as_array().unwrap();
+    assert!(!reconciliations.is_empty());
+    assert!(reconciliations.iter().any(|reconciliation| {
+        reconciliation["observed_field"]["metadata"][cdf_kernel::PHYSICAL_TYPE_METADATA_KEY]
+            == "bson:int32"
+            && reconciliation["expected_field"]["metadata"][cdf_kernel::PHYSICAL_TYPE_METADATA_KEY]
+                == "bson:int64"
+    }));
+
+    let reader = cdf_package::PackageReader::open(package).unwrap();
+    let memory: std::sync::Arc<dyn cdf_memory::MemoryCoordinator> = std::sync::Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(
+            128 * 1024 * 1024,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    for segment in reader
+        .verified_canonical_segment_stream(memory, 128 * 1024 * 1024)
+        .unwrap()
+    {
+        for batch in segment.unwrap().batches {
+            let variants = batch
+                .column_by_name(cdf_contract::VARIANT_COLUMN_NAME)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .unwrap();
+            assert_eq!(variants.null_count(), variants.len());
+        }
+    }
+}
+
 fn one_resource(resource: &CompiledResource) -> Result<()> {
     if resource.descriptor().resource_id.as_str() != RESOURCE_ID {
         return Err(CdfError::contract(format!(

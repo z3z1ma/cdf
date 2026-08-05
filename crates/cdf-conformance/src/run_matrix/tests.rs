@@ -234,7 +234,7 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
         !location.username().is_empty() && location.password().is_some(),
         "CDF_MONGODB_ENDPOINT must include fixture credentials so runtime secret resolution is exercised"
     );
-    let secret = location.password().unwrap().to_owned();
+    let encoded_secret = location.password().unwrap().to_owned();
     location.set_path(&format!("/cdf_conformance/{collection}"));
     let location = location.to_string();
     let auth_source =
@@ -257,7 +257,6 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
         ],
     );
     assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
-    assert_invocation_redacted(&dry, &secret);
     let add = invoke_public_cli(
         &project_root,
         true,
@@ -274,12 +273,21 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
         ],
     );
     assert_eq!(add.exit_code, 0, "{}", add.stderr);
-    assert_invocation_redacted(&add, &secret);
-    assert!(
-        walk_files(&project_root.join(".cdf/secrets"))
-            .iter()
-            .any(|path| std::fs::read_to_string(path).unwrap() == secret.as_str())
+    let secret = walk_files(&project_root.join(".cdf/secrets"))
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .find(|value| {
+            url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+                == encoded_secret
+        })
+        .expect("MongoDB add must publish the decoded credential to a private secret file");
+    assert_ne!(
+        secret, encoded_secret,
+        "authenticated lifecycle fixture must distinguish decoded and URL-encoded secret forms"
     );
+    assert!(location.contains(&encoded_secret));
+    assert_invocation_redacted(&dry, &secret);
+    assert_invocation_redacted(&add, &secret);
 
     // Remove only the scaffolded local source; MongoDB credential references stay active so every
     // contact-bearing lifecycle command exercises secret resolution and output redaction.
@@ -384,47 +392,7 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
 }
 
 fn assert_physical_reconciliation_stays_out_of_residual_variant(package: &std::path::Path) {
-    use arrow_array::Array;
-
-    let evidence_path = package.join("schema/physical-reconciliations.json");
-    assert!(
-        evidence_path.is_file(),
-        "physical reconciliation evidence was not published; package files: {:?}",
-        walk_files(package)
-    );
-    let evidence: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(evidence_path).unwrap()).unwrap();
-    let reconciliations = evidence["reconciliations"].as_array().unwrap();
-    assert!(!reconciliations.is_empty());
-    assert!(reconciliations.iter().any(|reconciliation| {
-        reconciliation["observed_field"]["metadata"][cdf_kernel::PHYSICAL_TYPE_METADATA_KEY]
-            == "bson:int32"
-            && reconciliation["expected_field"]["metadata"][cdf_kernel::PHYSICAL_TYPE_METADATA_KEY]
-                == "bson:int64"
-    }));
-
-    let reader = cdf_package::PackageReader::open(package).unwrap();
-    let memory: std::sync::Arc<dyn cdf_memory::MemoryCoordinator> = std::sync::Arc::new(
-        cdf_memory::DeterministicMemoryCoordinator::new(
-            128 * 1024 * 1024,
-            std::collections::BTreeMap::new(),
-        )
-        .unwrap(),
-    );
-    for segment in reader
-        .verified_canonical_segment_stream(memory, 128 * 1024 * 1024)
-        .unwrap()
-    {
-        for batch in segment.unwrap().batches {
-            let variants = batch
-                .column_by_name(cdf_contract::VARIANT_COLUMN_NAME)
-                .unwrap()
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .unwrap();
-            assert_eq!(variants.null_count(), variants.len());
-        }
-    }
+    super::mongodb_fixture::assert_physical_reconciliation_stays_out_of_residual_variant(package);
 }
 
 fn invoke_public_cli(
@@ -571,32 +539,82 @@ fn checkpoint_position_semantics(package: &std::path::Path) -> serde_json::Value
 
 fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
     let reader = cdf_package::PackageReader::open(package).unwrap();
+    let project_root = package
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .expect("package must live below <project>/.cdf/packages");
     let mut receipts = Vec::new();
     reader
-        .for_each_receipt(&mut |receipt| {
+        .for_each_receipt(&mut |mut receipt| {
+            let package_hash = receipt.package_hash.to_string();
+            let idempotency_token = receipt.idempotency_token.to_string();
+            assert!(receipt.receipt_id.as_str().ends_with(&idempotency_token));
+            let verify_package_hash = receipt
+                .verify
+                .parameters
+                .remove("package_hash")
+                .expect("DuckDB receipt must bind package_hash");
+            let verify_idempotency = receipt
+                .verify
+                .parameters
+                .remove("idempotency_token")
+                .expect("DuckDB receipt must bind idempotency_token");
+            assert_eq!(verify_package_hash, package_hash);
+            assert_eq!(verify_idempotency, idempotency_token);
+            receipt.verify.parameters.insert(
+                "package_hash".to_owned(),
+                "<invocation-specific>".to_owned(),
+            );
+            receipt.verify.parameters.insert(
+                "idempotency_token".to_owned(),
+                "<invocation-specific>".to_owned(),
+            );
+            let transaction = receipt.transaction.map(|mut transaction| {
+                let database_path = transaction
+                    .values
+                    .remove("database_path")
+                    .expect("DuckDB receipt must record database_path");
+                let writer_lock = transaction
+                    .values
+                    .remove("writer_lock")
+                    .expect("DuckDB receipt must record writer_lock");
+                let expected_database = project_root.join(".cdf/dev.duckdb");
+                assert_eq!(std::path::Path::new(&database_path), expected_database);
+                assert_eq!(
+                    std::path::Path::new(&writer_lock),
+                    expected_database.with_file_name("dev.duckdb.cdf.lock")
+                );
+                transaction
+                    .values
+                    .insert("database_path".to_owned(), "<project-database>".to_owned());
+                transaction
+                    .values
+                    .insert("writer_lock".to_owned(), "<project-lock>".to_owned());
+                serde_json::json!({
+                    "system": transaction.system,
+                    "values": transaction.values,
+                })
+            });
             receipts.push(serde_json::json!({
+                "receipt_id": "<invocation-specific>",
                 "destination": receipt.destination,
                 "target": receipt.target,
+                "package_hash": "<invocation-specific>",
+                "idempotency_token": "<invocation-specific>",
                 "segment_acks": receipt.segment_acks.into_iter().map(|ack| serde_json::json!({
                     "segment_id": ack.segment_id,
                     "row_count": ack.row_count,
                     "byte_count": ack.byte_count,
                 })).collect::<Vec<_>>(),
                 "disposition": receipt.disposition,
-                "transaction": receipt.transaction.map(|transaction| serde_json::json!({
-                    "system": transaction.system,
-                    "values": transaction.values.into_iter().filter(|(key, _)| {
-                        !matches!(key.as_str(), "database_path" | "writer_lock")
-                    }).collect::<std::collections::BTreeMap<_, _>>(),
-                })),
+                "transaction": transaction,
                 "counts": receipt.counts,
                 "schema_hash": receipt.schema_hash,
                 "migrations": receipt.migrations,
                 "verify_kind": receipt.verify.kind,
                 "verify_statement": receipt.verify.statement,
-                "verify_parameters": receipt.verify.parameters.into_iter().filter(|(key, _)| {
-                    !matches!(key.as_str(), "idempotency_token" | "package_hash")
-                }).collect::<std::collections::BTreeMap<_, _>>(),
+                "verify_parameters": receipt.verify.parameters,
             }));
             Ok(())
         })

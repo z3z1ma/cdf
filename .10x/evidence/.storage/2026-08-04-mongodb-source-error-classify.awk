@@ -20,6 +20,8 @@ BEGIN {
     } else if (match(source, /std::io::ErrorKind::[A-Za-z]+/)) {
         syntax = substr(source, RSTART, RLENGTH)
         sub(/^std::io::/, "Io", syntax)
+    } else if (match(source, /Io::[A-Za-z]+/)) {
+        syntax = substr(source, RSTART, RLENGTH)
     } else if (match(source, /mongodb::error::Error::custom/)) {
         syntax = "MongoError::custom"
     } else if (match(source, /mongodb::error::ErrorKind::[A-Za-z]+/)) {
@@ -138,6 +140,16 @@ BEGIN {
         retry = "kind_dependent"
         redaction = "controlled_message_without_endpoint_or_credentials"
         rationale = "This official-driver variant participates in the adjacent exhaustive typed mapping branch."
+    } else if (syntax ~ /^Io::(TimedOut|WouldBlock|Interrupted|ConnectionAborted|ConnectionRefused|ConnectionReset|NotConnected|BrokenPipe)$/) {
+        owner = "remote_transport"
+        retry = "host_policy_only"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The direct standard-I/O mapping identifies a transient connection or scheduling failure."
+    } else if (syntax ~ /^Io::(UnexpectedEof|InvalidData)$/) {
+        owner = "mongodb_source_data"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The direct standard-I/O mapping identifies truncated or malformed selected-source data."
     } else if (kind == "Transient") {
         owner = "remote_transport"
         retry = "host_policy_only"

@@ -659,15 +659,11 @@ impl PayloadObservation {
                 "MongoDB roofline payload contradicted its non-null four-column schema",
             ));
         }
-        let ids = downcast::<Int64Array>(batch, 0, "id", "Int64")?;
-        let metrics = downcast::<Int64Array>(batch, 1, "metric", "Int64")?;
-        let labels = downcast::<StringArray>(batch, 2, "label", "Utf8")?;
-        let updated = downcast::<TimestampMillisecondArray>(
-            batch,
-            3,
-            "updated_at",
-            "Timestamp(Millisecond)",
-        )?;
+        let ids = downcast::<Int64Array>(batch, "id", "Int64")?;
+        let metrics = downcast::<Int64Array>(batch, "metric", "Int64")?;
+        let labels = downcast::<StringArray>(batch, "label", "Utf8")?;
+        let updated =
+            downcast::<TimestampMillisecondArray>(batch, "updated_at", "Timestamp(Millisecond)")?;
         for row in 0..batch.num_rows() {
             let offset = u64::try_from(row)
                 .map_err(|_| CdfError::data("MongoDB roofline row offset exceeds u64"))?;
@@ -743,12 +739,12 @@ impl PayloadObservation {
     }
 }
 
-fn downcast<'a, T: 'static>(
-    batch: &'a RecordBatch,
-    index: usize,
-    name: &str,
-    expected: &str,
-) -> Result<&'a T> {
+fn downcast<'a, T: 'static>(batch: &'a RecordBatch, name: &str, expected: &str) -> Result<&'a T> {
+    let index = batch.schema().index_of(name).map_err(|_| {
+        CdfError::data(format!(
+            "MongoDB roofline payload omitted required field `{name}`"
+        ))
+    })?;
     batch
         .column(index)
         .as_any()
@@ -756,7 +752,7 @@ fn downcast<'a, T: 'static>(
         .ok_or_else(|| {
             let actual = batch.schema().field(index).clone();
             CdfError::data(format!(
-                "MongoDB roofline field `{name}` at index {index} was not {expected}; observed field {:?} with type {}",
+                "MongoDB roofline field `{name}` was not {expected}; observed field {:?} with type {}",
                 actual.name(),
                 actual.data_type()
             ))
@@ -1079,5 +1075,21 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
         assert!(error.message.contains("logical row 0"));
+
+        let reordered = RecordBatch::try_from_iter(vec![
+            ("id", Arc::new(Int64Array::from(vec![0])) as ArrayRef),
+            ("label", Arc::new(StringArray::from(vec!["label-0"])) as ArrayRef),
+            ("metric", Arc::new(Int64Array::from(vec![0])) as ArrayRef),
+            (
+                "updated_at",
+                Arc::new(
+                    TimestampMillisecondArray::from(vec![0_i64]).with_timezone("UTC"),
+                ) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let mut name_addressed = PayloadObservation::default();
+        name_addressed.observe(&reordered).unwrap();
+        name_addressed.finish(1, "reordered").unwrap();
     }
 }

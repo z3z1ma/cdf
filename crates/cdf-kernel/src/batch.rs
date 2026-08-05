@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use std::fmt;
 
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};
@@ -261,46 +261,35 @@ impl BatchHeader {
     }
 
     pub fn pre_contract_evidence_retained_bytes(&self) -> Result<u64> {
-        let mut seen = BTreeSet::new();
-        let arrays = self
+        let vector_bytes = self
+            .pre_contract_evidence
+            .residual_candidates
+            .capacity()
+            .checked_mul(std::mem::size_of::<PreContractResidualCandidate>())
+            .and_then(|bytes| {
+                self.pre_contract_evidence
+                    .physical_reconciliations
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<PreContractPhysicalReconciliation>())
+                    .and_then(|physical| bytes.checked_add(physical))
+            })
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| crate::CdfError::data("pre-contract evidence vector memory overflow"))?;
+        let candidates = self
             .pre_contract_evidence
             .residual_candidates
             .iter()
-            .map(|candidate| Arc::clone(&candidate.value))
-            .chain(
-                self.pre_contract_evidence
-                    .physical_reconciliations
-                    .iter()
-                    .map(|reconciliation| Arc::clone(&reconciliation.observed_values)),
-            )
-            .try_fold(0_u64, |total, candidate| {
-                let allocation = Arc::as_ptr(&candidate) as *const () as usize;
-                if !seen.insert(allocation) {
-                    return Ok(total);
-                }
-                let bytes = u64::try_from(candidate.get_array_memory_size()).map_err(|_| {
-                    crate::CdfError::data("pre-contract evidence memory exceeds u64")
-                })?;
+            .try_fold(vector_bytes, |total, candidate| {
                 total
-                    .checked_add(bytes)
+                    .checked_add(candidate.retained_bytes()?)
                     .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))
             })?;
         self.pre_contract_evidence
             .physical_reconciliations
             .iter()
-            .try_fold(arrays, |total, reconciliation| {
-                let bytes = reconciliation
-                    .batch_row_ordinals
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<usize>())
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or_else(|| {
-                        crate::CdfError::data(
-                            "pre-contract physical reconciliation row memory exceeds u64",
-                        )
-                    })?;
+            .try_fold(candidates, |total, reconciliation| {
                 total
-                    .checked_add(bytes)
+                    .checked_add(reconciliation.retained_bytes()?)
                     .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))
             })
     }
@@ -395,6 +384,16 @@ impl PreContractResidualCandidate {
 
     pub fn value_index(&self) -> usize {
         self.value_index
+    }
+
+    pub fn retained_bytes(&self) -> Result<u64> {
+        pre_contract_value_bytes(
+            &self.source_path,
+            &self.observed_field,
+            self.expected_field.as_ref(),
+            self.value.as_ref(),
+            0,
+        )
     }
 }
 
@@ -495,6 +494,90 @@ impl PreContractPhysicalReconciliation {
     pub fn batch_row_ordinals(&self) -> &[usize] {
         &self.batch_row_ordinals
     }
+
+    pub fn retained_bytes(&self) -> Result<u64> {
+        let ordinal_bytes = self
+            .batch_row_ordinals
+            .capacity()
+            .checked_mul(std::mem::size_of::<usize>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| {
+                crate::CdfError::data("pre-contract physical reconciliation row memory exceeds u64")
+            })?;
+        pre_contract_value_bytes(
+            &self.source_path,
+            &self.observed_field,
+            Some(&self.expected_field),
+            self.observed_values.as_ref(),
+            ordinal_bytes,
+        )
+    }
+}
+
+fn pre_contract_value_bytes(
+    source_path: &[String],
+    observed_field: &Field,
+    expected_field: Option<&Field>,
+    value: &dyn Array,
+    initial: u64,
+) -> Result<u64> {
+    let value_bytes = u64::try_from(value.get_array_memory_size())
+        .map_err(|_| crate::CdfError::data("pre-contract evidence array memory exceeds u64"))?;
+    let path_bytes = source_path.iter().try_fold(0_u64, |total, segment| {
+        total
+            .checked_add(u64::try_from(segment.capacity()).unwrap_or(u64::MAX))
+            .ok_or_else(|| crate::CdfError::data("pre-contract path memory overflow"))
+    })?;
+    let mut total = initial
+        .checked_add(value_bytes)
+        .and_then(|bytes| bytes.checked_add(path_bytes))
+        .and_then(|bytes| {
+            u64::try_from(
+                source_path
+                    .len()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .ok()
+            .and_then(|path| bytes.checked_add(path))
+        })
+        .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))?;
+    total = total
+        .checked_add(field_retained_bytes(observed_field)?)
+        .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))?;
+    if let Some(expected) = expected_field {
+        total = total
+            .checked_add(field_retained_bytes(expected)?)
+            .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))?;
+    }
+    Ok(total)
+}
+
+fn field_retained_bytes(field: &Field) -> Result<u64> {
+    let mut bytes = std::mem::size_of::<Field>()
+        .checked_add(field.name().len())
+        .ok_or_else(|| crate::CdfError::data("pre-contract field memory overflow"))?;
+    for (key, value) in field.metadata() {
+        bytes = bytes
+            .checked_add(key.len())
+            .and_then(|bytes| bytes.checked_add(value.len()))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<String>()))
+            .ok_or_else(|| crate::CdfError::data("pre-contract field memory overflow"))?;
+    }
+    let nested = match field.data_type() {
+        arrow_schema::DataType::List(child) => field_retained_bytes(child)?,
+        arrow_schema::DataType::Struct(fields) => {
+            fields.iter().try_fold(0_u64, |total, child| {
+                total
+                    .checked_add(field_retained_bytes(child)?)
+                    .ok_or_else(|| crate::CdfError::data("pre-contract field memory overflow"))
+            })?
+        }
+        _ => 0,
+    };
+    u64::try_from(bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_add(nested))
+        .ok_or_else(|| crate::CdfError::data("pre-contract field memory overflow"))
 }
 
 impl fmt::Debug for PreContractPhysicalReconciliation {

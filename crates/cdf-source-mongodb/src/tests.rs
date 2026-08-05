@@ -25,8 +25,8 @@ use crate::{
     identifier::{MongoDbIdentifier, validate_field_path},
     query::{build_query, scan_from_partition},
     schema::{
-        MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference, decode_batch,
-        decode_batch_with_evidence, parse_decimal128,
+        MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference,
+        attach_expected_physical_types, decode_batch, decode_batch_with_evidence, parse_decimal128,
     },
 };
 
@@ -585,6 +585,173 @@ fn compatible_physical_reconciliation_is_vectorized_beyond_residual_cardinality(
         ROWS
     );
     assert_eq!(decoded.record_batch.num_rows(), ROWS);
+}
+
+#[test]
+fn nested_leaf_reconciliation_composes_with_missing_and_unknown_fields() {
+    let nested = with_physical_type(
+        with_source_name(
+            Field::new(
+                "nested",
+                DataType::Struct(
+                    vec![
+                        Arc::new(with_physical_type(
+                            with_source_name(Field::new("known", DataType::Int64, false), "known"),
+                            "bson:int64",
+                        )),
+                        Arc::new(with_physical_type(
+                            with_source_name(
+                                Field::new("optional", DataType::Int64, true),
+                                "optional",
+                            ),
+                            "bson:int64",
+                        )),
+                    ]
+                    .into(),
+                ),
+                false,
+            ),
+            "nested",
+        ),
+        "bson:document",
+    );
+    let schema = Arc::new(Schema::new(vec![nested]));
+    let document = RawDocumentBuf::try_from(&doc! {
+        "nested": {"known": 7_i32, "extra": "preserve"}
+    })
+    .unwrap();
+
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0).unwrap();
+
+    assert_eq!(decoded.physical_reconciliations.len(), 1);
+    assert_eq!(
+        decoded.physical_reconciliations[0].source_path(),
+        ["nested", "known"]
+    );
+    assert_eq!(decoded.residual_candidates.len(), 1);
+    assert_eq!(
+        decoded.residual_candidates[0].source_path(),
+        ["nested", "extra"]
+    );
+}
+
+#[test]
+fn mixed_array_reconciliation_retains_exact_element_path() {
+    let child = Arc::new(with_physical_type(
+        Field::new("item", DataType::Int64, true),
+        "bson:int64",
+    ));
+    let schema = Arc::new(Schema::new(vec![with_physical_type(
+        with_source_name(Field::new("values", DataType::List(child), false), "values"),
+        "bson:array",
+    )]));
+    let document = RawDocumentBuf::try_from(&doc! {"values": [1_i32, 2_i64]}).unwrap();
+
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0).unwrap();
+
+    assert_eq!(decoded.physical_reconciliations.len(), 1);
+    assert_eq!(
+        decoded.physical_reconciliations[0].source_path(),
+        ["values", "0"]
+    );
+    assert_eq!(
+        physical_type(decoded.physical_reconciliations[0].observed_field()),
+        Some("bson:int32")
+    );
+}
+
+#[test]
+fn non_finite_bson_doubles_preserve_exact_arrow_values() {
+    let schema = Arc::new(Schema::new(vec![with_physical_type(
+        Field::new("value", DataType::Float64, false),
+        "bson:double",
+    )]));
+    let documents = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        .into_iter()
+        .map(|value| RawDocumentBuf::try_from(&doc! {"value": value}).unwrap())
+        .collect::<Vec<_>>();
+    let references = documents
+        .iter()
+        .map(RawDocumentBuf::as_ref)
+        .collect::<Vec<_>>();
+
+    let decoded = decode_batch_with_evidence(Arc::clone(&schema), schema, &references, 0).unwrap();
+    let values = decoded
+        .record_batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    assert!(values.value(0).is_nan());
+    assert_eq!(values.value(1), f64::INFINITY);
+    assert_eq!(values.value(2), f64::NEG_INFINITY);
+}
+
+#[test]
+fn sparse_wide_batches_fail_before_column_accumulator_growth() {
+    let schema = Arc::new(Schema::new(
+        (0..4_096)
+            .map(|index| Field::new(format!("field_{index}"), DataType::Int64, true))
+            .collect::<Vec<_>>(),
+    ));
+    let document = RawDocumentBuf::try_from(&doc! {"field_0": 1_i64}).unwrap();
+    let documents = vec![document.as_ref(); 1_025];
+
+    let error = decode_batch_with_evidence(Arc::clone(&schema), schema, &documents, 0).unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(
+        error.message.contains("progressive decode bound"),
+        "{error}"
+    );
+}
+
+#[test]
+fn discovery_caps_retained_nested_shape_across_documents() {
+    let mut inference = SchemaInference::default();
+    let mut terminal = None;
+    for index in 0..4_096 {
+        let document = RawDocumentBuf::try_from(&doc! {
+            "nested": {format!("field_{index}"): 1_i64}
+        })
+        .unwrap();
+        if let Err(error) = inference.observe(document.as_ref()) {
+            terminal = Some(error);
+            break;
+        }
+    }
+    let error = terminal.expect("retained nested discovery shape must be bounded");
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("retained schema bound"), "{error}");
+}
+
+#[test]
+fn physical_catalog_attachment_enforces_decimal_semantics() {
+    let observed = Schema::new(vec![with_physical_type(
+        semantic_field(
+            Field::new("amount", DataType::Utf8, true),
+            MONGODB_DECIMAL_TEXT_SEMANTIC,
+        ),
+        "bson:decimal128",
+    )]);
+    let decimal = Schema::new(vec![Field::new(
+        "amount",
+        DataType::Decimal128(18, 2),
+        true,
+    )]);
+    assert_eq!(
+        attach_expected_physical_types(&decimal, &observed)
+            .unwrap()
+            .field(0)
+            .data_type(),
+        &DataType::Decimal128(18, 2)
+    );
+
+    let plain_text = Schema::new(vec![Field::new("amount", DataType::Utf8, true)]);
+    let error = attach_expected_physical_types(&plain_text, &observed).unwrap_err();
+    assert!(error.message.contains("tagged-text semantic"), "{error}");
 }
 
 #[test]

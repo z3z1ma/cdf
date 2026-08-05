@@ -14,9 +14,9 @@ use crate::expression_execution::{
 };
 use crate::expression_memory::expression_working_set_bytes;
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
+    Array, ArrayRef, BooleanArray, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
+    StructArray, UInt32Array, UInt64Array,
 };
-use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use arrow_select::take::take_record_batch;
@@ -651,8 +651,24 @@ where
                             .cdc
                             .as_ref()
                             .map(|metadata| metadata.operation_field.clone());
+                        let residual_preflight = preflight_residual_quarantines(
+                            &plan.validation_program,
+                            residual_candidates,
+                            &ResidualBatchContext {
+                                evaluation: &evaluation_context,
+                                source_rows: None,
+                                cdc_operation_field: cdc_operation_field.as_deref(),
+                                batch_id: &batch.header.batch_id,
+                                observation_id: candidate
+                                    .expected
+                                    .as_ref()
+                                    .map(|evidence| evidence.observation_id.as_str()),
+                            },
+                        )?;
+                        let residual_candidates = residual_preflight.remaining_candidates;
                         let track_source_rows = pre_contract_may_filter
                             || !residual_candidates.is_empty()
+                            || !residual_preflight.quarantined_batch_rows.is_empty()
                             || plan
                                 .relational_expression_plan
                                 .as_ref()
@@ -731,8 +747,16 @@ where
                             source_rows,
                             relational_source_rows.as_deref(),
                         )?;
+                        let (output, source_rows) = remove_preflight_quarantined_rows(
+                            output,
+                            source_rows,
+                            &residual_preflight.quarantined_batch_rows,
+                        )?;
                         let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
-                        let contract = apply_contract_exec(
+                        for record in residual_preflight.quarantine_records {
+                            discard_quarantine(record)?;
+                        }
+                        let mut contract = apply_contract_exec(
                             output,
                             &mut contract_evaluator,
                             &mut discard_quarantine,
@@ -750,6 +774,7 @@ where
                             TransformKernelMode::Fused,
                             transform_memory_lease,
                         )?;
+                        merge_verdict_summary(&mut contract.summary, residual_preflight.summary);
                         let projected =
                             apply_projection(&contract.accepted, plan.final_projection.as_deref())?;
                         let normalized = append_residual_variant(
@@ -4375,8 +4400,29 @@ where
                     physical_reconciliation_artifacts,
                 )?;
 
+                let batch_source_position = normalize_source_position_for_partition(
+                    batch.header.source_position.clone(),
+                    &partition_scope,
+                );
+                let evaluation_context = package_evaluation_context
+                    .clone()
+                    .with_source_position(batch_source_position.clone());
+                let residual_preflight = preflight_residual_quarantines(
+                    &validation_program,
+                    residual_candidates,
+                    &ResidualBatchContext {
+                        evaluation: &evaluation_context,
+                        source_rows: None,
+                        cdc_operation_field: cdc_operation_field.as_deref(),
+                        batch_id: &batch.header.batch_id,
+                        observation_id: partition_observation_id.as_deref(),
+                    },
+                )?;
+                let residual_candidates = residual_preflight.remaining_candidates;
+
                 let track_source_rows = pre_contract_may_filter
                     || !residual_candidates.is_empty()
+                    || !residual_preflight.quarantined_batch_rows.is_empty()
                     || late_data_policy.is_some()
                     || plan
                         .relational_expression_plan
@@ -4457,10 +4503,11 @@ where
                     source_rows,
                     relational_source_rows.as_deref(),
                 )?;
-                let batch_source_position = normalize_source_position_for_partition(
-                    batch.header.source_position.clone(),
-                    &partition_scope,
-                );
+                let (output, source_rows) = remove_preflight_quarantined_rows(
+                    output,
+                    source_rows,
+                    &residual_preflight.quarantined_batch_rows,
+                )?;
                 if let Some(position) = &batch_source_position {
                     accumulate_processed_partition_position(
                         cdf_kernel::partition_schema_observation_id(&partition),
@@ -4533,7 +4580,7 @@ where
                         }
                     };
                 }
-                if output.num_rows() == 0 {
+                if output.num_rows() == 0 && residual_preflight.quarantine_records.is_empty() {
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
                         elapsed_ns(validation_started, "validation/normalization")?,
@@ -4544,10 +4591,8 @@ where
                     continue;
                 }
 
-                let evaluation_context = package_evaluation_context
-                    .clone()
-                    .with_source_position(batch_source_position.clone());
                 let quarantine_lease = if residual_candidates.is_empty()
+                    && residual_preflight.quarantine_records.is_empty()
                     && !program_may_quarantine(&validation_program)
                 {
                     None
@@ -4559,12 +4604,15 @@ where
                     &mut quarantine_part_count,
                     quarantine_lease,
                 );
+                for record in residual_preflight.quarantine_records {
+                    quarantine_sink.push(record)?;
+                }
                 let ContractExecOutput {
                     accepted,
                     accepted_source_rows,
                     variant_values,
-                    summary,
-                    residual_decisions: batch_residual_decisions,
+                    mut summary,
+                    residual_decisions: mut batch_residual_decisions,
                     memory_lease,
                 } = apply_contract_exec(
                     output,
@@ -4585,6 +4633,11 @@ where
                     },
                     transform_memory_lease,
                 )?;
+                merge_verdict_summary(&mut summary, residual_preflight.summary);
+                batch_residual_decisions.splice(
+                    0..0,
+                    residual_preflight.residual_decisions,
+                );
                 quarantine_sink.finish()?;
                 residual_decisions.push(batch_residual_decisions)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
@@ -7123,6 +7176,113 @@ struct ResidualExecOutput {
     residual_decisions: Vec<ResidualDecisionArtifact>,
 }
 
+struct ResidualQuarantinePreflight {
+    quarantined_batch_rows: BTreeSet<usize>,
+    remaining_candidates: Vec<PreContractResidualCandidate>,
+    quarantine_records: Vec<QuarantineRecord>,
+    summary: VerdictSummary,
+    residual_decisions: Vec<ResidualDecisionArtifact>,
+}
+
+fn preflight_residual_quarantines(
+    program: &ValidationProgram,
+    candidates: Vec<PreContractResidualCandidate>,
+    context: &ResidualBatchContext<'_>,
+) -> Result<ResidualQuarantinePreflight> {
+    let mut grouped = BTreeMap::<usize, Vec<PreContractResidualCandidate>>::new();
+    for candidate in candidates {
+        grouped
+            .entry(candidate.batch_row_ordinal())
+            .or_default()
+            .push(candidate);
+    }
+    let dynamic_controls = residual_dynamic_controls(context);
+    let mut output = ResidualQuarantinePreflight {
+        quarantined_batch_rows: BTreeSet::new(),
+        remaining_candidates: Vec::new(),
+        quarantine_records: Vec::new(),
+        summary: VerdictSummary::default(),
+        residual_decisions: Vec::new(),
+    };
+    for (batch_row, row_candidates) in grouped {
+        let Some((rule_id, error_code)) =
+            residual_quarantine_reason(program, &row_candidates, &dynamic_controls)
+        else {
+            output.remaining_candidates.extend(row_candidates);
+            continue;
+        };
+        output.quarantined_batch_rows.insert(batch_row);
+        output.summary.input_rows += 1;
+        output.summary.quarantined_rows += 1;
+        let summary = output
+            .summary
+            .rule_summaries
+            .iter_mut()
+            .find(|summary| summary.rule_id == rule_id && summary.error_code == error_code);
+        if let Some(summary) = summary {
+            summary.checked_rows += 1;
+            summary.violation_count += 1;
+        } else {
+            output
+                .summary
+                .rule_summaries
+                .push(cdf_contract::RuleVerdictSummary {
+                    rule_id: rule_id.clone(),
+                    error_code: error_code.clone(),
+                    checked_rows: 1,
+                    violation_count: 1,
+                });
+        }
+        for candidate in row_candidates {
+            let redaction = residual_redaction(program, &candidate)?;
+            output.quarantine_records.push(QuarantineRecord {
+                source_row_ordinal: candidate.source_row_ordinal(),
+                rule_id: rule_id.clone(),
+                error_code: error_code.clone(),
+                source_position: context.evaluation.source_position.clone(),
+                observed_value_redacted: residual_observed_value(&candidate, &redaction),
+            });
+            output.summary.violation_count += 1;
+            output.summary.quarantine_candidate_count += 1;
+            output.residual_decisions.push(residual_decision_artifact(
+                program,
+                &candidate,
+                context.batch_id,
+                context.observation_id,
+                ResidualRuntimeVerdict::Quarantined,
+                &rule_id,
+                redaction,
+            )?);
+        }
+    }
+    Ok(output)
+}
+
+fn remove_preflight_quarantined_rows(
+    batch: RecordBatch,
+    source_rows: Option<Vec<usize>>,
+    quarantined: &BTreeSet<usize>,
+) -> Result<(RecordBatch, Option<Vec<usize>>)> {
+    if quarantined.is_empty() {
+        return Ok((batch, source_rows));
+    }
+    let source_rows = source_rows.ok_or_else(|| {
+        CdfError::internal("preflight residual quarantine omitted source-row tracking")
+    })?;
+    let accepted = source_rows
+        .iter()
+        .map(|source| !quarantined.contains(source))
+        .collect::<Vec<_>>();
+    let accepted_mask = BooleanArray::from(accepted.clone());
+    let batch = filter_record_batch(&batch, &accepted_mask).map_err(CdfError::from)?;
+    let source_rows = accepted
+        .into_iter()
+        .zip(source_rows)
+        .filter_map(|(accepted, source)| accepted.then_some(source))
+        .collect();
+    Ok((batch, Some(source_rows)))
+}
+
 fn validate_physical_reconciliations(
     batch: &RecordBatch,
     reconciliations: Vec<PreContractPhysicalReconciliation>,
@@ -7133,29 +7293,7 @@ fn validate_physical_reconciliations(
         .into_iter()
         .map(|reconciliation| {
             let source = reconciliation.source_path().join(".");
-            let field_index = batch
-                .schema()
-                .fields()
-                .iter()
-                .position(|field| {
-                    source_name(field.as_ref()).unwrap_or_else(|| field.name()) == source
-                })
-                .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "physical reconciliation field {source:?} is absent from its materialized batch"
-                    ))
-                })?;
-            let materialized_schema = batch.schema();
-            let materialized_field = materialized_schema.field(field_index);
             let expected_field = reconciliation.expected_field();
-            if materialized_field.data_type() != expected_field.data_type()
-                || materialized_field.name() != expected_field.name()
-                || materialized_field.metadata() != expected_field.metadata()
-            {
-                return Err(CdfError::data(format!(
-                    "physical reconciliation field {source:?} does not match its materialized typed field"
-                )));
-            }
             if !lossless_physical_projection(
                 reconciliation.observed_field().data_type(),
                 expected_field.data_type(),
@@ -7166,16 +7304,6 @@ fn validate_physical_reconciliations(
                     expected_field.data_type()
                 )));
             }
-            let projected = cast(
-                reconciliation.observed_values().as_ref(),
-                expected_field.data_type(),
-            )
-            .map_err(|error| {
-                CdfError::data(format!(
-                    "physical reconciliation field {source:?} could not be losslessly projected: {error}"
-                ))
-            })?;
-            let materialized = batch.column(field_index);
             for (value_index, row) in reconciliation
                 .batch_row_ordinals()
                 .iter()
@@ -7188,9 +7316,24 @@ fn validate_physical_reconciliations(
                         batch.num_rows()
                     )));
                 }
-                if projected.slice(value_index, 1).to_data()
-                    != materialized.slice(row, 1).to_data()
+                let (materialized_field, materialized) = materialized_leaf_value(
+                    batch,
+                    reconciliation.source_path(),
+                    row,
+                )?;
+                if materialized_field.data_type() != expected_field.data_type()
+                    || materialized_field.name() != expected_field.name()
+                    || materialized_field.metadata() != expected_field.metadata()
                 {
+                    return Err(CdfError::data(format!(
+                        "physical reconciliation field {source:?} does not match its materialized typed field"
+                    )));
+                }
+                if !lossless_reconciliation_value_equals(
+                    reconciliation.observed_values().as_ref(),
+                    value_index,
+                    materialized.as_ref(),
+                )? {
                     return Err(CdfError::data(format!(
                         "physical reconciliation field {source:?} does not equal its materialized typed value at batch row {row}"
                     )));
@@ -7235,6 +7378,132 @@ fn lossless_physical_projection(observed: &DataType, expected: &DataType) -> boo
     }
 }
 
+fn materialized_leaf_value(
+    batch: &RecordBatch,
+    source_path: &[String],
+    batch_row: usize,
+) -> Result<(Field, ArrayRef)> {
+    let schema = batch.schema();
+    let (field_index, consumed) = (1..=source_path.len())
+        .rev()
+        .find_map(|consumed| {
+            let source = source_path[..consumed].join(".");
+            schema
+                .fields()
+                .iter()
+                .position(|field| {
+                    source_name(field.as_ref()).unwrap_or_else(|| field.name()) == source
+                })
+                .map(|index| (index, consumed))
+        })
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "physical reconciliation field {:?} is absent from its materialized batch",
+                source_path.join(".")
+            ))
+        })?;
+    let mut field = schema.field(field_index).clone();
+    let mut values = Arc::clone(batch.column(field_index));
+    let mut value_index = batch_row;
+    for segment in &source_path[consumed..] {
+        match (field.data_type(), values.as_ref()) {
+            (DataType::Struct(fields), array) => {
+                let struct_values =
+                    array
+                        .as_any()
+                        .downcast_ref::<StructArray>()
+                        .ok_or_else(|| {
+                            CdfError::data(
+                                "materialized reconciliation struct has incompatible storage",
+                            )
+                        })?;
+                let child_index = fields
+                    .iter()
+                    .position(|child| source_name(child).unwrap_or_else(|| child.name()) == segment)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "physical reconciliation nested field {segment:?} is absent"
+                        ))
+                    })?;
+                if struct_values.is_null(value_index) {
+                    return Err(CdfError::data(
+                        "physical reconciliation names a null materialized struct",
+                    ));
+                }
+                field = fields[child_index].as_ref().clone();
+                values = Arc::clone(struct_values.column(child_index));
+            }
+            (DataType::List(child), array) => {
+                let list_values = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    CdfError::data("materialized reconciliation list has incompatible storage")
+                })?;
+                if list_values.is_null(value_index) {
+                    return Err(CdfError::data(
+                        "physical reconciliation names a null materialized list",
+                    ));
+                }
+                let element = segment.parse::<usize>().map_err(|_| {
+                    CdfError::data(format!(
+                        "physical reconciliation list path segment {segment:?} is not an index"
+                    ))
+                })?;
+                let offsets = list_values.value_offsets();
+                let start = usize::try_from(offsets[value_index])
+                    .map_err(|_| CdfError::data("materialized list offset is negative"))?;
+                let end = usize::try_from(offsets[value_index + 1])
+                    .map_err(|_| CdfError::data("materialized list offset is negative"))?;
+                value_index = start
+                    .checked_add(element)
+                    .ok_or_else(|| CdfError::data("physical reconciliation list index overflow"))?;
+                if value_index >= end {
+                    return Err(CdfError::data(
+                        "physical reconciliation list index is outside the materialized value",
+                    ));
+                }
+                field = child.as_ref().clone();
+                values = Arc::clone(list_values.values());
+            }
+            _ => {
+                return Err(CdfError::data(format!(
+                    "physical reconciliation path {:?} traverses a scalar materialized field",
+                    source_path.join(".")
+                )));
+            }
+        }
+    }
+    Ok((field, values.slice(value_index, 1)))
+}
+
+fn lossless_reconciliation_value_equals(
+    observed: &dyn Array,
+    observed_index: usize,
+    materialized: &dyn Array,
+) -> Result<bool> {
+    match (observed.data_type(), materialized.data_type()) {
+        (DataType::Int32, DataType::Int64) => {
+            let observed = observed
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .ok_or_else(|| {
+                    CdfError::data("physical Int32 reconciliation has incompatible storage")
+                })?;
+            let materialized = materialized
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| {
+                    CdfError::data("materialized Int64 reconciliation has incompatible storage")
+                })?;
+            Ok(!observed.is_null(observed_index)
+                && !materialized.is_null(0)
+                && i64::from(observed.value(observed_index)) == materialized.value(0))
+        }
+        (observed_type, materialized_type) if observed_type == materialized_type => {
+            Ok(observed.slice(observed_index, 1).to_data() == materialized.slice(0, 1).to_data())
+        }
+        _ => Ok(false),
+    }
+}
+
 fn physical_reconciliation_row_ranges(
     rows: &[usize],
 ) -> Result<Vec<PhysicalReconciliationRowRange>> {
@@ -7269,6 +7538,57 @@ fn field_type_evidence(field: &Field) -> Result<FieldTypeEvidenceArtifact> {
     })
 }
 
+fn residual_dynamic_controls(context: &ResidualBatchContext<'_>) -> BTreeSet<String> {
+    let mut controls = BTreeSet::new();
+    if let Some(field) = context.cdc_operation_field {
+        controls.insert(field.to_owned());
+    }
+    collect_source_position_control_fields(
+        context.evaluation.source_position.as_ref(),
+        &mut controls,
+    );
+    controls
+}
+
+fn residual_quarantine_reason(
+    program: &ValidationProgram,
+    candidates: &[PreContractResidualCandidate],
+    dynamic_controls: &BTreeSet<String>,
+) -> Option<(String, String)> {
+    for candidate in candidates {
+        let field = candidate
+            .source_path()
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        let field_program = program.residual.as_ref().and_then(|residual| {
+            residual
+                .fields
+                .iter()
+                .find(|item| item.source_name == field || item.output_name == field)
+        });
+        let control_critical = dynamic_controls.contains(field)
+            || field_program.is_some_and(|field| field.control_critical || field.required);
+        let captures = program.residual.as_ref().is_some_and(|residual| {
+            residual.default_verdict == ResidualCandidateVerdict::Capture
+                && residual.capture.is_some()
+        });
+        if control_critical {
+            return Some((
+                format!("residual:{}:control-critical", residual_path(candidate)),
+                "cdf.residual_control_critical".to_owned(),
+            ));
+        }
+        if !captures {
+            return Some((
+                format!("residual:{}:contract", residual_path(candidate)),
+                "cdf.residual_contract_quarantine".to_owned(),
+            ));
+        }
+    }
+    None
+}
+
 fn apply_residual_verdicts(
     batch: RecordBatch,
     program: &ValidationProgram,
@@ -7299,55 +7619,15 @@ fn apply_residual_verdicts(
         }
     }
 
-    let mut dynamic_controls = BTreeSet::new();
-    if let Some(field) = context.cdc_operation_field {
-        dynamic_controls.insert(field.to_owned());
-    }
-    collect_source_position_control_fields(
-        context.evaluation.source_position.as_ref(),
-        &mut dynamic_controls,
-    );
+    let dynamic_controls = residual_dynamic_controls(context);
 
     for (row, row_candidates) in grouped {
         let redactions = row_candidates
             .iter()
             .map(|candidate| residual_redaction(program, candidate))
             .collect::<Result<Vec<_>>>()?;
-        let mut quarantine_reason = None;
-        for candidate in &row_candidates {
-            let field = candidate
-                .source_path()
-                .first()
-                .map(String::as_str)
-                .unwrap_or_default();
-            let field_program = program.residual.as_ref().and_then(|residual| {
-                residual
-                    .fields
-                    .iter()
-                    .find(|item| item.source_name == field || item.output_name == field)
-            });
-            let control_critical = dynamic_controls.contains(field)
-                || field_program.is_some_and(|field| field.control_critical || field.required);
-            let residual = program.residual.as_ref();
-            let captures = residual.is_some_and(|residual| {
-                residual.default_verdict == ResidualCandidateVerdict::Capture
-                    && residual.capture.is_some()
-            });
-            if control_critical {
-                quarantine_reason = Some((
-                    format!("residual:{}:control-critical", residual_path(candidate)),
-                    "cdf.residual_control_critical".to_owned(),
-                ));
-                break;
-            }
-            if !captures {
-                quarantine_reason = Some((
-                    format!("residual:{}:contract", residual_path(candidate)),
-                    "cdf.residual_contract_quarantine".to_owned(),
-                ));
-                break;
-            }
-        }
+        let mut quarantine_reason =
+            residual_quarantine_reason(program, &row_candidates, &dynamic_controls);
 
         let encoded = if quarantine_reason.is_none() {
             let fields = row_candidates
@@ -8298,8 +8578,9 @@ mod transform_kernel_tests {
         compile_validation_program,
     };
     use cdf_kernel::{
-        BatchId, ErrorKind, PreContractPhysicalReconciliation, PreContractResidualCandidate,
-        TrustLevel, with_physical_type, with_semantic,
+        BatchId, CursorPosition, CursorValue, ErrorKind, PreContractPhysicalReconciliation,
+        PreContractResidualCandidate, SourcePosition, TrustLevel, with_physical_type,
+        with_semantic,
     };
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use cdf_package::PackageBuilder;
@@ -8307,8 +8588,9 @@ mod transform_kernel_tests {
 
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
-        apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
-        residual_redaction, source_row_tracking_schema,
+        apply_pre_contract_expressions, bind_filter_expressions, execute_batch,
+        preflight_residual_quarantines, remove_preflight_quarantined_rows,
+        reserve_quarantine_evidence, residual_redaction, source_row_tracking_schema,
         validate_materialized_effective_batch_schema, validate_physical_reconciliations,
     };
 
@@ -8417,6 +8699,94 @@ mod transform_kernel_tests {
         .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Data);
         assert!(error.message.contains("does not equal"));
+    }
+
+    #[test]
+    fn control_residual_is_quarantined_even_when_filter_drops_its_placeholder() {
+        let expected_schema = Schema::new(vec![Field::new("cursor", DataType::Int64, false)]);
+        let program = compile_validation_program(
+            &ContractPolicy::for_trust(TrustLevel::Governed),
+            &ObservedSchema::from_arrow(&expected_schema),
+        )
+        .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "cursor",
+                DataType::Int64,
+                true,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![None, Some(2)]))],
+        )
+        .unwrap();
+        let filter = crate::expression::plan_expression(
+            DeclarativeExpression::parse_comparison("cursor > 0").unwrap(),
+            ExpressionUse::Filter,
+            &expected_schema,
+        )
+        .unwrap();
+        let tracked_schema = source_row_tracking_schema(&expected_schema).unwrap();
+        let bound = bind_filter_expressions(&[filter], &tracked_schema).unwrap();
+        let candidate = PreContractResidualCandidate::new(
+            41,
+            0,
+            vec!["cursor".to_owned()],
+            Field::new("cursor", DataType::Utf8, true),
+            Some(Field::new("cursor", DataType::Int64, false)),
+            Arc::new(StringArray::from(vec!["wrong"])),
+            0,
+        )
+        .unwrap();
+        let evaluation = ContractEvaluationContext::default().with_source_position(Some(
+            SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "cursor".to_owned(),
+                value: CursorValue::I64(2),
+            }),
+        ));
+        let batch_id = BatchId::new("filtered-control-residual").unwrap();
+        let preflight = preflight_residual_quarantines(
+            &program,
+            vec![candidate],
+            &ResidualBatchContext {
+                evaluation: &evaluation,
+                source_rows: None,
+                cdc_operation_field: None,
+                batch_id: &batch_id,
+                observation_id: Some("observation"),
+            },
+        )
+        .unwrap();
+
+        let executed = execute_batch(
+            &batch,
+            &bound,
+            true,
+            None,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
+        let executed = apply_pre_contract_expressions(
+            executed.batch,
+            &[],
+            &mut None,
+            true,
+            None,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
+        let (filtered, source_rows) = remove_preflight_quarantined_rows(
+            executed.batch,
+            executed.source_rows,
+            &preflight.quarantined_batch_rows,
+        )
+        .unwrap();
+
+        assert_eq!(filtered.num_rows(), 1);
+        assert_eq!(source_rows, Some(vec![1]));
+        assert_eq!(preflight.quarantine_records.len(), 1);
+        assert_eq!(preflight.quarantine_records[0].source_row_ordinal, 41);
+        assert_eq!(preflight.summary.quarantined_rows, 1);
+        assert_eq!(preflight.residual_decisions.len(), 1);
     }
 
     #[test]
