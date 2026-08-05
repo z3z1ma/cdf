@@ -1,9 +1,9 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{env, path::Path, path::PathBuf, process::Command};
 
-fn git(manifest_dir: &PathBuf, args: &[&str]) -> Option<String> {
+fn git(workspace_root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(manifest_dir)
+        .arg(workspace_root)
         .args(args)
         .output()
         .ok()?;
@@ -15,18 +15,30 @@ fn git(manifest_dir: &PathBuf, args: &[&str]) -> Option<String> {
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let revision = git(&manifest_dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(&manifest_dir);
+    let revision = git(workspace_root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let dirty = git(
-        &manifest_dir,
-        &["status", "--porcelain", "--untracked-files=no"],
+        workspace_root,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates",
+        ],
     )
     .is_none_or(|status| !status.is_empty());
     println!("cargo:rustc-env=CDF_BENCHMARK_BUILD_GIT_REVISION={revision}");
     println!("cargo:rustc-env=CDF_BENCHMARK_BUILD_GIT_DIRTY={dirty}");
 
-    if let Some(git_dir) = git(&manifest_dir, &["rev-parse", "--absolute-git-dir"]) {
+    if let Some(git_dir) = git(workspace_root, &["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
-        if let Some(reference) = git(&manifest_dir, &["symbolic-ref", "HEAD"]) {
+        if let Some(reference) = git(workspace_root, &["symbolic-ref", "HEAD"]) {
             println!("cargo:rerun-if-changed={git_dir}/{reference}");
         }
     }

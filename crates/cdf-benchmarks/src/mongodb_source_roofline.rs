@@ -924,11 +924,19 @@ fn base_git_revision(workspace_root: &Path) -> BenchResult<String> {
     let status = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["status", "--porcelain", "--untracked-files=no"])
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates",
+        ])
         .output()?;
     if !status.status.success() || !status.stdout.is_empty() {
         return Err(bench_error(
-            "MongoDB roofline requires a clean tracked Git snapshot so cdf_revision reconstructs the measured source",
+            "MongoDB roofline requires a clean committed participating source snapshot so cdf_revision reconstructs the measured source",
         ));
     }
     let output = Command::new("git")
@@ -964,6 +972,7 @@ fn workspace_content_revision(workspace_root: &Path) -> BenchResult<(String, Vec
         "Cargo.toml",
         "Cargo.lock",
         "crates/cdf-benchmarks/Cargo.toml",
+        "crates/cdf-benchmarks/build.rs",
         "crates/cdf-benchmarks/src/bin/mongodb-source-roofline.rs",
         "crates/cdf-benchmarks/src/mongodb_source_roofline.rs",
         "crates/cdf-source-mongodb/Cargo.toml",

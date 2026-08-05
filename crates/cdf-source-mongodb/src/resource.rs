@@ -82,10 +82,6 @@ impl MongoDbCollectionResource {
         })
     }
 
-    fn runtime_schema_observation_id(&self) -> String {
-        format!("runtime:{}.{}", self.database, self.collection)
-    }
-
     fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
         let Some(execution) = self.execution else {
             return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
@@ -206,10 +202,7 @@ impl ResourceStream for MongoDbCollectionResource {
             plan_mongodb_partition(&self.descriptor, &self.schema, &self.collection, request)?;
         partition.scan_intent = CompiledScanIntent::full_scan();
         if self.effective_schema_runtime.is_some() {
-            cdf_kernel::bind_partition_schema_candidate(
-                &mut partition,
-                &self.runtime_schema_observation_id(),
-            )?;
+            cdf_kernel::bind_partition_schema_candidate(&mut partition, "runtime.mongodb")?;
         }
         Ok(vec![partition])
     }
@@ -234,10 +227,7 @@ impl QueryableResource for MongoDbCollectionResource {
                 .ok_or_else(|| {
                     CdfError::internal("MongoDB negotiation omitted its inline partition")
                 })?;
-            cdf_kernel::bind_partition_schema_candidate(
-                partition,
-                &self.runtime_schema_observation_id(),
-            )?;
+            cdf_kernel::bind_partition_schema_candidate(partition, "runtime.mongodb")?;
         }
         Ok(scan)
     }

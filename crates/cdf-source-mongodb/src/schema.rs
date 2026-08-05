@@ -58,6 +58,7 @@ pub(crate) struct SchemaInference {
 
 impl SchemaInference {
     pub(crate) fn observe(&mut self, document: &RawDocument) -> Result<()> {
+        validate_document_shape(document, 0)?;
         self.documents = self
             .documents
             .checked_add(1)
@@ -429,16 +430,6 @@ pub(crate) fn decode_batch_with_evidence(
                 .to_owned()
         })
         .collect::<BTreeSet<_>>();
-    let projected_sources = output_schema
-        .fields()
-        .iter()
-        .map(|field| {
-            source_name(field)
-                .unwrap_or_else(|| field.name())
-                .to_owned()
-        })
-        .collect::<BTreeSet<_>>();
-    let mut matches_pinned_physical = projected_sources == known_sources;
     let mut residual_candidates = Vec::new();
     let mut residual_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
@@ -448,7 +439,21 @@ pub(crate) fn decode_batch_with_evidence(
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
                 if !value_matches_pinned_physical(field, value)? {
-                    matches_pinned_physical = false;
+                    let candidate = residual_candidate(
+                        source_row_offset.saturating_add(row as u64),
+                        row,
+                        source,
+                        value,
+                        Some(field.as_ref().clone()),
+                        residual_candidates.len(),
+                        residual_evidence_bytes,
+                    )?
+                    .with_preserved_typed_projection()?;
+                    push_residual_candidate(
+                        &mut residual_candidates,
+                        &mut residual_evidence_bytes,
+                        candidate,
+                    )?;
                 }
                 column.append(value)?;
                 let mut source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
@@ -463,16 +468,19 @@ pub(crate) fn decode_batch_with_evidence(
                 )?;
             } else {
                 column.append(None)?;
+                let candidate = residual_candidate(
+                    source_row_offset.saturating_add(row as u64),
+                    row,
+                    source,
+                    value,
+                    Some(field.as_ref().clone()),
+                    residual_candidates.len(),
+                    residual_evidence_bytes,
+                )?;
                 push_residual_candidate(
                     &mut residual_candidates,
                     &mut residual_evidence_bytes,
-                    residual_candidate(
-                        source_row_offset.saturating_add(row as u64),
-                        row,
-                        source,
-                        value,
-                        Some(field.as_ref().clone()),
-                    )?,
+                    candidate,
                 )?;
             }
         }
@@ -484,22 +492,27 @@ pub(crate) fn decode_batch_with_evidence(
             if known_sources.contains(&name) {
                 continue;
             }
+            let candidate = residual_candidate(
+                source_row_offset.saturating_add(row as u64),
+                row,
+                &name,
+                Some(value),
+                None,
+                residual_candidates.len(),
+                residual_evidence_bytes,
+            )?;
             push_residual_candidate(
                 &mut residual_candidates,
                 &mut residual_evidence_bytes,
-                residual_candidate(
-                    source_row_offset.saturating_add(row as u64),
-                    row,
-                    &name,
-                    Some(value),
-                    None,
-                )?,
+                candidate,
             )?;
         }
     }
-    let residual_sources = residual_candidates
+    let nulled_sources = residual_candidates
         .iter()
-        .filter(|candidate| candidate.expected_field().is_some())
+        .filter(|candidate| {
+            candidate.expected_field().is_some() && !candidate.preserves_typed_projection()
+        })
         .filter_map(|candidate| candidate.source_path().first().cloned())
         .collect::<BTreeSet<_>>();
     let materialized_fields = output_schema
@@ -507,7 +520,7 @@ pub(crate) fn decode_batch_with_evidence(
         .iter()
         .map(|field| {
             let source = source_name(field).unwrap_or_else(|| field.name());
-            if residual_sources.contains(source) {
+            if nulled_sources.contains(source) {
                 Arc::new(field.as_ref().clone().with_nullable(true))
             } else {
                 Arc::clone(field)
@@ -527,15 +540,11 @@ pub(crate) fn decode_batch_with_evidence(
             "MongoDB decoded batch contradicted the pinned Arrow schema: {error}"
         ))
     })?;
-    let physical_schema = execution_physical_schema(
-        &full_schema,
-        &output_schema,
-        documents,
-        &projected_sources,
-        &known_sources,
-        &residual_candidates,
-        matches_pinned_physical,
-    )?;
+    // The MongoDB decoder owns BSON-subtype reconciliation and emits both a materialized Arrow
+    // output and complete residual evidence. Its engine-facing physical observation is therefore
+    // the fixed pinned decoder domain, not a per-wire-batch inference that could assign
+    // contradictory schemas to one partition observation identity.
+    let physical_schema = full_schema.as_ref().clone();
     Ok(DecodedMongoBatch {
         record_batch,
         physical_schema,
@@ -599,7 +608,9 @@ fn residual_candidate(
     source: &str,
     value: Option<RawBsonRef<'_>>,
     expected: Option<Field>,
-) -> Result<PreContractResidualCandidate> {
+    existing_candidates: usize,
+    retained_bytes: u64,
+) -> Result<AccountedResidualCandidate> {
     let source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
     residual_candidate_at_path(
         source_row_ordinal,
@@ -607,7 +618,21 @@ fn residual_candidate(
         source_path,
         value,
         expected,
+        existing_candidates,
+        retained_bytes,
     )
+}
+
+struct AccountedResidualCandidate {
+    candidate: PreContractResidualCandidate,
+    retained_bytes: u64,
+}
+
+impl AccountedResidualCandidate {
+    fn with_preserved_typed_projection(mut self) -> Result<Self> {
+        self.candidate = self.candidate.with_preserved_typed_projection()?;
+        Ok(self)
+    }
 }
 
 fn residual_candidate_at_path(
@@ -616,7 +641,9 @@ fn residual_candidate_at_path(
     source_path: Vec<String>,
     value: Option<RawBsonRef<'_>>,
     expected: Option<Field>,
-) -> Result<PreContractResidualCandidate> {
+    existing_candidates: usize,
+    retained_bytes: u64,
+) -> Result<AccountedResidualCandidate> {
     if source_path
         .iter()
         .any(|segment| segment.is_empty() || segment.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES)
@@ -628,8 +655,19 @@ fn residual_candidate_at_path(
     let source = source_path
         .last()
         .ok_or_else(|| CdfError::internal("MongoDB residual source path is empty"))?;
+    if existing_candidates >= MAXIMUM_RESIDUAL_CANDIDATES {
+        return Err(CdfError::data(format!(
+            "MongoDB batch exceeds the {MAXIMUM_RESIDUAL_CANDIDATES}-candidate residual evidence bound; reduce batch_rows"
+        )));
+    }
+    let path_bytes = residual_path_bytes(&source_path)?;
+    let allocation_floor = residual_value_allocation_floor(value)?
+        .checked_add(path_bytes)
+        .and_then(|bytes| bytes.checked_add(RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES))
+        .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?;
+    validate_residual_evidence_bound(retained_bytes, allocation_floor)?;
     let (observed_field, value) = observed_value_evidence(source, value)?;
-    PreContractResidualCandidate::new(
+    let candidate = PreContractResidualCandidate::new(
         source_row_ordinal,
         batch_row_ordinal,
         source_path,
@@ -637,47 +675,102 @@ fn residual_candidate_at_path(
         expected,
         value,
         0,
-    )
+    )?;
+    let array_bytes = u64::try_from(candidate.value().get_array_memory_size())
+        .map_err(|_| CdfError::internal("MongoDB residual evidence memory exceeds u64"))?;
+    let retained_bytes = allocation_floor.max(
+        array_bytes
+            .checked_add(path_bytes)
+            .and_then(|bytes| bytes.checked_add(RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES))
+            .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?,
+    );
+    Ok(AccountedResidualCandidate {
+        candidate,
+        retained_bytes,
+    })
 }
 
 fn push_residual_candidate(
     candidates: &mut Vec<PreContractResidualCandidate>,
     retained_bytes: &mut u64,
-    candidate: PreContractResidualCandidate,
+    accounted: AccountedResidualCandidate,
 ) -> Result<()> {
-    if candidates.len() >= MAXIMUM_RESIDUAL_CANDIDATES {
-        return Err(CdfError::data(format!(
-            "MongoDB batch exceeds the {MAXIMUM_RESIDUAL_CANDIDATES}-candidate residual evidence bound; reduce batch_rows"
-        )));
-    }
-    let array_bytes = u64::try_from(candidate.value().get_array_memory_size())
-        .map_err(|_| CdfError::internal("MongoDB residual evidence memory exceeds u64"))?;
-    let path_bytes =
-        candidate
-            .source_path()
-            .iter()
-            .try_fold(0_u64, |total, segment| {
-                total
-                    .checked_add(u64::try_from(segment.len()).map_err(|_| {
-                        CdfError::internal("MongoDB residual path length exceeds u64")
-                    })?)
-                    .ok_or_else(|| CdfError::internal("MongoDB residual path memory overflow"))
-            })?;
-    let candidate_bytes = array_bytes
-        .checked_add(path_bytes)
-        .and_then(|bytes| bytes.checked_add(RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES))
-        .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?;
     let next = retained_bytes
-        .checked_add(candidate_bytes)
+        .checked_add(accounted.retained_bytes)
         .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?;
-    if next > MAXIMUM_RESIDUAL_EVIDENCE_BYTES {
+    validate_residual_evidence_bound(*retained_bytes, accounted.retained_bytes)?;
+    *retained_bytes = next;
+    candidates.push(accounted.candidate);
+    Ok(())
+}
+
+fn residual_path_bytes(source_path: &[String]) -> Result<u64> {
+    source_path.iter().try_fold(0_u64, |total, segment| {
+        total
+            .checked_add(
+                u64::try_from(segment.len())
+                    .map_err(|_| CdfError::internal("MongoDB residual path length exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::internal("MongoDB residual path memory overflow"))
+    })
+}
+
+fn validate_residual_evidence_bound(retained_bytes: u64, candidate_bytes: u64) -> Result<()> {
+    if retained_bytes
+        .checked_add(candidate_bytes)
+        .is_none_or(|next| next > MAXIMUM_RESIDUAL_EVIDENCE_BYTES)
+    {
         return Err(CdfError::data(format!(
             "MongoDB batch residual evidence exceeds the {MAXIMUM_RESIDUAL_EVIDENCE_BYTES}-byte bound; reduce batch_rows or narrow the source shape"
         )));
     }
-    *retained_bytes = next;
-    candidates.push(candidate);
     Ok(())
+}
+
+fn residual_value_allocation_floor(value: Option<RawBsonRef<'_>>) -> Result<u64> {
+    let raw_bytes = match value {
+        None | Some(RawBsonRef::Null) => 1,
+        Some(
+            RawBsonRef::String(value)
+            | RawBsonRef::JavaScriptCode(value)
+            | RawBsonRef::Symbol(value),
+        ) => u64::try_from(value.len())
+            .map_err(|_| CdfError::internal("MongoDB residual string length exceeds u64"))?,
+        Some(RawBsonRef::Document(value)) => u64::try_from(value.as_bytes().len())
+            .map_err(|_| CdfError::internal("MongoDB residual document length exceeds u64"))?,
+        Some(RawBsonRef::Array(value)) => u64::try_from(value.as_bytes().len())
+            .map_err(|_| CdfError::internal("MongoDB residual array length exceeds u64"))?,
+        Some(RawBsonRef::Binary(value)) => u64::try_from(value.bytes.len())
+            .map_err(|_| CdfError::internal("MongoDB residual binary length exceeds u64"))?,
+        Some(RawBsonRef::RegularExpression(value)) => {
+            let bytes = value
+                .pattern
+                .as_str()
+                .len()
+                .checked_add(value.options.as_str().len())
+                .ok_or_else(|| CdfError::internal("MongoDB residual regex length overflow"))?;
+            u64::try_from(bytes)
+                .map_err(|_| CdfError::internal("MongoDB residual regex length exceeds u64"))?
+        }
+        Some(RawBsonRef::JavaScriptCodeWithScope(value)) => {
+            let code = u64::try_from(value.code.len()).map_err(|_| {
+                CdfError::internal("MongoDB residual JavaScript length exceeds u64")
+            })?;
+            code.checked_add(u64::try_from(value.scope.as_bytes().len()).map_err(|_| {
+                CdfError::internal("MongoDB residual JavaScript scope length exceeds u64")
+            })?)
+            .ok_or_else(|| CdfError::internal("MongoDB residual JavaScript length overflow"))?
+        }
+        // RawDbPointerRef intentionally hides its namespace bytes. Charging the complete evidence
+        // budget fails a second candidate closed while leaving enough decode headroom for one
+        // maximum-size BSON value to be copied into exact evidence.
+        Some(RawBsonRef::DbPointer(_)) => MAXIMUM_RESIDUAL_EVIDENCE_BYTES / 4,
+        Some(_) => 32,
+    };
+    raw_bytes
+        .max(1)
+        .checked_mul(4)
+        .ok_or_else(|| CdfError::internal("MongoDB residual allocation estimate overflow"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -708,6 +801,8 @@ fn collect_nested_unknown_fields(
                         source_path.clone(),
                         Some(value),
                         None,
+                        candidates.len(),
+                        *retained_bytes,
                     )?;
                     source_path.pop();
                     push_residual_candidate(candidates, retained_bytes, candidate)?;
@@ -800,82 +895,14 @@ fn observed_value_evidence(
     }
 }
 
-fn execution_physical_schema(
-    full_schema: &Schema,
-    output_schema: &Schema,
-    documents: &[&RawDocument],
-    projected_sources: &BTreeSet<String>,
-    known_sources: &BTreeSet<String>,
-    residual_candidates: &[PreContractResidualCandidate],
-    matches_pinned_physical: bool,
-) -> Result<Schema> {
-    if matches_pinned_physical && residual_candidates.is_empty() {
-        return Ok(full_schema.clone());
-    }
-    let inferred = (|| {
-        let mut inference = SchemaInference::default();
-        for document in documents {
-            inference.observe(document)?;
-        }
-        inference.finish().map(|(schema, _, _)| schema)
-    })();
-    if let Ok(inferred) = inferred {
-        let mut fields = inferred
-            .fields()
-            .iter()
-            .filter(|field| {
-                let source = source_name(field).unwrap_or_else(|| field.name());
-                projected_sources.contains(source) || !known_sources.contains(source)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        for output in output_schema.fields() {
-            let source = source_name(output).unwrap_or_else(|| output.name());
-            if !fields
-                .iter()
-                .any(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
-            {
-                fields.push(Arc::new(with_source_name(
-                    Field::new(source, DataType::Null, true),
-                    source,
-                )));
-            }
-        }
-        fields.sort_by(|left, right| left.name().cmp(right.name()));
-        return Ok(Schema::new_with_metadata(
-            fields,
-            full_schema.metadata().clone(),
-        ));
-    }
-    let mut fields = output_schema.fields().to_vec();
-    for candidate in residual_candidates
-        .iter()
-        .filter(|candidate| candidate.expected_field().is_none())
-    {
-        let source = candidate
-            .source_path()
-            .first()
-            .ok_or_else(|| CdfError::internal("MongoDB residual source path disappeared"))?;
-        if !fields
-            .iter()
-            .any(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
-        {
-            fields.push(Arc::new(candidate.observed_field().clone()));
-        }
-    }
-    fields.sort_by(|left, right| left.name().cmp(right.name()));
-    Ok(Schema::new_with_metadata(
-        fields,
-        full_schema.metadata().clone(),
-    ))
-}
-
 fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -> Result<bool> {
     let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
         return Ok(field.is_nullable());
     };
     let Some(physical) = physical_type(field) else {
-        return Ok(false);
+        // A declared Arrow-only schema has no BSON subtype contract to contradict. Logical
+        // compatibility remains authoritative until discovery pins exact physical metadata.
+        return Ok(true);
     };
     Ok(match (physical, value) {
         ("bson:boolean", RawBsonRef::Boolean(_))
@@ -905,7 +932,6 @@ fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -
             let DataType::Struct(fields) = field.data_type() else {
                 return Ok(false);
             };
-            validate_unique_document(document)?;
             let expected = fields
                 .iter()
                 .map(|field| {
@@ -963,6 +989,11 @@ fn validate_document_shape(document: &RawDocument, depth: usize) -> Result<()> {
                 "MongoDB field name exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte residual path bound"
             )));
         }
+        if name.as_str().contains('.') {
+            return Err(CdfError::data(format!(
+                "MongoDB field `{name}` contains a literal dot and cannot be represented as an unambiguous CDF field path; rename the source field"
+            )));
+        }
         validate_nested_value_shape(value, depth + 1)?;
     }
     Ok(())
@@ -974,6 +1005,7 @@ fn validate_nested_value_shape(value: RawBsonRef<'_>, depth: usize) -> Result<()
     }
     match value {
         RawBsonRef::Document(document) => validate_document_shape(document, depth),
+        RawBsonRef::JavaScriptCodeWithScope(value) => validate_document_shape(value.scope, depth),
         RawBsonRef::Array(array) => {
             for value in array {
                 validate_nested_value_shape(

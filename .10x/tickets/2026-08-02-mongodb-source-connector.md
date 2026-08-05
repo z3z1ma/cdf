@@ -115,8 +115,22 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   MongoDB error ownership; and replaced declarative benchmark/conformance setup with the current
   query-first public lifecycle. The affected-package strict Clippy barrier passed, `cargo machete
   --with-metadata` found no unused dependency, and 19 pre-existing MongoDB unit tests plus the new
-  residual-cardinality boundary test passed. The regenerated error ledger contains 216 classified
-  construction-bearing rows, including 21 production invariant rows whose ownership is explicit.
+  residual-cardinality boundary test passed.
+- 2026-08-04: Rereview repair made runtime observation IDs partition-bound, worker-safe hashes;
+  rejected literal dotted BSON keys and recursively validated JavaScript-with-scope documents;
+  enforced residual memory/cardinality bounds before evidence allocation; and separated preserved
+  physical reconciliation from logical nulling. BSON Int32 observed under a pinned BSON Int64
+  domain now retains the exact Int32 value and physical metadata without quarantining or changing
+  the partition observation identity. `cdf-kernel` passed 84 unit tests, `cdf-source-mongodb`
+  passed 22, and the focused engine null-evidence regression passed.
+- 2026-08-04: The repaired live MongoDB matrix again passed all 15 supported cells with three
+  destination-sheet exclusions. The public CLI lifecycle passed and now compares package
+  layout/file inventory, segment identity/content, checkpoint positions, and receipt semantics
+  across one and four jobs while checking both decoded and URL-encoded credential forms. The
+  mechanically regenerated error ledger contains 234 classified rows (200 production, 34 test),
+  including all official-driver test constructions and 31 explicit production invariant rows.
+  Benchmark build/runtime cleanliness now includes untracked participating source and binds the
+  benchmark build script itself; a fresh clean-snapshot roofline remains pending after commit.
 
 ## Blockers
 
@@ -128,7 +142,7 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 
 ## Evidence
 
-- Twenty focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+- Twenty-two focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
   injection, portability/redaction, cursor, and error-wrapper behavior.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.

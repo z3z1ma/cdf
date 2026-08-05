@@ -1162,21 +1162,33 @@ pub fn bind_partition_schema_observation(
 /// that its physical schema still equals a discovery observation.
 pub fn bind_partition_schema_candidate(
     partition: &mut PartitionPlan,
-    observation_id: &str,
+    namespace: &str,
 ) -> Result<()> {
-    if observation_id.is_empty() {
+    if namespace.is_empty()
+        || namespace.len() > 32
+        || !namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
         return Err(CdfError::contract(
-            "partition schema observation identity cannot be empty",
+            "partition schema candidate namespace must be a safe 1..=32 character token",
         ));
     }
-    partition.metadata.insert(
-        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
-        observation_id.to_owned(),
-    );
+    use sha2::{Digest, Sha256};
+
+    partition.metadata.remove(PLAN_SCHEMA_OBSERVATION_ID_KEY);
     partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
     partition
         .metadata
         .remove(PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
+    let source_binding = derive_partition_schema_observation_binding(partition)?;
+    let observation_id = format!(
+        "{namespace}.{:x}",
+        Sha256::digest(source_binding.as_str().as_bytes())
+    );
+    partition
+        .metadata
+        .insert(PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(), observation_id);
     let binding = derive_partition_schema_observation_binding(partition)?;
     partition.metadata.insert(
         PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),

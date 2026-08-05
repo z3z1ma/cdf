@@ -340,8 +340,16 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
     let package = jobs_one.join(".cdf/packages").join(package_id);
     let second_package = jobs_four.join(".cdf/packages").join(second_package_id);
     assert_eq!(
-        package_segment_fingerprint(&package),
-        package_segment_fingerprint(&second_package)
+        package_identity_semantics(&package),
+        package_identity_semantics(&second_package)
+    );
+    assert_eq!(
+        checkpoint_position_semantics(&package),
+        checkpoint_position_semantics(&second_package)
+    );
+    assert_eq!(
+        receipt_semantics(&package),
+        receipt_semantics(&second_package)
     );
     std::fs::remove_file(jobs_one.join(".cdf/state.db")).unwrap();
     std::fs::remove_file(jobs_one.join(".cdf/dev.duckdb")).unwrap();
@@ -369,8 +377,11 @@ fn invoke_public_cli(
 }
 
 fn assert_invocation_redacted(result: &cdf_cli_core::output::InvocationResult, secret: &str) {
-    assert!(!result.stdout.contains(secret));
-    assert!(!result.stderr.contains(secret));
+    let encoded = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect::<String>();
+    for sensitive in [secret, encoded.as_str()] {
+        assert!(!result.stdout.contains(sensitive));
+        assert!(!result.stderr.contains(sensitive));
+    }
 }
 
 fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -389,20 +400,103 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn package_segment_fingerprint(package: &std::path::Path) -> Vec<(u64, String)> {
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(package.join("manifest.json")).unwrap()).unwrap();
-    manifest["identity"]["segments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|segment| {
-            (
-                segment["row_count"].as_u64().unwrap(),
-                segment["sha256"].as_str().unwrap().to_owned(),
-            )
+fn package_identity_semantics(package: &std::path::Path) -> serde_json::Value {
+    let reader = cdf_package::PackageReader::open(package).unwrap();
+    let header = reader.manifest();
+    let mut files = Vec::new();
+    reader
+        .for_each_identity_file(&mut |file| {
+            files.push((file.path, file.byte_count));
+            Ok(())
         })
-        .collect()
+        .unwrap();
+    let mut segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            segments.push((
+                segment.segment_id.to_string(),
+                segment.path,
+                segment.package_row_ord_start,
+                segment.row_count,
+                segment.byte_count,
+                segment.sha256,
+            ));
+            Ok(())
+        })
+        .unwrap();
+    serde_json::json!({
+        "manifest_version": header.manifest_version,
+        "identity_manifest_version": header.identity.manifest_version,
+        "layout": header.identity.layout,
+        "file_count": header.identity.file_count,
+        "file_bytes": header.identity.file_bytes,
+        "files": files,
+        "segment_count": header.identity.segment_count,
+        "segments": segments,
+        "lifecycle": header.lifecycle,
+        "archives": header.archives,
+    })
+}
+
+fn checkpoint_position_semantics(package: &std::path::Path) -> serde_json::Value {
+    let delta = cdf_package::PackageReader::open(package)
+        .unwrap()
+        .state_delta_preimage()
+        .unwrap();
+    let segments = delta
+        .segments
+        .into_iter()
+        .map(|segment| {
+            serde_json::json!({
+                "segment_id": segment.segment_id,
+                "scope": segment.scope,
+                "output_position": segment.output_position,
+                "row_count": segment.row_count,
+                "byte_count": segment.byte_count,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "pipeline_id": delta.pipeline_id,
+        "resource_id": delta.resource_id,
+        "scope": delta.scope,
+        "state_version": delta.state_version,
+        "input_position": delta.input_position,
+        "output_position": delta.output_position,
+        "output_watermark": delta.output_watermark,
+        "partition_watermarks": delta.partition_watermarks,
+        "late_data_carryover": delta.late_data_carryover,
+        "source_continuation": delta.source_continuation,
+        "schema_hash": delta.schema_hash,
+        "segments": segments,
+    })
+}
+
+fn receipt_semantics(package: &std::path::Path) -> serde_json::Value {
+    let reader = cdf_package::PackageReader::open(package).unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(serde_json::json!({
+                "destination": receipt.destination,
+                "target": receipt.target,
+                "segment_acks": receipt.segment_acks.into_iter().map(|ack| serde_json::json!({
+                    "segment_id": ack.segment_id,
+                    "row_count": ack.row_count,
+                    "byte_count": ack.byte_count,
+                })).collect::<Vec<_>>(),
+                "disposition": receipt.disposition,
+                "transaction_system": receipt.transaction.map(|transaction| transaction.system),
+                "counts": receipt.counts,
+                "schema_hash": receipt.schema_hash,
+                "migrations": receipt.migrations,
+                "verify_kind": receipt.verify.kind,
+                "verify_statement": receipt.verify.statement,
+            }));
+            Ok(())
+        })
+        .unwrap();
+    serde_json::Value::Array(receipts)
 }
 
 fn copy_tree(source: &std::path::Path, target: &std::path::Path, excluded: &[&str]) {

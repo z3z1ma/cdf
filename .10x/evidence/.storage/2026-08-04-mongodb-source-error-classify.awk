@@ -14,7 +14,12 @@ BEGIN {
     test = file ~ /\/tests\.rs$/ \
         || (file ~ /\/error\.rs$/ && error_test_line > 0 && line >= error_test_line)
 
-    if (match(source, /CdfError::[a-z_]+/)) {
+    if (match(source, /mongodb::error::Error::custom/)) {
+        syntax = "MongoError::custom"
+    } else if (match(source, /mongodb::error::ErrorKind::[A-Za-z]+/)) {
+        syntax = substr(source, RSTART, RLENGTH)
+        sub(/^mongodb::error::ErrorKind/, "MongoErrorKind", syntax)
+    } else if (match(source, /CdfError::[a-z_]+/)) {
         syntax = substr(source, RSTART, RLENGTH)
     } else if (match(source, /=> ErrorKind::[A-Za-z]+/)) {
         syntax = substr(source, RSTART + 3, RLENGTH - 3)

@@ -638,17 +638,14 @@ fn ensure_cursor_kind(
     arithmetic: CursorArithmetic,
     value: &CursorValue,
 ) -> Result<()> {
-    if matches!(
-        (arithmetic, value),
-        (
-            CursorArithmetic::I32 | CursorArithmetic::I64 | CursorArithmetic::Date32,
-            CursorValue::I64(_)
-        ) | (CursorArithmetic::U64, CursorValue::U64(_))
-            | (
-                CursorArithmetic::TimestampMicros,
-                CursorValue::TimestampMicros { .. }
-            )
-    ) {
+    let compatible = match (arithmetic, value) {
+        (CursorArithmetic::I32, CursorValue::I64(value)) => i32::try_from(*value).is_ok(),
+        (CursorArithmetic::I64 | CursorArithmetic::Date32, CursorValue::I64(_))
+        | (CursorArithmetic::U64, CursorValue::U64(_))
+        | (CursorArithmetic::TimestampMicros, CursorValue::TimestampMicros { .. }) => true,
+        _ => false,
+    };
+    if compatible {
         return Ok(());
     }
     Err(CdfError::data(format!(
@@ -917,6 +914,15 @@ mod tests {
                 &schema,
                 None,
                 &[position(i64::from(i32::MIN))]
+            )
+            .is_err()
+        );
+        assert!(
+            aggregate_resource_output_position(
+                &descriptor,
+                &schema,
+                None,
+                &[position(i64::from(i32::MIN) - 1), position(10)]
             )
             .is_err()
         );

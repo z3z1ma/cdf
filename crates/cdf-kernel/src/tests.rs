@@ -150,6 +150,34 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
 }
 
 #[test]
+fn runtime_schema_candidate_identity_is_worker_safe_and_partition_bound() {
+    let partition = || PartitionPlan {
+        partition_id: PartitionId::new("runtime-partition").unwrap(),
+        scope: ScopeKey::Resource,
+        planned_position: None,
+        start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::Forbidden,
+        metadata: BTreeMap::from([("target".to_owned(), "warehouse.events".to_owned())]),
+    };
+    let mut first = partition();
+    bind_partition_schema_candidate(&mut first, "runtime.mongodb").unwrap();
+    let first_id = partition_schema_observation_id(&first).to_owned();
+
+    assert!(first_id.starts_with("runtime.mongodb."));
+    assert!(first_id.len() <= 128);
+    assert!(first_id.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+' | b'/')
+    }));
+
+    let mut second = partition();
+    second.partition_id = PartitionId::new("runtime-partition-2").unwrap();
+    bind_partition_schema_candidate(&mut second, "runtime.mongodb").unwrap();
+    assert_ne!(partition_schema_observation_id(&second), first_id.as_str());
+    assert!(bind_partition_schema_candidate(&mut second, "runtime:mongodb").is_err());
+}
+
+#[test]
 fn planned_file_position_is_required_typed_authority() {
     let file = FilePosition {
         path: "s3://bucket/object.parquet".to_owned(),

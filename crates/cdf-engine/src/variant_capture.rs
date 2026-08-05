@@ -63,6 +63,7 @@ pub(crate) enum ResidualRuntimeVerdict {
 pub(crate) enum ResidualTypedProjection {
     Nulled,
     Absent,
+    Preserved,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

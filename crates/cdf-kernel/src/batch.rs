@@ -289,6 +289,7 @@ pub struct PreContractResidualCandidate {
     expected_field: Option<Field>,
     value: ArrayRef,
     value_index: usize,
+    preserves_typed_projection: bool,
 }
 
 impl PreContractResidualCandidate {
@@ -327,7 +328,18 @@ impl PreContractResidualCandidate {
             expected_field,
             value,
             value_index,
+            preserves_typed_projection: false,
         })
+    }
+
+    pub fn with_preserved_typed_projection(mut self) -> Result<Self> {
+        if self.expected_field.is_none() {
+            return Err(crate::CdfError::data(
+                "preserved pre-contract evidence requires an expected field",
+            ));
+        }
+        self.preserves_typed_projection = true;
+        Ok(self)
     }
 
     pub fn source_row_ordinal(&self) -> u64 {
@@ -357,6 +369,10 @@ impl PreContractResidualCandidate {
     pub fn value_index(&self) -> usize {
         self.value_index
     }
+
+    pub fn preserves_typed_projection(&self) -> bool {
+        self.preserves_typed_projection
+    }
 }
 
 impl fmt::Debug for PreContractResidualCandidate {
@@ -370,6 +386,10 @@ impl fmt::Debug for PreContractResidualCandidate {
             .field("expected_field", &self.expected_field)
             .field("value_type", self.value.data_type())
             .field("value_is_null", &self.value.is_null(self.value_index))
+            .field(
+                "preserves_typed_projection",
+                &self.preserves_typed_projection,
+            )
             .finish()
     }
 }
@@ -382,6 +402,7 @@ impl PartialEq for PreContractResidualCandidate {
             && self.observed_field == other.observed_field
             && self.expected_field == other.expected_field
             && self.value_index == other.value_index
+            && self.preserves_typed_projection == other.preserves_typed_projection
             && self.value.to_data() == other.value.to_data()
     }
 }

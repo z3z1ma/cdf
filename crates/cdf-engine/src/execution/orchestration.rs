@@ -1195,7 +1195,7 @@ fn materialize_batch_schema_evidence(
                 let physical_schema = batch.header.materialized_physical_schema()?;
                 admission.validate_materialized(&physical_schema, &expected.coercion_plan)?;
                 validate_materialized_effective_batch_schema(
-                    record_batch.schema().as_ref(),
+                    record_batch,
                     effective_schema,
                     batch.header.residual_candidates(),
                 )?;
@@ -1235,7 +1235,7 @@ fn materialize_batch_schema_evidence(
                 let physical_schema = batch.header.materialized_physical_schema()?;
                 admission.validate_materialized(&physical_schema, supplied)?;
                 validate_materialized_effective_batch_schema(
-                    record_batch.schema().as_ref(),
+                    record_batch,
                     effective_schema,
                     batch.header.residual_candidates(),
                 )?;
@@ -1257,7 +1257,7 @@ fn materialize_batch_schema_evidence(
             {
                 let physical_schema = batch.header.materialized_physical_schema()?;
                 validate_materialized_effective_batch_schema(
-                    record_batch.schema().as_ref(),
+                    record_batch,
                     effective_schema,
                     batch.header.residual_candidates(),
                 )?;
@@ -7081,6 +7081,9 @@ fn apply_residual_verdicts(
             .collect::<Result<Vec<_>>>()?;
         let mut quarantine_reason = None;
         for candidate in &row_candidates {
+            if candidate.preserves_typed_projection() {
+                continue;
+            }
             let field = candidate
                 .source_path()
                 .first()
@@ -7186,7 +7189,11 @@ fn apply_residual_verdicts(
                     context.batch_id,
                     context.observation_id,
                     ResidualRuntimeVerdict::Captured,
-                    "cdf.residual_capture",
+                    if candidate.preserves_typed_projection() {
+                        "cdf.physical_reconciliation"
+                    } else {
+                        "cdf.residual_capture"
+                    },
                     redaction,
                 )?);
             }
@@ -7298,7 +7305,9 @@ fn residual_decision_artifact(
             .and_then(|residual| residual.capture.as_ref())
             .map(|capture| capture.encoding.clone())
             .unwrap_or_else(|| cdf_contract::RESIDUAL_ENCODING_NAME.to_owned()),
-        typed_projection: if candidate.expected_field().is_some() {
+        typed_projection: if candidate.preserves_typed_projection() {
+            ResidualTypedProjection::Preserved
+        } else if candidate.expected_field().is_some() {
             ResidualTypedProjection::Nulled
         } else {
             ResidualTypedProjection::Absent
@@ -7955,15 +7964,47 @@ fn validate_effective_batch_schema(observed: &Schema, effective: &Schema) -> Res
 }
 
 fn validate_materialized_effective_batch_schema(
-    observed: &Schema,
+    observed: &RecordBatch,
     effective: &Schema,
     residual_candidates: &[PreContractResidualCandidate],
 ) -> Result<()> {
-    let nullable_sources = residual_candidates
+    let nullable_sources = effective
+        .fields()
         .iter()
-        .filter_map(|candidate| candidate.source_path().first().cloned())
+        .map(|field| {
+            source_name(field.as_ref())
+                .unwrap_or_else(|| field.name())
+                .to_owned()
+        })
         .collect::<BTreeSet<_>>();
-    validate_effective_batch_schema_with_nullable_sources(observed, effective, &nullable_sources)
+    validate_effective_batch_schema_with_nullable_sources(
+        observed.schema().as_ref(),
+        effective,
+        &nullable_sources,
+    )?;
+
+    for (index, field) in effective.fields().iter().enumerate() {
+        if field.is_nullable() || observed.column(index).null_count() == 0 {
+            continue;
+        }
+        let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+        let covered_rows = residual_candidates
+            .iter()
+            .filter(|candidate| {
+                !candidate.preserves_typed_projection()
+                    && candidate.source_path().first().map(String::as_str) == Some(source)
+            })
+            .map(PreContractResidualCandidate::batch_row_ordinal)
+            .collect::<BTreeSet<_>>();
+        for row in 0..observed.num_rows() {
+            if observed.column(index).is_null(row) && !covered_rows.contains(&row) {
+                return Err(CdfError::data(format!(
+                    "materialized non-null field {source:?} contains an unaccounted null at batch row {row}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_effective_batch_schema_with_nullable_sources(
@@ -8045,7 +8086,42 @@ mod transform_kernel_tests {
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
         apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
         residual_redaction, source_row_tracking_schema,
+        validate_materialized_effective_batch_schema,
     };
+
+    #[test]
+    fn materialized_nullable_domain_requires_exact_evidence_for_actual_nulls() {
+        let effective = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let observed = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)])),
+            vec![Arc::new(Int64Array::from(vec![Some(1), None]))],
+        )
+        .unwrap();
+
+        let error =
+            validate_materialized_effective_batch_schema(&observed, &effective, &[]).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("unaccounted null"));
+
+        let candidate = PreContractResidualCandidate::new(
+            1,
+            1,
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Utf8, true),
+            Some(Field::new("id", DataType::Int64, false)),
+            Arc::new(StringArray::from(vec!["wrong"])),
+            0,
+        )
+        .unwrap();
+        validate_materialized_effective_batch_schema(&observed, &effective, &[candidate]).unwrap();
+
+        let populated = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)])),
+            vec![Arc::new(Int64Array::from(vec![Some(1), Some(2)]))],
+        )
+        .unwrap();
+        validate_materialized_effective_batch_schema(&populated, &effective, &[]).unwrap();
+    }
 
     #[test]
     fn residual_semantic_unknowns_retain_observed_data_ownership() {

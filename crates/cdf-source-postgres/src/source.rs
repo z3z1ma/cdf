@@ -355,8 +355,7 @@ impl ResourceStream for PostgresTableResource {
             plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
         partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
         if self.effective_schema_runtime.is_some() {
-            let observation_id = format!("runtime:{}", self.target.display_name());
-            cdf_kernel::bind_partition_schema_candidate(&mut partition, &observation_id)?;
+            cdf_kernel::bind_partition_schema_candidate(&mut partition, "runtime.postgres")?;
         }
         Ok(vec![partition])
     }
@@ -379,7 +378,6 @@ impl QueryableResource for PostgresTableResource {
         let mut scan =
             negotiate_postgres_table_scan(&self.descriptor, &self.schema, &self.target, request)?;
         if self.effective_schema_runtime.is_some() {
-            let observation_id = format!("runtime:{}", self.target.display_name());
             let partition = scan
                 .inline_partitions_mut()
                 .and_then(|partitions| partitions.first_mut())
@@ -388,7 +386,7 @@ impl QueryableResource for PostgresTableResource {
                         "Postgres negotiation omitted its single inline partition authority",
                     )
                 })?;
-            cdf_kernel::bind_partition_schema_candidate(partition, &observation_id)?;
+            cdf_kernel::bind_partition_schema_candidate(partition, "runtime.postgres")?;
         }
         Ok(scan)
     }

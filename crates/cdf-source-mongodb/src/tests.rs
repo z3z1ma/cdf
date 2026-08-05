@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use arrow_array::{
-    Array, FixedSizeBinaryArray, Int64Array, StringArray, TimestampMillisecondArray,
+    Array, FixedSizeBinaryArray, Int32Array, Int64Array, StringArray, TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
@@ -14,7 +14,7 @@ use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceEx
 use mongodb::bson::{
     DateTime, Decimal128, doc,
     oid::ObjectId,
-    raw::{CString, RawDocumentBuf, cstr},
+    raw::{CString, RawDocumentBuf, RawJavaScriptCodeWithScope, cstr},
 };
 
 use crate::{
@@ -388,8 +388,12 @@ fn governed_decoder_preserves_unknown_and_mismatched_values_as_residual_evidence
             .physical_schema
             .fields()
             .iter()
-            .any(|field| field.name() == "new_field")
+            .all(|field| field.name() != "new_field")
     );
+    assert!(decoded.residual_candidates.iter().any(|candidate| {
+        candidate.observed_field().name() == "new_field"
+            && physical_type(candidate.observed_field()) == Some("bson:int64")
+    }));
 }
 
 #[test]
@@ -495,7 +499,7 @@ fn governed_decoder_captures_nested_unknown_field_at_exact_path() {
 }
 
 #[test]
-fn compatible_arrow_value_still_reports_changed_bson_physical_type() {
+fn compatible_bson_integer_uses_the_pinned_materialized_observation_domain() {
     let pinned = Arc::new(Schema::new(vec![with_physical_type(
         with_source_name(Field::new("sequence", DataType::Int64, false), "sequence"),
         "bson:int64",
@@ -505,15 +509,36 @@ fn compatible_arrow_value_still_reports_changed_bson_physical_type() {
     let decoded =
         decode_batch_with_evidence(Arc::clone(&pinned), pinned, &[document.as_ref()], 0).unwrap();
 
-    assert!(decoded.residual_candidates.is_empty());
+    assert_eq!(decoded.residual_candidates.len(), 1);
+    let candidate = &decoded.residual_candidates[0];
+    assert_eq!(candidate.source_path(), ["sequence"]);
+    assert_eq!(
+        physical_type(candidate.observed_field()),
+        Some("bson:int32")
+    );
+    assert_eq!(
+        physical_type(candidate.expected_field().unwrap()),
+        Some("bson:int64")
+    );
+    assert!(candidate.preserves_typed_projection());
+    assert_eq!(
+        candidate
+            .value()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap()
+            .value(candidate.value_index()),
+        7
+    );
     assert_eq!(decoded.record_batch.column(0).data_type(), &DataType::Int64);
+    assert!(!decoded.record_batch.schema().field(0).is_nullable());
     assert_eq!(
         decoded.physical_schema.field(0).data_type(),
-        &DataType::Int32
+        &DataType::Int64
     );
     assert_eq!(
         physical_type(decoded.physical_schema.field(0)),
-        Some("bson:int32")
+        Some("bson:int64")
     );
 }
 
@@ -566,6 +591,55 @@ fn duplicate_nested_bson_keys_fail_before_residual_materialization() {
         .unwrap_err();
 
     assert!(error.message.contains("repeats field `known`"), "{error}");
+}
+
+#[test]
+fn literal_dotted_bson_keys_fail_discovery_and_decode() {
+    let mut document = RawDocumentBuf::new();
+    document.append(cstr!("a.b"), 1_i64);
+
+    let discovery_error = SchemaInference::default()
+        .observe(document.as_ref())
+        .unwrap_err();
+    assert_eq!(discovery_error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(discovery_error.message.contains("literal dot"));
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "known",
+        DataType::Int64,
+        true,
+    )]));
+    let decode_error =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0)
+            .unwrap_err();
+    assert_eq!(decode_error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(decode_error.message.contains("literal dot"));
+}
+
+#[test]
+fn duplicate_javascript_scope_keys_fail_before_residual_materialization() {
+    let mut scope = RawDocumentBuf::new();
+    scope.append(cstr!("binding"), 1_i64);
+    scope.append(cstr!("binding"), 2_i64);
+    let mut document = RawDocumentBuf::new();
+    document.append(
+        cstr!("script"),
+        RawJavaScriptCodeWithScope {
+            code: "return binding".to_owned(),
+            scope,
+        },
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "known",
+        DataType::Int64,
+        true,
+    )]));
+
+    let error = decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0)
+        .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("repeats field `binding`"), "{error}");
 }
 
 #[test]
