@@ -38,7 +38,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('version', 'version', [CompletionResultType]::ParameterValue, 'Print the cdf version')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Create a new cdf project')
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a source resource to the project')
-            [CompletionResult]::new('compile', 'compile', [CompletionResultType]::ParameterValue, 'Compile the selected project into a verified local manifest')
+            [CompletionResult]::new('compile', 'compile', [CompletionResultType]::ParameterValue, 'Prepare independently verified compiled resource artifacts')
             [CompletionResult]::new('validate', 'validate', [CompletionResultType]::ParameterValue, 'Statically validate project configuration and selected resources')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Plan a resource run without executing it')
             [CompletionResult]::new('explain', 'explain', [CompletionResultType]::ParameterValue, 'Explain resolution, capabilities, and execution choices')
@@ -119,12 +119,13 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;compile' {
+            [CompletionResult]::new('--exclude', '--exclude', [CompletionResultType]::ParameterName, 'Exclude resources matching this glob; may be repeated')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('--refresh', '--refresh', [CompletionResultType]::ParameterName, 'Refresh read-only source observations and publish updated project authority')
+            [CompletionResult]::new('--locked', '--locked', [CompletionResultType]::ParameterName, 'Require sufficient unchanged cdf.lock authority')
             [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')

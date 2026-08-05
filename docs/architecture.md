@@ -24,9 +24,10 @@ The CLI/project/security surface is
 
 ## Artifact Flow
 
-1. `cdf compile` lowers locked project authority into the verified
-   `.cdf/manifest.json`; `cdf compile --refresh` is the explicit source-observation
-   form that may also update `cdf.lock`.
+1. `cdf compile [selectors...]` prepares resources independently, stores
+   immutable `.cdf/compiled/<resource>@<hash>.json` artifacts, updates their
+   `.cdf/manifest.json` status index, and commits `cdf.lock` last. `--locked`
+   asserts existing authority without discovery.
 2. `cdf plan` compiles the project resource into a plan and destination preview
    before data movement.
 3. `cdf run` executes a resource through the run spine, writes a package,

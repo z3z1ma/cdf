@@ -44,7 +44,10 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
     )
     .unwrap();
 
-    assert_eq!(lock.dependency_tuple, dependency_tuple);
+    assert_eq!(
+        lock.resources["github.issues"].compiler.dependency_tuple,
+        dependency_tuple
+    );
     assert_eq!(lock.destinations, existing.destinations);
     assert_eq!(report.resource_ids, vec!["github.issues"]);
     let snapshot = lock.resources["github.issues"].contract.as_ref().unwrap();

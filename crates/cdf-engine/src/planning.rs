@@ -395,7 +395,7 @@ where
     plan.validate_recorded()?;
     if plan.input_schema.to_arrow()?.as_ref() != resource.schema().as_ref() {
         return Err(CdfError::contract(
-            "relational expression input schema differs from the resolved source schema; run `cdf compile --refresh`",
+            "relational expression input schema differs from compiled authority; run `cdf compile` for the selected resource",
         ));
     }
     Ok(plan.output_schema.to_arrow()?.as_ref().clone())

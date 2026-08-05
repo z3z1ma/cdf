@@ -22,9 +22,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
-    ProjectConfig, ProjectResourceInput, ProjectResourceInventory, ProjectSourceBinding,
-    TrustPreset, WriteDispositionPreset, internal::validate_secret_references_in_json,
+    ProjectConfig, ProjectResourceInput, ProjectResourceInventory,
+    ProjectResourceSelectionResolution, ProjectSourceBinding, TrustPreset, WriteDispositionPreset,
+    internal::validate_secret_references_in_json,
     inventory_project_resources, parse_resource_file,
+    project_inputs::{read_project_resource_path, resolve_project_source_binding},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +277,74 @@ pub fn compile_query_project_resources(
         input_schemas,
         inventory,
     )
+}
+
+pub fn compile_selected_query_project_resources(
+    registry: &SourceRegistry,
+    config: &ProjectConfig,
+    project_root: &Path,
+    environment: &str,
+    destination: &DestinationSheet,
+    semantic_catalog: &SemanticCatalog,
+    selection: &ProjectResourceSelectionResolution,
+) -> Result<Vec<CompiledProjectResource>> {
+    let mut compiled = Vec::with_capacity(selection.resources.len());
+    for path in &selection.resources {
+        let input = read_project_resource_path(path)?;
+        let authored = parse_resource_file(&input.sql, &input.relative_path)?;
+        let parsed = parse_project_query_at(
+            &authored.query_sql,
+            &input.relative_path,
+            authored.query_span.start_line,
+            authored.query_span.start_column,
+        )?;
+        let source_name = crate::ProjectSourceName::new(
+            &parsed.upstream.configured_source,
+            &input.relative_path,
+        )?;
+        let source = resolve_project_source_binding(config, environment, registry, &source_name)
+            .map_err(|error| {
+                if config.sources.contains_key(source_name.as_str()) {
+                    error
+                } else {
+                    CdfError::contract(format!(
+                        "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+                        input.relative_path,
+                        parsed.upstream.span.start_line,
+                        parsed.upstream.span.start_column,
+                        parsed.upstream.configured_source,
+                        parsed.upstream.configured_source,
+                    ))
+                }
+            })?;
+        registry
+            .validate_resource_configuration(&source.source_type, &parsed.upstream.resource_options)
+            .map_err(|error| {
+                CdfError::new(
+                    error.kind,
+                    format!(
+                        "[CDF-SOURCE-RESOURCE-OPTIONS] {}:{}:{}: {}",
+                        input.relative_path,
+                        parsed.upstream.span.start_line,
+                        parsed.upstream.span.start_column,
+                        error.message
+                    ),
+                )
+            })?;
+        compiled.push(compile_input(
+            registry,
+            config,
+            project_root,
+            destination,
+            semantic_catalog,
+            &input,
+            &authored,
+            parsed,
+            &source,
+            None,
+        )?);
+    }
+    Ok(compiled)
 }
 
 fn compile_inventory(

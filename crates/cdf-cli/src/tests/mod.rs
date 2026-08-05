@@ -46,8 +46,7 @@ use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
     ResolvedProjectDestination, SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionPhase,
     SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, execute_schema_promotion,
-    load_schema_promotion_recovery_status, parse_lock, parse_project_manifest,
-    replay_package_from_artifacts,
+    load_schema_promotion_recovery_status, parse_lock, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -2123,17 +2122,17 @@ fn write_minimal_lockfile(project: &TestProject) {
     fs::write(
         project.root.join("cdf.lock"),
         r#"
-version = 2
-normalizer = "namecase-v1"
-semantics = {}
+version = 3
 
 [project]
 name = "cli_test"
 default_environment = "dev"
 
-[dependency_tuple]
-cdf = "0.1.0"
-arrow_rs = "58.3.0"
+[semantics]
+
+[resources]
+
+[destinations]
 "#,
     )
     .unwrap();

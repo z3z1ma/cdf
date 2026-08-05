@@ -373,7 +373,7 @@ fn publish_project_files_inner_with_hook_and_policy(
         }
         PendingTransactionPolicy::FailClosed if observed_marker.is_pending() => {
             return Err(CdfError::contract(format!(
-                "project publication is incomplete at {}; run `cdf compile --refresh` to recover it before offline compilation",
+                "project publication is incomplete at {}; rerun `cdf compile` to recover it",
                 project_root.join(PROJECT_FILE_TRANSACTION_MARKER).display()
             )));
         }
@@ -1855,7 +1855,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
-        assert!(error.message.contains("cdf compile --refresh"));
+        assert!(error.message.contains("rerun `cdf compile`"));
         assert_eq!(
             fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap(),
             marker_before

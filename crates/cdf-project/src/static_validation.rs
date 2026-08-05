@@ -1,16 +1,15 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, path::Path};
 
 use cdf_kernel::{CdfError, Result};
 use cdf_runtime::SourceRegistry;
 use cdf_semantic::SemanticCatalog;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 
 use crate::{
-    CdfLock, LOCK_FILE_NAME, PROJECT_MANIFEST_RELATIVE_PATH, ProjectConfig, ProjectManifest,
-    ProjectResourceSelection, ProjectResourceSelectionResolution,
+    COMPILATION_INDEX_RELATIVE_PATH, LOCK_FILE_NAME, ProjectConfig, ProjectResourceSelection,
+    ProjectResourceSelectionResolution,
     internal::validate_environment_uri_fields,
-    parse_lock, parse_project_manifest,
+    load_compilation_snapshot,
     project_inputs::read_project_resource_path,
     query_compiler::{validate_static_configured_source, validate_static_query_project_resource},
 };
@@ -135,7 +134,7 @@ pub fn validate_project_static(
         }
     }
 
-    let authority = load_local_authority(project_root, &mut diagnostics);
+    let authority = load_local_authority(project_root, environment, &mut diagnostics);
     let mut referenced_sources = BTreeSet::new();
     let mut resources = Vec::with_capacity(selection.resources.len());
     for path in &selection.resources {
@@ -267,7 +266,8 @@ pub fn validate_project_static(
                 "resource SQL and configured-source references".to_owned(),
                 "closed source and resource option schemas".to_owned(),
                 "secret-reference syntax".to_owned(),
-                "locally present lock and manifest integrity".to_owned(),
+                "locally present lock, compilation-index, and resource-artifact integrity"
+                    .to_owned(),
             ],
             skipped: vec![
                 "secret resolution and environment-value lookup".to_owned(),
@@ -279,11 +279,9 @@ pub fn validate_project_static(
 }
 
 struct LocalAuthority {
-    lock: Option<CdfLock>,
-    lock_bytes_hash: Option<String>,
-    manifest: Option<ProjectManifest>,
+    artifacts: std::collections::BTreeMap<String, crate::CompiledResourceArtifact>,
     lock_present: bool,
-    manifest_present: bool,
+    index_present: bool,
     valid: bool,
 }
 
@@ -296,31 +294,19 @@ impl LocalAuthority {
         config: &ProjectConfig,
         environment: &str,
     ) -> LocalAuthorityStatus {
-        let (Some(lock), Some(lock_bytes_hash), Some(manifest), Some(content_hash)) = (
-            self.lock.as_ref(),
-            self.lock_bytes_hash.as_deref(),
-            self.manifest.as_ref(),
-            content_hash,
-        ) else {
-            return if !self.lock_present || !self.manifest_present {
-                LocalAuthorityStatus::Missing
-            } else {
-                LocalAuthorityStatus::Stale
-            };
+        if !self.lock_present || !self.index_present {
+            return LocalAuthorityStatus::Missing;
+        }
+        let Some(content_hash) = content_hash else {
+            return LocalAuthorityStatus::Stale;
         };
-        let current = lock.project.name == config.project.name
-            && lock.project.default_environment == config.project.default_environment
-            && lock.normalizer == config.project.normalizer
-            && lock.resources.contains_key(resource_id)
-            && manifest.header.project_name == config.project.name
-            && manifest.header.environment == environment
-            && manifest.header.normalizer == config.project.normalizer
-            && manifest.header.lock_content_hash.as_str() == lock_bytes_hash
-            && manifest.resources.iter().any(|resource| {
-                resource.resource_id == resource_id
-                    && resource.origin.relative_path == path
-                    && resource.origin.authored_content_hash == content_hash
-            });
+        let current = self.artifacts.get(resource_id).is_some_and(|artifact| {
+            artifact.project_name == config.project.name
+                && artifact.environment == environment
+                && artifact.lock_binding.compiler.normalizer == config.project.normalizer
+                && artifact.resource.origin.relative_path == path
+                && artifact.resource.origin.authored_content_hash == content_hash
+        });
         if current {
             LocalAuthorityStatus::Current
         } else {
@@ -331,84 +317,46 @@ impl LocalAuthority {
 
 fn load_local_authority(
     project_root: &Path,
+    environment: &str,
     diagnostics: &mut Vec<ProjectStaticValidationDiagnostic>,
 ) -> LocalAuthority {
-    let lock_bytes = optional_artifact(&project_root.join(LOCK_FILE_NAME), "project lockfile");
-    let manifest_bytes = optional_artifact(
-        &project_root.join(PROJECT_MANIFEST_RELATIVE_PATH),
-        "project manifest",
-    );
-    let lock_present = !matches!(&lock_bytes, Ok(None));
-    let manifest_present = !matches!(&manifest_bytes, Ok(None));
-    let mut valid = true;
-    let (lock, lock_bytes_hash) = match lock_bytes {
-        Ok(Some(bytes)) => {
-            let hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&bytes)));
-            match std::str::from_utf8(&bytes)
-                .map_err(|error| CdfError::data(format!("cdf.lock is not UTF-8: {error}")))
-                .and_then(parse_lock)
-            {
-                Ok(lock) => (Some(lock), Some(hash)),
-                Err(error) => {
-                    valid = false;
-                    diagnostics.push(global_error("CDF-VALIDATE-LOCK", error));
-                    (None, Some(hash))
-                }
+    let lock_present = project_root.join(LOCK_FILE_NAME).exists();
+    let index_present = project_root.join(COMPILATION_INDEX_RELATIVE_PATH).exists();
+    match load_compilation_snapshot(project_root, Some(environment)) {
+        Ok(snapshot) => {
+            let valid = snapshot.authority_diagnostic.is_none();
+            if let Some(diagnostic) = snapshot.authority_diagnostic {
+                let code = match diagnostic.code.as_str() {
+                    "CDF-COMPILE-LOCK" => "CDF-VALIDATE-LOCK".to_owned(),
+                    "CDF-COMPILE-INDEX" => "CDF-VALIDATE-INDEX".to_owned(),
+                    _ => "CDF-VALIDATE-COMPILATION".to_owned(),
+                };
+                diagnostics.push(ProjectStaticValidationDiagnostic {
+                    severity: StaticValidationSeverity::Error,
+                    code,
+                    kind: diagnostic.kind,
+                    resource_id: None,
+                    path: None,
+                    message: diagnostic.message,
+                });
+            }
+            LocalAuthority {
+                artifacts: snapshot.artifacts,
+                lock_present,
+                index_present,
+                valid,
             }
         }
-        Ok(None) => (None, None),
         Err(error) => {
-            valid = false;
-            diagnostics.push(global_error("CDF-VALIDATE-LOCK", error));
-            (None, None)
-        }
-    };
-    let manifest = match manifest_bytes {
-        Ok(Some(bytes)) => match parse_project_manifest(&bytes) {
-            Ok(manifest) => Some(manifest),
-            Err(error) => {
-                valid = false;
-                diagnostics.push(global_error("CDF-VALIDATE-MANIFEST", error));
-                None
+            diagnostics.push(global_error("CDF-VALIDATE-COMPILATION", error));
+            LocalAuthority {
+                artifacts: std::collections::BTreeMap::new(),
+                lock_present,
+                index_present,
+                valid: false,
             }
-        },
-        Ok(None) => None,
-        Err(error) => {
-            valid = false;
-            diagnostics.push(global_error("CDF-VALIDATE-MANIFEST", error));
-            None
         }
-    };
-    LocalAuthority {
-        lock,
-        lock_bytes_hash,
-        manifest,
-        lock_present,
-        manifest_present,
-        valid,
     }
-}
-
-fn optional_artifact(path: &Path, label: &str) -> Result<Option<Vec<u8>>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(CdfError::environment(format!(
-                "inspect {label} {}: {error}",
-                path.display()
-            )));
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(CdfError::data(format!(
-            "{label} {} must be a regular non-symlink file",
-            path.display()
-        )));
-    }
-    fs::read(path)
-        .map(Some)
-        .map_err(|error| CdfError::environment(format!("read {label} {}: {error}", path.display())))
 }
 
 fn global_error(code: &str, error: CdfError) -> ProjectStaticValidationDiagnostic {

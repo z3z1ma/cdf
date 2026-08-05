@@ -410,7 +410,7 @@ impl AddReport {
                     && !request.plan.proposal.private_files.is_empty(),
                 lockfile: false,
             },
-            next_command: "cdf compile --refresh".to_owned(),
+            next_command: format!("cdf compile {}", request.resource_id),
         }
     }
 }

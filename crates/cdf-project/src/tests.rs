@@ -57,7 +57,6 @@ use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 use sha2::{Digest, Sha256};
 mod discovery_schema;
-mod manifest;
 mod project_files;
 mod project_inputs;
 mod promotion;

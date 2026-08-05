@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Component, Path},
 };
 
@@ -16,16 +15,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AuthoredResourceForm, CdfLock, CompiledProjectResource, ContractSnapshot, DependencyTuple,
-    EffectiveEnvironment, EffectiveResourceEnvelope, LOCK_FILE_NAME, LockedDestination,
-    PROJECT_FILE_NAME, ProjectConfig, ProjectConfiguredSourceIdentity, ProjectFileExpectation,
-    ProjectFileTransactionReport, ProjectFileWrite, lock_to_toml, parse_cdf_toml, parse_lock,
-    project_file_transaction_generation, publish_project_files_transactionally,
-    publish_project_files_transactionally_without_recovery,
+    EffectiveEnvironment, EffectiveResourceEnvelope, LockedDestination, ProjectConfig,
+    ProjectConfiguredSourceIdentity, parse_lock,
     semantic_uses::{compiled_fields, semantic_pins_for_resources},
 };
 
 pub const PROJECT_MANIFEST_VERSION: u16 = 1;
-pub const PROJECT_MANIFEST_RELATIVE_PATH: &str = ".cdf/manifest.json";
 pub const PROJECT_MANIFEST_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const PROJECT_MANIFEST_MAX_INPUTS: usize = 100_000;
 pub const PROJECT_MANIFEST_MAX_RESOURCES: usize = 100_000;
@@ -47,6 +42,10 @@ macro_rules! manifest_hash_type {
                 Ok(Self(value))
             }
 
+            #[allow(
+                dead_code,
+                reason = "typed artifact hashes share one closed serialization implementation"
+            )]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -91,8 +90,7 @@ manifest_hash_type!(LineageHash);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectCompilationMode {
-    LockedOffline,
-    Refresh,
+    ResourceArtifact,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,7 +147,7 @@ pub enum ManifestInputGeneration {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectManifestAuthoredInput {
+pub struct CompiledArtifactInput {
     pub input_id: String,
     pub input_kind: ManifestInputKind,
     pub location: ManifestInputLocation,
@@ -159,7 +157,7 @@ pub struct ProjectManifestAuthoredInput {
     pub generation: ManifestInputGeneration,
 }
 
-impl ProjectManifestAuthoredInput {
+impl CompiledArtifactInput {
     pub fn explicit_file(
         path: impl Into<String>,
         input_kind: ManifestInputKind,
@@ -343,7 +341,7 @@ pub struct ProjectManifest {
     pub generated_at_unix_ms: Option<i64>,
     pub header: ProjectManifestHeader,
     pub hashes: ProjectManifestHashes,
-    pub inputs: Vec<ProjectManifestAuthoredInput>,
+    pub inputs: Vec<CompiledArtifactInput>,
     pub resources: Vec<ManifestResource>,
     pub semantics: Vec<ManifestSemanticDefinition>,
     pub lineage: Vec<ManifestLineageEdge>,
@@ -356,7 +354,7 @@ pub struct ProjectManifestCompileRequest<'a> {
     pub lock: &'a CdfLock,
     pub lock_bytes: &'a [u8],
     pub resources: &'a [CompiledProjectResource],
-    pub authored_inputs: Vec<ProjectManifestAuthoredInput>,
+    pub authored_inputs: Vec<CompiledArtifactInput>,
     pub semantic_catalog: &'a SemanticCatalog,
     pub semantic_sources: BTreeMap<String, ManifestSemanticSource>,
     pub selected_destination_id: &'a str,
@@ -365,22 +363,12 @@ pub struct ProjectManifestCompileRequest<'a> {
     pub diagnostics: Vec<ManifestDiagnostic>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectManifestSnapshot {
-    pub config: ProjectConfig,
-    pub environment: EffectiveEnvironment,
-    pub lock: CdfLock,
-    pub lock_bytes: Vec<u8>,
-    pub manifest: ProjectManifest,
-    pub generation: u64,
-}
-
 #[derive(Serialize)]
 struct ManifestIdentity<'a> {
     version: u16,
     header: &'a ProjectManifestHeader,
     hashes: &'a ProjectManifestHashes,
-    inputs: &'a [ProjectManifestAuthoredInput],
+    inputs: &'a [CompiledArtifactInput],
     resources: &'a [ManifestResource],
     semantics: &'a [ManifestSemanticDefinition],
     lineage: &'a [ManifestLineageEdge],
@@ -478,8 +466,9 @@ pub fn compile_project_manifest(
     let mut diagnostics = request.diagnostics;
     sort_diagnostics(&mut diagnostics);
 
+    let compiler = common_locked_compiler(request.lock)?;
     let dependency_tuple_hash =
-        DependencyTupleHash::new(canonical_hash(&request.lock.dependency_tuple)?)?;
+        DependencyTupleHash::new(canonical_hash(&compiler.dependency_tuple)?)?;
     let lock_content_hash = ProjectLockContentHash::new(bytes_hash(request.lock_bytes))?;
     let lock_semantic_hash = ProjectLockSemanticHash::new(canonical_hash(request.lock)?)?;
     let environment_binding_hash =
@@ -489,14 +478,17 @@ pub fn compile_project_manifest(
         environment: request.environment.name.clone(),
         environment_binding_hash,
         compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
-        dependency_tuple: request.lock.dependency_tuple.clone(),
+        dependency_tuple: compiler.dependency_tuple.clone(),
         dependency_tuple_hash,
         normalizer: request.config.project.normalizer.clone(),
         lock_content_hash,
         lock_semantic_hash,
         compilation_mode: request.compilation_mode,
         compiler_policies: BTreeMap::from([
-            ("manifest".to_owned(), "project-manifest-v1".to_owned()),
+            (
+                "manifest".to_owned(),
+                "compiled-resource-artifact-v1".to_owned(),
+            ),
             (
                 "source_plan".to_owned(),
                 "compiled-source-plan-v1".to_owned(),
@@ -535,27 +527,6 @@ pub fn compile_project_manifest(
 }
 
 impl ProjectManifest {
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with(ManifestErrorAuthority::Artifact)
-    }
-
-    pub fn canonical_json_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        self.canonical_json_bytes_unchecked()
-    }
-
-    fn canonical_json_bytes_unchecked(&self) -> Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| CdfError::internal(format!("serialize project manifest: {error}")))?;
-        bytes.push(b'\n');
-        if bytes.len() > PROJECT_MANIFEST_MAX_BYTES {
-            return Err(CdfError::contract(format!(
-                "project manifest exceeds the {PROJECT_MANIFEST_MAX_BYTES}-byte bound"
-            )));
-        }
-        Ok(bytes)
-    }
-
     fn identity_hash(&self) -> Result<String> {
         canonical_hash(&ManifestIdentity {
             version: self.version,
@@ -677,206 +648,14 @@ impl ProjectManifest {
     }
 }
 
-pub fn parse_project_manifest(bytes: &[u8]) -> Result<ProjectManifest> {
-    if bytes.len() > PROJECT_MANIFEST_MAX_BYTES {
-        return Err(CdfError::data(format!(
-            "project manifest exceeds the {PROJECT_MANIFEST_MAX_BYTES}-byte read bound"
-        )));
-    }
-    let manifest: ProjectManifest = serde_json::from_slice(bytes)
-        .map_err(|error| CdfError::data(format!("parse project manifest: {error}")))?;
-    manifest.validate()?;
-    if manifest.canonical_json_bytes()? != bytes {
-        return Err(CdfError::data(
-            "project manifest bytes are not the canonical closed representation",
-        ));
-    }
-    Ok(manifest)
-}
-
-pub fn validate_project_manifest_authority(
-    manifest: &ProjectManifest,
-    config: &ProjectConfig,
-    environment: &EffectiveEnvironment,
-    lock: &CdfLock,
-    lock_bytes: &[u8],
-) -> Result<()> {
-    manifest.validate()?;
-    if manifest.header.project_name != config.project.name
-        || manifest.header.environment != environment.name
-        || manifest.header.normalizer != config.project.normalizer
-    {
-        return Err(CdfError::data(
-            "project manifest header is stale for the selected project environment",
-        ));
-    }
-    if manifest.header.environment_binding_hash.as_str() != canonical_hash(environment)? {
-        return Err(CdfError::data(
-            "project manifest environment binding is stale",
-        ));
-    }
-    if manifest.header.lock_content_hash.as_str() != bytes_hash(lock_bytes)
-        || manifest.header.lock_semantic_hash.as_str() != canonical_hash(lock)?
-    {
-        return Err(CdfError::data(
-            "project manifest lock binding does not match cdf.lock",
-        ));
-    }
-    if manifest.header.dependency_tuple != lock.dependency_tuple
-        || manifest.header.dependency_tuple_hash.as_str() != canonical_hash(&lock.dependency_tuple)?
-    {
-        return Err(CdfError::data(
-            "project manifest dependency binding does not match cdf.lock",
-        ));
-    }
-    let manifest_semantics = manifest
-        .semantics
-        .iter()
-        .flat_map(|definition| {
-            definition
-                .references
-                .iter()
-                .map(|usage| (usage.reference.clone(), definition.definition_hash.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    if manifest_semantics != lock.semantics {
-        return Err(CdfError::data(
-            "project manifest semantic snapshot does not match cdf.lock pins",
-        ));
-    }
-    Ok(())
-}
-
-pub fn publish_project_manifest(
-    project_root: impl AsRef<Path>,
-    manifest: &ProjectManifest,
-    lock: &CdfLock,
-    lock_bytes: Vec<u8>,
-    prior_manifest_bytes: Option<Vec<u8>>,
-) -> Result<ProjectFileTransactionReport> {
-    manifest.validate_with(ManifestErrorAuthority::Compiler)?;
-    if manifest.header.lock_content_hash.as_str() != bytes_hash(&lock_bytes)
-        || manifest.header.lock_semantic_hash.as_str() != canonical_hash(lock)?
-    {
-        return Err(CdfError::internal(
-            "manifest publication received cdf.lock authority that does not match the manifest",
-        ));
-    }
-    let bytes = manifest.canonical_json_bytes_unchecked()?;
-    publish_project_files_transactionally_without_recovery(
-        project_root,
-        PROJECT_MANIFEST_RELATIVE_PATH,
-        vec![
-            ProjectFileWrite::new(
-                LOCK_FILE_NAME,
-                lock_bytes.clone(),
-                ProjectFileExpectation::Exact(lock_bytes),
-            ),
-            ProjectFileWrite::new(
-                PROJECT_MANIFEST_RELATIVE_PATH,
-                bytes,
-                expectation(prior_manifest_bytes),
-            )
-            .owner_only(),
-        ],
-    )
-}
-
-pub fn publish_project_manifest_and_lock(
-    project_root: impl AsRef<Path>,
-    manifest: &ProjectManifest,
-    lock: &CdfLock,
-    prior_manifest_bytes: Option<Vec<u8>>,
-    prior_lock_bytes: Option<Vec<u8>>,
-) -> Result<ProjectFileTransactionReport> {
-    manifest.validate_with(ManifestErrorAuthority::Compiler)?;
-    let manifest_bytes = manifest.canonical_json_bytes_unchecked()?;
-    let lock_bytes = lock_to_toml(lock)?.into_bytes();
-    if manifest.header.lock_content_hash.as_str() != bytes_hash(&lock_bytes)
-        || manifest.header.lock_semantic_hash.as_str() != canonical_hash(lock)?
-    {
-        return Err(CdfError::internal(
-            "manifest+lock publication received a manifest that does not bind the new cdf.lock",
-        ));
-    }
-    publish_project_files_transactionally(
-        project_root,
-        LOCK_FILE_NAME,
-        vec![
-            ProjectFileWrite::new(
-                PROJECT_MANIFEST_RELATIVE_PATH,
-                manifest_bytes,
-                expectation(prior_manifest_bytes),
-            )
-            .owner_only(),
-            ProjectFileWrite::new(LOCK_FILE_NAME, lock_bytes, expectation(prior_lock_bytes)),
-        ],
-    )
-}
-
-pub fn load_project_manifest_snapshot(
-    project_root: impl AsRef<Path>,
-    environment_name: Option<&str>,
-) -> Result<ProjectManifestSnapshot> {
-    let root = project_root.as_ref();
-    for attempt in 0..3 {
-        let generation_before = project_file_transaction_generation(root)?;
-        let project_bytes =
-            read_public_file(&root.join(PROJECT_FILE_NAME), "project configuration")?;
-        let lock_bytes = read_public_file(&root.join(LOCK_FILE_NAME), "project lockfile")?;
-        let manifest_bytes = read_public_file(
-            &root.join(PROJECT_MANIFEST_RELATIVE_PATH),
-            "project manifest",
-        )?;
-        let project_text = std::str::from_utf8(&project_bytes).map_err(|error| {
-            CdfError::data(format!("project configuration is not UTF-8: {error}"))
-        })?;
-        let lock_text = std::str::from_utf8(&lock_bytes)
-            .map_err(|error| CdfError::data(format!("project lockfile is not UTF-8: {error}")))?;
-        let config = parse_cdf_toml(project_text)?;
-        let selected = environment_name.unwrap_or(&config.project.default_environment);
-        let environment = config.effective_environment(selected)?;
-        let lock = parse_lock(lock_text)?;
-        let manifest = parse_project_manifest(&manifest_bytes)?;
-        validate_project_manifest_authority(&manifest, &config, &environment, &lock, &lock_bytes)?;
-        let authored_inputs_before =
-            read_manifest_authored_inputs(root, &manifest, &project_bytes)?;
-        let generation_after = project_file_transaction_generation(root)?;
-        let authored_inputs_after = read_manifest_authored_inputs(root, &manifest, &project_bytes)?;
-        let stable = generation_before == generation_after
-            && read_public_file(&root.join(PROJECT_FILE_NAME), "project configuration")?
-                == project_bytes
-            && read_public_file(&root.join(LOCK_FILE_NAME), "project lockfile")? == lock_bytes
-            && read_public_file(
-                &root.join(PROJECT_MANIFEST_RELATIVE_PATH),
-                "project manifest",
-            )? == manifest_bytes
-            && authored_inputs_before == authored_inputs_after;
-        if stable {
-            return Ok(ProjectManifestSnapshot {
-                config,
-                environment,
-                lock,
-                lock_bytes,
-                manifest,
-                generation: generation_after,
-            });
-        }
-        if attempt == 2 {
-            return Err(CdfError::contract(
-                "project publication changed repeatedly while reading the manifest; retry after the writer completes",
-            ));
-        }
-    }
-    Err(CdfError::internal(
-        "project manifest stable-read loop exited without a result",
-    ))
-}
-
 fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Result<()> {
     if request.config.project.name != request.lock.project.name
         || request.config.project.default_environment != request.lock.project.default_environment
-        || request.config.project.normalizer != request.lock.normalizer
+        || request
+            .lock
+            .resources
+            .values()
+            .any(|resource| resource.compiler.normalizer != request.config.project.normalizer)
     {
         return Err(CdfError::contract(
             "cdf.lock project authority is stale for the project configuration",
@@ -954,6 +733,23 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
     .map(drop)
 }
 
+fn common_locked_compiler(lock: &CdfLock) -> Result<&crate::LockedResourceCompilerBinding> {
+    let mut resources = lock.resources.values();
+    let compiler = resources
+        .next()
+        .map(|resource| &resource.compiler)
+        .ok_or_else(|| CdfError::contract("compiled authority contains no resource bindings"))?;
+    if resources.any(|resource| {
+        resource.compiler.dependency_tuple != compiler.dependency_tuple
+            || resource.compiler.normalizer != compiler.normalizer
+    }) {
+        return Err(CdfError::contract(
+            "compiled resources do not share one compiler dependency authority",
+        ));
+    }
+    Ok(compiler)
+}
+
 fn selected_destination<'a>(
     environment: &EffectiveEnvironment,
     lock: &'a CdfLock,
@@ -974,7 +770,7 @@ fn selected_destination<'a>(
 fn compile_manifest_resource(
     entry: &CompiledProjectResource,
     fields: Vec<ManifestField>,
-    inputs: &[ProjectManifestAuthoredInput],
+    inputs: &[CompiledArtifactInput],
     project_input_id: &str,
     selected_destination: (&str, &LockedDestination),
     lock: &CdfLock,
@@ -997,7 +793,7 @@ fn compile_manifest_resource(
     let origin = compile_origin(entry, inputs, project_input_id)?;
     let relational_plan = entry.query.relational_plan.clone().ok_or_else(|| {
         CdfError::contract(format!(
-            "[CDF-SCHEMA-UNRESOLVED] resource {resource_id:?} has no finalized relational plan; run `cdf compile --refresh`"
+            "[CDF-SCHEMA-UNRESOLVED] resource {resource_id:?} has no finalized relational plan; run `cdf compile {resource_id}`"
         ))
     })?;
     let compiled_stream_policy = (!resource.execution_extent().is_bounded())
@@ -1040,7 +836,7 @@ fn compile_manifest_resource(
 
 fn compile_origin(
     entry: &CompiledProjectResource,
-    inputs: &[ProjectManifestAuthoredInput],
+    inputs: &[CompiledArtifactInput],
     project_input_id: &str,
 ) -> Result<ManifestResourceOrigin> {
     let query = &entry.query;
@@ -1278,7 +1074,7 @@ fn push_lineage(
 
 fn validate_resource(
     resource: &ManifestResource,
-    inputs: &[ProjectManifestAuthoredInput],
+    inputs: &[CompiledArtifactInput],
     authority: ManifestErrorAuthority,
 ) -> Result<()> {
     let expected_path = format!(
@@ -1615,7 +1411,7 @@ fn validate_semantics(
 
 fn validate_lineage(
     lineage: &[ManifestLineageEdge],
-    inputs: &[ProjectManifestAuthoredInput],
+    inputs: &[CompiledArtifactInput],
     resources: &[ManifestResource],
     semantics: &[ManifestSemanticDefinition],
     authority: ManifestErrorAuthority,
@@ -1686,7 +1482,7 @@ fn validate_lineage(
 }
 
 fn validate_inputs(
-    inputs: &[ProjectManifestAuthoredInput],
+    inputs: &[CompiledArtifactInput],
     authority: ManifestErrorAuthority,
 ) -> Result<()> {
     validate_sorted_unique(
@@ -1754,6 +1550,63 @@ fn validate_security(manifest: &ProjectManifest, authority: ManifestErrorAuthori
     let value = serde_json::to_value(manifest)
         .map_err(|error| CdfError::internal(format!("inspect manifest security: {error}")))?;
     inspect_json_security(&value, authority)
+}
+
+pub(crate) fn validate_compiled_artifact_sections(
+    inputs: &[CompiledArtifactInput],
+    resource: &ManifestResource,
+    semantics: &[ManifestSemanticDefinition],
+    lineage: &[ManifestLineageEdge],
+    diagnostics: &[ManifestDiagnostic],
+) -> Result<()> {
+    let authority = ManifestErrorAuthority::Artifact;
+    check_bound(
+        "inputs",
+        inputs.len(),
+        PROJECT_MANIFEST_MAX_INPUTS,
+        authority,
+    )?;
+    check_bound(
+        "fields",
+        resource.fields.len(),
+        PROJECT_MANIFEST_MAX_FIELDS,
+        authority,
+    )?;
+    check_bound(
+        "semantics",
+        semantics.len(),
+        PROJECT_MANIFEST_MAX_SEMANTICS,
+        authority,
+    )?;
+    check_bound(
+        "lineage edges",
+        lineage.len(),
+        PROJECT_MANIFEST_MAX_LINEAGE_EDGES,
+        authority,
+    )?;
+    check_bound(
+        "diagnostics",
+        diagnostics.len(),
+        PROJECT_MANIFEST_MAX_DIAGNOSTICS,
+        authority,
+    )?;
+    validate_inputs(inputs, authority)?;
+    validate_resource(resource, inputs, authority)?;
+    validate_semantics(semantics, std::slice::from_ref(resource), authority)?;
+    validate_lineage(
+        lineage,
+        inputs,
+        std::slice::from_ref(resource),
+        semantics,
+        authority,
+    )?;
+    validate_diagnostics(diagnostics, authority)
+}
+
+pub(crate) fn validate_compiled_artifact_security(value: &impl Serialize) -> Result<()> {
+    let value = serde_json::to_value(value)
+        .map_err(|error| CdfError::internal(format!("inspect artifact security: {error}")))?;
+    inspect_json_security(&value, ManifestErrorAuthority::Artifact)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1829,6 +1682,9 @@ fn inspect_json_security_at(
         serde_json::Value::Object(values) => {
             for (key, value) in values {
                 let child_location = match (location, key.as_str()) {
+                    (ManifestSecurityLocation::Root, "resource") => {
+                        ManifestSecurityLocation::Resource
+                    }
                     (ManifestSecurityLocation::Root, "resources") => {
                         ManifestSecurityLocation::Resources
                     }
@@ -1975,98 +1831,6 @@ fn canonical_hash<T: Serialize + ?Sized>(value: &T) -> Result<String> {
 
 fn bytes_hash(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
-}
-
-fn expectation(prior: Option<Vec<u8>>) -> ProjectFileExpectation {
-    match prior {
-        Some(bytes) => ProjectFileExpectation::Exact(bytes),
-        None => ProjectFileExpectation::Absent,
-    }
-}
-
-fn read_public_file(path: &Path, label: &str) -> Result<Vec<u8>> {
-    fs::read(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            CdfError::contract(format!(
-                "{label} is missing at {}; run `cdf compile`",
-                path.display()
-            ))
-        } else {
-            CdfError::environment(format!("read {label} at {}: {error}", path.display()))
-        }
-    })
-}
-
-fn read_manifest_authored_inputs(
-    project_root: &Path,
-    manifest: &ProjectManifest,
-    project_bytes: &[u8],
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    let mut observed = BTreeMap::new();
-    for input in &manifest.inputs {
-        let ManifestInputLocation::ProjectRelativePath { path } = &input.location else {
-            continue;
-        };
-        let bytes = if path == PROJECT_FILE_NAME {
-            project_bytes.to_vec()
-        } else {
-            read_project_relative_manifest_input(project_root, path)?
-        };
-        let actual = bytes_hash(&bytes);
-        if input.content_hash.as_str() != actual {
-            return Err(CdfError::data(format!(
-                "project manifest authored input `{path}` is stale: expected {}, observed {actual}",
-                input.content_hash.as_str()
-            )));
-        }
-        observed.insert(input.input_id.clone(), bytes);
-    }
-    Ok(observed)
-}
-
-fn read_project_relative_manifest_input(project_root: &Path, relative: &str) -> Result<Vec<u8>> {
-    validate_relative_manifest_path(relative, ManifestErrorAuthority::Artifact)?;
-    let canonical_root = fs::canonicalize(project_root)
-        .map_err(|error| manifest_input_io_error("resolve project root", project_root, error))?;
-    let path = project_root.join(relative);
-    let canonical_path = fs::canonicalize(&path)
-        .map_err(|error| manifest_input_io_error("resolve authored input", &path, error))?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(CdfError::data(format!(
-            "project manifest authored input `{relative}` resolves outside the project root"
-        )));
-    }
-    let metadata = fs::metadata(&canonical_path)
-        .map_err(|error| manifest_input_io_error("inspect authored input", &path, error))?;
-    if !metadata.is_file() {
-        return Err(CdfError::data(format!(
-            "project manifest authored input `{relative}` is not a regular file"
-        )));
-    }
-    fs::read(&canonical_path)
-        .map_err(|error| manifest_input_io_error("read authored input", &path, error))
-}
-
-fn manifest_input_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
-    if matches!(
-        error.kind(),
-        std::io::ErrorKind::NotFound
-            | std::io::ErrorKind::NotADirectory
-            | std::io::ErrorKind::IsADirectory
-            | std::io::ErrorKind::InvalidData
-            | std::io::ErrorKind::UnexpectedEof
-    ) || cdf_kernel::is_filesystem_loop(&error)
-    {
-        CdfError::data(format!(
-            "{action} for project manifest at {}: {error}",
-            path.display()
-        ))
-    } else {
-        CdfError::environment(format!(
-            "{action} for project manifest at {}: {error}; check project path permissions, device availability, and process file limits before retrying",
-            path.display()
-        ))
-    }
 }
 
 fn manifest_error(authority: ManifestErrorAuthority, message: impl Into<String>) -> Result<()> {

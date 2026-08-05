@@ -909,7 +909,12 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
     let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
     let mut divergent_lock = context.lock.as_ref().unwrap().clone();
-    divergent_lock.normalizer = "divergent-caller-projection".to_owned();
+    divergent_lock
+        .resources
+        .get_mut("local.events")
+        .unwrap()
+        .compiler
+        .normalizer = "divergent-caller-projection".to_owned();
     let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
 
     let error = execute_schema_promotion(SchemaPromotionExecutionRequest {

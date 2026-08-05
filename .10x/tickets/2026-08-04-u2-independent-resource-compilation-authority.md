@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-05
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/2026-08-04-u1-resource-selectors-static-validate.md`
 
@@ -122,6 +122,28 @@ Replace the current exact-project compilation snapshot with one current-only res
 - 2026-08-04: The shared checkout is intentionally untouched and currently contains another
   executor's uncommitted connector/fixture work, including context/manifest/input fixes. Execution
   must consume only committed upstream state and preserve those changes.
+- 2026-08-05: Started from pushed `main` at `1bcf2ade` in the dedicated
+  `cdf-u2-independent-resource-compilation` worktree. The shared checkout remains untouched.
+- 2026-08-05: Replaced compile refresh/offline grammar with exact/glob/exclusion selection and
+  `--locked`; implemented canonical per-resource aggregation so failures are indexed safely and do
+  not discard independently published successes.
+- 2026-08-05: Lock version 3 now embeds each resource's canonical governed schema plus its
+  compiler/dependency, configured-source, semantic, contract, destination-sheet, and compiled
+  artifact bindings. The compiled artifact hash is bound only after hashing the artifact's
+  cycle-free lock entry.
+- 2026-08-05: Added canonical content-addressed `.cdf/compiled/<resource>@<hash>.json` artifacts and
+  made `.cdf/manifest.json` a per-resource status index. Selected publication reuses the existing
+  exact-guard transaction and commits immutable sidecars/artifact, index, and changed lock in that
+  order with `cdf.lock` last.
+- 2026-08-05: Replaced static validation and SQL consumption of the project-wide manifest with
+  independently verified artifact snapshots. SQL now exposes `compilation_resources`, downgrades a
+  stale/corrupt current artifact without serving its compiled facts, and still mounts package and
+  checkpoint tables when compilation authority is absent or corrupt.
+- 2026-08-05: Focused verification exposed and repaired two batch edges: unscoped reconciliation
+  now marks known resources absent after a complete path inventory, and an index-publication error
+  no longer replaces already-collected per-resource diagnostics. Strict Clippy also prompted
+  removal of an unused selected-schema parameter rather than an allowance. The uncompiled legacy
+  monolithic-manifest fixture was deleted outright.
 
 ## Blockers
 
@@ -129,7 +151,28 @@ None. The first execution step is a deliberate committed-upstream reconciliation
 
 ## Evidence
 
-Pending execution.
+- Criteria 1-6 and 9: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::sql --locked`
+  observed 11 passing tests before exposing two new edge failures; after the repairs, the two exact
+  failed tests each passed. The same run proves selector isolation, partial success, first-use
+  discovery, locked rebuild, independent stale isolation, corrupt-index SQL availability, and
+  status-table behavior through actual CLI/artifact bytes.
+- Criteria 1-4: the `cdf-project` library run observed 300 passing tests and two narrow assertion
+  failures caused by the new lock/scaffold model. After preserving an existing per-resource
+  compiler binding during contract freeze and updating the scaffold assertion, both exact tests
+  passed. Artifact/index unit tests in the 300-test observation exercised closed canonical parsing,
+  content-hash binding, bounded validation, and safe content-addressed paths.
+- Criteria 7-8: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::recovery --locked`
+  observed 18 passing publication/recovery tests. The broader 300-test `cdf-project` observation
+  also covered exact guards, transaction boundaries, failpoints, concurrent changes, and error
+  ownership; the two subsequent fixes did not touch the transaction implementation.
+- Criteria 5 and 9: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib tests::init_validate
+  --locked` observed 12 passing tests; `tests::add` observed 5 passing tests. Validation remains
+  static and aggregate while add points directly at the selected compile flow.
+- Criterion 10: affected all-target `cargo check` passed with `DUCKDB_DOWNLOAD_LIB=1`; strict
+  affected-package Clippy passed with `-D warnings`; the explicit cognitive-complexity diagnostic
+  produced only pre-existing findings outside changed U2 functions; both generated CLI artifact
+  checks reported fresh output; `cargo machete --with-metadata` found no unused dependencies;
+  `cargo fmt --all` and `git diff --check` passed.
 
 ## Review
 

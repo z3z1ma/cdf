@@ -109,80 +109,164 @@ fn sql_read_only_query_does_not_create_local_artifacts() {
 }
 
 #[test]
-fn compile_refresh_and_offline_compile_publish_one_typed_report() {
+fn compile_publishes_independent_artifact_index_and_locked_rebuild() {
     let project = TestProject::new();
-    let refresh = run([
+    let prepared = run([
         "cdf",
         "--json",
         "--project",
         project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
-    assert_eq!(refresh.exit_code, 0, "stderr: {}", refresh.stderr);
-    let refresh = stderr_or_stdout_json(&refresh.stdout);
-    assert_eq!(refresh["command"], "compile");
-    assert_eq!(refresh["result"]["mode"], "refresh");
-    assert_eq!(refresh["result"]["resources"], 1);
-    assert_eq!(refresh["result"]["source_observations"], 1);
-    assert_eq!(refresh["result"]["writes"]["manifest"], true);
-    assert_eq!(refresh["result"]["writes"]["lockfile"], true);
-    for external in ["destination", "state", "package", "receipt", "checkpoint"] {
-        assert_eq!(refresh["result"]["writes"][external], false);
-    }
+    assert_eq!(
+        prepared.exit_code, 0,
+        "stdout: {}\nstderr: {}",
+        prepared.stdout, prepared.stderr
+    );
+    let prepared = stderr_or_stdout_json(&prepared.stdout);
+    assert_eq!(prepared["command"], "compile");
+    assert_eq!(prepared["result"]["counts"]["compiled"], 1);
+    assert_eq!(
+        prepared["result"]["resources"][0]["discovered_schema"],
+        true
+    );
+    let artifact_path = prepared["result"]["resources"][0]["artifact_path"]
+        .as_str()
+        .unwrap();
+    assert!(project.root.join(artifact_path).is_file());
 
     let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
-    let offline = run(["cdf", "--json", "--project", project.root_str(), "compile"]);
-    assert_eq!(offline.exit_code, 0, "stderr: {}", offline.stderr);
-    let offline = stderr_or_stdout_json(&offline.stdout);
-    assert_eq!(offline["result"]["mode"], "locked_offline");
-    assert_eq!(offline["result"]["source_observations"], 0);
-    assert_eq!(offline["result"]["writes"]["lockfile"], false);
-    let offline_manifest = fs::read(project.root.join(".cdf/manifest.json")).unwrap();
-    let repeated = run(["cdf", "--json", "--project", project.root_str(), "compile"]);
-    assert_eq!(repeated.exit_code, 0, "stderr: {}", repeated.stderr);
-    let repeated = stderr_or_stdout_json(&repeated.stdout);
-    assert_eq!(repeated["result"]["writes"]["manifest"], false);
+    let index_before = fs::read(project.root.join(".cdf/manifest.json")).unwrap();
+    let locked = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+        "--locked",
+    ]);
     assert_eq!(
-        fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
-        offline_manifest
+        locked.exit_code, 0,
+        "stdout: {}\nstderr: {}",
+        locked.stdout, locked.stderr
     );
     assert_eq!(
         fs::read(project.root.join("cdf.lock")).unwrap(),
         lock_before
     );
+    assert_eq!(
+        fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
+        index_before
+    );
 }
 
 #[test]
-fn offline_compile_preserves_missing_lock_diagnostic_without_publishing() {
+fn compile_selectors_isolate_resources_and_aggregate_partial_success() {
     let project = TestProject::new();
+    fs::create_dir_all(project.root.join("cdf/broken")).unwrap();
+    fs::write(
+        project.root.join("cdf/broken/unknown.cdf.sql"),
+        RESOURCE.replace("source => 'local'", "source => 'missing'"),
+    )
+    .unwrap();
+
+    let selected = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.*",
+    ]);
+    assert_eq!(selected.exit_code, 0, "stderr: {}", selected.stderr);
+    let selected = stderr_or_stdout_json(&selected.stdout);
+    assert_eq!(selected["result"]["selection"], json!(["local.events"]));
+
+    let aggregate = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "*",
+    ]);
+    assert_eq!(aggregate.exit_code, 1);
+    let aggregate = stderr_or_stdout_json(&aggregate.stdout);
+    assert_eq!(aggregate["result"]["counts"]["compiled"], 1);
+    assert_eq!(aggregate["result"]["counts"]["failed"], 1);
+    assert_eq!(
+        aggregate["result"]["resources"][0]["resource_id"],
+        "broken.unknown"
+    );
+    assert_eq!(aggregate["result"]["resources"][0]["status"], "failed");
+    assert_eq!(aggregate["result"]["resources"][1]["status"], "compiled");
+
+    let index = cdf_project::parse_compilation_index(
+        &fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        index.resources["broken.unknown"].status,
+        cdf_project::CompilationStatus::Failed
+    );
+    assert_eq!(
+        index.resources["local.events"].status,
+        cdf_project::CompilationStatus::Current
+    );
+}
+
+#[test]
+fn unscoped_compile_marks_deleted_known_resources_absent() {
+    let project = TestProject::new();
+    compile_test_project(&project);
+    fs::remove_file(project.root.join("cdf/local/events.cdf.sql")).unwrap();
+    fs::remove_dir(project.root.join("cdf/local")).unwrap();
+
     let result = run(["cdf", "--json", "--project", project.root_str(), "compile"]);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let index = cdf_project::parse_compilation_index(
+        &fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        index.resources["local.events"].status,
+        cdf_project::CompilationStatus::Absent
+    );
+    assert!(index.resources["local.events"].artifact.is_none());
+}
 
-    assert_ne!(result.exit_code, 0);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["kind"], "contract");
-    assert_eq!(json["error"]["code"], "CDF-PROJECT-CONTRACT");
-    let message = json["error"]["message"].as_str().unwrap();
-    assert!(message.contains("cdf.lock is missing"));
-    assert!(!message.contains("cdf compile --refresh"));
+#[test]
+fn locked_compile_reports_missing_selected_authority_and_indexes_failure() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        "local.events",
+        "--locked",
+    ]);
 
-    let human = run(["cdf", "--project", project.root_str(), "compile"]);
-    assert_eq!(human.exit_code, result.exit_code);
-    assert!(human.stderr.contains(message));
-    assert!(!human.stderr.contains("cdf compile --refresh"));
-    assert!(!project.root.join(".cdf/manifest.json").exists());
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["counts"]["failed"], 1);
+    assert_eq!(json["result"]["resources"][0]["error"]["kind"], "contract");
+    assert!(project.root.join(".cdf/manifest.json").is_file());
     assert!(!project.root.join("cdf.lock").exists());
 }
 
 #[test]
-fn compile_preserves_data_and_auth_diagnostics_without_refresh_decoration() {
+fn compile_preserves_per_resource_data_and_auth_diagnostics() {
     let data_project = TestProject::new();
     let prepared = run([
         "cdf",
         "--project",
         data_project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
     assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
     fs::remove_file(data_project.root.join(".cdf/manifest.json")).unwrap();
@@ -195,14 +279,19 @@ fn compile_preserves_data_and_auth_diagnostics_without_refresh_decoration() {
         data_project.root_str(),
         "compile",
     ]);
-    let data_json = assert_json_error_code(&data, "CDF-PACKAGE-DATA");
-    assert_eq!(data_json["error"]["kind"], "data");
-    let data_message = data_json["error"]["message"].as_str().unwrap();
+    assert_eq!(data.exit_code, 1);
+    let data_json = stderr_or_stdout_json(&data.stdout);
+    assert_eq!(
+        data_json["result"]["resources"][0]["error"]["kind"], "data",
+        "{data_json}"
+    );
+    let data_message = data_json["result"]["resources"][0]["error"]["message"]
+        .as_str()
+        .unwrap();
     assert!(
         data_message.contains("must be a regular non-symlink file"),
         "{data_message}"
     );
-    assert!(!data_message.contains("cdf compile --refresh"));
 
     let auth_project = TestProject::new();
     fs::write(
@@ -236,17 +325,19 @@ egress_allowlist = ["not-example.com"]
         "--project",
         auth_project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
-    let auth_json = assert_json_error_code(&auth, "CDF-PROJECT-AUTH");
-    assert_eq!(auth_json["error"]["kind"], "auth");
-    let auth_message = auth_json["error"]["message"].as_str().unwrap();
+    assert_eq!(auth.exit_code, 1);
+    let auth_json = stderr_or_stdout_json(&auth.stdout);
+    assert_eq!(auth_json["result"]["resources"][0]["error"]["kind"], "auth");
+    let auth_message = auth_json["result"]["resources"][0]["error"]["message"]
+        .as_str()
+        .unwrap();
     assert!(auth_message.contains("egress"), "{auth_message}");
-    assert!(!auth_message.contains("cdf compile --refresh"));
 }
 
 #[test]
-fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_authority() {
+fn compile_discovers_only_selected_source_and_publishes_schema_authority() {
     let project = TestProject::new();
 
     let result = run([
@@ -255,17 +346,11 @@ fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_author
         "--project",
         project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["result"]["source_observations"], 1);
-    assert!(
-        json["result"]["writes"]["schema_artifacts"]
-            .as_u64()
-            .unwrap()
-            >= 1
-    );
+    assert_eq!(json["result"]["resources"][0]["discovered_schema"], true);
     assert!(project.root.join(".cdf/schemas").is_dir());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
@@ -290,18 +375,22 @@ fn compile_binds_destination_uri_aliases_to_canonical_ids() {
             "--project",
             project.root_str(),
             "compile",
-            "--refresh",
+            "local.events",
         ]);
         assert_eq!(result.exit_code, 0, "{uri}: {}", result.stderr);
-        let manifest =
-            parse_project_manifest(&fs::read(project.root.join(".cdf/manifest.json")).unwrap())
-                .unwrap();
+        let index = cdf_project::parse_compilation_index(
+            &fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let artifact_ref = index.resources["local.events"].artifact.as_ref().unwrap();
+        let artifact = cdf_project::parse_compiled_resource_artifact(
+            &fs::read(project.root.join(&artifact_ref.path)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(artifact.resource.destination.destination_id, expected_id);
         assert_eq!(
-            manifest.resources[0].destination.destination_id,
-            expected_id
-        );
-        assert_eq!(
-            manifest.resources[0]
+            artifact
+                .resource
                 .destination
                 .sheet
                 .sheet
@@ -313,7 +402,7 @@ fn compile_binds_destination_uri_aliases_to_canonical_ids() {
 }
 
 #[test]
-fn sql_mounts_manifest_tables_then_rejects_stale_authored_inputs() {
+fn sql_mounts_current_artifacts_and_downgrades_stale_authored_inputs() {
     let project = TestProject::new();
     compile_test_project(&project);
     let mounted = run([
@@ -352,22 +441,22 @@ fn sql_mounts_manifest_tables_then_rejects_stale_authored_inputs() {
         "--project",
         project.root_str(),
         "sql",
-        "select r.resource_id, r.source_plan_json, f.path from manifest_resources r join manifest_fields f using (resource_id) order by f.ordinal",
+        "select status from compilation_resources where resource_id = 'local.events'",
     ]);
-    assert_ne!(result.exit_code, 0);
-    assert!(result.stderr.contains("authored input"));
-    assert!(result.stderr.contains("cdf compile"));
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["rows"], json!([["stale"]]));
     assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
 #[test]
-fn sql_fails_closed_on_tampered_manifest_without_republishing() {
+fn sql_keeps_system_tables_available_when_compilation_index_is_tampered() {
     let project = TestProject::new();
     compile_test_project(&project);
     let manifest_path = project.root.join(".cdf/manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["header"]["normalizer"] = json!("tampered");
+    manifest["project_name"] = json!("tampered");
     let tampered = serde_json::to_vec_pretty(&manifest).unwrap();
     fs::write(&manifest_path, &tampered).unwrap();
     let before = project_tree_snapshot(&project.root);
@@ -378,10 +467,11 @@ fn sql_fails_closed_on_tampered_manifest_without_republishing() {
         "--project",
         project.root_str(),
         "sql",
-        "select * from manifest_project",
+        "select count(*) from packages",
     ]);
-    assert_ne!(result.exit_code, 0);
-    assert!(result.stderr.contains("cdf compile"));
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["rows"], json!([[0]]));
     assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
@@ -391,7 +481,7 @@ fn compile_test_project(project: &TestProject) {
         "--project",
         project.root_str(),
         "compile",
-        "--refresh",
+        "local.events",
     ]);
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
 }
