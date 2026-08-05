@@ -13,5 +13,5 @@ crates/cdf-project/src/manifest.rs:1129	CdfError::internal missing just-inserted
 crates/cdf-project/src/manifest.rs:1146	CdfError::internal missing just-pushed semantic reference	CDF manifest assembly	Internal	retain
 crates/cdf-project/src/manifest.rs:1219	CdfError::internal invalid already-compiled semantic reference	CDF compiled authority	Internal	retain
 crates/cdf-project/src/manifest.rs:1755	CdfError::internal typed manifest security serialization failure	CDF serializer	Internal	retain
-crates/cdf-project/src/manifest.rs:1936	CdfError::internal canonical identity serialization failure	CDF serializer	Internal	retain
-crates/cdf-project/src/manifest.rs:2043	ManifestErrorAuthority::Compiler to CdfError::internal	CDF compiler-produced manifest	Internal	retain; Artifact arm remains Data
+crates/cdf-project/src/manifest.rs:1971	CdfError::internal canonical identity serialization failure	CDF serializer	Internal	retain
+crates/cdf-project/src/manifest.rs:2078	ManifestErrorAuthority::Compiler to CdfError::internal	CDF compiler-produced manifest	Internal	retain; Artifact arm remains Data

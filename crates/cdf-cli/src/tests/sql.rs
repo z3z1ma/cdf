@@ -175,6 +175,77 @@ fn offline_compile_preserves_missing_lock_diagnostic_without_publishing() {
 }
 
 #[test]
+fn compile_preserves_data_and_auth_diagnostics_without_refresh_decoration() {
+    let data_project = TestProject::new();
+    let prepared = run([
+        "cdf",
+        "--project",
+        data_project.root_str(),
+        "compile",
+        "--refresh",
+    ]);
+    assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
+    fs::remove_file(data_project.root.join(".cdf/manifest.json")).unwrap();
+    fs::create_dir(data_project.root.join(".cdf/manifest.json")).unwrap();
+
+    let data = run([
+        "cdf",
+        "--json",
+        "--project",
+        data_project.root_str(),
+        "compile",
+    ]);
+    let data_json = assert_json_error_code(&data, "CDF-PACKAGE-DATA");
+    assert_eq!(data_json["error"]["kind"], "data");
+    let data_message = data_json["error"]["message"].as_str().unwrap();
+    assert!(
+        data_message.contains("must be a regular non-symlink file"),
+        "{data_message}"
+    );
+    assert!(!data_message.contains("cdf compile --refresh"));
+
+    let auth_project = TestProject::new();
+    fs::write(
+        auth_project.root.join("cdf.toml"),
+        r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[sources.local]
+type = "files"
+root = "https://example.com/data"
+egress_allowlist = ["not-example.com"]
+"#,
+    )
+    .unwrap();
+    fs::write(
+        auth_project.root.join("cdf/local/events.cdf.sql"),
+        RESOURCE.replace("*.ndjson", "events.ndjson"),
+    )
+    .unwrap();
+    let auth = run([
+        "cdf",
+        "--json",
+        "--project",
+        auth_project.root_str(),
+        "compile",
+        "--refresh",
+    ]);
+    let auth_json = assert_json_error_code(&auth, "CDF-PROJECT-AUTH");
+    assert_eq!(auth_json["error"]["kind"], "auth");
+    let auth_message = auth_json["error"]["message"].as_str().unwrap();
+    assert!(auth_message.contains("egress"), "{auth_message}");
+    assert!(!auth_message.contains("cdf compile --refresh"));
+}
+
+#[test]
 fn compile_refresh_observes_only_refreshable_sources_and_publishes_schema_authority() {
     let project = TestProject::new();
     fs::write(

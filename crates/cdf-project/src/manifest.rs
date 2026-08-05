@@ -1753,17 +1753,35 @@ fn validate_diagnostics(
 fn validate_security(manifest: &ProjectManifest, authority: ManifestErrorAuthority) -> Result<()> {
     let value = serde_json::to_value(manifest)
         .map_err(|error| CdfError::internal(format!("inspect manifest security: {error}")))?;
-    inspect_json_security(None, &value, authority)
+    inspect_json_security(&value, authority)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManifestSecurityLocation {
+    Root,
+    Resources,
+    Resource,
+    ResourceOrigin,
+    AuthoredSql,
+    Other,
 }
 
 fn inspect_json_security(
-    key: Option<&str>,
     value: &serde_json::Value,
     authority: ManifestErrorAuthority,
 ) -> Result<()> {
+    inspect_json_security_at(None, value, authority, ManifestSecurityLocation::Root)
+}
+
+fn inspect_json_security_at(
+    key: Option<&str>,
+    value: &serde_json::Value,
+    authority: ManifestErrorAuthority,
+    location: ManifestSecurityLocation,
+) -> Result<()> {
     match value {
         serde_json::Value::String(value) => {
-            let authored_sql = key == Some("authored_sql");
+            let authored_sql = location == ManifestSecurityLocation::AuthoredSql;
             let forbidden_control = value.chars().any(|character| {
                 character.is_control() && !(authored_sql && matches!(character, '\t' | '\n' | '\r'))
             });
@@ -1799,13 +1817,30 @@ fn inspect_json_security(
                 .map_err(|error| remap(error, authority))?;
         }
         serde_json::Value::Array(values) => {
+            let element_location = if location == ManifestSecurityLocation::Resources {
+                ManifestSecurityLocation::Resource
+            } else {
+                ManifestSecurityLocation::Other
+            };
             for value in values {
-                inspect_json_security(key, value, authority)?;
+                inspect_json_security_at(key, value, authority, element_location)?;
             }
         }
         serde_json::Value::Object(values) => {
             for (key, value) in values {
-                inspect_json_security(Some(key), value, authority)?;
+                let child_location = match (location, key.as_str()) {
+                    (ManifestSecurityLocation::Root, "resources") => {
+                        ManifestSecurityLocation::Resources
+                    }
+                    (ManifestSecurityLocation::Resource, "origin") => {
+                        ManifestSecurityLocation::ResourceOrigin
+                    }
+                    (ManifestSecurityLocation::ResourceOrigin, "authored_sql") => {
+                        ManifestSecurityLocation::AuthoredSql
+                    }
+                    _ => ManifestSecurityLocation::Other,
+                };
+                inspect_json_security_at(Some(key), value, authority, child_location)?;
             }
         }
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
@@ -2058,28 +2093,52 @@ mod security_tests {
     #[test]
     fn authored_sql_admits_only_safe_authored_whitespace_controls() {
         let safe = serde_json::json!({
-            "authored_sql": "SELECT\t*\r\nFROM upstream(source => 'local');\n"
+            "resources": [{
+                "origin": {
+                    "authored_sql": "SELECT\t*\r\nFROM upstream(source => 'local');\n"
+                }
+            }]
         });
-        inspect_json_security(None, &safe, ManifestErrorAuthority::Compiler).unwrap();
-        inspect_json_security(None, &safe, ManifestErrorAuthority::Artifact).unwrap();
+        inspect_json_security(&safe, ManifestErrorAuthority::Compiler).unwrap();
+        inspect_json_security(&safe, ManifestErrorAuthority::Artifact).unwrap();
 
         for codepoint in (0_u32..=0x1f).chain(0x7f..=0x9f) {
             if matches!(codepoint, 0x09 | 0x0a | 0x0d) {
                 continue;
             }
             let character = char::from_u32(codepoint).unwrap();
-            let value = serde_json::json!({ "authored_sql": format!("SELECT{character}1") });
+            let value = serde_json::json!({
+                "resources": [{
+                    "origin": { "authored_sql": format!("SELECT{character}1") }
+                }]
+            });
             let compiler_error =
-                inspect_json_security(None, &value, ManifestErrorAuthority::Compiler).unwrap_err();
+                inspect_json_security(&value, ManifestErrorAuthority::Compiler).unwrap_err();
             assert_eq!(
                 compiler_error.kind,
                 ErrorKind::Internal,
                 "U+{codepoint:04X}"
             );
             let artifact_error =
-                inspect_json_security(None, &value, ManifestErrorAuthority::Artifact).unwrap_err();
+                inspect_json_security(&value, ManifestErrorAuthority::Artifact).unwrap_err();
             assert_eq!(artifact_error.kind, ErrorKind::Data, "U+{codepoint:04X}");
         }
+    }
+
+    #[test]
+    fn adapter_owned_authored_sql_key_does_not_receive_the_typed_sql_exception() {
+        let collision = serde_json::json!({
+            "resources": [{
+                "source_plan": {
+                    "physical_plan": {
+                        "authored_sql": "adapter-owned\nnot authored SQL"
+                    }
+                }
+            }]
+        });
+        let error =
+            inspect_json_security(&collision, ManifestErrorAuthority::Compiler).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Internal);
     }
 
     #[test]
@@ -2087,7 +2146,7 @@ mod security_tests {
         for character in ['\t', '\n', '\r'] {
             let value = serde_json::json!({ "message": format!("unsafe{character}text") });
             let error =
-                inspect_json_security(None, &value, ManifestErrorAuthority::Compiler).unwrap_err();
+                inspect_json_security(&value, ManifestErrorAuthority::Compiler).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Internal);
         }
 
@@ -2097,7 +2156,7 @@ mod security_tests {
             serde_json::json!("x".repeat(MAX_MANIFEST_STRING_BYTES + 1)),
         ] {
             let error =
-                inspect_json_security(None, &value, ManifestErrorAuthority::Compiler).unwrap_err();
+                inspect_json_security(&value, ManifestErrorAuthority::Compiler).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Internal);
         }
     }
