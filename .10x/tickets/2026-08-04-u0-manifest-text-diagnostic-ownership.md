@@ -131,7 +131,7 @@ None. The ticket is executable from its active references.
   `git ls-files -- crates/cdf-cli/src/compile_command.rs crates/cdf-project/src/manifest.rs | sort`
   and `rg -n -- 'CdfError::internal|ManifestErrorAuthority::Compiler => CdfError::internal'
   crates/cdf-cli/src/compile_command.rs crates/cdf-project/src/manifest.rs`. A supplemental
-  `rg -n -- 'ErrorKind::Internal'` over the same files finds three test assertions and no direct
+  `rg -n -- 'ErrorKind::Internal'` over the same files finds four test assertions and no direct
   constructor. The final production inventory has two files, two site-bearing files, fourteen
   Internal construction sites (four CLI, ten manifest), zero unclassified Internal constructors,
   plus the two compile-owned Contract endpoints affected by deletion of the decorator.
