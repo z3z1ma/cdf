@@ -50,11 +50,8 @@ pub enum SecretCheckStatus {
 pub struct CdfLock {
     pub version: u16,
     pub project: ProjectLock,
-    pub semantics: BTreeMap<String, String>,
     #[serde(default)]
     pub resources: BTreeMap<String, LockedResource>,
-    #[serde(default)]
-    pub destinations: BTreeMap<String, LockedDestination>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +91,7 @@ pub struct LockedResource {
     pub contract: Option<ContractSnapshot>,
     pub compiler: LockedResourceCompilerBinding,
     pub semantic_pins: BTreeMap<String, String>,
-    pub destination_sheets: BTreeMap<String, String>,
+    pub destinations: BTreeMap<String, LockedDestination>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compiled_artifact_hash: Option<String>,
 }
@@ -188,6 +185,41 @@ impl LockedDestination {
     }
 }
 
+impl CdfLock {
+    pub fn destination(&self, destination_id: &str) -> Result<Option<&LockedDestination>> {
+        let mut found = None;
+        for resource in self.resources.values() {
+            let Some(destination) = resource.destinations.get(destination_id) else {
+                continue;
+            };
+            if found.is_some_and(|existing| existing != destination) {
+                return Err(CdfError::contract(format!(
+                    "cdf.lock resources disagree on destination `{destination_id}` authority"
+                )));
+            }
+            found = Some(destination);
+        }
+        Ok(found)
+    }
+
+    pub fn destination_bindings(&self) -> Result<BTreeMap<String, LockedDestination>> {
+        let mut destinations = BTreeMap::new();
+        for resource in self.resources.values() {
+            for (destination_id, destination) in &resource.destinations {
+                if destinations
+                    .insert(destination_id.clone(), destination.clone())
+                    .is_some_and(|existing| existing != *destination)
+                {
+                    return Err(CdfError::contract(format!(
+                        "cdf.lock resources disagree on destination `{destination_id}` authority"
+                    )));
+                }
+            }
+        }
+        Ok(destinations)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockDiff {
     pub kind: LockDiffKind,
@@ -229,16 +261,6 @@ fn validate_lock(lock: &CdfLock) -> Result<()> {
             "unsupported cdf.lock version {}; expected {LOCKFILE_VERSION}",
             lock.version
         )));
-    }
-    for (reference, definition_hash) in &lock.semantics {
-        reference
-            .parse::<cdf_kernel::SemanticReference>()
-            .map_err(|error| {
-                CdfError::contract(format!(
-                    "locked semantic reference {reference:?} is invalid: {error}"
-                ))
-            })?;
-        validate_sha256("locked semantic definition", definition_hash)?;
     }
     for (resource_id, resource) in &lock.resources {
         resource.descriptor.validate()?;
@@ -306,14 +328,12 @@ fn validate_lock(lock: &CdfLock) -> Result<()> {
                 })?;
             validate_sha256("locked resource semantic definition", definition_hash)?;
         }
-        for (destination, sheet_hash) in &resource.destination_sheets {
-            if lock
-                .destinations
-                .get(destination)
-                .is_none_or(|locked| locked.sheet_hash != *sheet_hash)
+        for (destination, locked) in &resource.destinations {
+            if locked.sheet.destination.as_str() != destination
+                || semantic_hash(&locked.sheet_artifact()?)? != locked.sheet_hash
             {
                 return Err(CdfError::contract(format!(
-                    "locked resource `{resource_id}` destination sheet `{destination}` does not match lock authority"
+                    "locked resource `{resource_id}` destination `{destination}` does not match its canonical capability authority"
                 )));
             }
         }
@@ -328,17 +348,6 @@ fn validate_lock(lock: &CdfLock) -> Result<()> {
                 resource.schema_hash
             )));
         }
-    }
-    let resource_semantics = lock
-        .resources
-        .values()
-        .flat_map(|resource| resource.semantic_pins.iter())
-        .map(|(reference, hash)| (reference.clone(), hash.clone()))
-        .collect::<BTreeMap<_, _>>();
-    if resource_semantics != lock.semantics {
-        return Err(CdfError::contract(
-            "cdf.lock global semantic index does not equal its per-resource semantic bindings",
-        ));
     }
     Ok(())
 }
@@ -402,15 +411,7 @@ pub fn generate_lockfile_with_destination_artifacts(
     semantic_catalog: &SemanticCatalog,
 ) -> Result<CdfLock> {
     validate_project_shape(config)?;
-    let destination_sheets = destination_artifacts
-        .iter()
-        .map(|artifact| {
-            Ok((
-                artifact.sheet.destination.to_string(),
-                semantic_hash(artifact)?,
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    let destinations = locked_destinations(destination_artifacts)?;
     let mut locked_resources = BTreeMap::new();
     for resource in resources {
         let descriptor = resource.descriptor().clone();
@@ -449,16 +450,10 @@ pub fn generate_lockfile_with_destination_artifacts(
                     source: CompiledSourceCompilerBinding::compile(resource.source_plan())?,
                 },
                 semantic_pins,
-                destination_sheets: destination_sheets.clone(),
+                destinations: destinations.clone(),
                 compiled_artifact_hash: None,
             },
         );
-    }
-
-    let mut destinations = BTreeMap::new();
-    for artifact in destination_artifacts {
-        let destination = artifact.sheet.destination.to_string();
-        destinations.insert(destination, LockedDestination::new(artifact.clone())?);
     }
 
     Ok(CdfLock {
@@ -467,13 +462,7 @@ pub fn generate_lockfile_with_destination_artifacts(
             name: config.project.name.clone(),
             default_environment: config.project.default_environment.clone(),
         },
-        semantics: locked_resources
-            .values()
-            .flat_map(|resource| resource.semantic_pins.iter())
-            .map(|(reference, hash)| (reference.clone(), hash.clone()))
-            .collect(),
         resources: locked_resources,
-        destinations,
     })
 }
 
@@ -565,6 +554,7 @@ pub fn freeze_contract_snapshots(
     };
 
     if existing_lock.is_some() {
+        let destinations = locked_destinations(destination_artifacts)?;
         for resource in selected_contract_resources(resources, selector)? {
             let resource_id = resource.descriptor().resource_id.to_string();
             let snapshot = snapshots.get(&resource_id).cloned().ok_or_else(|| {
@@ -581,20 +571,13 @@ pub fn freeze_contract_snapshots(
                         snapshot,
                         current_dependency_tuple(),
                         &config.project.normalizer,
-                        destination_sheet_hashes(&lock.destinations),
+                        destinations.clone(),
                         semantic_catalog,
                     )?,
                 );
             }
         }
     }
-    lock.semantics = lock
-        .resources
-        .values()
-        .flat_map(|resource| resource.semantic_pins.iter())
-        .map(|(reference, hash)| (reference.clone(), hash.clone()))
-        .collect();
-
     let resource_ids = snapshots.keys().cloned().collect::<Vec<_>>();
     let report = ContractFreezeReport {
         registry: LOCK_FILE_NAME.to_owned(),
@@ -621,6 +604,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
 ) -> Result<CdfLock> {
     if let Some(lock) = existing_lock {
         let mut updated = lock.clone();
+        let destinations = locked_destinations(destination_artifacts)?;
         let snapshot = contract_snapshot_for_resource_with_semantic_catalog(
             pinned_resource,
             semantic_catalog,
@@ -632,16 +616,10 @@ pub fn pin_schema_snapshot_in_project_lockfile(
                 snapshot,
                 current_dependency_tuple(),
                 &config.project.normalizer,
-                destination_sheet_hashes(&updated.destinations),
+                destinations,
                 semantic_catalog,
             )?,
         );
-        updated.semantics = updated
-            .resources
-            .values()
-            .flat_map(|resource| resource.semantic_pins.iter())
-            .map(|(reference, hash)| (reference.clone(), hash.clone()))
-            .collect();
         return Ok(updated);
     }
 
@@ -698,12 +676,6 @@ pub fn upsert_compiled_resource_in_lockfile(
         ));
     }
     let mut updated = existing.clone();
-    for artifact in destination_artifacts {
-        updated.destinations.insert(
-            artifact.sheet.destination.to_string(),
-            LockedDestination::new(artifact.clone())?,
-        );
-    }
     let resource_id = resource.descriptor().resource_id.to_string();
     let contract =
         contract_snapshot_for_resource_with_semantic_catalog(resource, semantic_catalog)?;
@@ -714,16 +686,10 @@ pub fn upsert_compiled_resource_in_lockfile(
             contract,
             current_dependency_tuple(),
             &config.project.normalizer,
-            destination_sheet_hashes(&updated.destinations),
+            locked_destinations(destination_artifacts)?,
             semantic_catalog,
         )?,
     );
-    updated.semantics = updated
-        .resources
-        .values()
-        .flat_map(|resource| resource.semantic_pins.iter())
-        .map(|(reference, hash)| (reference.clone(), hash.clone()))
-        .collect();
     Ok(updated)
 }
 
@@ -921,7 +887,7 @@ fn locked_resource_from_current(
     contract: ContractSnapshot,
     dependency_tuple: DependencyTuple,
     normalizer: &str,
-    destination_sheets: BTreeMap<String, String>,
+    destinations: BTreeMap<String, LockedDestination>,
     semantic_catalog: &SemanticCatalog,
 ) -> Result<LockedResource> {
     let descriptor = resource.descriptor().clone();
@@ -951,17 +917,22 @@ fn locked_resource_from_current(
             std::slice::from_ref(resource),
             semantic_catalog,
         )?,
-        destination_sheets,
+        destinations,
         compiled_artifact_hash: None,
     })
 }
 
-fn destination_sheet_hashes(
-    destinations: &BTreeMap<String, LockedDestination>,
-) -> BTreeMap<String, String> {
-    destinations
+fn locked_destinations(
+    destination_artifacts: &[DestinationSheetArtifact],
+) -> Result<BTreeMap<String, LockedDestination>> {
+    destination_artifacts
         .iter()
-        .map(|(id, destination)| (id.clone(), destination.sheet_hash.clone()))
+        .map(|artifact| {
+            Ok((
+                artifact.sheet.destination.to_string(),
+                LockedDestination::new(artifact.clone())?,
+            ))
+        })
         .collect()
 }
 

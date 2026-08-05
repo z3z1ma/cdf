@@ -27,7 +27,7 @@ pub(super) fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
     Arc::new(registry)
 }
 
-pub(super) fn test_source_registry() -> cdf_runtime::SourceRegistry {
+pub(crate) fn test_source_registry() -> cdf_runtime::SourceRegistry {
     let formats = test_format_registry();
     let runtime_formats = Arc::clone(&formats);
     let mut registry = cdf_runtime::SourceRegistry::new();
@@ -173,7 +173,7 @@ impl cdf_runtime::SourceDriver for ProjectReferenceTestDriver {
     }
 }
 
-pub(super) const BOOK_PROJECT: &str = r#"
+pub(crate) const BOOK_PROJECT: &str = r#"
 [project]
 name = "acme_data"
 default_environment = "dev"
@@ -201,7 +201,7 @@ base_url = "https://api.github.com"
 auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
 "#;
 
-pub(super) const GITHUB_RESOURCE: &str = r#"
+pub(crate) const GITHUB_RESOURCE: &str = r#"
 [source.github]
 kind = "rest"
 base_url = "https://api.github.com"
@@ -221,7 +221,7 @@ schema = { fields = [
 ] }
 "#;
 
-pub(super) fn compile_declarative_fixture(
+pub(crate) fn compile_declarative_fixture(
     registry: &cdf_runtime::SourceRegistry,
     input: &str,
 ) -> cdf_kernel::Result<Vec<cdf_declarative::CompiledResource>> {

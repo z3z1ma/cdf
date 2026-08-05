@@ -21,6 +21,8 @@ pub enum ErrorKind {
 pub struct CdfError {
     pub kind: ErrorKind,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub retry_after_ms: Option<u64>,
 }
 
@@ -29,6 +31,7 @@ impl CdfError {
         Self {
             kind,
             message: message.into(),
+            code: None,
             retry_after_ms: None,
         }
     }
@@ -41,8 +44,14 @@ impl CdfError {
         Self {
             kind: ErrorKind::RateLimited,
             message: message.into(),
+            code: None,
             retry_after_ms,
         }
+    }
+
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
 
     pub fn auth(message: impl Into<String>) -> Self {

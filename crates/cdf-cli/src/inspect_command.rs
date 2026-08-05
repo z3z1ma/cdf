@@ -70,7 +70,12 @@ pub(crate) fn inspect(
                             &context.environment.destination,
                         ),
                         runtime,
-                        locked: redact_typed(context.lock.map(|lock| lock.destinations))?,
+                        locked: redact_typed(
+                            context
+                                .lock
+                                .map(|lock| lock.destination_bindings())
+                                .transpose()?,
+                        )?,
                     };
                     CommandOutput::rendered(
                         "inspect destinations",

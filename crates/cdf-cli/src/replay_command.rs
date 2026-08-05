@@ -244,6 +244,7 @@ impl ReplayDestination {
                 let _ = progress.append_run_failed(&CdfError {
                     kind: error.kind.clone(),
                     message: error.message.clone(),
+                    code: error.code.clone(),
                     retry_after_ms: None,
                 });
                 Err(error.into())

@@ -205,7 +205,7 @@ fn compile_one(
         )?
     };
 
-    let authored = captured_authored_inputs(&context, &entry)?;
+    let authored = captured_authored_inputs(&entry)?;
     let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
@@ -286,23 +286,14 @@ struct CapturedInput {
 }
 
 fn captured_authored_inputs(
-    context: &ProjectContext,
     entry: &CompiledProjectResource,
 ) -> Result<Vec<CapturedInput>, CliError> {
-    Ok(vec![
-        captured_input(
-            PROJECT_FILE_NAME,
-            ManifestInputKind::Project,
-            context.project_bytes.clone(),
-            "cdf-project-toml",
-        )?,
-        captured_input(
-            &entry.query.relative_path,
-            ManifestInputKind::ResourceSql,
-            entry.query.authored_sql.as_bytes().to_vec(),
-            "cdf-resource-sql",
-        )?,
-    ])
+    Ok(vec![captured_input(
+        &entry.query.relative_path,
+        ManifestInputKind::ResourceSql,
+        entry.query.authored_sql.as_bytes().to_vec(),
+        "cdf-resource-sql",
+    )?])
 }
 
 fn captured_input(
@@ -382,10 +373,15 @@ fn publish_success(
         ));
         LOCK_FILE_NAME
     };
-    let guards = authored
-        .iter()
-        .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone()))
-        .collect();
+    let mut guards = vec![ProjectFileGuard::exact(
+        PROJECT_FILE_NAME,
+        context.project_bytes.clone(),
+    )];
+    guards.extend(
+        authored
+            .iter()
+            .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone())),
+    );
     publish_project_files_transactionally_guarded(&context.root, final_target, guards, writes)?;
     Ok(())
 }

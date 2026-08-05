@@ -776,6 +776,7 @@ impl ForeignProducer for SubprocessProducer {
                             "stream subprocess {:?} stdout: {}",
                             self.protocol, error.message
                         ),
+                        code: error.code,
                         retry_after_ms: error.retry_after_ms,
                     })?;
                     subprocess_foreign_events(

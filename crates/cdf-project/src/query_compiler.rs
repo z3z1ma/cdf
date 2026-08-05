@@ -199,13 +199,14 @@ pub(crate) fn validate_static_query_project_resource(
         crate::ProjectSourceName::new(&parsed.upstream.configured_source, &input.relative_path)?;
     let source = config.sources.get(source_name.as_str()).ok_or_else(|| {
         CdfError::contract(format!(
-            "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+            "{}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
             input.relative_path,
             parsed.upstream.span.start_line,
             parsed.upstream.span.start_column,
             parsed.upstream.configured_source,
             parsed.upstream.configured_source,
         ))
+        .with_code("CDF-SOURCE-UNKNOWN")
     })?;
     validate_static_configured_source(registry, config, environment, source_name.as_str())?;
     registry
@@ -308,13 +309,14 @@ pub fn compile_selected_query_project_resources(
                     error
                 } else {
                     CdfError::contract(format!(
-                        "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+                        "{}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
                         input.relative_path,
                         parsed.upstream.span.start_line,
                         parsed.upstream.span.start_column,
                         parsed.upstream.configured_source,
                         parsed.upstream.configured_source,
                     ))
+                    .with_code("CDF-SOURCE-UNKNOWN")
                 }
             })?;
         registry
@@ -372,13 +374,14 @@ fn compile_inventory(
         )?;
         let source = inventory.sources.get(&source_name).ok_or_else(|| {
             CdfError::contract(format!(
-                "[CDF-SOURCE-UNKNOWN] {}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
+                "{}:{}:{}: upstream references unknown configured source {:?}; declare [sources.{}] in cdf.toml",
                 input.relative_path,
                 parsed.upstream.span.start_line,
                 parsed.upstream.span.start_column,
                 parsed.upstream.configured_source,
                 parsed.upstream.configured_source,
             ))
+            .with_code("CDF-SOURCE-UNKNOWN")
         })?;
         referenced_sources.insert(source.name.clone());
         registry
