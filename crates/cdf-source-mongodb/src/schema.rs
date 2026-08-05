@@ -738,21 +738,33 @@ pub(crate) fn decode_batch_with_physical_schema(
         .collect::<BTreeSet<_>>();
     let mut residual_candidates = Vec::new();
     let mut physical_reconciliation_accumulators = BTreeMap::new();
+    let physical_reconciliation_fields = decoder_schema
+        .fields()
+        .iter()
+        .map(|field| field_can_produce_physical_reconciliation(field))
+        .collect::<Vec<_>>();
     let mut pre_contract_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
-        for (field, column) in decoder_schema.fields().iter().zip(&mut columns) {
+        for ((field, column), reconcile_physical) in decoder_schema
+            .fields()
+            .iter()
+            .zip(&mut columns)
+            .zip(&physical_reconciliation_fields)
+        {
             let source = source_name(field).unwrap_or_else(|| field.name());
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
                 let mut source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
-                collect_physical_reconciliations(
-                    &mut physical_reconciliation_accumulators,
-                    row,
-                    &mut source_path,
-                    value,
-                    field,
-                    &mut pre_contract_evidence_bytes,
-                )?;
+                if *reconcile_physical {
+                    collect_physical_reconciliations(
+                        &mut physical_reconciliation_accumulators,
+                        row,
+                        &mut source_path,
+                        value,
+                        field,
+                        &mut pre_contract_evidence_bytes,
+                    )?;
+                }
                 column.append(value)?;
                 collect_nested_unknown_fields(
                     field,
@@ -849,6 +861,38 @@ fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument
             .checked_mul(std::mem::size_of::<ColumnAccumulator>())
             .ok_or_else(|| CdfError::data("MongoDB decoder column allocation overflow"))?,
     )?;
+    if !schema
+        .fields()
+        .iter()
+        .any(|field| field_contains_list(field))
+    {
+        for document in documents {
+            validate_document_shape(document, 0)?;
+        }
+        let rows = documents.len();
+        for field in schema.fields() {
+            estimate_fixed_field_appends(field, rows, &mut budget)?;
+        }
+        let payload_multiplier = schema
+            .fields()
+            .iter()
+            .map(|field| field_payload_multiplier(field))
+            .max()
+            .unwrap_or(0);
+        if payload_multiplier > 0 {
+            let raw_document_bytes = documents.iter().try_fold(0_usize, |total, document| {
+                total
+                    .checked_add(document.as_bytes().len())
+                    .ok_or_else(|| CdfError::data("MongoDB decoder payload estimate overflow"))
+            })?;
+            budget.charge(
+                raw_document_bytes
+                    .checked_mul(payload_multiplier)
+                    .ok_or_else(|| CdfError::data("MongoDB decoder payload estimate overflow"))?,
+            )?;
+        }
+        return Ok(());
+    }
     for document in documents {
         validate_document_shape(document, 0)?;
         for field in schema.fields() {
@@ -882,6 +926,71 @@ impl DecodeAllocationBudget {
 
     fn charge_growable_entry<T>(&mut self) -> Result<()> {
         self.charge(std::mem::size_of::<T>().saturating_mul(2))
+    }
+
+    fn charge_growable_entries<T>(&mut self, entries: usize) -> Result<()> {
+        let entry_bytes = std::mem::size_of::<T>()
+            .checked_mul(2)
+            .ok_or_else(|| CdfError::data("MongoDB decoder allocation overflow"))?;
+        self.charge(
+            entry_bytes
+                .checked_mul(entries)
+                .ok_or_else(|| CdfError::data("MongoDB decoder allocation overflow"))?,
+        )
+    }
+}
+
+fn field_contains_list(field: &Field) -> bool {
+    match field.data_type() {
+        DataType::List(_) => true,
+        DataType::Struct(fields) => fields.iter().any(|field| field_contains_list(field)),
+        _ => false,
+    }
+}
+
+fn field_payload_multiplier(field: &Field) -> usize {
+    match field.data_type() {
+        DataType::Utf8 if semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC) => 3,
+        DataType::Utf8 | DataType::Binary => 1,
+        DataType::Struct(fields) => fields
+            .iter()
+            .map(|field| field_payload_multiplier(field))
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn estimate_fixed_field_appends(
+    field: &Field,
+    rows: usize,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<()> {
+    match field.data_type() {
+        DataType::Boolean => budget.charge_growable_entries::<Option<bool>>(rows),
+        DataType::Int32 | DataType::Date32 => budget.charge_growable_entries::<Option<i32>>(rows),
+        DataType::Int64 | DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            budget.charge_growable_entries::<Option<i64>>(rows)
+        }
+        DataType::Float64 => budget.charge_growable_entries::<Option<f64>>(rows),
+        DataType::Utf8 => budget.charge_growable_entries::<Option<String>>(rows),
+        DataType::Binary => budget.charge_growable_entries::<Option<Vec<u8>>>(rows),
+        DataType::FixedSizeBinary(12) => budget.charge_growable_entries::<Option<[u8; 12]>>(rows),
+        DataType::Decimal128(_, _) => budget.charge_growable_entries::<Option<i128>>(rows),
+        DataType::Struct(fields) => {
+            budget.charge_growable_entries::<bool>(rows)?;
+            for child in fields {
+                estimate_fixed_field_appends(child, rows, budget)?;
+            }
+            Ok(())
+        }
+        DataType::Null => Ok(()),
+        DataType::List(_) => Err(CdfError::internal(
+            "MongoDB fixed-cardinality preflight received a list field",
+        )),
+        other => Err(CdfError::contract(format!(
+            "MongoDB decoder cannot preflight Arrow type {other:?}"
+        ))),
     }
 }
 
@@ -1081,6 +1190,17 @@ impl PhysicalReconciliationAccumulator {
             self.values.finish()?,
             self.batch_row_ordinals,
         )
+    }
+}
+
+fn field_can_produce_physical_reconciliation(field: &Field) -> bool {
+    match field.data_type() {
+        DataType::Int64 => matches!(physical_type(field), Some("bson:int32" | "bson:int64")),
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| field_can_produce_physical_reconciliation(field)),
+        DataType::List(child) => field_can_produce_physical_reconciliation(child),
+        _ => false,
     }
 }
 
