@@ -866,6 +866,7 @@ fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument
         .fields()
         .iter()
         .any(|field| field_contains_list(field))
+        && !schema_has_overlapping_source_paths(schema)
     {
         for document in documents {
             validate_document_shape(document, 0)?;
@@ -947,6 +948,47 @@ fn field_contains_list(field: &Field) -> bool {
         DataType::Struct(fields) => fields.iter().any(|field| field_contains_list(field)),
         _ => false,
     }
+}
+
+fn schema_has_overlapping_source_paths(schema: &Schema) -> bool {
+    fields_have_overlapping_source_paths(schema.fields())
+        || schema
+            .fields()
+            .iter()
+            .any(|field| nested_fields_have_overlapping_source_paths(field))
+}
+
+fn nested_fields_have_overlapping_source_paths(field: &Field) -> bool {
+    match field.data_type() {
+        DataType::Struct(fields) => {
+            fields_have_overlapping_source_paths(fields)
+                || fields
+                    .iter()
+                    .any(|field| nested_fields_have_overlapping_source_paths(field))
+        }
+        DataType::List(child) => nested_fields_have_overlapping_source_paths(child),
+        _ => false,
+    }
+}
+
+fn fields_have_overlapping_source_paths(fields: &Fields) -> bool {
+    fields.iter().enumerate().any(|(index, left)| {
+        let left = source_name(left).unwrap_or_else(|| left.name());
+        fields.iter().skip(index + 1).any(|right| {
+            let right = source_name(right).unwrap_or_else(|| right.name());
+            source_paths_overlap(left, right)
+        })
+    })
+}
+
+fn source_paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 fn field_payload_multiplier(field: &Field) -> usize {

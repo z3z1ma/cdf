@@ -692,6 +692,37 @@ fn sparse_wide_batches_fail_before_column_accumulator_growth() {
 }
 
 #[test]
+fn overlapping_source_paths_use_exact_payload_preflight() {
+    let nested = with_source_name(
+        Field::new(
+            "nested_object",
+            DataType::Struct(vec![Arc::new(Field::new("payload", DataType::Utf8, false))].into()),
+            false,
+        ),
+        "nested",
+    );
+    let flat = with_source_name(
+        Field::new("flat_payload", DataType::Utf8, false),
+        "nested.payload",
+    );
+    let schema = Arc::new(Schema::new(vec![nested, flat]));
+    let payload = "x".repeat(9 * 1024 * 1024);
+    let document = RawDocumentBuf::try_from(&doc! {
+        "nested": {"payload": payload}
+    })
+    .unwrap();
+    let documents = [document.as_ref(), document.as_ref()];
+
+    let error = decode_batch_with_evidence(Arc::clone(&schema), schema, &documents, 0).unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(
+        error.message.contains("progressive decode bound"),
+        "{error}"
+    );
+}
+
+#[test]
 fn discovery_caps_retained_nested_shape_across_documents() {
     let mut inference = SchemaInference::default();
     let mut terminal = None;
