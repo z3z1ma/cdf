@@ -36,6 +36,7 @@ pub(crate) struct BoundScalarExpression {
     input_schema: Schema,
     output_type: ScalarType,
     allocation_root: ScalarExpressionNode,
+    dependency_indexes: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,11 @@ pub(crate) fn bind_scalar_expression(
         input_schema: schema.clone(),
         output_type: expression.root.scalar_type.clone(),
         allocation_root: expression.root.clone(),
+        dependency_indexes: expression
+            .column_dependencies()
+            .iter()
+            .map(|dependency| dependency.index)
+            .collect(),
     })
 }
 
@@ -335,11 +341,7 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
     )?;
     validate_expression_memory(&batch, expression_bytes, memory)?;
     cancellation.check()?;
-    if batch.schema().as_ref() != &plan.input_schema {
-        return Err(CdfError::contract(
-            "relational expression input schema differs from its compiled authority; run `cdf compile`",
-        ));
-    }
+    validate_bound_relational_input(batch.schema().as_ref(), &plan.input_schema)?;
     let (filtered, source_rows) = match &plan.filter {
         Some(filter) => {
             let values = evaluate_bound_scalar(&batch, filter, Some(memory), cancellation)?;
@@ -371,8 +373,8 @@ pub(crate) fn execute_bound_relational_expression_plan_tracked(
             cancellation,
         )?);
     }
-    let output = RecordBatch::try_new(Arc::new(plan.output_schema.clone()), columns)
-        .map_err(CdfError::from)?;
+    let output_schema = relational_output_schema(&plan.output_schema, &columns);
+    let output = RecordBatch::try_new(Arc::new(output_schema), columns).map_err(CdfError::from)?;
     validate_expression_output_memory(&batch, output.get_array_memory_size(), memory)?;
     Ok((output, source_rows))
 }
@@ -385,11 +387,7 @@ fn execute_bound_relational_expression_plan_inner(
 ) -> Result<RecordBatch> {
     let batch = crate::output_schema::canonicalize_expression_input_batch(batch.clone())?;
     cancellation.check()?;
-    if batch.schema().as_ref() != &plan.input_schema {
-        return Err(CdfError::contract(
-            "relational expression input schema differs from its compiled authority; run `cdf compile`",
-        ));
-    }
+    validate_bound_relational_input(batch.schema().as_ref(), &plan.input_schema)?;
     let filtered = match &plan.filter {
         Some(filter) => apply_bound_filters(
             &batch,
@@ -409,10 +407,49 @@ fn execute_bound_relational_expression_plan_inner(
             cancellation,
         )?);
     }
-    let output = RecordBatch::try_new(Arc::new(plan.output_schema.clone()), columns)
-        .map_err(CdfError::from)?;
+    let output_schema = relational_output_schema(&plan.output_schema, &columns);
+    let output = RecordBatch::try_new(Arc::new(output_schema), columns).map_err(CdfError::from)?;
     validate_expression_output_memory(&batch, output.get_array_memory_size(), memory)?;
     Ok(output)
+}
+
+fn validate_bound_relational_input(actual: &Schema, expected: &Schema) -> Result<()> {
+    let compatible = actual.metadata() == expected.metadata()
+        && actual.fields().len() == expected.fields().len()
+        && actual
+            .fields()
+            .iter()
+            .zip(expected.fields())
+            .all(|(actual, expected)| {
+                actual.name() == expected.name()
+                    && actual.data_type() == expected.data_type()
+                    && actual.metadata() == expected.metadata()
+                    && (actual.is_nullable() == expected.is_nullable()
+                        || (actual.is_nullable() && !expected.is_nullable()))
+            });
+    if compatible {
+        Ok(())
+    } else {
+        Err(CdfError::contract(
+            "relational expression input schema differs from its compiled authority; run `cdf compile`",
+        ))
+    }
+}
+
+fn relational_output_schema(expected: &Schema, columns: &[ArrayRef]) -> Schema {
+    let fields = expected
+        .fields()
+        .iter()
+        .zip(columns)
+        .map(|(field, column)| {
+            if column.null_count() == 0 || field.is_nullable() {
+                Arc::clone(field)
+            } else {
+                Arc::new(field.as_ref().clone().with_nullable(true))
+            }
+        })
+        .collect::<Vec<_>>();
+    Schema::new_with_metadata(fields, expected.metadata().clone())
 }
 
 fn validate_expression_memory(
@@ -474,11 +511,13 @@ pub(crate) fn evaluate_bound_scalar(
     cancellation: &RunCancellation,
 ) -> Result<ArrayRef> {
     cancellation.check()?;
-    if batch.schema().as_ref() != &expression.input_schema {
-        return Err(CdfError::contract(
-            "scalar execution input schema differs from its bound authority; run `cdf compile`",
-        ));
-    }
+    validate_bound_relational_input(batch.schema().as_ref(), &expression.input_schema)?;
+    let actual_schema = batch.schema();
+    let nullable_dependency_widened = expression.dependency_indexes.iter().any(|index| {
+        let actual = &actual_schema.fields()[*index];
+        let expected = &expression.input_schema.fields()[*index];
+        actual.is_nullable() && !expected.is_nullable()
+    });
     let value = expression
         .physical
         .evaluate(batch)
@@ -497,7 +536,8 @@ pub(crate) fn evaluate_bound_scalar(
             "pinned scalar kernel returned an invalid batch length",
         ));
     }
-    if !expression.output_type.nullable && output.null_count() != 0 {
+    if !expression.output_type.nullable && output.null_count() != 0 && !nullable_dependency_widened
+    {
         return Err(CdfError::internal(
             "pinned scalar kernel returned nulls for a verified non-nullable binding",
         ));

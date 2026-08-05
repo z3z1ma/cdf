@@ -139,11 +139,39 @@ pub(crate) fn seed_collection(endpoint: &str, collection: &str) -> Result<()> {
             .map_err(|_| CdfError::environment("reset MongoDB fixture collection"))?;
         collection
             .insert_many([
-                doc! {"_id": 1_i64, "name": "ada", "updated_at": 10_i32},
+                doc! {"_id": 1_i64, "name": "ada", "updated_at": 10_i64},
                 doc! {"_id": 2_i64, "updated_at": 20_i64},
             ])
             .await
             .map_err(|_| CdfError::environment("seed MongoDB fixture collection"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn make_lifecycle_runtime_cursor_physically_narrower(
+    endpoint: &str,
+    collection: &str,
+) -> Result<()> {
+    let endpoint = endpoint.to_owned();
+    let collection = collection.to_owned();
+    crate::test_execution_services().run_io(async move {
+        let mut options = ClientOptions::parse(&endpoint)
+            .await
+            .map_err(|_| CdfError::environment("parse MongoDB fixture endpoint"))?;
+        options.server_api = Some(ServerApi::builder().version(ServerApiVersion::V1).build());
+        let client = Client::with_options(options)
+            .map_err(|_| CdfError::environment("construct MongoDB fixture client"))?;
+        let result = client
+            .database(DATABASE)
+            .collection::<Document>(&collection)
+            .update_one(doc! {"_id": 2_i64}, doc! {"$set": {"updated_at": 20_i32}})
+            .await
+            .map_err(|_| CdfError::environment("inject MongoDB physical cursor drift"))?;
+        if result.matched_count != 1 || result.modified_count != 1 {
+            return Err(CdfError::data(
+                "MongoDB physical cursor drift fixture did not update exactly one document",
+            ));
+        }
         Ok(())
     })
 }

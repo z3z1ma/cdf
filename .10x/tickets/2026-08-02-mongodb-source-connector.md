@@ -127,10 +127,24 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   destination-sheet exclusions. The public CLI lifecycle passed and now compares package
   layout/file inventory, segment identity/content, checkpoint positions, and receipt semantics
   across one and four jobs while checking both decoded and URL-encoded credential forms. The
-  mechanically regenerated error ledger contains 234 classified rows (200 production, 34 test),
-  including all official-driver test constructions and 31 explicit production invariant rows.
+  mechanically regenerated error ledger now contains 256 classified rows (219 production, 37
+  test), including direct standard-I/O constructions and 39 explicit production invariant rows.
   Benchmark build/runtime cleanliness now includes untracked participating source and binds the
   benchmark build script itself; a fresh clean-snapshot roofline remains pending after commit.
+- 2026-08-04: Second-rereview repair removed source-asserted typed-projection bypasses and split
+  compatible physical reconciliation from residual drift end to end. MongoDB now vectorizes
+  compatible subtype evidence independently of the 65,536 residual-candidate ceiling, validates
+  it against the actual materialized Arrow cell before publication, persists exact observed and
+  expected BSON metadata, bounds document-shape allocation progressively, and holds one canonical
+  nullable materialized schema across clean and drifting batches. The verified source-owned
+  physical observation catalog supplies exact BSON expectations after generic aggregation strips
+  reserved metadata at its trust boundary. The authenticated public CLI lifecycle passed with a
+  clean BSON Int64 batch followed by a BSON Int32-to-Int64 reconciliation batch, `batch_rows=1`,
+  null `_cdf_variant`, jobs-one/jobs-four package semantics, redaction, and replay. MongoDB passed
+  23 unit tests, the engine passed 237 executable library tests with six performance tests ignored,
+  and the live source matrix again passed 15 supported cells with three governed exclusions.
+  Strict affected-package Clippy and `cargo machete --with-metadata` passed; the explicit cognitive
+  complexity diagnostic reported only previously known functions outside this repair.
 
 ## Blockers
 
@@ -142,7 +156,7 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 
 ## Evidence
 
-- Twenty-two focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+- Twenty-three focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
   injection, portability/redaction, cursor, and error-wrapper behavior.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.

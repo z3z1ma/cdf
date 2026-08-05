@@ -754,8 +754,11 @@ fn downcast<'a, T: 'static>(
         .as_any()
         .downcast_ref::<T>()
         .ok_or_else(|| {
+            let actual = batch.schema().field(index).clone();
             CdfError::data(format!(
-                "MongoDB roofline field `{name}` was not {expected}"
+                "MongoDB roofline field `{name}` at index {index} was not {expected}; observed field {:?} with type {}",
+                actual.name(),
+                actual.data_type()
             ))
         })
 }

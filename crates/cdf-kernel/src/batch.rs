@@ -239,6 +239,19 @@ impl BatchHeader {
         std::mem::take(&mut self.pre_contract_evidence.residual_candidates)
     }
 
+    pub fn extend_physical_reconciliations(
+        &mut self,
+        reconciliations: impl IntoIterator<Item = PreContractPhysicalReconciliation>,
+    ) {
+        self.pre_contract_evidence
+            .physical_reconciliations
+            .extend(reconciliations);
+    }
+
+    pub fn take_physical_reconciliations(&mut self) -> Vec<PreContractPhysicalReconciliation> {
+        std::mem::take(&mut self.pre_contract_evidence.physical_reconciliations)
+    }
+
     pub fn mark_materialized_residuals_complete(&mut self) {
         self.pre_contract_evidence.materialized_residuals_complete = true;
     }
@@ -249,17 +262,42 @@ impl BatchHeader {
 
     pub fn pre_contract_evidence_retained_bytes(&self) -> Result<u64> {
         let mut seen = BTreeSet::new();
-        self.pre_contract_evidence
+        let arrays = self
+            .pre_contract_evidence
             .residual_candidates
             .iter()
+            .map(|candidate| Arc::clone(&candidate.value))
+            .chain(
+                self.pre_contract_evidence
+                    .physical_reconciliations
+                    .iter()
+                    .map(|reconciliation| Arc::clone(&reconciliation.observed_values)),
+            )
             .try_fold(0_u64, |total, candidate| {
-                let allocation = Arc::as_ptr(&candidate.value) as *const () as usize;
+                let allocation = Arc::as_ptr(&candidate) as *const () as usize;
                 if !seen.insert(allocation) {
                     return Ok(total);
                 }
-                let bytes =
-                    u64::try_from(candidate.value.get_array_memory_size()).map_err(|_| {
-                        crate::CdfError::data("pre-contract evidence memory exceeds u64")
+                let bytes = u64::try_from(candidate.get_array_memory_size()).map_err(|_| {
+                    crate::CdfError::data("pre-contract evidence memory exceeds u64")
+                })?;
+                total
+                    .checked_add(bytes)
+                    .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))
+            })?;
+        self.pre_contract_evidence
+            .physical_reconciliations
+            .iter()
+            .try_fold(arrays, |total, reconciliation| {
+                let bytes = reconciliation
+                    .batch_row_ordinals
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<usize>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or_else(|| {
+                        crate::CdfError::data(
+                            "pre-contract physical reconciliation row memory exceeds u64",
+                        )
                     })?;
                 total
                     .checked_add(bytes)
@@ -276,6 +314,7 @@ impl BatchHeader {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PreContractEvidence {
     residual_candidates: Vec<PreContractResidualCandidate>,
+    physical_reconciliations: Vec<PreContractPhysicalReconciliation>,
     materialized_residuals_complete: bool,
 }
 
@@ -289,7 +328,6 @@ pub struct PreContractResidualCandidate {
     expected_field: Option<Field>,
     value: ArrayRef,
     value_index: usize,
-    preserves_typed_projection: bool,
 }
 
 impl PreContractResidualCandidate {
@@ -328,18 +366,7 @@ impl PreContractResidualCandidate {
             expected_field,
             value,
             value_index,
-            preserves_typed_projection: false,
         })
-    }
-
-    pub fn with_preserved_typed_projection(mut self) -> Result<Self> {
-        if self.expected_field.is_none() {
-            return Err(crate::CdfError::data(
-                "preserved pre-contract evidence requires an expected field",
-            ));
-        }
-        self.preserves_typed_projection = true;
-        Ok(self)
     }
 
     pub fn source_row_ordinal(&self) -> u64 {
@@ -369,10 +396,6 @@ impl PreContractResidualCandidate {
     pub fn value_index(&self) -> usize {
         self.value_index
     }
-
-    pub fn preserves_typed_projection(&self) -> bool {
-        self.preserves_typed_projection
-    }
 }
 
 impl fmt::Debug for PreContractResidualCandidate {
@@ -386,10 +409,6 @@ impl fmt::Debug for PreContractResidualCandidate {
             .field("expected_field", &self.expected_field)
             .field("value_type", self.value.data_type())
             .field("value_is_null", &self.value.is_null(self.value_index))
-            .field(
-                "preserves_typed_projection",
-                &self.preserves_typed_projection,
-            )
             .finish()
     }
 }
@@ -402,12 +421,106 @@ impl PartialEq for PreContractResidualCandidate {
             && self.observed_field == other.observed_field
             && self.expected_field == other.expected_field
             && self.value_index == other.value_index
-            && self.preserves_typed_projection == other.preserves_typed_projection
             && self.value.to_data() == other.value.to_data()
     }
 }
 
 impl Eq for PreContractResidualCandidate {}
+
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct PreContractPhysicalReconciliation {
+    source_path: Vec<String>,
+    observed_field: Field,
+    expected_field: Field,
+    observed_values: ArrayRef,
+    batch_row_ordinals: Vec<usize>,
+}
+
+impl PreContractPhysicalReconciliation {
+    pub fn new(
+        source_path: Vec<String>,
+        observed_field: Field,
+        expected_field: Field,
+        observed_values: ArrayRef,
+        batch_row_ordinals: Vec<usize>,
+    ) -> Result<Self> {
+        if source_path.is_empty() || source_path.iter().any(String::is_empty) {
+            return Err(crate::CdfError::data(
+                "pre-contract physical reconciliation requires non-empty source path segments",
+            ));
+        }
+        if observed_values.is_empty() || observed_values.len() != batch_row_ordinals.len() {
+            return Err(crate::CdfError::data(
+                "pre-contract physical reconciliation values must align with non-empty batch row ordinals",
+            ));
+        }
+        if observed_values.data_type() != observed_field.data_type() {
+            return Err(crate::CdfError::data(format!(
+                "pre-contract physical reconciliation Arrow value type {} does not match observed field type {}",
+                observed_values.data_type(),
+                observed_field.data_type()
+            )));
+        }
+        if batch_row_ordinals.windows(2).any(|rows| rows[0] >= rows[1]) {
+            return Err(crate::CdfError::data(
+                "pre-contract physical reconciliation batch rows must be strictly increasing",
+            ));
+        }
+        Ok(Self {
+            source_path,
+            observed_field,
+            expected_field,
+            observed_values,
+            batch_row_ordinals,
+        })
+    }
+
+    pub fn source_path(&self) -> &[String] {
+        &self.source_path
+    }
+
+    pub fn observed_field(&self) -> &Field {
+        &self.observed_field
+    }
+
+    pub fn expected_field(&self) -> &Field {
+        &self.expected_field
+    }
+
+    pub fn observed_values(&self) -> &ArrayRef {
+        &self.observed_values
+    }
+
+    pub fn batch_row_ordinals(&self) -> &[usize] {
+        &self.batch_row_ordinals
+    }
+}
+
+impl fmt::Debug for PreContractPhysicalReconciliation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreContractPhysicalReconciliation")
+            .field("source_path", &self.source_path)
+            .field("observed_field", &self.observed_field)
+            .field("expected_field", &self.expected_field)
+            .field("value_type", self.observed_values.data_type())
+            .field("row_count", &self.batch_row_ordinals.len())
+            .finish()
+    }
+}
+
+impl PartialEq for PreContractPhysicalReconciliation {
+    fn eq(&self, other: &Self) -> bool {
+        self.source_path == other.source_path
+            && self.observed_field == other.observed_field
+            && self.expected_field == other.expected_field
+            && self.batch_row_ordinals == other.batch_row_ordinals
+            && self.observed_values.to_data() == other.observed_values.to_data()
+    }
+}
+
+impl Eq for PreContractPhysicalReconciliation {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreContractQuarantineFact {

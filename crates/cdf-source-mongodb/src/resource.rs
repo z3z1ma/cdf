@@ -16,13 +16,14 @@ use crate::{
     execution::{MongoDbClientHandle, MongoDbExecutionInput, execute_mongodb_collection},
     identifier::MongoDbIdentifier,
     query::{MONGODB_SOURCE_KIND, predicate_fidelity, scan_from_partition},
-    schema::validate_mongodb_schema,
+    schema::{attach_expected_physical_types, validate_mongodb_schema},
 };
 
 #[derive(Clone)]
 pub(crate) struct MongoDbCollectionResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
+    decoder_schema: SchemaRef,
     endpoint: String,
     database: MongoDbIdentifier,
     collection: MongoDbIdentifier,
@@ -53,6 +54,8 @@ impl MongoDbCollectionResource {
         execution: ExecutionServices,
     ) -> Result<Self> {
         let schema = Arc::new(compiled.schema.clone());
+        let observed_schema = current_physical_schema(compiled)?;
+        let decoder_schema = attach_expected_physical_types(&schema, observed_schema.as_ref())?;
         validate_resource_shape(&compiled.descriptor, &schema, &collection)?;
         validate_compiled_schema_evidence(compiled)?;
         if !(1..=100_000).contains(&batch_rows) || !(1..=16).contains(&stream_buffer_batches) {
@@ -63,6 +66,7 @@ impl MongoDbCollectionResource {
         Ok(Self {
             descriptor: compiled.descriptor.clone(),
             schema,
+            decoder_schema,
             endpoint,
             database,
             collection,
@@ -114,6 +118,7 @@ impl MongoDbCollectionResource {
                         client: self.client,
                         descriptor: self.descriptor,
                         schema: self.schema,
+                        decoder_schema: self.decoder_schema,
                         database: self.database,
                         collection: self.collection,
                         batch_rows: self.batch_rows,
@@ -145,6 +150,30 @@ impl MongoDbCollectionResource {
             termination,
         )
     }
+}
+
+fn current_physical_schema(compiled: &cdf_runtime::CompiledSourcePlan) -> Result<SchemaRef> {
+    if let Some(runtime) = compiled.effective_schema_runtime.as_ref() {
+        let [observation] = runtime.evidence.observations() else {
+            return Err(CdfError::data(
+                "MongoDB execution requires exactly one current collection schema observation",
+            ));
+        };
+        return runtime
+            .physical_schema(&observation.physical_schema_hash)
+            .cloned()
+            .ok_or_else(|| {
+                CdfError::data(
+                    "MongoDB current collection schema observation is absent from its physical catalog",
+                )
+            });
+    }
+    let [observation] = compiled.baseline_observation_schema_catalog.as_slice() else {
+        return Err(CdfError::data(
+            "MongoDB execution requires exactly one pinned collection schema observation",
+        ));
+    };
+    Ok(Arc::clone(&observation.schema))
 }
 
 impl fmt::Debug for MongoDbCollectionResource {

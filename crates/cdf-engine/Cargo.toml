@@ -8,6 +8,7 @@ description = "Planning and execution boundary for cdf."
 
 [dependencies]
 arrow-array = "58.3.0"
+arrow-cast = "58.3.0"
 arrow-data = "58.3.0"
 arrow-ipc = { version = "58.3.0", features = ["lz4"] }
 arrow-schema = "58.3.0"

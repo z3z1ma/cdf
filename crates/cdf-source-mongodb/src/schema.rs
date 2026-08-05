@@ -11,8 +11,8 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CdfError, PreContractResidualCandidate, Result, physical_type, semantic, source_name,
-    with_physical_type, with_semantic, with_source_name,
+    CdfError, PreContractPhysicalReconciliation, PreContractResidualCandidate, Result,
+    physical_type, semantic, source_name, with_physical_type, with_semantic, with_source_name,
 };
 use mongodb::bson::{RawBsonRef, RawDocument};
 
@@ -22,9 +22,121 @@ pub(crate) const MONGODB_DECIMAL_TEXT_SEMANTIC: &str =
 const MAXIMUM_SCHEMA_FIELDS: usize = 4_096;
 const MAXIMUM_SCHEMA_DEPTH: usize = 32;
 const MAXIMUM_RESIDUAL_CANDIDATES: usize = 65_536;
+const MAXIMUM_PHYSICAL_RECONCILIATION_GROUPS: usize = MAXIMUM_SCHEMA_FIELDS;
+const MAXIMUM_DOCUMENT_SHAPE_ELEMENTS: usize = 65_536;
+const MAXIMUM_DOCUMENT_SHAPE_BYTES: u64 = 64 * 1024 * 1024;
+const DOCUMENT_SHAPE_ELEMENT_OVERHEAD_BYTES: u64 = 256;
 const MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES: usize = 1_024;
 const MAXIMUM_RESIDUAL_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 const RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES: u64 = 512;
+
+pub(crate) fn attach_expected_physical_types(
+    logical_schema: &Schema,
+    observed_schema: &Schema,
+) -> Result<SchemaRef> {
+    let fields = logical_schema
+        .fields()
+        .iter()
+        .map(|logical| {
+            let source = source_name(logical).unwrap_or_else(|| logical.name());
+            let observed = observed_schema
+                .fields()
+                .iter()
+                .find(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "MongoDB physical schema observation omitted pinned field `{source}`"
+                    ))
+                })?;
+            attach_expected_field_physical_type(logical, observed)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new_with_metadata(
+        fields,
+        logical_schema.metadata().clone(),
+    )))
+}
+
+fn attach_expected_field_physical_type(logical: &Field, observed: &Field) -> Result<Field> {
+    let physical = physical_type(observed).ok_or_else(|| {
+        CdfError::data(format!(
+            "MongoDB physical schema observation omitted exact BSON type metadata for `{}`",
+            source_name(observed).unwrap_or_else(|| observed.name())
+        ))
+    })?;
+    validate_observed_physical_type(observed, physical)?;
+    let data_type = match (logical.data_type(), observed.data_type()) {
+        (DataType::Struct(logical_children), DataType::Struct(observed_children)) => {
+            let children = logical_children
+                .iter()
+                .map(|logical_child| {
+                    let source = source_name(logical_child)
+                        .unwrap_or_else(|| logical_child.name());
+                    let observed_child = observed_children
+                        .iter()
+                        .find(|field| {
+                            source_name(field).unwrap_or_else(|| field.name()) == source
+                        })
+                        .ok_or_else(|| {
+                            CdfError::data(format!(
+                                "MongoDB physical schema observation omitted pinned nested field `{source}`"
+                            ))
+                        })?;
+                    attach_expected_field_physical_type(logical_child, observed_child)
+                        .map(Arc::new)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            DataType::Struct(children.into())
+        }
+        (DataType::List(logical_child), DataType::List(observed_child)) => {
+            DataType::List(Arc::new(attach_expected_field_physical_type(
+                logical_child,
+                observed_child,
+            )?))
+        }
+        (logical_type, observed_type) if logical_type == observed_type => logical_type.clone(),
+        (DataType::Int64, DataType::Int32) => DataType::Int64,
+        (logical_type, observed_type) => {
+            return Err(CdfError::data(format!(
+                "MongoDB physical schema observation type {observed_type} cannot materialize pinned type {logical_type} for `{}`",
+                logical.name()
+            )));
+        }
+    };
+    Ok(with_physical_type(
+        logical.clone().with_data_type(data_type),
+        physical,
+    ))
+}
+
+fn validate_observed_physical_type(field: &Field, physical: &str) -> Result<()> {
+    let matches = match field.data_type() {
+        DataType::Boolean => physical == "bson:boolean",
+        DataType::Int32 => physical == "bson:int32",
+        DataType::Int64 => physical == "bson:int64",
+        DataType::Float64 => physical == "bson:double",
+        DataType::Utf8 => matches!(physical, "bson:string" | "bson:decimal128"),
+        DataType::Binary => physical == "bson:binary",
+        DataType::FixedSizeBinary(12) => physical == "bson:object_id",
+        DataType::Date32 | DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            physical == "bson:date_time"
+        }
+        DataType::Decimal128(_, _) => physical == "bson:decimal128",
+        DataType::List(_) => physical == "bson:array",
+        DataType::Struct(_) => physical == "bson:document",
+        DataType::Null => physical == "bson:null",
+        _ => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(CdfError::data(format!(
+            "MongoDB physical schema observation binds BSON type `{physical}` to incompatible Arrow type {} for `{}`",
+            field.data_type(),
+            source_name(field).unwrap_or_else(|| field.name())
+        )))
+    }
+}
 
 #[derive(Clone, Debug)]
 enum InferredType {
@@ -393,7 +505,8 @@ pub(crate) struct DecodedMongoBatch {
     pub(crate) record_batch: RecordBatch,
     pub(crate) physical_schema: Schema,
     pub(crate) residual_candidates: Vec<PreContractResidualCandidate>,
-    pub(crate) residual_evidence_bytes: u64,
+    pub(crate) physical_reconciliations: Vec<PreContractPhysicalReconciliation>,
+    pub(crate) pre_contract_evidence_bytes: u64,
 }
 
 #[cfg(test)]
@@ -431,7 +544,8 @@ pub(crate) fn decode_batch_with_evidence(
         })
         .collect::<BTreeSet<_>>();
     let mut residual_candidates = Vec::new();
-    let mut residual_evidence_bytes = 0_u64;
+    let mut physical_reconciliation_accumulators = Vec::new();
+    let mut pre_contract_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
         validate_document_shape(document, 0)?;
         for (field, column) in output_schema.fields().iter().zip(&mut columns) {
@@ -439,20 +553,13 @@ pub(crate) fn decode_batch_with_evidence(
             let value = raw_value_at_path(document, source)?;
             if value_matches_field(field, value)? {
                 if !value_matches_pinned_physical(field, value)? {
-                    let candidate = residual_candidate(
-                        source_row_offset.saturating_add(row as u64),
+                    record_physical_reconciliation(
+                        &mut physical_reconciliation_accumulators,
                         row,
                         source,
                         value,
-                        Some(field.as_ref().clone()),
-                        residual_candidates.len(),
-                        residual_evidence_bytes,
-                    )?
-                    .with_preserved_typed_projection()?;
-                    push_residual_candidate(
-                        &mut residual_candidates,
-                        &mut residual_evidence_bytes,
-                        candidate,
+                        field.as_ref().clone(),
+                        &mut pre_contract_evidence_bytes,
                     )?;
                 }
                 column.append(value)?;
@@ -464,7 +571,7 @@ pub(crate) fn decode_batch_with_evidence(
                     row,
                     &mut source_path,
                     &mut residual_candidates,
-                    &mut residual_evidence_bytes,
+                    &mut pre_contract_evidence_bytes,
                 )?;
             } else {
                 column.append(None)?;
@@ -475,11 +582,11 @@ pub(crate) fn decode_batch_with_evidence(
                     value,
                     Some(field.as_ref().clone()),
                     residual_candidates.len(),
-                    residual_evidence_bytes,
+                    pre_contract_evidence_bytes,
                 )?;
                 push_residual_candidate(
                     &mut residual_candidates,
-                    &mut residual_evidence_bytes,
+                    &mut pre_contract_evidence_bytes,
                     candidate,
                 )?;
             }
@@ -499,33 +606,19 @@ pub(crate) fn decode_batch_with_evidence(
                 Some(value),
                 None,
                 residual_candidates.len(),
-                residual_evidence_bytes,
+                pre_contract_evidence_bytes,
             )?;
             push_residual_candidate(
                 &mut residual_candidates,
-                &mut residual_evidence_bytes,
+                &mut pre_contract_evidence_bytes,
                 candidate,
             )?;
         }
     }
-    let nulled_sources = residual_candidates
-        .iter()
-        .filter(|candidate| {
-            candidate.expected_field().is_some() && !candidate.preserves_typed_projection()
-        })
-        .filter_map(|candidate| candidate.source_path().first().cloned())
-        .collect::<BTreeSet<_>>();
     let materialized_fields = output_schema
         .fields()
         .iter()
-        .map(|field| {
-            let source = source_name(field).unwrap_or_else(|| field.name());
-            if nulled_sources.contains(source) {
-                Arc::new(field.as_ref().clone().with_nullable(true))
-            } else {
-                Arc::clone(field)
-            }
-        })
+        .map(|field| Arc::new(field.as_ref().clone().with_nullable(true)))
         .collect::<Vec<_>>();
     let materialized_schema = Arc::new(Schema::new_with_metadata(
         materialized_fields,
@@ -540,6 +633,14 @@ pub(crate) fn decode_batch_with_evidence(
             "MongoDB decoded batch contradicted the pinned Arrow schema: {error}"
         ))
     })?;
+    let physical_reconciliations = physical_reconciliation_accumulators
+        .into_iter()
+        .map(PhysicalReconciliationAccumulator::finish)
+        .collect::<Result<Vec<_>>>()?;
+    let exact_evidence_bytes =
+        retained_pre_contract_evidence_bytes(&residual_candidates, &physical_reconciliations)?;
+    validate_residual_evidence_bound(0, exact_evidence_bytes)?;
+    pre_contract_evidence_bytes = pre_contract_evidence_bytes.max(exact_evidence_bytes);
     // The MongoDB decoder owns BSON-subtype reconciliation and emits both a materialized Arrow
     // output and complete residual evidence. Its engine-facing physical observation is therefore
     // the fixed pinned decoder domain, not a per-wire-batch inference that could assign
@@ -549,7 +650,8 @@ pub(crate) fn decode_batch_with_evidence(
         record_batch,
         physical_schema,
         residual_candidates,
-        residual_evidence_bytes,
+        physical_reconciliations,
+        pre_contract_evidence_bytes,
     })
 }
 
@@ -628,11 +730,128 @@ struct AccountedResidualCandidate {
     retained_bytes: u64,
 }
 
-impl AccountedResidualCandidate {
-    fn with_preserved_typed_projection(mut self) -> Result<Self> {
-        self.candidate = self.candidate.with_preserved_typed_projection()?;
-        Ok(self)
+struct PhysicalReconciliationAccumulator {
+    source_path: Vec<String>,
+    observed_field: Field,
+    expected_field: Field,
+    values: ColumnAccumulator,
+    batch_row_ordinals: Vec<usize>,
+}
+
+impl PhysicalReconciliationAccumulator {
+    fn new(
+        source_path: Vec<String>,
+        observed_field: Field,
+        expected_field: Field,
+        batch_row_ordinal: usize,
+        value: RawBsonRef<'_>,
+    ) -> Result<Self> {
+        let mut values = ColumnAccumulator::new(&observed_field)?;
+        values.append(Some(value))?;
+        Ok(Self {
+            source_path,
+            observed_field,
+            expected_field,
+            values,
+            batch_row_ordinals: vec![batch_row_ordinal],
+        })
     }
+
+    fn push(&mut self, batch_row_ordinal: usize, value: RawBsonRef<'_>) -> Result<()> {
+        if self
+            .batch_row_ordinals
+            .last()
+            .is_some_and(|previous| *previous >= batch_row_ordinal)
+        {
+            return Err(CdfError::internal(
+                "MongoDB physical reconciliation rows are not strictly increasing",
+            ));
+        }
+        self.values.append(Some(value))?;
+        self.batch_row_ordinals.push(batch_row_ordinal);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<PreContractPhysicalReconciliation> {
+        PreContractPhysicalReconciliation::new(
+            self.source_path,
+            self.observed_field,
+            self.expected_field,
+            self.values.finish()?,
+            self.batch_row_ordinals,
+        )
+    }
+}
+
+fn record_physical_reconciliation(
+    accumulators: &mut Vec<PhysicalReconciliationAccumulator>,
+    batch_row_ordinal: usize,
+    source: &str,
+    value: Option<RawBsonRef<'_>>,
+    expected_field: Field,
+    retained_bytes: &mut u64,
+) -> Result<()> {
+    let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
+        return Err(CdfError::internal(
+            "MongoDB nullable value was classified as a physical subtype reconciliation",
+        ));
+    };
+    let observed_field = observed_value_field(source, value)?;
+    let source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let row_bytes = residual_value_allocation_floor(Some(value))?
+        .checked_add(std::mem::size_of::<usize>() as u64)
+        .ok_or_else(|| CdfError::internal("MongoDB physical evidence memory overflow"))?;
+    validate_residual_evidence_bound(*retained_bytes, row_bytes)?;
+    *retained_bytes = retained_bytes
+        .checked_add(row_bytes)
+        .ok_or_else(|| CdfError::internal("MongoDB physical evidence memory overflow"))?;
+    if let Some(existing) = accumulators.iter_mut().find(|existing| {
+        existing.source_path == source_path
+            && existing.observed_field == observed_field
+            && existing.expected_field == expected_field
+    }) {
+        return existing.push(batch_row_ordinal, value);
+    }
+    if accumulators.len() >= MAXIMUM_PHYSICAL_RECONCILIATION_GROUPS {
+        return Err(CdfError::data(format!(
+            "MongoDB batch exceeds the {MAXIMUM_PHYSICAL_RECONCILIATION_GROUPS}-group physical reconciliation bound; reduce batch_rows or narrow the source shape"
+        )));
+    }
+    accumulators.push(PhysicalReconciliationAccumulator::new(
+        source_path,
+        observed_field,
+        expected_field,
+        batch_row_ordinal,
+        value,
+    )?);
+    Ok(())
+}
+
+fn retained_pre_contract_evidence_bytes(
+    residual_candidates: &[PreContractResidualCandidate],
+    physical_reconciliations: &[PreContractPhysicalReconciliation],
+) -> Result<u64> {
+    residual_candidates
+        .iter()
+        .map(|candidate| candidate.value().get_array_memory_size())
+        .chain(physical_reconciliations.iter().map(|reconciliation| {
+            reconciliation
+                .observed_values()
+                .get_array_memory_size()
+                .saturating_add(
+                    reconciliation
+                        .batch_row_ordinals()
+                        .len()
+                        .saturating_mul(std::mem::size_of::<usize>()),
+                )
+        }))
+        .try_fold(0_u64, |total, bytes| {
+            total
+                .checked_add(u64::try_from(bytes).map_err(|_| {
+                    CdfError::internal("MongoDB pre-contract evidence memory exceeds u64")
+                })?)
+                .ok_or_else(|| CdfError::internal("MongoDB pre-contract evidence memory overflow"))
+        })
 }
 
 fn residual_candidate_at_path(
@@ -856,17 +1075,7 @@ fn observed_value_evidence(
             Arc::new(NullArray::new(1)),
         ));
     };
-    match infer_value(value, 0).and_then(|inferred| {
-        inferred_field(
-            source.to_owned(),
-            InferredField {
-                value: inferred,
-                nullable: true,
-                observed_documents: 1,
-            },
-            0,
-        )
-    }) {
+    match observed_value_field(source, value) {
         Ok(field) => {
             let mut column = ColumnAccumulator::new(&field)?;
             column.append(Some(value))?;
@@ -893,6 +1102,18 @@ fn observed_value_evidence(
             ))
         }
     }
+}
+
+fn observed_value_field(source: &str, value: RawBsonRef<'_>) -> Result<Field> {
+    inferred_field(
+        source.to_owned(),
+        InferredField {
+            value: infer_value(value, 0)?,
+            nullable: true,
+            observed_documents: 1,
+        },
+        0,
+    )
 }
 
 fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -> Result<bool> {
@@ -932,22 +1153,6 @@ fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -
             let DataType::Struct(fields) = field.data_type() else {
                 return Ok(false);
             };
-            let expected = fields
-                .iter()
-                .map(|field| {
-                    source_name(field)
-                        .unwrap_or_else(|| field.name())
-                        .to_owned()
-                })
-                .collect::<BTreeSet<_>>();
-            for element in document {
-                let (name, _) = element.map_err(|error| {
-                    CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
-                })?;
-                if !expected.contains(name.as_str()) {
-                    return Ok(false);
-                }
-            }
             for child in fields {
                 let source = source_name(child).unwrap_or_else(|| child.name());
                 if !value_matches_pinned_physical(child, raw_value_at_path(document, source)?)? {
@@ -976,14 +1181,60 @@ fn validate_unique_document(document: &RawDocument) -> Result<()> {
 }
 
 fn validate_document_shape(document: &RawDocument, depth: usize) -> Result<()> {
+    let mut budget = DocumentShapeBudget::default();
+    validate_document_shape_with_budget(document, depth, &mut budget)
+}
+
+#[derive(Default)]
+struct DocumentShapeBudget {
+    elements: usize,
+    estimated_bytes: u64,
+}
+
+impl DocumentShapeBudget {
+    fn admit(&mut self, name_bytes: usize) -> Result<()> {
+        if self.elements >= MAXIMUM_DOCUMENT_SHAPE_ELEMENTS {
+            return Err(CdfError::data(format!(
+                "MongoDB document exceeds the {MAXIMUM_DOCUMENT_SHAPE_ELEMENTS}-element structural bound"
+            )));
+        }
+        let name_bytes = u64::try_from(name_bytes)
+            .map_err(|_| CdfError::internal("MongoDB field name length exceeds u64"))?;
+        let next = self
+            .estimated_bytes
+            .checked_add(name_bytes)
+            .and_then(|bytes| bytes.checked_add(DOCUMENT_SHAPE_ELEMENT_OVERHEAD_BYTES))
+            .ok_or_else(|| CdfError::internal("MongoDB structural memory estimate overflow"))?;
+        if next > MAXIMUM_DOCUMENT_SHAPE_BYTES {
+            return Err(CdfError::data(format!(
+                "MongoDB document shape exceeds the {MAXIMUM_DOCUMENT_SHAPE_BYTES}-byte structural decode bound"
+            )));
+        }
+        self.elements += 1;
+        self.estimated_bytes = next;
+        Ok(())
+    }
+}
+
+fn validate_document_shape_with_budget(
+    document: &RawDocument,
+    depth: usize,
+    budget: &mut DocumentShapeBudget,
+) -> Result<()> {
     if depth > MAXIMUM_SCHEMA_DEPTH {
         return Err(CdfError::data("MongoDB document nesting is too deep"));
     }
-    validate_unique_document(document)?;
+    let mut names = BTreeSet::new();
     for element in document {
         let (name, value) = element.map_err(|error| {
             CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
         })?;
+        budget.admit(name.len())?;
+        if !names.insert(name.as_str()) {
+            return Err(CdfError::data(format!(
+                "MongoDB source document repeats field `{name}`"
+            )));
+        }
         if name.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES {
             return Err(CdfError::data(format!(
                 "MongoDB field name exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte residual path bound"
@@ -994,25 +1245,35 @@ fn validate_document_shape(document: &RawDocument, depth: usize) -> Result<()> {
                 "MongoDB field `{name}` contains a literal dot and cannot be represented as an unambiguous CDF field path; rename the source field"
             )));
         }
-        validate_nested_value_shape(value, depth + 1)?;
+        validate_nested_value_shape(value, depth + 1, budget)?;
     }
     Ok(())
 }
 
-fn validate_nested_value_shape(value: RawBsonRef<'_>, depth: usize) -> Result<()> {
+fn validate_nested_value_shape(
+    value: RawBsonRef<'_>,
+    depth: usize,
+    budget: &mut DocumentShapeBudget,
+) -> Result<()> {
     if depth > MAXIMUM_SCHEMA_DEPTH {
         return Err(CdfError::data("MongoDB value nesting is too deep"));
     }
     match value {
-        RawBsonRef::Document(document) => validate_document_shape(document, depth),
-        RawBsonRef::JavaScriptCodeWithScope(value) => validate_document_shape(value.scope, depth),
+        RawBsonRef::Document(document) => {
+            validate_document_shape_with_budget(document, depth, budget)
+        }
+        RawBsonRef::JavaScriptCodeWithScope(value) => {
+            validate_document_shape_with_budget(value.scope, depth, budget)
+        }
         RawBsonRef::Array(array) => {
             for value in array {
+                budget.admit(0)?;
                 validate_nested_value_shape(
                     value.map_err(|error| {
                         CdfError::data(format!("MongoDB array value is malformed: {error}"))
                     })?,
                     depth + 1,
+                    budget,
                 )?;
             }
             Ok(())

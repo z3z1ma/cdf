@@ -39,8 +39,8 @@ pub use arrow_type::parse_arrow_field_type;
 pub use async_types::{BatchStream, BoxFuture};
 pub use batch::{
     Batch, BatchHeader, BatchPayload, CdcMetadata, PayloadRef, PhysicalObservationRepresentation,
-    PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
-    RecordBatchPayload,
+    PreContractObservedValue, PreContractPhysicalReconciliation, PreContractQuarantineFact,
+    PreContractResidualCandidate, RecordBatchPayload,
 };
 pub use canonical_arrow::{
     CanonicalArrowDateUnit, CanonicalArrowField, CanonicalArrowIntervalUnit, CanonicalArrowSchema,
