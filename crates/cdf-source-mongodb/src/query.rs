@@ -299,7 +299,7 @@ fn canonical_order(
         }
         return Ok(canonical);
     }
-    requested
+    let mut order = requested
         .iter()
         .map(|order| {
             let field = field_by_name(schema, &order.field).ok_or_else(|| {
@@ -319,7 +319,14 @@ fn canonical_order(
                 direction: order.direction.clone(),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    if !order.iter().any(|item| item.source_field == "_id") {
+        order.push(StoredOrder {
+            source_field: "_id".to_owned(),
+            direction: SortDirection::Asc,
+        });
+    }
+    Ok(order)
 }
 
 fn validate_projection(

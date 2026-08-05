@@ -354,13 +354,9 @@ impl ResourceStream for PostgresTableResource {
         let mut partition =
             plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
         partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
-        if let Some(runtime) = &self.effective_schema_runtime {
-            let observation_id = self.target.display_name();
-            cdf_kernel::bind_partition_schema_observation(
-                &mut partition,
-                runtime,
-                &observation_id,
-            )?;
+        if self.effective_schema_runtime.is_some() {
+            let observation_id = format!("runtime:{}", self.target.display_name());
+            cdf_kernel::bind_partition_schema_candidate(&mut partition, &observation_id)?;
         }
         Ok(vec![partition])
     }
@@ -382,8 +378,8 @@ impl QueryableResource for PostgresTableResource {
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let mut scan =
             negotiate_postgres_table_scan(&self.descriptor, &self.schema, &self.target, request)?;
-        if let Some(runtime) = &self.effective_schema_runtime {
-            let observation_id = self.target.display_name();
+        if self.effective_schema_runtime.is_some() {
+            let observation_id = format!("runtime:{}", self.target.display_name());
             let partition = scan
                 .inline_partitions_mut()
                 .and_then(|partitions| partitions.first_mut())
@@ -392,7 +388,7 @@ impl QueryableResource for PostgresTableResource {
                         "Postgres negotiation omitted its single inline partition authority",
                     )
                 })?;
-            cdf_kernel::bind_partition_schema_observation(partition, runtime, &observation_id)?;
+            cdf_kernel::bind_partition_schema_candidate(partition, &observation_id)?;
         }
         Ok(scan)
     }
@@ -631,8 +627,9 @@ fn execute_postgres_table(
     validate_copy_descriptor(&statement, output_schema.as_ref())?;
     let catalog = read_catalog_columns(&mut transaction, &target)?;
     validate_source_domains_from_catalog(output_schema.as_ref(), &catalog)?;
+    let selected_catalog = select_catalog_columns(output_schema.as_ref(), &catalog)?;
     let live_schema =
-        crate::catalog::schema_from_catalog_columns(&descriptor.resource_id, catalog)?;
+        crate::catalog::schema_from_catalog_columns(&descriptor.resource_id, selected_catalog)?;
     let physical_schema = Arc::new(project_physical_schema(
         &live_schema,
         output_schema.as_ref(),
@@ -779,6 +776,28 @@ fn validate_source_domains_from_catalog(
         validate_source_column_domain(field, column)?;
     }
     Ok(())
+}
+
+fn select_catalog_columns(
+    schema: &Schema,
+    catalog: &[PostgresCatalogColumn],
+) -> Result<Vec<PostgresCatalogColumn>> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let physical_name = source_name(field).unwrap_or_else(|| field.name());
+            catalog
+                .iter()
+                .find(|column| column.name == physical_name)
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "Postgres live catalog omitted projected source field `{physical_name}`"
+                    ))
+                })
+        })
+        .collect()
 }
 
 fn project_physical_schema(physical: &Schema, effective: &Schema) -> Result<Schema> {
@@ -1981,6 +2000,40 @@ mod tests {
             projected.field(0).metadata()[cdf_kernel::PHYSICAL_TYPE_METADATA_KEY],
             "integer"
         );
+    }
+
+    #[test]
+    fn runtime_catalog_projection_ignores_unsupported_unselected_columns() {
+        let effective = Schema::new(vec![with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]);
+        let catalog = vec![
+            PostgresCatalogColumn {
+                name: "VendorID".to_owned(),
+                observed_type: "bigint".to_owned(),
+                numeric_precision: None,
+                numeric_scale: None,
+                nullable: false,
+            },
+            PostgresCatalogColumn {
+                name: "opaque_payload".to_owned(),
+                observed_type: "bytea".to_owned(),
+                numeric_precision: None,
+                numeric_scale: None,
+                nullable: true,
+            },
+        ];
+
+        let selected = select_catalog_columns(&effective, &catalog).unwrap();
+        let live = crate::catalog::schema_from_catalog_columns(
+            &ResourceId::new("warehouse.orders").unwrap(),
+            selected,
+        )
+        .unwrap();
+
+        assert_eq!(live.fields().len(), 1);
+        assert_eq!(live.field(0).name(), "VendorID");
     }
 
     #[test]

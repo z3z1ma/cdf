@@ -13,15 +13,18 @@ source matrix completes package, destination receipt, checkpoint, and replay law
 
 ## Procedure
 
-- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --locked` passed eight focused unit tests.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --locked` passed 19 focused unit tests;
+  the subsequently added residual-candidate hard-bound test passed in a focused rerun, for 20
+  current unit tests total.
 - The digest-pinned MongoDB 8.0.13 live source matrix executed 15 supported destination/disposition
   cells and recorded three destination-sheet exclusions. Every executed cell verified its package,
   receipt-gated checkpoint, duplicate no-op replay, and fresh-artifact replay.
 - The frozen error inventory in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classified 146
-  construction-bearing lines. The 12 `Internal` sites are CDF or official-driver invariant
-  failures; SDK and I/O failures retain typed provenance, retry delay, and redacted diagnostics.
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classified 216
+  construction-bearing lines. The 21 production invariant rows are CDF or official-driver
+  invariant failures; SDK and I/O failures retain typed provenance, retry delay, and redacted
+  diagnostics.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows. The selected 65,536-row batch and one-client pool produced a 119,474,542 ns CDF
   median versus 108,078,000 ns for the semantics-equivalent raw-driver baseline, ratio 0.904611.

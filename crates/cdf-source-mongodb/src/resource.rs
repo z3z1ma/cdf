@@ -82,8 +82,8 @@ impl MongoDbCollectionResource {
         })
     }
 
-    fn schema_observation_id(&self) -> String {
-        format!("{}.{}", self.database, self.collection)
+    fn runtime_schema_observation_id(&self) -> String {
+        format!("runtime:{}.{}", self.database, self.collection)
     }
 
     fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
@@ -205,11 +205,10 @@ impl ResourceStream for MongoDbCollectionResource {
         let mut partition =
             plan_mongodb_partition(&self.descriptor, &self.schema, &self.collection, request)?;
         partition.scan_intent = CompiledScanIntent::full_scan();
-        if let Some(runtime) = &self.effective_schema_runtime {
-            cdf_kernel::bind_partition_schema_observation(
+        if self.effective_schema_runtime.is_some() {
+            cdf_kernel::bind_partition_schema_candidate(
                 &mut partition,
-                runtime,
-                &self.schema_observation_id(),
+                &self.runtime_schema_observation_id(),
             )?;
         }
         Ok(vec![partition])
@@ -228,17 +227,16 @@ impl QueryableResource for MongoDbCollectionResource {
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let mut scan =
             negotiate_mongodb_scan(&self.descriptor, &self.schema, &self.collection, request)?;
-        if let Some(runtime) = &self.effective_schema_runtime {
+        if self.effective_schema_runtime.is_some() {
             let partition = scan
                 .inline_partitions_mut()
                 .and_then(|partitions| partitions.first_mut())
                 .ok_or_else(|| {
                     CdfError::internal("MongoDB negotiation omitted its inline partition")
                 })?;
-            cdf_kernel::bind_partition_schema_observation(
+            cdf_kernel::bind_partition_schema_candidate(
                 partition,
-                runtime,
-                &self.schema_observation_id(),
+                &self.runtime_schema_observation_id(),
             )?;
         }
         Ok(scan)
@@ -248,9 +246,11 @@ impl QueryableResource for MongoDbCollectionResource {
 pub(crate) fn validate_compiled_schema_evidence(
     compiled: &cdf_runtime::CompiledSourcePlan,
 ) -> Result<()> {
-    if compiled.effective_schema_runtime.is_none() {
+    if compiled.effective_schema_runtime.is_none()
+        && compiled.baseline_observation_schema_catalog.is_empty()
+    {
         return Err(CdfError::data(
-            "MongoDB execution requires sampled physical schema evidence; run schema discovery before resolving the resource",
+            "MongoDB execution requires sampled physical schema evidence; run schema discovery and pin the resource before resolving it",
         ));
     }
     Ok(())

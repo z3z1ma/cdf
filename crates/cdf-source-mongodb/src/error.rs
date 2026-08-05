@@ -10,28 +10,27 @@ pub(crate) fn classify_mongodb_error(action: &str, error: Error) -> CdfError {
     let kind = match error.kind.as_ref() {
         MongoErrorKind::Authentication { .. } => ErrorKind::Auth,
         MongoErrorKind::InvalidArgument { .. } => ErrorKind::Contract,
-        MongoErrorKind::Bson(_)
-        | MongoErrorKind::InvalidResponse { .. }
-        | MongoErrorKind::Command(mongodb::error::CommandError {
-            code: 2 | 14 | 20 | 26,
-            ..
-        }) => ErrorKind::Data,
+        MongoErrorKind::Bson(_) | MongoErrorKind::InvalidResponse { .. } => ErrorKind::Data,
+        MongoErrorKind::Command(command) if matches!(command.code, 2 | 14 | 20) => {
+            ErrorKind::Contract
+        }
+        MongoErrorKind::Command(command) if command.code == 26 => ErrorKind::Data,
         MongoErrorKind::Command(command) if matches!(command.code, 13 | 18) => ErrorKind::Auth,
         MongoErrorKind::Command(command)
             if matches!(command.code, 6 | 7 | 89 | 91 | 189 | 262 | 9001) =>
         {
             ErrorKind::Transient
         }
-        MongoErrorKind::Command(command) if matches!(command.code, 50 | 16500) => {
-            ErrorKind::RateLimited
-        }
+        MongoErrorKind::Command(command) if command.code == 50 => ErrorKind::Transient,
+        MongoErrorKind::Command(command) if command.code == 16500 => ErrorKind::RateLimited,
         MongoErrorKind::Io(error) => classify_io(error),
         MongoErrorKind::DnsResolve { .. } | MongoErrorKind::InvalidTlsConfig { .. } => {
             ErrorKind::Environment
         }
-        MongoErrorKind::ConnectionPoolCleared { .. }
-        | MongoErrorKind::ServerSelection { .. }
-        | MongoErrorKind::Shutdown => ErrorKind::Transient,
+        MongoErrorKind::ConnectionPoolCleared { .. } | MongoErrorKind::ServerSelection { .. } => {
+            ErrorKind::Transient
+        }
+        MongoErrorKind::Shutdown => ErrorKind::Internal,
         MongoErrorKind::IncompatibleServer { .. } | MongoErrorKind::SessionsNotSupported => {
             ErrorKind::Contract
         }

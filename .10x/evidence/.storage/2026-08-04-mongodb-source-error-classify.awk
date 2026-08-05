@@ -11,7 +11,8 @@ BEGIN {
     line = substr(rest, 1, second - 1) + 0
     source = substr(rest, second + 1)
     gsub(/\t/, " ", source)
-    test = file ~ /\/tests\.rs$/
+    test = file ~ /\/tests\.rs$/ \
+        || (file ~ /\/error\.rs$/ && error_test_line > 0 && line >= error_test_line)
 
     if (match(source, /CdfError::[a-z_]+/)) {
         syntax = substr(source, RSTART, RLENGTH)
@@ -62,10 +63,65 @@ BEGIN {
         redaction = "controlled_message_without_endpoint_or_credentials"
         rationale = "The official driver rejected a caller-supplied or compiled request argument."
     } else if (syntax == "MongoErrorKind::Shutdown") {
+        owner = "cdf_or_official_driver_invariant"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "CDF never intentionally shuts down the shared client while an invocation is active, so this variant is an invariant failure."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /2 \| 14 \| 20/) {
+        owner = "caller_contract"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Stable MongoDB request and type-mismatch codes identify an invalid compiled request."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /code == 26/) {
+        owner = "mongodb_source_data"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Namespace-not-found identifies selected source state that no longer exists."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /13 \| 18/) {
+        owner = "mongodb_auth"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Stable MongoDB authentication and authorization codes require credential repair."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /6 \| 7 \| 89 \| 91 \| 189 \| 262 \| 9001/) {
         owner = "remote_transport"
         retry = "host_policy_only"
         redaction = "controlled_message_without_endpoint_or_credentials"
-        rationale = "Driver shutdown is a transient external availability condition."
+        rationale = "Stable topology and transport codes may recover after external state changes."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /code == 50/) {
+        owner = "remote_transport"
+        retry = "host_policy_only"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Server execution timeout is transient availability, not quota pressure."
+    } else if (syntax == "MongoErrorKind::Command" && source ~ /code == 16500/) {
+        owner = "mongodb_rate_limit"
+        retry = "host_policy_only"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Stable MongoDB rate-limit code identifies externally imposed quota pressure."
+    } else if (syntax == "MongoErrorKind::Bson" || syntax == "MongoErrorKind::InvalidResponse") {
+        owner = "mongodb_source_data"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Malformed BSON or an invalid server response is non-retryable selected-source data."
+    } else if (syntax == "MongoErrorKind::Io" || syntax == "MongoErrorKind::ConnectionPoolCleared" || syntax == "MongoErrorKind::ServerSelection") {
+        owner = "dynamic_foreign_classifier"
+        retry = "kind_dependent"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The adjacent typed branch delegates I/O or topology ownership without flattening nested provenance."
+    } else if (syntax == "MongoErrorKind::DnsResolve" || syntax == "MongoErrorKind::InvalidTlsConfig") {
+        owner = "local_host_environment"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "Resolver and TLS-construction failures belong to the local host environment."
+    } else if (syntax == "MongoErrorKind::IncompatibleServer" || syntax == "MongoErrorKind::SessionsNotSupported") {
+        owner = "caller_contract"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The selected server cannot satisfy the compiled connector capability contract."
+    } else if (syntax == "MongoErrorKind::Internal") {
+        owner = "cdf_or_official_driver_invariant"
+        retry = "none"
+        redaction = "controlled_message_without_endpoint_or_credentials"
+        rationale = "The official driver reported an internal invariant failure after CDF validation."
     } else if (syntax ~ /^MongoErrorKind::/) {
         owner = "dynamic_foreign_classifier"
         retry = "kind_dependent"

@@ -99,12 +99,14 @@ impl<T> Drop for ScopedBlockingTask<T> {
 
 impl<T> TaskStreamSender<T> {
     pub async fn send(&mut self, item: T) -> Result<()> {
-        self.cancellation.check()?;
-        self.sender
-            .send(item)
+        self.cancellation
+            .await_or_cancel(async {
+                self.sender
+                    .send(item)
+                    .await
+                    .map_err(|_| CdfError::internal("task stream receiver closed"))
+            })
             .await
-            .map_err(|_| CdfError::internal("task stream receiver closed"))?;
-        self.cancellation.check()
     }
 }
 
@@ -2135,6 +2137,26 @@ mod tests {
             second.as_mut().poll(&mut context),
             Poll::Ready(())
         ));
+    }
+
+    #[test]
+    fn async_task_stream_send_cancels_while_bounded_queue_is_full() {
+        futures_executor::block_on(async {
+            let cancellation = RunCancellation::default();
+            let (mut raw_sender, _retained_receiver) = mpsc::channel(1);
+            raw_sender.send(1_u8).await.unwrap();
+            let mut sender = TaskStreamSender {
+                sender: raw_sender,
+                cancellation: cancellation.clone(),
+            };
+            let mut blocked = Box::pin(sender.send(2_u8));
+            let waker = futures_util::task::noop_waker();
+            let mut context = Context::from_waker(&waker);
+
+            assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
+            cancellation.cancel();
+            assert!(blocked.await.is_err());
+        });
     }
 
     #[test]

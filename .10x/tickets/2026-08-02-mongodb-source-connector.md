@@ -1,4 +1,4 @@
-Status: active
+Status: blocked
 Created: 2026-08-02
 Updated: 2026-08-04
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
@@ -105,14 +105,30 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   `jscpd` reported 2.52% duplicated lines, below the 10% threshold, and `cargo machete
   --with-metadata` found no unused dependencies. `graphify update .` could not run because the
   executable is unavailable in this environment.
+- 2026-08-04: Three independent red-team reviews falsified the first closure candidate. Repaired
+  execution-time schema admission to submit the actual observation instead of prebinding the
+  pinned hash; filtered Postgres catalog conversion to selected columns; preserved Int32 cursor
+  domain after lag arithmetic; made MongoDB discovery and cursorless scans deterministic; enforced
+  progressive residual-evidence cardinality/memory/path bounds; validated nested duplicate and
+  unknown BSON fields; made a full output queue cancellation-aware; strictly bound collection
+  type, collation, validator, and validation settings; percent-decoded add inputs; corrected stable
+  MongoDB error ownership; and replaced declarative benchmark/conformance setup with the current
+  query-first public lifecycle. The affected-package strict Clippy barrier passed, `cargo machete
+  --with-metadata` found no unused dependency, and 19 pre-existing MongoDB unit tests plus the new
+  residual-cardinality boundary test passed. The regenerated error ledger contains 216 classified
+  construction-bearing rows, including 21 production invariant rows whose ownership is explicit.
 
 ## Blockers
 
-None.
+- The official MongoDB driver can initiate topology-monitor connections to hosts learned after the
+  initial socket is authorized. The current spec advertises `mongodb+srv` and topology discovery,
+  but the injected egress authority has no pre-connect hook for those learned hosts. Closure needs
+  user ratification to narrow the current release to one explicit direct `mongodb://host[:port]`
+  authority, or a separately shaped egress-aware transport design.
 
 ## Evidence
 
-- Eight focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+- Twenty focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
   injection, portability/redaction, cursor, and error-wrapper behavior.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.
@@ -125,7 +141,14 @@ None.
 
 ## Review
 
-Pending independent red-team review.
+- First closure review verdict: fail. Critical: topology-discovered hosts could bypass injected
+  egress authorization. Significant: prebound execution observations, nondeterministic reads,
+  post-hoc residual memory accounting, cancellation while the output queue is full, incomplete
+  nested BSON evidence, lax collection metadata, stale error evidence, and benchmark/public-CLI
+  paths that did not exercise the current surface. The reviewers also found shared Postgres
+  projection admission and Int32 cursor-domain defects.
+- All non-semantic findings are repaired and await independent rereview on a stable pushed commit.
+  Residual risk remains the direct-host semantic decision recorded in Blockers.
 
 ## Retrospective
 

@@ -19,7 +19,7 @@ use cdf_bench_core::{
     IoMode, SystemHostProvider, bench_error, host_class,
 };
 use cdf_http::{EgressAllowlist, SecretProvider, SecretUri, SecretValue};
-use cdf_kernel::{CdfError, QueryableResource, Result, ScanRequest};
+use cdf_kernel::{CdfError, DestinationProtocol, QueryableResource, Result, ScanRequest};
 use cdf_runtime::{SourceRegistry, SourceResolutionContext};
 use futures_util::StreamExt;
 use mongodb::{
@@ -390,10 +390,20 @@ fn compile_resource(
     registry: &SourceRegistry,
     execution: &cdf_runtime::ExecutionServices,
 ) -> BenchResult<Arc<dyn QueryableResource>> {
-    let document = cdf_declarative::parse_toml(&format!(
+    let project_toml = format!(
         r#"
-[source.roofline]
-kind = "mongodb"
+[project]
+name = "mongodb_source_roofline"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.sqlite"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[sources.roofline]
+type = "mongodb"
 endpoint = "{endpoint}"
 database = "{DATABASE}"
 batch_rows = {batch_rows}
@@ -401,25 +411,46 @@ max_pool_size = {max_pool_size}
 stream_buffer_batches = {STREAM_BUFFER_BATCHES}
 discovery_records = 2048
 discovery_bytes = 16777216
-
-[resource.events]
-collection = "{COLLECTION}"
-cursor = {{ field = "updated_at", ordering = "exact", lag = "0ms" }}
-write_disposition = "append"
-trust = "governed"
-schema_mode = "hints"
-schema = {{ fields = [
-  {{ name = "id", source_name = "_id", type = "int64", nullable = false }},
-  {{ name = "metric", type = "int64", nullable = false }},
-  {{ name = "label", type = "utf8", nullable = false }},
-  {{ name = "updated_at", type = "timestamp(ms, UTC)", nullable = false }},
-] }}
 "#
-    ))?;
-    let provisional = cdf_declarative::compile_document(registry, &document)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| bench_error("MongoDB roofline compiled no resource"))?;
+    );
+    let resource_dir = root.join("cdf/roofline");
+    fs::create_dir_all(&resource_dir)?;
+    fs::write(root.join("cdf.toml"), &project_toml)?;
+    fs::write(
+        resource_dir.join("events.cdf.sql"),
+        format!(
+            r#"RESOURCE
+TARGET events
+DISPOSITION APPEND
+CURSOR updated_at
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT id, metric, label, updated_at
+FROM upstream(source => 'roofline', collection => '{COLLECTION}');
+"#
+        ),
+    )?;
+    let config = cdf_project::parse_cdf_toml(&project_toml)?;
+    let destination =
+        cdf_dest_duckdb::DuckDbDestination::new(root.join(".cdf/compile-only.duckdb"))?;
+    let mut entries = cdf_project::compile_query_project_resources(
+        registry,
+        &config,
+        root,
+        "dev",
+        destination.sheet(),
+        &cdf_semantic::SemanticCatalog::builtins()?,
+        &BTreeMap::new(),
+    )?;
+    if entries.len() != 1 {
+        return Err(bench_error(format!(
+            "MongoDB roofline expected one current query resource, found {}",
+            entries.len()
+        )));
+    }
+    let mut entry = entries.remove(0);
+    let provisional = entry.resource.clone();
     let context = SourceResolutionContext::new(
         root,
         Arc::new(NoSecrets),
@@ -433,8 +464,13 @@ schema = {{ fields = [
         &context,
         cdf_project::SchemaDiscoveryExecutionOptions::new(),
     )?;
-    let compiled = cdf_project::compile_discovered_schema_artifacts(&provisional, &mut discovery)?;
-    Ok(registry.resolve(compiled.source_plan(), &context)?)
+    entry.resource =
+        cdf_project::compile_discovered_schema_artifacts(&provisional, &mut discovery)?;
+    entry = cdf_project::finalize_query_project_resource(
+        entry,
+        &cdf_semantic::SemanticCatalog::builtins()?,
+    )?;
+    Ok(registry.resolve(entry.resource.source_plan(), &context)?)
 }
 
 async fn read_cdf(
@@ -449,12 +485,11 @@ async fn read_cdf(
         order_by: Vec::new(),
         scope: resource.descriptor().state_scope.clone(),
     })?;
-    let mut partition = scan
+    let partition = scan
         .inline_partitions()
         .and_then(|partitions| partitions.first())
         .cloned()
         .ok_or_else(|| CdfError::internal("MongoDB roofline negotiated no partition"))?;
-    bind_planned_physical_schema(resource, &mut partition)?;
     let (cpu_before, _) = process_counters()?;
     let started = Instant::now();
     let mut stream = resource.open(partition).await?;
@@ -731,54 +766,6 @@ fn label_checksum(value: &str) -> u64 {
     })
 }
 
-fn bind_planned_physical_schema(
-    resource: &dyn QueryableResource,
-    partition: &mut cdf_kernel::PartitionPlan,
-) -> Result<()> {
-    let runtime = resource.effective_schema_runtime().ok_or_else(|| {
-        CdfError::internal("MongoDB roofline resource omitted effective-schema runtime")
-    })?;
-    let observation_id = cdf_kernel::partition_schema_observation_id(partition);
-    let physical_hash = runtime
-        .evidence
-        .observation(observation_id)
-        .ok_or_else(|| {
-            CdfError::internal("MongoDB roofline partition omitted its schema observation")
-        })?
-        .physical_schema_hash
-        .clone();
-    let physical = runtime.physical_schema(&physical_hash).ok_or_else(|| {
-        CdfError::internal("MongoDB roofline observation omitted its physical schema")
-    })?;
-    let projected_fields = resource
-        .schema()
-        .fields()
-        .iter()
-        .map(|effective| {
-            let source = cdf_kernel::source_name(effective).unwrap_or_else(|| effective.name());
-            physical
-                .fields()
-                .iter()
-                .find(|field| {
-                    cdf_kernel::source_name(field).unwrap_or_else(|| field.name()) == source
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    CdfError::internal(format!(
-                        "MongoDB roofline physical schema omitted source field `{source}`"
-                    ))
-                })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let projected = Schema::new_with_metadata(projected_fields, physical.metadata().clone());
-    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(&projected)?.to_string();
-    partition.metadata.insert(
-        cdf_kernel::PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
-        physical_hash,
-    );
-    Ok(())
-}
-
 fn roofline_cell(
     batch_rows: u32,
     max_pool_size: u32,
@@ -960,6 +947,14 @@ fn base_git_revision(workspace_root: &Path) -> BenchResult<String> {
         return Err(bench_error(
             "MongoDB roofline resolved an invalid base Git revision",
         ));
+    }
+    let build_revision = option_env!("CDF_BENCHMARK_BUILD_GIT_REVISION")
+        .ok_or_else(|| bench_error("MongoDB roofline executable omitted its build Git revision"))?;
+    let build_dirty = option_env!("CDF_BENCHMARK_BUILD_GIT_DIRTY").unwrap_or("unknown");
+    if build_dirty != "false" || build_revision != revision {
+        return Err(bench_error(format!(
+            "MongoDB roofline executable was built from revision {build_revision} (dirty={build_dirty}) but runtime HEAD is {revision}; rebuild the release benchmark from this clean snapshot"
+        )));
     }
     Ok(revision.to_owned())
 }

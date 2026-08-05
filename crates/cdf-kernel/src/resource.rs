@@ -1155,6 +1155,36 @@ pub fn bind_partition_schema_observation(
     Ok(())
 }
 
+/// Binds one source-authored partition to a runtime observation that was not part of discovery.
+///
+/// Pinned execution uses this form when the source must observe the current physical schema from
+/// the extraction stream. The binding proves which partition owns the candidate without claiming
+/// that its physical schema still equals a discovery observation.
+pub fn bind_partition_schema_candidate(
+    partition: &mut PartitionPlan,
+    observation_id: &str,
+) -> Result<()> {
+    if observation_id.is_empty() {
+        return Err(CdfError::contract(
+            "partition schema observation identity cannot be empty",
+        ));
+    }
+    partition.metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+        observation_id.to_owned(),
+    );
+    partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
+    partition
+        .metadata
+        .remove(PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
+    let binding = derive_partition_schema_observation_binding(partition)?;
+    partition.metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+        binding.to_string(),
+    );
+    Ok(())
+}
+
 pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result<()> {
     scan.validate_partition_authority()?;
     let mut partitions_by_observation = BTreeMap::new();

@@ -200,23 +200,11 @@ pub(crate) async fn execute_mongodb_collection(
             &documents,
             source_row_offset,
         )?;
+        let evidence_bytes = decoded.residual_evidence_bytes;
         let record_batch = decoded.record_batch;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-        let evidence_bytes =
-            decoded
-                .residual_candidates
-                .iter()
-                .try_fold(0_u64, |total, candidate| {
-                    let bytes =
-                        u64::try_from(candidate.value().get_array_memory_size()).map_err(|_| {
-                            CdfError::data("MongoDB residual evidence memory exceeds u64")
-                        })?;
-                    total.checked_add(bytes).ok_or_else(|| {
-                        CdfError::data("MongoDB residual evidence memory accounting overflow")
-                    })
-                })?;
         let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
-            CdfError::data("MongoDB decoded batch retained-memory accounting overflow")
+            CdfError::internal("MongoDB decoded batch retained-memory accounting overflow")
         })?;
         if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
             return Err(CdfError::data(format!(

@@ -21,6 +21,10 @@ pub(crate) const MONGODB_DECIMAL_TEXT_SEMANTIC: &str =
     cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC;
 const MAXIMUM_SCHEMA_FIELDS: usize = 4_096;
 const MAXIMUM_SCHEMA_DEPTH: usize = 32;
+const MAXIMUM_RESIDUAL_CANDIDATES: usize = 65_536;
+const MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES: usize = 1_024;
+const MAXIMUM_RESIDUAL_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
+const RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES: u64 = 512;
 
 #[derive(Clone, Debug)]
 enum InferredType {
@@ -383,10 +387,12 @@ fn validate_field(field: &Field, depth: usize) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct DecodedMongoBatch {
     pub(crate) record_batch: RecordBatch,
     pub(crate) physical_schema: Schema,
     pub(crate) residual_candidates: Vec<PreContractResidualCandidate>,
+    pub(crate) residual_evidence_bytes: u64,
 }
 
 #[cfg(test)]
@@ -434,8 +440,9 @@ pub(crate) fn decode_batch_with_evidence(
         .collect::<BTreeSet<_>>();
     let mut matches_pinned_physical = projected_sources == known_sources;
     let mut residual_candidates = Vec::new();
+    let mut residual_evidence_bytes = 0_u64;
     for (row, document) in documents.iter().enumerate() {
-        validate_unique_document(document)?;
+        validate_document_shape(document, 0)?;
         for (field, column) in output_schema.fields().iter().zip(&mut columns) {
             let source = source_name(field).unwrap_or_else(|| field.name());
             let value = raw_value_at_path(document, source)?;
@@ -444,15 +451,29 @@ pub(crate) fn decode_batch_with_evidence(
                     matches_pinned_physical = false;
                 }
                 column.append(value)?;
-            } else {
-                column.append(None)?;
-                residual_candidates.push(residual_candidate(
+                let mut source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
+                collect_nested_unknown_fields(
+                    field,
+                    value,
                     source_row_offset.saturating_add(row as u64),
                     row,
-                    source,
-                    value,
-                    Some(field.as_ref().clone()),
-                )?);
+                    &mut source_path,
+                    &mut residual_candidates,
+                    &mut residual_evidence_bytes,
+                )?;
+            } else {
+                column.append(None)?;
+                push_residual_candidate(
+                    &mut residual_candidates,
+                    &mut residual_evidence_bytes,
+                    residual_candidate(
+                        source_row_offset.saturating_add(row as u64),
+                        row,
+                        source,
+                        value,
+                        Some(field.as_ref().clone()),
+                    )?,
+                )?;
             }
         }
         for element in document.iter() {
@@ -463,13 +484,17 @@ pub(crate) fn decode_batch_with_evidence(
             if known_sources.contains(&name) {
                 continue;
             }
-            residual_candidates.push(residual_candidate(
-                source_row_offset.saturating_add(row as u64),
-                row,
-                &name,
-                Some(value),
-                None,
-            )?);
+            push_residual_candidate(
+                &mut residual_candidates,
+                &mut residual_evidence_bytes,
+                residual_candidate(
+                    source_row_offset.saturating_add(row as u64),
+                    row,
+                    &name,
+                    Some(value),
+                    None,
+                )?,
+            )?;
         }
     }
     let residual_sources = residual_candidates
@@ -515,6 +540,7 @@ pub(crate) fn decode_batch_with_evidence(
         record_batch,
         physical_schema,
         residual_candidates,
+        residual_evidence_bytes,
     })
 }
 
@@ -574,16 +600,155 @@ fn residual_candidate(
     value: Option<RawBsonRef<'_>>,
     expected: Option<Field>,
 ) -> Result<PreContractResidualCandidate> {
+    let source_path = source.split('.').map(str::to_owned).collect::<Vec<_>>();
+    residual_candidate_at_path(
+        source_row_ordinal,
+        batch_row_ordinal,
+        source_path,
+        value,
+        expected,
+    )
+}
+
+fn residual_candidate_at_path(
+    source_row_ordinal: u64,
+    batch_row_ordinal: usize,
+    source_path: Vec<String>,
+    value: Option<RawBsonRef<'_>>,
+    expected: Option<Field>,
+) -> Result<PreContractResidualCandidate> {
+    if source_path
+        .iter()
+        .any(|segment| segment.is_empty() || segment.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES)
+    {
+        return Err(CdfError::data(format!(
+            "MongoDB residual field path exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte segment bound"
+        )));
+    }
+    let source = source_path
+        .last()
+        .ok_or_else(|| CdfError::internal("MongoDB residual source path is empty"))?;
     let (observed_field, value) = observed_value_evidence(source, value)?;
     PreContractResidualCandidate::new(
         source_row_ordinal,
         batch_row_ordinal,
-        source.split('.').map(str::to_owned).collect(),
+        source_path,
         observed_field,
         expected,
         value,
         0,
     )
+}
+
+fn push_residual_candidate(
+    candidates: &mut Vec<PreContractResidualCandidate>,
+    retained_bytes: &mut u64,
+    candidate: PreContractResidualCandidate,
+) -> Result<()> {
+    if candidates.len() >= MAXIMUM_RESIDUAL_CANDIDATES {
+        return Err(CdfError::data(format!(
+            "MongoDB batch exceeds the {MAXIMUM_RESIDUAL_CANDIDATES}-candidate residual evidence bound; reduce batch_rows"
+        )));
+    }
+    let array_bytes = u64::try_from(candidate.value().get_array_memory_size())
+        .map_err(|_| CdfError::internal("MongoDB residual evidence memory exceeds u64"))?;
+    let path_bytes =
+        candidate
+            .source_path()
+            .iter()
+            .try_fold(0_u64, |total, segment| {
+                total
+                    .checked_add(u64::try_from(segment.len()).map_err(|_| {
+                        CdfError::internal("MongoDB residual path length exceeds u64")
+                    })?)
+                    .ok_or_else(|| CdfError::internal("MongoDB residual path memory overflow"))
+            })?;
+    let candidate_bytes = array_bytes
+        .checked_add(path_bytes)
+        .and_then(|bytes| bytes.checked_add(RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES))
+        .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?;
+    let next = retained_bytes
+        .checked_add(candidate_bytes)
+        .ok_or_else(|| CdfError::internal("MongoDB residual evidence memory overflow"))?;
+    if next > MAXIMUM_RESIDUAL_EVIDENCE_BYTES {
+        return Err(CdfError::data(format!(
+            "MongoDB batch residual evidence exceeds the {MAXIMUM_RESIDUAL_EVIDENCE_BYTES}-byte bound; reduce batch_rows or narrow the source shape"
+        )));
+    }
+    *retained_bytes = next;
+    candidates.push(candidate);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_nested_unknown_fields(
+    field: &Field,
+    value: Option<RawBsonRef<'_>>,
+    source_row_ordinal: u64,
+    batch_row_ordinal: usize,
+    source_path: &mut Vec<String>,
+    candidates: &mut Vec<PreContractResidualCandidate>,
+    retained_bytes: &mut u64,
+) -> Result<()> {
+    match (field.data_type(), value) {
+        (DataType::Struct(fields), Some(RawBsonRef::Document(document))) => {
+            let expected = fields
+                .iter()
+                .map(|child| source_name(child).unwrap_or_else(|| child.name()))
+                .collect::<BTreeSet<_>>();
+            for element in document {
+                let (name, value) = element.map_err(|error| {
+                    CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+                })?;
+                if !expected.contains(name.as_str()) {
+                    source_path.push(name.to_string());
+                    let candidate = residual_candidate_at_path(
+                        source_row_ordinal,
+                        batch_row_ordinal,
+                        source_path.clone(),
+                        Some(value),
+                        None,
+                    )?;
+                    source_path.pop();
+                    push_residual_candidate(candidates, retained_bytes, candidate)?;
+                }
+            }
+            for child in fields {
+                let name = source_name(child).unwrap_or_else(|| child.name());
+                source_path.push(name.to_owned());
+                collect_nested_unknown_fields(
+                    child,
+                    raw_value_at_path(document, name)?,
+                    source_row_ordinal,
+                    batch_row_ordinal,
+                    source_path,
+                    candidates,
+                    retained_bytes,
+                )?;
+                source_path.pop();
+            }
+        }
+        (DataType::List(child), Some(RawBsonRef::Array(array))) => {
+            for (index, item) in array.into_iter().enumerate() {
+                let item = item.map_err(|error| {
+                    CdfError::data(format!("MongoDB array value is malformed: {error}"))
+                })?;
+                source_path.push(index.to_string());
+                collect_nested_unknown_fields(
+                    child,
+                    Some(item),
+                    source_row_ordinal,
+                    batch_row_ordinal,
+                    source_path,
+                    candidates,
+                    retained_bytes,
+                )?;
+                source_path.pop();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn observed_value_evidence(
@@ -782,6 +947,46 @@ fn validate_unique_document(document: &RawDocument) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_document_shape(document: &RawDocument, depth: usize) -> Result<()> {
+    if depth > MAXIMUM_SCHEMA_DEPTH {
+        return Err(CdfError::data("MongoDB document nesting is too deep"));
+    }
+    validate_unique_document(document)?;
+    for element in document {
+        let (name, value) = element.map_err(|error| {
+            CdfError::data(format!("MongoDB source returned malformed BSON: {error}"))
+        })?;
+        if name.len() > MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES {
+            return Err(CdfError::data(format!(
+                "MongoDB field name exceeds the {MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES}-byte residual path bound"
+            )));
+        }
+        validate_nested_value_shape(value, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn validate_nested_value_shape(value: RawBsonRef<'_>, depth: usize) -> Result<()> {
+    if depth > MAXIMUM_SCHEMA_DEPTH {
+        return Err(CdfError::data("MongoDB value nesting is too deep"));
+    }
+    match value {
+        RawBsonRef::Document(document) => validate_document_shape(document, depth),
+        RawBsonRef::Array(array) => {
+            for value in array {
+                validate_nested_value_shape(
+                    value.map_err(|error| {
+                        CdfError::data(format!("MongoDB array value is malformed: {error}"))
+                    })?,
+                    depth + 1,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn raw_value_at_path<'a>(document: &'a RawDocument, path: &str) -> Result<Option<RawBsonRef<'a>>> {

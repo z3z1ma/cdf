@@ -14,11 +14,12 @@ use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceEx
 use mongodb::bson::{
     DateTime, Decimal128, doc,
     oid::ObjectId,
-    raw::{RawDocumentBuf, cstr},
+    raw::{CString, RawDocumentBuf, cstr},
 };
 
 use crate::{
     MongoDbSourceDriver,
+    driver::collection_metadata_from_response,
     error::classify_mongodb_error,
     execution::cursor_value,
     identifier::{MongoDbIdentifier, validate_field_path},
@@ -217,6 +218,37 @@ fn add_planner_compiles_authority_collection_and_private_credentials() {
 }
 
 #[test]
+fn add_planner_percent_decodes_credentials_and_resource_path() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let proposal = driver
+        .add_planner()
+        .unwrap()
+        .propose_add(&SourceAddRequest {
+            source_name: "warehouse".to_owned(),
+            resource_name: "events".to_owned(),
+            location: "mongodb://reader%40ops:p%40ss%3Aword@mongo.example:27017/analytics%2Dprod/events%2D2026".to_owned(),
+            project_root: "/project".into(),
+            current_dir: "/project".into(),
+            options: BTreeMap::new(),
+            project_options: None,
+        })
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(proposal.source_options["database"], "analytics-prod");
+    assert_eq!(proposal.resource_options["collection"], "events-2026");
+    assert_eq!(proposal.private_files.len(), 2);
+    assert_eq!(
+        proposal.private_files[0].value.as_str().unwrap(),
+        "reader@ops"
+    );
+    assert_eq!(
+        proposal.private_files[1].value.as_str().unwrap(),
+        "p@ss:word"
+    );
+}
+
+#[test]
 fn discovery_infers_exact_bson_shapes_and_nested_missing_fields() {
     let object_id = ObjectId::parse_str("64b64c27f6f1a00f92d66c6a").unwrap();
     let decimal = Decimal128::from_str("1234567890.0123456789").unwrap();
@@ -361,6 +393,108 @@ fn governed_decoder_preserves_unknown_and_mismatched_values_as_residual_evidence
 }
 
 #[test]
+fn governed_decoder_rejects_residual_candidate_cardinality_over_bound() {
+    let mut document = RawDocumentBuf::new();
+    document.append(cstr!("known"), 1_i64);
+    for index in 0..=65_536 {
+        document.append(CString::try_from(format!("extra_{index}")).unwrap(), index);
+    }
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "known",
+        DataType::Int64,
+        false,
+    )]));
+
+    let error = decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0)
+        .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("65536-candidate"), "{error}");
+}
+
+#[test]
+fn collection_metadata_binds_complete_collation_and_validator_without_plaintext() {
+    let response = doc! {
+        "cursor": {"firstBatch": [{
+            "name": "events",
+            "type": "collection",
+            "options": {
+                "collation": {"locale": "en", "strength": 2_i32, "numericOrdering": true},
+                "validator": {"sequence": {"$type": "long"}},
+                "validationLevel": "strict",
+                "validationAction": "error"
+            }
+        }]}
+    };
+
+    let metadata =
+        collection_metadata_from_response(&response, &MongoDbIdentifier::new("events").unwrap())
+            .unwrap();
+    let identity = metadata.identity();
+
+    assert_eq!(identity["collection_type"], "collection");
+    assert!(identity["collation_identity"].starts_with("sha256:"));
+    assert!(identity["validator_sha256"].starts_with("sha256:"));
+    assert_eq!(identity["validation_level"], "strict");
+    assert_eq!(identity["validation_action"], "error");
+    let rendered = format!("{identity:?}");
+    assert!(!rendered.contains("numericOrdering"));
+    assert!(!rendered.contains("$type"));
+}
+
+#[test]
+fn collection_metadata_rejects_views_and_malformed_options() {
+    let collection = MongoDbIdentifier::new("events").unwrap();
+    let view = doc! {
+        "cursor": {"firstBatch": [{
+            "name": "events",
+            "type": "view",
+            "options": {}
+        }]}
+    };
+    assert!(collection_metadata_from_response(&view, &collection).is_err());
+
+    for malformed in [
+        doc! {"cursor": {"firstBatch": [{"name": "events", "options": {}}]}},
+        doc! {"cursor": {"firstBatch": [{"name": "events", "type": "collection", "options": "wrong"}]}},
+        doc! {"cursor": {"firstBatch": [{"name": "events", "type": "collection", "options": {"collation": "wrong"}}]}},
+        doc! {"cursor": {"firstBatch": [{"name": "events", "type": "collection", "options": {"validator": "wrong"}}]}},
+    ] {
+        assert!(collection_metadata_from_response(&malformed, &collection).is_err());
+    }
+}
+
+#[test]
+fn governed_decoder_captures_nested_unknown_field_at_exact_path() {
+    let nested_field = Field::new(
+        "nested",
+        DataType::Struct(
+            vec![Arc::new(with_source_name(
+                Field::new("known", DataType::Int64, false),
+                "known",
+            ))]
+            .into(),
+        ),
+        false,
+    );
+    let schema = Arc::new(Schema::new(vec![with_source_name(nested_field, "nested")]));
+    let document = RawDocumentBuf::try_from(&doc! {
+        "nested": {"known": 1_i64, "extra": "preserve me"}
+    })
+    .unwrap();
+
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0).unwrap();
+
+    assert_eq!(decoded.residual_candidates.len(), 1);
+    assert_eq!(
+        decoded.residual_candidates[0].source_path(),
+        ["nested", "extra"]
+    );
+    assert!(decoded.residual_candidates[0].expected_field().is_none());
+}
+
+#[test]
 fn compatible_arrow_value_still_reports_changed_bson_physical_type() {
     let pinned = Arc::new(Schema::new(vec![with_physical_type(
         with_source_name(Field::new("sequence", DataType::Int64, false), "sequence"),
@@ -407,6 +541,34 @@ fn duplicate_bson_keys_fail_instead_of_selecting_one_value() {
 }
 
 #[test]
+fn duplicate_nested_bson_keys_fail_before_residual_materialization() {
+    let mut nested = RawDocumentBuf::new();
+    nested.append(cstr!("known"), 1_i64);
+    nested.append(cstr!("known"), 2_i64);
+    let mut document = RawDocumentBuf::new();
+    document.append(cstr!("nested"), nested);
+    let schema = Arc::new(Schema::new(vec![with_source_name(
+        Field::new(
+            "nested",
+            DataType::Struct(
+                vec![Arc::new(with_source_name(
+                    Field::new("known", DataType::Int64, false),
+                    "known",
+                ))]
+                .into(),
+            ),
+            false,
+        ),
+        "nested",
+    )]));
+
+    let error = decode_batch_with_evidence(Arc::clone(&schema), schema, &[document.as_ref()], 0)
+        .unwrap_err();
+
+    assert!(error.message.contains("repeats field `known`"), "{error}");
+}
+
+#[test]
 fn cursor_query_uses_numeric_frontier_and_object_id_tie_breaker() {
     let descriptor = descriptor(true);
     let schema = Arc::new(schema());
@@ -434,6 +596,30 @@ fn cursor_query_uses_numeric_frontier_and_object_id_tie_breaker() {
     assert_eq!(query.filter, doc! {"sequence": {"$gt": 41_i64}});
     assert_eq!(query.sort, doc! {"sequence": 1_i32, "_id": 1_i32});
     assert_eq!(query.limit, None);
+}
+
+#[test]
+fn cursorless_snapshot_query_uses_stable_object_id_order() {
+    let descriptor = descriptor(false);
+    let schema = Arc::new(schema());
+    let partition = PartitionPlan {
+        partition_id: PartitionId::new("mongodb").unwrap(),
+        scope: descriptor.state_scope.clone(),
+        planned_position: None,
+        start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::Forbidden,
+        metadata: BTreeMap::from([
+            ("kind".to_owned(), "mongodb".to_owned()),
+            ("resource_id".to_owned(), descriptor.resource_id.to_string()),
+            ("collection".to_owned(), "events".to_owned()),
+        ]),
+    };
+    let collection = MongoDbIdentifier::new("events").unwrap();
+    let scan = scan_from_partition(&descriptor, &schema, &collection, &partition).unwrap();
+    let query = build_query(&descriptor, &schema, &partition, &scan).unwrap();
+
+    assert_eq!(query.sort, doc! {"_id": 1_i32});
 }
 
 #[test]
@@ -474,11 +660,20 @@ fn sdk_wrapper_preserves_typed_error_ownership_and_retry_delay() {
     assert_eq!(denied.kind, cdf_kernel::ErrorKind::Environment);
 
     for (code, expected_kind) in [
+        (2, cdf_kernel::ErrorKind::Contract),
+        (14, cdf_kernel::ErrorKind::Contract),
+        (20, cdf_kernel::ErrorKind::Contract),
         (13, cdf_kernel::ErrorKind::Auth),
         (18, cdf_kernel::ErrorKind::Auth),
         (26, cdf_kernel::ErrorKind::Data),
+        (6, cdf_kernel::ErrorKind::Transient),
+        (7, cdf_kernel::ErrorKind::Transient),
+        (89, cdf_kernel::ErrorKind::Transient),
         (91, cdf_kernel::ErrorKind::Transient),
-        (50, cdf_kernel::ErrorKind::RateLimited),
+        (189, cdf_kernel::ErrorKind::Transient),
+        (262, cdf_kernel::ErrorKind::Transient),
+        (9001, cdf_kernel::ErrorKind::Transient),
+        (50, cdf_kernel::ErrorKind::Transient),
         (16500, cdf_kernel::ErrorKind::RateLimited),
     ] {
         let command: mongodb::error::CommandError = serde_json::from_value(serde_json::json!({
@@ -499,7 +694,7 @@ fn sdk_wrapper_preserves_typed_error_ownership_and_retry_delay() {
         "read collection",
         mongodb::error::ErrorKind::Shutdown.into(),
     );
-    assert_eq!(shutdown.kind, cdf_kernel::ErrorKind::Transient);
+    assert_eq!(shutdown.kind, cdf_kernel::ErrorKind::Internal);
     let sessions = classify_mongodb_error(
         "read collection",
         mongodb::error::ErrorKind::SessionsNotSupported.into(),

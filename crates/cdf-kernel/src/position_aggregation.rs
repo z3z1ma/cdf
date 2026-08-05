@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CursorArithmetic {
+    I32,
     I64,
     U64,
     TimestampMicros,
@@ -521,7 +522,8 @@ fn aggregate_cursor(
         ))
     })?;
     let arithmetic = match field.data_type() {
-        DataType::Int32 | DataType::Int64 => CursorArithmetic::I64,
+        DataType::Int32 => CursorArithmetic::I32,
+        DataType::Int64 => CursorArithmetic::I64,
         DataType::UInt64 => CursorArithmetic::U64,
         DataType::Timestamp(
             TimeUnit::Second | TimeUnit::Millisecond | TimeUnit::Microsecond | TimeUnit::Nanosecond,
@@ -639,7 +641,7 @@ fn ensure_cursor_kind(
     if matches!(
         (arithmetic, value),
         (
-            CursorArithmetic::I64 | CursorArithmetic::Date32,
+            CursorArithmetic::I32 | CursorArithmetic::I64 | CursorArithmetic::Date32,
             CursorValue::I64(_)
         ) | (CursorArithmetic::U64, CursorValue::U64(_))
             | (
@@ -658,7 +660,7 @@ fn ensure_cursor_kind(
 fn greater(arithmetic: CursorArithmetic, left: &CursorValue, right: &CursorValue) -> bool {
     match (arithmetic, left, right) {
         (
-            CursorArithmetic::I64 | CursorArithmetic::Date32,
+            CursorArithmetic::I32 | CursorArithmetic::I64 | CursorArithmetic::Date32,
             CursorValue::I64(left),
             CursorValue::I64(right),
         ) => left > right,
@@ -685,6 +687,15 @@ fn close_cursor(
         ))
     };
     match (arithmetic, value) {
+        (CursorArithmetic::I32, CursorValue::I64(value)) => {
+            let closed = value
+                .checked_sub(i64::try_from(lag_ms).map_err(|_| incompatible())?)
+                .ok_or_else(incompatible)?;
+            i32::try_from(closed)
+                .map(i64::from)
+                .map(CursorValue::I64)
+                .map_err(|_| incompatible())
+        }
         (CursorArithmetic::I64, CursorValue::I64(value)) => value
             .checked_sub(i64::try_from(lag_ms).map_err(|_| incompatible())?)
             .map(CursorValue::I64)
@@ -857,6 +868,69 @@ mod tests {
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(20),
             })
+        );
+    }
+
+    #[test]
+    fn int32_cursor_aggregation_preserves_its_declared_domain() {
+        let descriptor = ResourceDescriptor {
+            resource_id: crate::ResourceId::new("mongo.events").unwrap(),
+            schema_source: crate::SchemaSource::Declared {
+                schema_hash: crate::SchemaHash::new("sha256:int32-cursor").unwrap(),
+                source: "test".to_owned(),
+            },
+            primary_key: Vec::new(),
+            merge_key: Vec::new(),
+            cursor: Some(crate::CursorSpec {
+                field: "sequence".to_owned(),
+                ordering: CursorOrderingClaim::Exact,
+                lag_tolerance_ms: 1,
+            }),
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: crate::ScopeKey::Resource,
+            freshness: None,
+            trust_level: crate::TrustLevel::Governed,
+        };
+        let schema = Schema::new(vec![arrow_schema::Field::new(
+            "sequence",
+            DataType::Int32,
+            false,
+        )]);
+        let position = |value| {
+            SourcePosition::Cursor(CursorPosition {
+                version: crate::SOURCE_POSITION_VERSION,
+                field: "sequence".to_owned(),
+                value: CursorValue::I64(value),
+            })
+        };
+
+        assert_eq!(
+            aggregate_resource_output_position(&descriptor, &schema, None, &[position(10)])
+                .unwrap(),
+            position(9)
+        );
+        assert!(
+            aggregate_resource_output_position(
+                &descriptor,
+                &schema,
+                None,
+                &[position(i64::from(i32::MIN))]
+            )
+            .is_err()
+        );
+
+        let mut excessive_lag = descriptor;
+        excessive_lag.cursor.as_mut().unwrap().lag_tolerance_ms = u64::MAX;
+        assert!(
+            aggregate_resource_output_position(
+                &excessive_lag,
+                &schema,
+                None,
+                &[position(i64::from(i32::MAX))]
+            )
+            .is_err()
         );
     }
 

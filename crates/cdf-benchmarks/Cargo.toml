@@ -39,6 +39,7 @@ cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-semantic = { path = "../cdf-semantic" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-object-access = { path = "../cdf-object-access" }
 cdf-source-clickhouse = { path = "../cdf-source-clickhouse" }

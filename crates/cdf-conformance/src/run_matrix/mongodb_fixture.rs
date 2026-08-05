@@ -120,7 +120,7 @@ pub(crate) fn add_runtime_unknown_field(cell: &RunMatrixCell) -> Result<()> {
     })
 }
 
-fn seed_collection(endpoint: &str, collection: &str) -> Result<()> {
+pub(crate) fn seed_collection(endpoint: &str, collection: &str) -> Result<()> {
     let endpoint = endpoint.to_owned();
     let collection = collection.to_owned();
     crate::test_execution_services().run_io(async move {
@@ -139,7 +139,7 @@ fn seed_collection(endpoint: &str, collection: &str) -> Result<()> {
             .map_err(|_| CdfError::environment("reset MongoDB fixture collection"))?;
         collection
             .insert_many([
-                doc! {"_id": 1_i64, "name": "ada", "updated_at": 10_i64},
+                doc! {"_id": 1_i64, "name": "ada", "updated_at": 10_i32},
                 doc! {"_id": 2_i64, "updated_at": 20_i64},
             ])
             .await
@@ -174,7 +174,7 @@ destination = "duckdb://.cdf/dev.duckdb"
 type = "mongodb"
 endpoint = "{endpoint}"
 database = "{DATABASE}"
-batch_rows = 1024
+batch_rows = 1
 max_pool_size = 2
 stream_buffer_batches = 1
 "#

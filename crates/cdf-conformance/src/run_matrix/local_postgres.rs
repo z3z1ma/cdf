@@ -81,6 +81,16 @@ impl LivePostgres {
             })?;
         Ok(format!("{}.{}", self.schema, table))
     }
+
+    pub(crate) fn alter_source_events_id_to_integer(&self, table: &str) -> Result<()> {
+        let qualified = qualified_name(&self.schema, table);
+        Client::connect(&self.url, NoTls)
+            .map_err(|error| conformance_postgres_error("connect to Postgres", error))?
+            .batch_execute(&format!(
+                "ALTER TABLE {qualified} ALTER COLUMN \"id\" TYPE INTEGER"
+            ))
+            .map_err(|error| conformance_postgres_error("alter run matrix SQL source table", error))
+    }
 }
 
 impl Drop for LivePostgres {

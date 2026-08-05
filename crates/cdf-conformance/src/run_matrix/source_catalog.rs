@@ -172,11 +172,11 @@ fn prepare_rest(
 
 fn prepare_postgres(
     cell: &RunMatrixCell,
-    _project_root: &Path,
+    project_root: &Path,
     environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
-        postgres_fixture::resource(cell.clone(), environment.postgres()?)?,
+        postgres_fixture::resource(cell.clone(), project_root, environment.postgres()?)?,
         postgres_fixture::assert_source_position,
     ))
 }

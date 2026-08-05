@@ -245,6 +245,12 @@ impl SourceAddPlanner for RestSourceDriver {
         {
             return Ok(None);
         }
+        let parsed = url::Url::parse(&request.location).map_err(|error| {
+            CdfError::contract(format!("cdf add could not parse REST URL: {error}"))
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Ok(None);
+        }
         let unknown = request
             .options
             .keys()
@@ -267,9 +273,6 @@ impl SourceAddPlanner for RestSourceDriver {
                 "REST cdf add requires options `records`, `cursor`, and `cursor_param` together",
             ));
         }
-        let parsed = url::Url::parse(&request.location).map_err(|error| {
-            CdfError::contract(format!("cdf add could not parse REST URL: {error}"))
-        })?;
         match parsed.scheme() {
             "https" => {}
             "http" if is_loopback(&parsed) => {}

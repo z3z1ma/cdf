@@ -14,6 +14,7 @@ use cdf_runtime::{
 };
 use futures::StreamExt;
 use mongodb::bson::{Bson, Document, doc};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -318,10 +319,16 @@ impl SourceAddPlanner for MongoDbSourceDriver {
                 "MongoDB cdf add URL must end with exactly `/database/collection`",
             ));
         }
-        let database = MongoDbIdentifier::new(segments[0].clone())?;
-        let collection = MongoDbIdentifier::new(segments[1].clone())?;
-        let username = (!parsed.username().is_empty()).then(|| parsed.username().to_owned());
-        let password = parsed.password().map(str::to_owned);
+        let database = MongoDbIdentifier::new(percent_decode_component("database", &segments[0])?)?;
+        let collection =
+            MongoDbIdentifier::new(percent_decode_component("collection", &segments[1])?)?;
+        let username = (!parsed.username().is_empty())
+            .then(|| percent_decode_component("username", parsed.username()))
+            .transpose()?;
+        let password = parsed
+            .password()
+            .map(|value| percent_decode_component("password", value))
+            .transpose()?;
         parsed
             .set_username("")
             .map_err(|()| CdfError::contract("clear MongoDB URL username"))?;
@@ -383,6 +390,17 @@ impl SourceAddPlanner for MongoDbSourceDriver {
             private_files,
         }))
     }
+}
+
+fn percent_decode_component(label: &str, value: &str) -> Result<String> {
+    percent_decode_str(value)
+        .decode_utf8()
+        .map(|value| value.into_owned())
+        .map_err(|_| {
+            CdfError::contract(format!(
+                "MongoDB cdf add {label} contains invalid percent-encoded UTF-8"
+            ))
+        })
 }
 
 fn add_private_file(
@@ -539,6 +557,7 @@ async fn discover_mongodb_collection(
             database_handle
                 .collection::<Document>(collection.as_str())
                 .find(Document::new())
+                .sort(doc! {"_id": 1_i32})
                 .limit(limit)
                 .batch_size(batch_size)
                 .batch()
@@ -593,21 +612,21 @@ async fn discover_mongodb_collection(
 }
 
 #[derive(Clone, Debug)]
-struct MongoDbCollectionMetadata {
+pub(crate) struct MongoDbCollectionMetadata {
     collection_type: String,
-    default_collation: String,
+    collation_identity: String,
     validator_sha256: Option<String>,
     validation_level: Option<String>,
     validation_action: Option<String>,
 }
 
 impl MongoDbCollectionMetadata {
-    fn identity(&self) -> BTreeMap<String, String> {
+    pub(crate) fn identity(&self) -> BTreeMap<String, String> {
         let mut identity = BTreeMap::from([
             ("collection_type".to_owned(), self.collection_type.clone()),
             (
-                "default_collation".to_owned(),
-                self.default_collation.clone(),
+                "collation_identity".to_owned(),
+                self.collation_identity.clone(),
             ),
             (
                 "validator_present".to_owned(),
@@ -654,39 +673,103 @@ async fn read_collection_metadata(
                 })
         })
         .await?;
-    let entries = response
+    collection_metadata_from_response(&response, collection)
+}
+
+pub(crate) fn collection_metadata_from_response(
+    response: &Document,
+    collection: &MongoDbIdentifier,
+) -> Result<MongoDbCollectionMetadata> {
+    let cursor = response
         .get_document("cursor")
-        .ok()
-        .and_then(|cursor| cursor.get_array("firstBatch").ok())
-        .ok_or_else(|| CdfError::data("MongoDB listCollections omitted cursor.firstBatch"))?;
-    let entry = entries
-        .iter()
-        .filter_map(Bson::as_document)
-        .find(|entry| entry.get_str("name").ok() == Some(collection.as_str()))
+        .map_err(|_| CdfError::data("MongoDB listCollections returned invalid cursor metadata"))?;
+    let entries = cursor.get_array("firstBatch").map_err(|_| {
+        CdfError::data("MongoDB listCollections returned invalid cursor.firstBatch metadata")
+    })?;
+    let mut matching = entries.iter().map(|entry| {
+        entry.as_document().ok_or_else(|| {
+            CdfError::data("MongoDB listCollections returned a non-document collection entry")
+        })
+    });
+    let entry = matching
+        .find_map(|entry| match entry {
+            Ok(entry) => match entry.get_str("name") {
+                Ok(name) if name == collection.as_str() => Some(Ok(entry)),
+                Ok(_) => None,
+                Err(_) => Some(Err(CdfError::data(
+                    "MongoDB listCollections entry omitted its collection name",
+                ))),
+            },
+            Err(error) => Some(Err(error)),
+        })
+        .transpose()?
         .ok_or_else(|| {
             CdfError::data(format!(
                 "MongoDB collection `{collection}` was not returned by bounded metadata discovery"
             ))
         })?;
-    let options = entry.get_document("options").cloned().unwrap_or_default();
-    let default_collation = options
-        .get_document("collation")
-        .ok()
-        .and_then(|collation| collation.get_str("locale").ok())
-        .map_or_else(|| "simple".to_owned(), |locale| locale.to_owned());
-    let validator_sha256 = options
-        .get_document("validator")
-        .ok()
-        .filter(|validator| !validator.is_empty())
-        .map(artifact_hash)
-        .transpose()?;
+    let collection_type = entry
+        .get_str("type")
+        .map_err(|_| CdfError::data("MongoDB listCollections entry omitted its collection type"))?;
+    if collection_type != "collection" {
+        return Err(CdfError::contract(format!(
+            "MongoDB source target `{collection}` is type `{collection_type}`; configure a collection rather than a view or timeseries alias"
+        )));
+    }
+    let options = entry.get_document("options").map_err(|_| {
+        CdfError::data("MongoDB listCollections entry omitted valid collection options")
+    })?;
+    let collation_identity = match options.get("collation") {
+        None => "simple".to_owned(),
+        Some(Bson::Document(collation)) if !collation.is_empty() => artifact_hash(collation)?,
+        Some(_) => {
+            return Err(CdfError::data(
+                "MongoDB collection metadata contains an invalid collation document",
+            ));
+        }
+    };
+    let validator_sha256 = match options.get("validator") {
+        None => None,
+        Some(Bson::Document(validator)) => Some(artifact_hash(validator)?),
+        Some(_) => {
+            return Err(CdfError::data(
+                "MongoDB collection metadata contains an invalid validator document",
+            ));
+        }
+    };
+    let validation_level = optional_metadata_string(options, "validationLevel")?;
+    if let Some(level) = validation_level.as_deref()
+        && !matches!(level, "off" | "strict" | "moderate")
+    {
+        return Err(CdfError::data(format!(
+            "MongoDB collection metadata contains unsupported validationLevel `{level}`"
+        )));
+    }
+    let validation_action = optional_metadata_string(options, "validationAction")?;
+    if let Some(action) = validation_action.as_deref()
+        && !matches!(action, "error" | "warn")
+    {
+        return Err(CdfError::data(format!(
+            "MongoDB collection metadata contains unsupported validationAction `{action}`"
+        )));
+    }
     Ok(MongoDbCollectionMetadata {
-        collection_type: entry.get_str("type").unwrap_or("collection").to_owned(),
-        default_collation,
+        collection_type: collection_type.to_owned(),
+        collation_identity,
         validator_sha256,
-        validation_level: options.get_str("validationLevel").ok().map(str::to_owned),
-        validation_action: options.get_str("validationAction").ok().map(str::to_owned),
+        validation_level,
+        validation_action,
     })
+}
+
+fn optional_metadata_string(options: &Document, field: &str) -> Result<Option<String>> {
+    match options.get(field) {
+        None => Ok(None),
+        Some(Bson::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(CdfError::data(format!(
+            "MongoDB collection metadata field `{field}` must be a string"
+        ))),
+    }
 }
 
 fn validate_server_version(build_info: &Document) -> Result<String> {
