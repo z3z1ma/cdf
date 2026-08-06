@@ -8,11 +8,11 @@ Check host-dependent readiness without writing project, destination, package, re
 Usage: cdf doctor [OPTIONS] [COMMAND]
 
 Commands:
-  runtime      Operate on cdf project evidence
-  resource     Show one resolved resource
-  source       Operate on cdf project evidence
-  destination  Operate on cdf project evidence
-  all          Operate on cdf project evidence
+  runtime      Check local runtime readiness
+  resource     Check readiness for selected resources
+  source       Check readiness for configured sources
+  destination  Check configured destination readiness
+  all          Check all project operational dependencies
 
 Options:
   -q, --quiet

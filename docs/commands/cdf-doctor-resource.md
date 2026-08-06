@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Show one resolved resource
+Check readiness for selected resources
 
 Usage: cdf doctor resource [OPTIONS] [RESOURCE_SELECTOR]...
 

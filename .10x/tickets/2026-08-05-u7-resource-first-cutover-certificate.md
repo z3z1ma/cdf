@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-05
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -86,6 +86,18 @@ findings before judging closure. The review range includes U6b.
 - 2026-08-06: U6b closed after focused quality checks and a bundled-release FineWeb certificate;
   U7 is now unblocked. Its broad suite and final review remain intentionally deferred to this
   ticket.
+- 2026-08-06: Activated for the current-only sweep, one broad behavioral/quality certificate,
+  release sandbox journeys, and the single final review. Unrelated untracked evidence, personal
+  Codex configuration, and distribution archives remain protected outside the ticket diff.
+- 2026-08-06: Current-only sweep removed the last advertised/invoked top-level resume/replay
+  surfaces from VISION, the MVP acceptance demo, and the MongoDB run-matrix public CLI cell. The
+  demo now consumes the multi-resource plan envelope and passes its focused end-to-end test.
+  Generated CLI snapshots and command/error docs are fresh. Terminal U1/U2 records and their
+  dependency references now live under `tickets/done/`.
+- 2026-08-06: Help audit found contextual description leakage from the generic command-name table:
+  `inspect run` described execution, while doctor scopes used unrelated or generic descriptions.
+  Added scope-specific inspect/doctor help and regenerated help, manpage, completion, and command
+  reference artifacts.
 
 ## Blockers
 

@@ -8,8 +8,8 @@ Commands:
   resource      Show one resolved resource
   lock          Show the project lock
   destinations  List resolved destinations
-  package       List, verify, archive, and collect packages
-  run           Execute a governed resource run
+  package       Show durable package evidence
+  run           Show durable run evidence
 
 Options:
   -q, --quiet                  Suppress progress and non-primary success narration

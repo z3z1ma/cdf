@@ -1284,8 +1284,16 @@ fn inspect_command() -> ClapCommand {
         .subcommand(cmd("resource").arg(values_arg("values").value_name("ID")))
         .subcommand(cmd("lock").arg(values_arg("values").hide(true)))
         .subcommand(cmd("destinations").arg(values_arg("values").hide(true)))
-        .subcommand(cmd("package").arg(values_arg("values").value_name("DIR")))
-        .subcommand(cmd("run").arg(values_arg("values").value_name("RUN_ID")))
+        .subcommand(
+            cmd("package")
+                .about("Show durable package evidence")
+                .arg(values_arg("values").value_name("DIR")),
+        )
+        .subcommand(
+            cmd("run")
+                .about("Show durable run evidence")
+                .arg(values_arg("values").value_name("RUN_ID")),
+        )
 }
 
 fn contract_command() -> ClapCommand {
@@ -1326,18 +1334,20 @@ fn doctor_command() -> ClapCommand {
     cmd("doctor")
         .about("Check explicitly scoped operational readiness")
         .long_about("Check host-dependent readiness without writing project, destination, package, receipt, checkpoint, or run authority. Bare doctor checks only the local runtime; doctor all is the only implicit whole-project probe.")
-        .subcommand(cmd("runtime"))
+        .subcommand(cmd("runtime").about("Check local runtime readiness"))
         .subcommand(
             cmd("resource")
+                .about("Check readiness for selected resources")
                 .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
                 .arg(append_option("exclude", "exclude", "RESOURCE_GLOB")),
         )
         .subcommand(
             cmd("source")
+                .about("Check readiness for configured sources")
                 .arg(values_arg("configured_sources").value_name("CONFIGURED_SOURCE")),
         )
-        .subcommand(cmd("destination"))
-        .subcommand(cmd("all"))
+        .subcommand(cmd("destination").about("Check configured destination readiness"))
+        .subcommand(cmd("all").about("Check all project operational dependencies"))
 }
 
 fn backfill_command() -> ClapCommand {

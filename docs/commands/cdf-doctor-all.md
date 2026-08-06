@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Operate on cdf project evidence
+Check all project operational dependencies
 
 Usage: cdf doctor all [OPTIONS]
 

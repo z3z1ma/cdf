@@ -344,8 +344,8 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('resource', 'resource', [CompletionResultType]::ParameterValue, 'Show one resolved resource')
             [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Show the project lock')
             [CompletionResult]::new('destinations', 'destinations', [CompletionResultType]::ParameterValue, 'List resolved destinations')
-            [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'List, verify, archive, and collect packages')
-            [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Execute a governed resource run')
+            [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'Show durable package evidence')
+            [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Show durable run evidence')
             break
         }
         'cdf;inspect;project' {
@@ -798,11 +798,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
-            [CompletionResult]::new('runtime', 'runtime', [CompletionResultType]::ParameterValue, 'Operate on cdf project evidence')
-            [CompletionResult]::new('resource', 'resource', [CompletionResultType]::ParameterValue, 'Show one resolved resource')
-            [CompletionResult]::new('source', 'source', [CompletionResultType]::ParameterValue, 'Operate on cdf project evidence')
-            [CompletionResult]::new('destination', 'destination', [CompletionResultType]::ParameterValue, 'Operate on cdf project evidence')
-            [CompletionResult]::new('all', 'all', [CompletionResultType]::ParameterValue, 'Operate on cdf project evidence')
+            [CompletionResult]::new('runtime', 'runtime', [CompletionResultType]::ParameterValue, 'Check local runtime readiness')
+            [CompletionResult]::new('resource', 'resource', [CompletionResultType]::ParameterValue, 'Check readiness for selected resources')
+            [CompletionResult]::new('source', 'source', [CompletionResultType]::ParameterValue, 'Check readiness for configured sources')
+            [CompletionResult]::new('destination', 'destination', [CompletionResultType]::ParameterValue, 'Check configured destination readiness')
+            [CompletionResult]::new('all', 'all', [CompletionResultType]::ParameterValue, 'Check all project operational dependencies')
             break
         }
         'cdf;doctor;runtime' {

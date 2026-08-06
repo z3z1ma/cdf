@@ -81,11 +81,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let plan_human = invoke_human(project.root(), ["plan", RESOURCE_ID]);
     let plan_json = invoke_json(project.root(), ["plan", RESOURCE_ID]);
     assert_eq!(plan_json["command"], "plan");
-    assert_eq!(plan_json["result"]["resource_id"], RESOURCE_ID);
-    let cli_plan_package_id = plan_json["result"]["package_id"].as_str().unwrap();
+    let plan_report = &plan_json["result"]["resources"][0]["report"];
+    assert_eq!(plan_report["resource_id"], RESOURCE_ID);
+    let cli_plan_package_id = plan_report["package_id"].as_str().unwrap();
     assert!(cli_plan_package_id.starts_with("cli-"));
     assert_eq!(
-        plan_json["result"]["state_advancement"]["advances_after"],
+        plan_report["state_advancement"]["advances_after"],
         "destination receipt is recorded and CheckpointStore::commit verifies coverage"
     );
     assert!(
@@ -179,8 +180,8 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         None
     );
 
-    let resume_json = invoke_json(project.root(), ["resume", RUN_ID]);
-    assert_eq!(resume_json["command"], "resume");
+    let resume_json = invoke_json(project.root(), ["run", "--resume", RUN_ID]);
+    assert_eq!(resume_json["command"], "run");
     assert_eq!(resume_json["result"]["recovery"]["result"], "success");
     assert_eq!(resume_json["result"]["source_contact"], false);
     assert_eq!(
@@ -269,14 +270,14 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let replay_json = invoke_json(
         replay_project.root(),
         [
-            "replay",
-            "package",
+            "run",
+            "--package",
             &package_dir.display().to_string(),
             "--to",
             &replay_to,
         ],
     );
-    assert_eq!(replay_json["command"], "replay package");
+    assert_eq!(replay_json["command"], "run");
     assert_eq!(
         replay_json["result"]["receipt"]["counts"]["rows_written"],
         2
@@ -296,8 +297,8 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let replay_human = invoke_human(
         human_replay_project.root(),
         [
-            "replay",
-            "package",
+            "run",
+            "--package",
             &package_dir.display().to_string(),
             "--to",
             &human_replay_to,
@@ -347,11 +348,8 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let request = &requests[0];
     let evidence = MvpAcceptanceDemoEvidence {
         cli_plan_before_source_contact: true,
-        plan_resource_id: plan_json["result"]["resource_id"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-        plan_partition_count: plan_json["result"]["will_fetch"]["partitions"]
+        plan_resource_id: plan_report["resource_id"].as_str().unwrap().to_owned(),
+        plan_partition_count: plan_report["will_fetch"]["partitions"]
             .as_array()
             .unwrap()
             .len(),
@@ -411,10 +409,10 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         "$ cdf plan {RESOURCE_ID}\n{plan_human}\n\
          $ cdf contract test {RESOURCE_ID}\n{contract_human}\n\
          # simulated kill after destination receipt verification and before checkpoint commit\n\
-         $ cdf resume {RUN_ID}\n{}\n\
+         $ cdf run --resume {RUN_ID}\n{}\n\
          $ cdf sql 'select package_id, status from packages order by package_id'\n{sql_human}\n\
          $ cdf state history {RESOURCE_ID} --pipeline {PIPELINE_ID}\n{history_human}\n\
-         $ cdf replay package <package> --to duckdb://<replay>\n{replay_human}\n\
+         $ cdf run --package <package> --to duckdb://<replay>\n{replay_human}\n\
          # duplicate replay: true; destination footprint unchanged\n\
          # drift verdict: accepted_rows=1 quarantined_rows=1 receipt_verified=true checkpoint_gated=true\n",
         serde_json::to_string_pretty(&resume_json).unwrap()

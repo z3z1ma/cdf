@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Operate on cdf project evidence
+Check readiness for configured sources
 
 Usage: cdf doctor source [OPTIONS] [CONFIGURED_SOURCE]...
 

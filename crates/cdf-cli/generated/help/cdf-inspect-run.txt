@@ -1,4 +1,4 @@
-Execute a governed resource run
+Show durable run evidence
 
 Usage: cdf inspect run [OPTIONS] [RUN_ID]...
 

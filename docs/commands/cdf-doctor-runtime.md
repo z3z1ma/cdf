@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Operate on cdf project evidence
+Check local runtime readiness
 
 Usage: cdf doctor runtime [OPTIONS]
 

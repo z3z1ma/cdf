@@ -1130,11 +1130,11 @@ _cdf__subcmd__discover__subcmd__source_commands() {
 (( $+functions[_cdf__subcmd__doctor_commands] )) ||
 _cdf__subcmd__doctor_commands() {
     local commands; commands=(
-'runtime:Operate on cdf project evidence' \
-'resource:Show one resolved resource' \
-'source:Operate on cdf project evidence' \
-'destination:Operate on cdf project evidence' \
-'all:Operate on cdf project evidence' \
+'runtime:Check local runtime readiness' \
+'resource:Check readiness for selected resources' \
+'source:Check readiness for configured sources' \
+'destination:Check configured destination readiness' \
+'all:Check all project operational dependencies' \
     )
     _describe -t commands 'cdf doctor commands' commands "$@"
 }
@@ -1186,8 +1186,8 @@ _cdf__subcmd__inspect_commands() {
 'resource:Show one resolved resource' \
 'lock:Show the project lock' \
 'destinations:List resolved destinations' \
-'package:List, verify, archive, and collect packages' \
-'run:Execute a governed resource run' \
+'package:Show durable package evidence' \
+'run:Show durable run evidence' \
     )
     _describe -t commands 'cdf inspect commands' commands "$@"
 }

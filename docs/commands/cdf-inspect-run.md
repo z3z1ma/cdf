@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Execute a governed resource run
+Show durable run evidence
 
 Usage: cdf inspect run [OPTIONS] [RUN_ID]...
 

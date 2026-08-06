@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-List, verify, archive, and collect packages
+Show durable package evidence
 
 Usage: cdf inspect package [OPTIONS] [DIR]...
 

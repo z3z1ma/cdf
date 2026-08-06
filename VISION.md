@@ -955,7 +955,7 @@ The `verify` clause is the receipt's teeth and the end-to-end argument applied (
 
 ### 14.5 Idempotency, replay, and the guarantee table
 
-Every commit carries the package hash as its idempotency token. Destinations with `package_token` support record it — a `_cdf_load` column, a load-table row, an object key — and make re-driving the same package a no-op answered with a `duplicate: true` receipt (invariant I4). Destinations with only `merge_keys` idempotency achieve replay-safety for `merge` but not `append`, and the planner says so. `cdf replay package <pkg> --to <dest>` is therefore always safe when in doubt — the confluence result of §4.4 as an operator's calm — converting the scariest moment in ingestion, "did that load land?", into a command.
+Every commit carries the package hash as its idempotency token. Destinations with `package_token` support record it — a `_cdf_load` column, a load-table row, an object key — and make re-driving the same package a no-op answered with a `duplicate: true` receipt (invariant I4). Destinations with only `merge_keys` idempotency achieve replay-safety for `merge` but not `append`, and the planner says so. `cdf run --package <pkg> --to <dest>` is therefore always safe when in doubt — the confluence result of §4.4 as an operator's calm — converting the scariest moment in ingestion, "did that load land?", into a command.
 
 The guarantee table, derived mechanically from resource capabilities × disposition × destination sheet and printed by every `cdf plan`:
 
@@ -1044,20 +1044,25 @@ Design rules: every command runs headless, exits with meaningful codes, and take
 cdf init                                          # scaffold project + one example resource per tier
 cdf validate                                      # schema-check project & resources; CI's first line
 cdf plan github.issues                            # compile; print plan, guarantee, DDL preview
-cdf explain github.issues --where "updated_at >= '2026-07-01'" --columns id,title
+cdf explain github.issues --filter "updated_at >= '2026-07-01'" --select id,title
 cdf run github.issues --to duckdb://local.duckdb
-cdf run --all --env prod
+cdf run 'github.*' --exclude github.audit           # deterministic multi-resource selection
+CDF_ENV=prod cdf run 'github.*'
 cdf preview github.issues --limit 500             # one batch: schema + sample, nothing written
 cdf sql "select state, count(*) from github.issues group by 1"
-cdf inspect resource|sheet|package|run|receipt <id>
-cdf diff schema github.issues --against last
+cdf inspect resource <id>
+cdf inspect package <path> | cdf inspect run <run-id>
+cdf diff schema                                    # compare durable schema authorities
 cdf contract freeze|show|test github.issues
-cdf state show|history|rewind|migrate|recover github.issues
-cdf resume                                        # drain interrupted work per the crash matrix
-cdf replay package <pkg> --to <dest>              # idempotent by construction
+cdf state show|history|rewind|recover github.issues
+cdf run --resume                                  # drain the only interrupted run, if one exists
+cdf run --resume <run-id>                         # recover one explicit interrupted run
+cdf run --package <pkg> --to <dest>               # exact-package execution; idempotent by construction
 cdf backfill github.issues --from 2026-01-01 --to 2026-07-01
 cdf package ls|gc|verify                          # archive arrives fast-follow
-cdf doctor                                        # env, secrets, python, ICU, ledger↔destination drift
+cdf doctor source github                          # selected source readiness
+cdf doctor destination duckdb                     # selected destination readiness
+cdf doctor all                                    # explicit whole-project operational probe
 cdf status                                        # freshness SLOs; nonzero exit on breach
 ```
 

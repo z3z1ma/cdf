@@ -395,7 +395,7 @@ fn mongodb_public_cli_lifecycle_is_current_redacted_and_jobs_invariant() {
     let replay = super::tests::invoke_public_cli(
         &jobs_one,
         true,
-        &["replay", "package", package.to_str().unwrap()],
+        &["run", "--package", package.to_str().unwrap()],
     );
     assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
     super::tests::assert_invocation_redacted(&replay, &secret);

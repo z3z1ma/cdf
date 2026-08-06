@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Operate on cdf project evidence
+Check configured destination readiness
 
 Usage: cdf doctor destination [OPTIONS]
 

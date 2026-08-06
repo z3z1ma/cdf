@@ -1,4 +1,4 @@
-List, verify, archive, and collect packages
+Show durable package evidence
 
 Usage: cdf inspect package [OPTIONS] [DIR]...
 

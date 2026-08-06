@@ -1,4 +1,4 @@
-Operate on cdf project evidence
+Check configured destination readiness
 
 Usage: cdf doctor destination [OPTIONS]
 

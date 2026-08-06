@@ -21,11 +21,11 @@ resources, and every adjacent command has one scope and effect ceiling.
 2. **U1 — selectors and static validate.** Introduce deterministic resource selection, cut
    validate off from secrets/network/source/destination state, remove `--deep`, and publish one
    aggregate typed report. Owner:
-   `.10x/tickets/2026-08-04-u1-resource-selectors-static-validate.md`.
+   `.10x/tickets/done/2026-08-04-u1-resource-selectors-static-validate.md`.
 3. **U2 — independent compilation authority.** Replace monolithic exact-project lock/manifest
    execution authority with per-resource lock entries, immutable artifacts, and a bounded status
    index; make selected and aggregate compile useful under partial failure. Owner:
-   `.10x/tickets/2026-08-04-u2-independent-resource-compilation-authority.md`.
+   `.10x/tickets/done/2026-08-04-u2-independent-resource-compilation-authority.md`.
 4. **U3 — shared selected preparation and multi-resource plan/run.** Route plan/run/compile through
    one prepared-resource seam, remove refresh/pin/discover/no-pin legacy grammar, enforce the
    all-selected preparation barrier, and retain independent runtime outcomes.
