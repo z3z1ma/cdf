@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-05
 Updated: 2026-08-05
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -100,6 +100,9 @@ long-running work. Use a release build for the end-to-end sandbox check.
   singular resource inspection use selected read-only compilation; status reads lock/state
   authority; package and run inspection use operational or artifact authority; only explicit
   resource inventory keeps whole-project loading.
+- 2026-08-05: Published the coherent implementation as `2d398cfa`. The release build using the
+  repository's shipped `bundled-duckdb` feature then completed the exact sandbox compile, plan, and
+  run journey for `fineweb.documents`.
 
 ## Blockers
 
@@ -121,6 +124,11 @@ None.
   existing functions outside this change set.
 - Generated CLI artifact and documentation checks, `cargo fmt --all -- --check`, and `git diff
   --check` passed.
+- `cargo build -p cdf-cli --release --locked --features bundled-duckdb` passed using the shipped
+  static DuckDB path. The resulting binary compiled and planned `fineweb.documents`, then ran it to
+  completion: 1.1M rows / 2.1 GiB in 58s, 14 segments, committed receipt/checkpoint, with live
+  `Planned`, `Read`, `Validated`, `Packaged`, `Loaded`, `Verified`, and `Committed` progress. The
+  former relational input-schema mismatch did not recur.
 
 ## Review
 
@@ -128,4 +136,10 @@ Deferred by user instruction to the single combined U-tranche review in U7.
 
 ## Retrospective
 
-Pending implementation.
+Three boundary mistakes had compounded into the observed UX: a run path was validating preserved
+Arrow fields against source-native physical labels, the progress worker depended on a future event
+to display a throttled current event, and artifact/recovery commands entered through full authored
+project loading. Fixing each at its owning boundary produced a smaller model than adding more
+refresh or retry behavior. The release certificate also reinforced that local release validation
+must use the repository's `bundled-duckdb` feature; a plain release build correctly fails when no
+external DuckDB library is installed.

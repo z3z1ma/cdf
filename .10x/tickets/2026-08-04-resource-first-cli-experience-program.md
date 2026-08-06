@@ -42,7 +42,7 @@ resources, and every adjacent command has one scope and effect ceiling.
    execution and interrupted-run recovery into explicit `run` input modes; audit
    preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
    command-effect contract.
-   Owner: `.10x/tickets/2026-08-05-u6-operational-recovery-command-coherence.md`.
+   Owner: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`.
 8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
 
@@ -128,6 +128,10 @@ entire tranche is frozen. Focused tests/check/Clippy run during each child.
   an honest star fallback, and add no longer compiles unrelated project resources.
 - 2026-08-05: U6 activated on `main` with the ratified single-run-verb and scoped-doctor model,
   including explicit ownership of the release-mode sandbox schema/progress regression certificate.
+- 2026-08-05: U6 completed and was pushed as `2d398cfa`: run now owns resource-set, portable-plan,
+  exact-package, and interrupted-run authority; doctor has explicit operational scopes; adjacent
+  commands load named authority; and the optimized bundled release binary loaded the 1.1M-row,
+  2.1-GiB FineWeb sandbox resource with live progress and no schema mismatch. U7 is unblocked.
 
 ## Blockers
 
