@@ -117,6 +117,12 @@ findings before judging closure. The review range includes U6b.
   docs/reference generation, and completion/man generation checks passed. Scoped `jscpd` measured
   2.48% duplicated lines, below the 10% gate. `cargo machete` identified one real superseded
   `cdf-cli` dev dependency (`flate2`); removed it and its package edge, after which machete passed.
+- 2026-08-06: The focused cognitive-complexity diagnostic produced no warning in a function added
+  or structurally changed by this tranche. Its touched-package warning for `preview_resource` is
+  pre-existing; the modified optional-attestation helper remained below the threshold. The
+  required product smoke script initially named two tests using superseded pin/autopin language;
+  updated those selectors, then the matrix passed 5 CLI product cells, 2 project incrementality/
+  destination cells, preview/run parity, and 3 Iceberg projection-authority cells.
 
 ## Blockers
 
@@ -137,6 +143,8 @@ None.
   strict all-target/all-feature Clippy, both CLI generated-artifact checks, and formatting passed.
 - Maintainability: first-party `jscpd` reported 2.48% duplicated lines; `cargo machete
   --with-metadata` passed after removing the unused `cdf-cli` `flate2` dev dependency.
+- Product barrier: `DUCKDB_DOWNLOAD_LIB=1 tools/product-smoke-matrix.sh` passed every selected
+  product cell after correcting its two stale current-test selectors.
 - Limits: these focused observations establish the repaired seams only. The required post-repair
   workspace suite, quality gates, release journeys, and final review remain below.
 

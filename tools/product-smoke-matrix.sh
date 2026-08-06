@@ -11,8 +11,8 @@ fi
 
 cargo nextest run -p cdf-cli --locked -E \
   'test(add_local_parquet_writes_query_resource_and_shared_source_configuration) |
-   test(pinned_multi_file_parquet_preview_attests_unopened_observed_partitions) |
-   test(run_local_parquet_discover_autopins_and_commits_pinned_schema) |
+   test(locked_multi_file_parquet_preview_attests_unopened_observed_partitions) |
+   test(run_local_parquet_discovery_establishes_and_commits_locked_schema) |
    test(package_verify_uses_lower_package_reader) |
    test(replay_package_duckdb_replays_from_artifacts_without_source_contact)'
 
