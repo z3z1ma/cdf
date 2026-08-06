@@ -1168,7 +1168,6 @@ dependencies = [
  "cdf-semantic",
  "cdf-state-sqlite",
  "duckdb",
- "flate2",
  "futures-util",
  "glob",
  "mimalloc",

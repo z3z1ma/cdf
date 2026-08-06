@@ -111,6 +111,12 @@ findings before judging closure. The review range includes U6b.
   test, and three focused run-matrix conformance tests covering REST compile/run, keyless append,
   and preview/run archetype parity. A locked affected-package check for `cdf-cli`, `cdf-engine`,
   `cdf-project`, and `cdf-conformance` then passed.
+- 2026-08-06: The post-repair workspace run passed all 2,287 selected tests with 56 scheduled or
+  environment-backed tests skipped. All-feature doc tests passed, including the one compile-fail
+  doctest. Formatting, all-target/all-feature workspace check, strict all-feature Clippy, committed
+  docs/reference generation, and completion/man generation checks passed. Scoped `jscpd` measured
+  2.48% duplicated lines, below the 10% gate. `cargo machete` identified one real superseded
+  `cdf-cli` dev dependency (`flate2`); removed it and its package edge, after which machete passed.
 
 ## Blockers
 
@@ -125,6 +131,12 @@ None.
   keyless append, and preview/run parity passed 3/3.
 - Compile boundary: `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-cli -p cdf-engine -p cdf-project
   -p cdf-conformance --locked` passed after formatting.
+- Workspace behavior: `DUCKDB_DOWNLOAD_LIB=1 cargo nextest run --workspace --locked
+  --no-fail-fast` passed 2,287/2,287 selected tests; 56 were skipped by their declared profiles.
+- Documentation and static gates: all-feature workspace doc tests, all-target/all-feature check,
+  strict all-target/all-feature Clippy, both CLI generated-artifact checks, and formatting passed.
+- Maintainability: first-party `jscpd` reported 2.48% duplicated lines; `cargo machete
+  --with-metadata` passed after removing the unused `cdf-cli` `flate2` dev dependency.
 - Limits: these focused observations establish the repaired seams only. The required post-repair
   workspace suite, quality gates, release journeys, and final review remain below.
 
