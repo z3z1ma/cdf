@@ -37,6 +37,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 6. **U5 — source discovery, generation, and add.** Add source/resource discovery and canonical
    artifacts, adapter-owned catalog enumeration, thin create-or-verify generation, then reconcile
    the single-location add path against the ratified authoring model.
+   Owner: `.10x/tickets/2026-08-05-u5-source-resource-discovery-generation-add.md`.
 7. **U6 — operational and recovery command coherence.** Implement scoped doctor; fold package
    execution and interrupted-run recovery into explicit `run` input modes; audit
    preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
