@@ -1,7 +1,232 @@
 use super::*;
 
 fn single_plan(report: &serde_json::Value) -> &serde_json::Value {
-    &report["result"]["resources"][0]["report"]
+    report["result"]["resources"]
+        .as_array()
+        .and_then(|resources| resources.first())
+        .and_then(|resource| resource.get("report"))
+        .unwrap_or(&report["result"])
+}
+
+#[test]
+fn plan_out_writes_canonical_artifact_and_preserves_terminal_report() {
+    let project = TestProject::new();
+    let plan_path = project.root.join("portable-plan.json");
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
+    assert!(result.stdout.contains("Plan"));
+    assert!(result.stdout.contains("Portable plan"));
+    assert!(result.stdout.contains("created"));
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/manifest.json").exists());
+    let bytes = fs::read(&plan_path).unwrap();
+    let artifact = cdf_project::parse_portable_plan(&bytes).unwrap();
+    assert_eq!(artifact.selection.resolved, ["local.events"]);
+    assert_eq!(artifact.resources.len(), 1);
+    assert!(
+        artifact.resources[0]
+            .schema_authority
+            .is_proposed_first_use()
+    );
+
+    let repeated = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+    assert_eq!(
+        repeated.exit_code, 0,
+        "{}{}",
+        repeated.stdout, repeated.stderr
+    );
+    assert!(repeated.stdout.contains("unchanged"));
+    assert_eq!(fs::read(&plan_path).unwrap(), bytes);
+}
+
+#[test]
+fn portable_plan_runs_after_whole_plan_preflight_and_publishes_first_use_authority() {
+    let project = TestProject::new();
+    let plan_path = project.root.join("portable-plan.json");
+    let planned = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+    assert_eq!(planned.exit_code, 0, "{}{}", planned.stdout, planned.stderr);
+    let artifact = cdf_project::parse_portable_plan(&fs::read(&plan_path).unwrap()).unwrap();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--plan".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["input_authority"], "portable_plan");
+    assert_eq!(
+        json["result"]["portable_plan"]["plan_hash"],
+        artifact.plan_hash
+    );
+    assert_eq!(json["result"]["portable_plan"]["preflight"], "passed");
+    assert_eq!(
+        json["result"]["portable_plan"]["first_use_authority"],
+        "published"
+    );
+    assert!(project.root.join("cdf.lock").is_file());
+    assert!(project.root.join(".cdf/manifest.json").is_file());
+    assert!(project.root.join(".cdf/packages").is_dir());
+    assert!(project.root.join(".cdf/dev.duckdb").is_file());
+}
+
+#[test]
+fn portable_plan_rejects_tampering_before_any_project_or_run_write() {
+    let project = TestProject::new();
+    let plan_path = project.root.join("portable-plan.json");
+    let planned = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+    assert_eq!(planned.exit_code, 0, "{}{}", planned.stdout, planned.stderr);
+    let mut bytes = fs::read(&plan_path).unwrap();
+    let mut unknown: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    unknown["unexpected"] = serde_json::json!(true);
+    let mut unknown_bytes = serde_json::to_vec_pretty(&unknown).unwrap();
+    unknown_bytes.push(b'\n');
+    assert!(cdf_project::parse_portable_plan(&unknown_bytes).is_err());
+    let mut wrong_version: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    wrong_version["version"] = serde_json::json!(999);
+    let mut wrong_version_bytes = serde_json::to_vec_pretty(&wrong_version).unwrap();
+    wrong_version_bytes.push(b'\n');
+    assert!(cdf_project::parse_portable_plan(&wrong_version_bytes).is_err());
+    assert!(
+        cdf_project::parse_portable_plan(&vec![b' '; cdf_project::PORTABLE_PLAN_MAX_BYTES + 1])
+            .is_err()
+    );
+    bytes.push(b' ');
+    fs::write(&plan_path, bytes).unwrap();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--plan".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/manifest.json").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
+fn portable_plan_rejects_changed_source_generation_before_any_run_write() {
+    let project = TestProject::new();
+    let plan_path = project.root.join("portable-plan.json");
+    let planned = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+    assert_eq!(planned.exit_code, 0, "{}{}", planned.stdout, planned.stderr);
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        "{\"id\":3,\"updated_at\":1783296120000000}\n",
+    )
+    .unwrap();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--plan".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(
+        result.stderr.contains("changed generation"),
+        "{}{}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/manifest.json").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
+fn plan_out_never_overwrites_different_artifact() {
+    let project = TestProject::new();
+    let plan_path = project.root.join("portable-plan.json");
+    let initial = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+    assert_eq!(initial.exit_code, 0, "{}{}", initial.stdout, initial.stderr);
+    let before = fs::read(&plan_path).unwrap();
+
+    let changed = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "plan".to_owned(),
+        "local.events".to_owned(),
+        "--limit".to_owned(),
+        "1".to_owned(),
+        "--out".to_owned(),
+        plan_path.display().to_string(),
+    ]);
+
+    assert_ne!(changed.exit_code, 0);
+    assert!(
+        changed
+            .stderr
+            .contains("already exists with different content")
+    );
+    assert_eq!(fs::read(&plan_path).unwrap(), before);
 }
 
 #[test]

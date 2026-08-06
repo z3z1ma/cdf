@@ -656,9 +656,6 @@ fn load_current_artifact(
     )?;
     let artifact = parse_compiled_resource_artifact(&bytes)?;
     if artifact.artifact_hash != reference.artifact_hash
-        || artifact.project_name != config.project.name
-        || artifact.environment != environment.name
-        || artifact.environment_binding_hash != canonical_hash(environment)?
         || artifact.resource.resource_id != entry.resource_id
         || artifact.resource.origin.relative_path != entry.path
         || Some(artifact.resource.origin.authored_content_hash.as_str())
@@ -667,6 +664,36 @@ fn load_current_artifact(
         return Err(CdfError::data(format!(
             "compiled artifact for `{}` does not match its index authority",
             entry.resource_id
+        )));
+    }
+    let locked = lock
+        .and_then(|lock| lock.resources.get(&entry.resource_id))
+        .ok_or_else(|| CdfError::data("compiled artifact has no matching lock authority"))?;
+    validate_compiled_resource_artifact_current(
+        root,
+        config,
+        environment,
+        &artifact,
+        Some(locked),
+    )?;
+    Ok(artifact)
+}
+
+pub fn validate_compiled_resource_artifact_current(
+    root: &Path,
+    config: &ProjectConfig,
+    environment: &EffectiveEnvironment,
+    artifact: &CompiledResourceArtifact,
+    locked: Option<&LockedResource>,
+) -> Result<()> {
+    artifact.validate()?;
+    if artifact.project_name != config.project.name
+        || artifact.environment != environment.name
+        || artifact.environment_binding_hash != canonical_hash(environment)?
+    {
+        return Err(CdfError::data(format!(
+            "compiled artifact for `{}` is stale for the selected project environment",
+            artifact.resource.resource_id
         )));
     }
     let configured = &artifact.resource.configured_source;
@@ -683,23 +710,24 @@ fn load_current_artifact(
     {
         return Err(CdfError::data(format!(
             "compiled artifact for `{}` is stale for its selected project configuration",
-            entry.resource_id
+            artifact.resource.resource_id
         )));
     }
-    let locked = lock
-        .and_then(|lock| lock.resources.get(&entry.resource_id))
-        .ok_or_else(|| CdfError::data("compiled artifact has no matching lock authority"))?;
-    let mut expected_binding = locked.clone();
-    if expected_binding.compiled_artifact_hash.as_deref() != Some(artifact.artifact_hash.as_str()) {
-        return Err(CdfError::data(
-            "compiled artifact hash differs from cdf.lock authority",
-        ));
-    }
-    expected_binding.compiled_artifact_hash = None;
-    if artifact.lock_binding != expected_binding {
-        return Err(CdfError::data(
-            "compiled artifact binding differs from cdf.lock authority",
-        ));
+    if let Some(locked) = locked {
+        let mut expected_binding = locked.clone();
+        if expected_binding.compiled_artifact_hash.as_deref()
+            != Some(artifact.artifact_hash.as_str())
+        {
+            return Err(CdfError::data(
+                "compiled artifact hash differs from cdf.lock authority",
+            ));
+        }
+        expected_binding.compiled_artifact_hash = None;
+        if artifact.lock_binding != expected_binding {
+            return Err(CdfError::data(
+                "compiled artifact binding differs from cdf.lock authority",
+            ));
+        }
     }
     let authored = read_required_file(
         &root.join(&artifact.resource.origin.relative_path),
@@ -708,16 +736,16 @@ fn load_current_artifact(
     if sha256(&authored) != artifact.resource.origin.authored_content_hash {
         return Err(CdfError::data(format!(
             "authored resource `{}` changed after compilation",
-            entry.resource_id
+            artifact.resource.resource_id
         )));
     }
     let authored_sql = std::str::from_utf8(&authored).map_err(|error| {
         CdfError::data(format!(
             "authored resource `{}` is not UTF-8: {error}",
-            entry.resource_id
+            artifact.resource.resource_id
         ))
     })?;
-    let default_target = cdf_kernel::TargetName::new(&entry.resource_id)?;
+    let default_target = cdf_kernel::TargetName::new(&artifact.resource.resource_id)?;
     let effective = current_effective_resource_envelope(
         config,
         authored_sql,
@@ -727,10 +755,41 @@ fn load_current_artifact(
     if effective != artifact.resource.effective {
         return Err(CdfError::data(format!(
             "compiled artifact for `{}` is stale for its effective resource configuration",
-            entry.resource_id
+            artifact.resource.resource_id
         )));
     }
-    Ok(artifact)
+    Ok(())
+}
+
+pub fn hydrate_compiled_resource_artifact(
+    project_root: &Path,
+    artifact: &CompiledResourceArtifact,
+) -> Result<cdf_declarative::CompiledResource> {
+    artifact.validate()?;
+    let manifest = &artifact.resource;
+    let resource = cdf_declarative::CompiledResource::from_compiled_source_with_execution(
+        manifest.configured_source.configured_source.clone(),
+        manifest.origin.resource_name.clone(),
+        Some(project_root.to_path_buf()),
+        manifest.source_plan.clone(),
+        manifest.execution_extent.clone(),
+    )?
+    .with_relational_expression_plan(manifest.relational_plan.clone())?;
+    if resource.descriptor() != &manifest.descriptor
+        || resource.capabilities() != &manifest.capabilities
+        || resource.execution_extent() != &manifest.execution_extent
+        || resource.schema().as_ref() != &manifest.output_schema.to_arrow()?
+    {
+        return Err(CdfError::data(format!(
+            "compiled artifact for `{}` does not hydrate to its recorded resource authority",
+            manifest.resource_id
+        )));
+    }
+    Ok(resource)
+}
+
+pub fn effective_environment_binding_hash(environment: &EffectiveEnvironment) -> Result<String> {
+    canonical_hash(environment)
 }
 
 fn canonical_pretty_json<T: Serialize>(value: &T, max: usize, label: &str) -> Result<Vec<u8>> {

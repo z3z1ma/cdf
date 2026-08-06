@@ -33,7 +33,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 5. **U4 — portable plan export/consumption.** Add `plan --out`, canonical plan artifact authority,
    `run --plan`, strict portability validation, and whole-plan no-repair preflight while preserving
    the existing terminal plan document.
-   Owner: `.10x/tickets/2026-08-05-u4-portable-plan-export-consumption.md`.
+   Owner: `.10x/tickets/done/2026-08-05-u4-portable-plan-export-consumption.md`.
 6. **U5 — source discovery, generation, and add.** Add source/resource discovery and canonical
    artifacts, adapter-owned catalog enumeration, thin create-or-verify generation, then reconcile
    the single-location add path against the ratified authoring model.
@@ -78,12 +78,9 @@ that replaces them and must all be absent at cutover.
 
 ## Review and validation cadence
 
-The primary agent implements every child. A separate read-only subagent reviews frozen logical
-cuts: U0 alone, U1+U2 authority foundations, U3+U4 planning/execution, U5+U6 command family, and U7
-end-to-end. Reviews use deterministic open-code-review file/rule selection when available, return
-one severity-ranked batch, and do not create open-ended nit loops. Focused tests/check/Clippy run
-during each child; broader certificates run only at the named cut barriers and final sandbox
-closure.
+The primary agent implements every child. Per the user's execution override, no intermediate
+subagent or red-team review runs; one combined review and broader certificate runs at U7 after the
+entire tranche is frozen. Focused tests/check/Clippy run during each child.
 
 ## Acceptance criteria
 
@@ -118,6 +115,11 @@ closure.
 - 2026-08-05: U3 completed directly on `main`: selected plan/run share one preparation authority,
   run enforces a complete preparation barrier and retains exact first-use payloads, plan remains
   read-only, and the superseded pin/discover/no-pin command grammar is deleted. U4 is now unblocked.
+- 2026-08-05: U4 completed directly on `main`: `plan --out` publishes a canonical bounded portable
+  artifact while preserving terminal output, `run --plan` performs whole-plan no-repair preflight,
+  exact first-use authority publication, and execution with aggregate plan-hash evidence. Three
+  PostgreSQL executable-backfill schema-coercion test failures observed in the broader planning
+  module are explicitly owned by U6's backfill coherence audit.
 
 ## Blockers
 

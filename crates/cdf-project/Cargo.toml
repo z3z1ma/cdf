@@ -10,6 +10,7 @@ description = "Project configuration and orchestration boundary for cdf."
 arrow-array = "58.3.0"
 arrow-cast = "58.3.0"
 arrow-schema = "58.3.0"
+base64 = "0.22.1"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-engine = { path = "../cdf-engine" }

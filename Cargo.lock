@@ -1712,6 +1712,7 @@ dependencies = [
  "arrow-cast",
  "arrow-ipc",
  "arrow-schema",
+ "base64",
  "bytes",
  "cdf-builtin-drivers",
  "cdf-contract",

@@ -45,6 +45,20 @@ pub(super) fn plan_report_document(report: &PlanReport) -> RenderDocument {
             }
         };
     }
+    if let Some(artifact) = &report.artifact {
+        let status = match artifact.status {
+            crate::portable_plan_command::PortablePlanWriteStatus::Created => "created",
+            crate::portable_plan_command::PortablePlanWriteStatus::Unchanged => "unchanged",
+        };
+        document = document.blank_line().push(
+            KeyValuePanel::new("Portable plan")
+                .row("status", status)
+                .row("path", artifact.path.clone())
+                .row("hash", artifact.plan_hash.clone())
+                .row("resources", artifact.resources.to_string())
+                .row("size", humanize_bytes(artifact.bytes)),
+        );
+    }
     document
 }
 

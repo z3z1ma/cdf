@@ -19,6 +19,7 @@ mod doctor_drift;
 mod inspect_command;
 mod inspect_run_command;
 mod package_command;
+mod portable_plan_command;
 mod project_command;
 mod project_run_resource;
 mod replay_command;

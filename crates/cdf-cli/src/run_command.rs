@@ -27,15 +27,18 @@ use sha2::{Digest, Sha256};
 use crate::{
     add_command::registered_source_resource_sql,
     args::{Cli, RunArgs, ScanArgs},
-    context::ProjectContext,
+    context::{ProjectCompilationContext, ProjectContext},
     destination_uri::{
-        destination_error_suggestions, redact_error_value,
+        destination_error_suggestions, redact_error_value, resolve_portable_destination,
         resolve_selected_destination_with_services,
     },
     error_catalog,
     output::{CliError, CommandOutput, HumanOutput},
     progress::{ProgressDelivery, human_progress_sink},
-    project_run_resource::{PreparedRuntimeResourceForCli, prepare_runtime_resource_for_cli},
+    project_run_resource::{
+        PreparedRuntimeResourceForCli, build_project_run_resource_from_compilation,
+        prepare_runtime_resource_for_cli,
+    },
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, StatusKind, StatusLine},
@@ -43,7 +46,7 @@ use crate::{
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
     },
-    scan_command::{build_engine_plan_for_resource, planning_frontier},
+    scan_command::{build_engine_plan_for_resource, planning_frontier, planning_frontier_at},
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
@@ -64,6 +67,17 @@ pub(crate) fn run(
             "later loop/streaming supervisor",
             error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
+    }
+    if let Some(path) = args.plan.clone() {
+        return run_portable_plan(
+            cli,
+            &path,
+            &args,
+            host,
+            services,
+            destinations,
+            progress_delivery,
+        );
     }
     if args.selectors.is_empty() {
         return Err(CliError::usage_with(
@@ -152,7 +166,7 @@ pub(crate) fn run(
                 .map(|(resource_id, _)| RunResourceOutcome::PreparationBlocked { resource_id }),
         );
         outcomes.sort_by(|left, right| left.resource_id().cmp(right.resource_id()));
-        return run_batch_output(selection.selection, outcomes, Vec::new(), None);
+        return run_batch_output(selection.selection, outcomes, Vec::new(), None, None);
     }
 
     let mut documents = Vec::with_capacity(prepared_runs.len());
@@ -179,15 +193,467 @@ pub(crate) fn run(
             }),
         }
     }
-    run_batch_output(selection.selection, outcomes, documents, buffered_progress)
+    run_batch_output(
+        selection.selection,
+        outcomes,
+        documents,
+        buffered_progress,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_portable_plan(
+    cli: &Cli,
+    path: &Path,
+    args: &RunArgs,
+    host: &cdf_engine::StandaloneExecutionHost,
+    services: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
+) -> Result<CommandOutput, CliError> {
+    let artifact = crate::portable_plan_command::load_artifact(path)?;
+    let context = ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    validate_portable_plan_environment(&context, &artifact, services)?;
+    crate::portable_plan_command::current_lock_matches(&context.root, &artifact.lock_precondition)?;
+    let mut prepared_runs = Vec::with_capacity(artifact.resources.len());
+    for planned in &artifact.resources {
+        prepared_runs.push((
+            planned.resource_id.clone(),
+            prepare_portable_resource(&context, planned, args, host, services, destinations)?,
+        ));
+    }
+    let authority_written =
+        crate::portable_plan_command::publish_proposed_authority(&context, &artifact)?;
+    let mut outcomes = Vec::with_capacity(prepared_runs.len());
+    let mut documents = Vec::with_capacity(prepared_runs.len());
+    let mut buffered_progress = None;
+    for (resource_id, prepared) in prepared_runs {
+        match execute_prepared(cli, prepared, host, progress_delivery) {
+            Ok(output) => {
+                let CommandOutput { human, json, .. } = output;
+                documents.push(match human {
+                    HumanOutput::Rendered(document) => document,
+                    HumanOutput::RenderedWithProgress { progress, document } => {
+                        buffered_progress = Some(progress);
+                        document
+                    }
+                });
+                outcomes.push(RunResourceOutcome::Completed {
+                    resource_id,
+                    result: json,
+                });
+            }
+            Err(error) => outcomes.push(RunResourceOutcome::Failed {
+                resource_id,
+                error: RunResourceError::from(error),
+            }),
+        }
+    }
+    run_batch_output(
+        artifact.selection,
+        outcomes,
+        documents,
+        buffered_progress,
+        Some(PortableRunAuthorityReport {
+            path: path.display().to_string(),
+            plan_hash: artifact.plan_hash,
+            preflight: "passed",
+            first_use_authority: if authority_written {
+                "published"
+            } else {
+                "unchanged"
+            },
+        }),
+    )
+}
+
+fn validate_portable_plan_environment(
+    context: &ProjectCompilationContext,
+    artifact: &cdf_project::PortablePlanArtifact,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<(), CliError> {
+    let host = services.capabilities();
+    if artifact.cdf_version != env!("CARGO_PKG_VERSION")
+        || artifact.project != context.compilation.config.project.name
+        || artifact.environment != context.environment.name
+        || artifact.environment_binding_hash
+            != cdf_project::effective_environment_binding_hash(&context.environment)?
+    {
+        return Err(CdfError::contract(
+            "portable plan does not match this CDF version, project, or environment; create a new plan on the planning host",
+        )
+        .into());
+    }
+    if host.logical_cpu_slots < artifact.required_host.minimum_logical_cpu_slots
+        || host.io_workers < artifact.required_host.minimum_io_workers
+    {
+        return Err(CdfError::environment(format!(
+            "portable plan requires at least {} logical CPU slot(s) and {} I/O worker(s); this host provides {} and {}",
+            artifact.required_host.minimum_logical_cpu_slots,
+            artifact.required_host.minimum_io_workers,
+            host.logical_cpu_slots,
+            host.io_workers
+        ))
+        .into());
+    }
+    if let Some(proposed) = &artifact.proposed_lock {
+        let mut expected =
+            context
+                .compilation
+                .lock
+                .clone()
+                .unwrap_or_else(|| cdf_project::CdfLock {
+                    version: cdf_project::LOCKFILE_VERSION,
+                    project: cdf_project::ProjectLock {
+                        name: context.compilation.config.project.name.clone(),
+                        default_environment: context
+                            .compilation
+                            .config
+                            .project
+                            .default_environment
+                            .clone(),
+                    },
+                    resources: Default::default(),
+                });
+        for resource in artifact
+            .resources
+            .iter()
+            .filter(|resource| resource.schema_authority.is_proposed_first_use())
+        {
+            expected.resources.insert(
+                resource.resource_id.clone(),
+                resource.schema_authority.lock_binding().clone(),
+            );
+        }
+        if &expected != proposed {
+            return Err(CdfError::data(
+                "portable plan proposed lock contains authority outside its exact selected first-use resources",
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_portable_resource(
+    context: &ProjectCompilationContext,
+    planned: &cdf_project::PortablePlanResource,
+    args: &RunArgs,
+    host: &cdf_engine::StandaloneExecutionHost,
+    services: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<PreparedRun, CliError> {
+    let current_binding = context
+        .compilation
+        .lock
+        .as_ref()
+        .and_then(|lock| lock.resources.get(&planned.resource_id));
+    match &planned.schema_authority {
+        cdf_project::PortableSchemaAuthority::Locked { lock_binding }
+            if current_binding != Some(lock_binding) =>
+        {
+            return Err(portable_replan_error(
+                &planned.resource_id,
+                "locked schema authority changed",
+            ));
+        }
+        cdf_project::PortableSchemaAuthority::ProposedFirstUse { .. }
+            if current_binding.is_some() =>
+        {
+            return Err(portable_replan_error(
+                &planned.resource_id,
+                "schema authority was pinned after planning",
+            ));
+        }
+        _ => {}
+    }
+    cdf_project::validate_compiled_resource_artifact_current(
+        &context.root,
+        &context.compilation.config,
+        &context.environment,
+        &planned.compiled_resource,
+        current_binding,
+    )?;
+    let sources = crate::source_registry::builtin_source_registry()?;
+    sources
+        .validate_inline_portable_source_plan(&planned.compiled_resource.resource.source_plan)?;
+    let compiled =
+        cdf_project::hydrate_compiled_resource_artifact(&context.root, &planned.compiled_resource)?;
+    let host_jobs = services.capabilities().logical_cpu_slots;
+    let provisional_jobs = args.jobs.unwrap_or(host_jobs).min(host_jobs);
+    let run_services = services
+        .with_run_job_ceiling(provisional_jobs)?
+        .with_scheduler_measurement(true)?;
+    let portable_artifact_root = install_portable_source_artifacts(planned)?;
+    let resource = build_project_run_resource_from_compilation(
+        context,
+        &compiled,
+        portable_artifact_root.path(),
+        &run_services,
+    )?;
+    planned
+        .engine_plan
+        .validate_compiled_schema_admission(resource.as_queryable())?;
+    planned
+        .engine_plan
+        .validate_compiled_source_resource(resource.as_queryable())?;
+    let state_store_path = context.state_store_path()?;
+    let state_store_path_ownership = context.state_store_path_ownership();
+    let current_frontier = planning_frontier_at(
+        &state_store_path,
+        state_store_path_ownership,
+        resource.as_queryable().descriptor(),
+        &planned.pipeline_id,
+    )?;
+    if current_frontier != planned.input_checkpoint_head {
+        return Err(portable_replan_error(
+            &planned.resource_id,
+            "the input checkpoint frontier changed",
+        ));
+    }
+    attest_portable_partitions(&planned.engine_plan, &resource, host)?;
+    let resolved = resolve_portable_destination(
+        destinations,
+        context,
+        &planned.destination.target,
+        &planned.destination.uri,
+        &run_services,
+    )
+    .map_err(|error| redact_error_value(error, None))?;
+    let destination_sheet = resolved.destination.destination_sheet_artifact()?;
+    let destination_description = resolved.destination.describe();
+    let destination_capabilities = resolved.destination.runtime_capabilities();
+    let destination_hash = cdf_runtime::artifact_hash(&(
+        planned.destination.uri.as_str(),
+        &context.environment.destination_policy,
+        &planned.destination.target,
+    ))?;
+    if destination_description.destination_id.to_string() != planned.destination.destination_id
+        || resolved.destination.target() != &planned.destination.target
+        || destination_sheet != planned.destination.sheet
+        || cdf_runtime::artifact_hash(&destination_sheet)? != planned.destination.sheet_hash
+        || destination_capabilities != planned.destination.runtime_capabilities
+        || destination_hash != planned.destination.configuration_hash
+    {
+        return Err(portable_replan_error(
+            &planned.resource_id,
+            "destination identity, policy, target, schema mapping, or runtime capabilities changed",
+        ));
+    }
+    let partition_count = planned.engine_plan.scan.partition_count()?;
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        partition_count,
+        &resource.source_plan().execution_capabilities,
+        &destination_capabilities,
+        &run_services,
+        args.jobs,
+    )?;
+    run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    let destination_report =
+        RunDestinationReport::from_project(&destination_description, resolved.destination.target());
+    let schema_snapshot = if planned.schema_authority.is_proposed_first_use() {
+        planned
+            .schema_authority
+            .lock_binding()
+            .schema_snapshot
+            .as_ref()
+            .map(|snapshot| crate::reports::SchemaSnapshotActionReport {
+                outcome: "added",
+                schema_hash: snapshot.schema_hash.to_string(),
+                path: snapshot.path.clone(),
+                snapshot_written: true,
+                lockfile_written: true,
+                discovery: None,
+            })
+    } else {
+        None
+    };
+    Ok(PreparedRun {
+        package_root: context.package_root(),
+        explicit: ResolvedRunArgs {
+            resource_id: planned.resource_id.clone(),
+            pipeline_id: planned.pipeline_id.clone(),
+            destination_uri: Some(planned.destination.uri.clone()),
+            target: planned.destination.target.clone(),
+            package_id: planned.engine_plan.package_id.clone(),
+            checkpoint_id: planned.checkpoint_id.clone(),
+            jobs: args.jobs,
+            stats_profile: args.stats_profile,
+            segmentation: Default::default(),
+        },
+        run_services,
+        prepared: PreparedRuntimeResourceForCli {
+            resource,
+            compiled_resource: compiled,
+            schema_snapshot,
+            schema_artifact_files: Vec::new(),
+        },
+        state_store_path,
+        state_store_path_ownership,
+        destination: resolved.destination,
+        secret_redaction: resolved.secret_redaction,
+        plan: planned.engine_plan.clone(),
+        scheduler,
+        destination_report,
+        adhoc: None,
+        explain_memory: args.explain_memory,
+        portable_artifact_root: Some(portable_artifact_root),
+    })
+}
+
+fn install_portable_source_artifacts(
+    planned: &cdf_project::PortablePlanResource,
+) -> Result<tempfile::TempDir, CliError> {
+    let root = tempfile::Builder::new()
+        .prefix("cdf-portable-run-")
+        .tempdir()
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "create portable plan artifact root: {error}; check temporary-directory access and free space"
+            ))
+        })?;
+    if let Some(artifact) = &planned.source_task_set {
+        let bytes = artifact.content()?;
+        let path = root
+            .path()
+            .join(".cdf")
+            .join(artifact.reference.store_namespace.as_str())
+            .join(artifact.reference.object_key.as_str());
+        let parent = path
+            .parent()
+            .ok_or_else(|| CdfError::internal("portable task-set artifact path has no parent"))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CdfError::environment(format!(
+                "create portable task-set directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "install portable task-set artifact {}: {error}",
+                    path.display()
+                ))
+            })?;
+    }
+    Ok(root)
+}
+
+fn attest_portable_partitions(
+    plan: &cdf_engine::EnginePlan,
+    resource: &crate::project_run_resource::CliProjectRunSource,
+    host: &cdf_engine::StandaloneExecutionHost,
+) -> Result<(), CliError> {
+    host.block_on_root(async {
+        if let Some(partitions) = plan.scan.inline_partitions() {
+            for partition in partitions {
+                attest_portable_partition(resource, partition.clone()).await?;
+            }
+        } else if let Some(reference) = plan.scan.external_task_set() {
+            let mut reader = resource
+                .as_queryable()
+                .planned_partition_reader(reference)?;
+            for ordinal in 0..reference.task_count {
+                let partition = reader.next_partition(ordinal)?.ok_or_else(|| {
+                    CdfError::data(format!(
+                        "portable source task set ended before planned partition {ordinal}"
+                    ))
+                })?;
+                attest_portable_executable(resource, partition).await?;
+            }
+            if reader.next_partition(reference.task_count)?.is_some() {
+                return Err(CdfError::data(
+                    "portable source task set contains more partitions than its planned authority",
+                ));
+            }
+        }
+        Ok(())
+    })
+    .map_err(Into::into)
+}
+
+async fn attest_portable_partition(
+    resource: &crate::project_run_resource::CliProjectRunSource,
+    partition: cdf_kernel::PartitionPlan,
+) -> cdf_kernel::Result<()> {
+    let expected = portable_partition_attestation(&partition)?;
+    let observed = resource
+        .as_queryable()
+        .attest_partition(partition.clone())
+        .await?;
+    validate_portable_attestation(&partition, &expected, observed)
+}
+
+async fn attest_portable_executable(
+    resource: &crate::project_run_resource::CliProjectRunSource,
+    partition: cdf_kernel::ExecutablePartition,
+) -> cdf_kernel::Result<()> {
+    let plan = partition.plan().clone();
+    let expected = portable_partition_attestation(&plan)?;
+    let observed = resource.as_queryable().attest_executable(partition).await?;
+    validate_portable_attestation(&plan, &expected, observed)
+}
+
+fn portable_partition_attestation(
+    partition: &cdf_kernel::PartitionPlan,
+) -> cdf_kernel::Result<cdf_kernel::PartitionAttestation> {
+    let planned_position = partition.planned_position.clone().ok_or_else(|| {
+        CdfError::contract(format!(
+            "portable plan partition `{}` has no source-generation position; its adapter must implement portable generation authority",
+            partition.partition_id
+        ))
+    })?;
+    let schema_hash = partition
+        .metadata
+        .get(cdf_kernel::PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+        .map(|value| cdf_kernel::SchemaHash::new(value.clone()))
+        .transpose()?;
+    Ok(cdf_kernel::PartitionAttestation::new(
+        planned_position,
+        schema_hash,
+    ))
+}
+
+fn validate_portable_attestation(
+    partition: &cdf_kernel::PartitionPlan,
+    expected: &cdf_kernel::PartitionAttestation,
+    observed: Option<cdf_kernel::PartitionAttestation>,
+) -> cdf_kernel::Result<()> {
+    let observed = observed.ok_or_else(|| {
+        CdfError::contract(format!(
+            "source adapter did not revalidate portable plan partition `{}`; create and run the plan on the same host or use a portable adapter",
+            partition.partition_id
+        ))
+    })?;
+    if !observed.is_monotonic_refinement_of(expected) {
+        return Err(CdfError::data(format!(
+            "source generation for portable plan partition `{}` changed; create a new plan",
+            partition.partition_id
+        )));
+    }
+    Ok(())
+}
+
+fn portable_replan_error(resource_id: &str, reason: &str) -> CliError {
+    CdfError::contract(format!(
+        "portable plan resource `{resource_id}` cannot run because {reason}; create a new portable plan"
+    ))
+    .into()
 }
 
 struct PreparedRun {
-    context: ProjectContext,
+    package_root: std::path::PathBuf,
     explicit: ResolvedRunArgs,
     run_services: cdf_runtime::ExecutionServices,
     prepared: PreparedRuntimeResourceForCli,
     state_store_path: std::path::PathBuf,
+    state_store_path_ownership: cdf_state_sqlite::StateStorePathOwnership,
     destination: cdf_project::ResolvedProjectDestination,
     secret_redaction: Option<String>,
     plan: cdf_engine::EnginePlan,
@@ -195,6 +661,7 @@ struct PreparedRun {
     destination_report: RunDestinationReport,
     adhoc: Option<AdhocRunReport>,
     explain_memory: bool,
+    portable_artifact_root: Option<tempfile::TempDir>,
 }
 
 fn prepare_single(
@@ -255,6 +722,8 @@ fn prepare_single(
         Some(&run_services),
     )?;
     let state_store_path = context.state_store_path()?;
+    let state_store_path_ownership = context.state_store_path_ownership();
+    let package_root = context.package_root();
     let committed_frontier = planning_frontier(
         &context,
         prepared.resource.as_queryable().descriptor(),
@@ -301,11 +770,12 @@ fn prepare_single(
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
     Ok(PreparedRun {
-        context,
+        package_root,
         explicit,
         run_services,
         prepared,
         state_store_path,
+        state_store_path_ownership,
         destination,
         secret_redaction: resolved.secret_redaction,
         plan,
@@ -313,6 +783,7 @@ fn prepare_single(
         destination_report,
         adhoc,
         explain_memory,
+        portable_artifact_root: None,
     })
 }
 
@@ -323,11 +794,12 @@ fn execute_prepared(
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let PreparedRun {
-        context,
+        package_root,
         explicit,
         run_services,
         prepared,
         state_store_path,
+        state_store_path_ownership,
         destination,
         secret_redaction,
         plan,
@@ -335,6 +807,7 @@ fn execute_prepared(
         destination_report,
         adhoc,
         explain_memory,
+        portable_artifact_root: _portable_artifact_root,
     } = prepared_run;
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
@@ -343,9 +816,9 @@ fn execute_prepared(
             ProjectRunRequest {
                 resource: prepared.resource.as_project_resource(),
                 plan,
-                package_root: context.package_root(),
+                package_root,
                 state_store_path,
-                state_store_path_ownership: context.state_store_path_ownership(),
+                state_store_path_ownership,
                 pipeline_id: explicit.pipeline_id.clone(),
                 package_id: explicit.package_id.clone(),
                 checkpoint_id: explicit.checkpoint_id.clone(),
@@ -451,9 +924,19 @@ fn run_destination_resolution_error(
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct RunBatchReport {
     input_authority: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    portable_plan: Option<PortableRunAuthorityReport>,
     selection: cdf_project::ProjectResourceSelection,
     counts: RunBatchCounts,
     resources: Vec<RunResourceOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PortableRunAuthorityReport {
+    path: String,
+    plan_hash: String,
+    preflight: &'static str,
+    first_use_authority: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -520,6 +1003,7 @@ fn run_batch_output(
     outcomes: Vec<RunResourceOutcome>,
     documents: Vec<RenderDocument>,
     progress: Option<crate::progress::ProgressSnapshot>,
+    portable_plan: Option<PortableRunAuthorityReport>,
 ) -> Result<CommandOutput, CliError> {
     let completed = outcomes
         .iter()
@@ -561,6 +1045,15 @@ fn run_batch_output(
                 .row("blocked", counts.blocked.to_string())
                 .row("failed", counts.failed.to_string()),
         );
+    if let Some(authority) = &portable_plan {
+        document = document.blank_line().push(
+            KeyValuePanel::new("Portable plan")
+                .row("path", authority.path.clone())
+                .row("hash", authority.plan_hash.clone())
+                .row("preflight", authority.preflight)
+                .row("first-use authority", authority.first_use_authority),
+        );
+    }
     for outcome in &outcomes {
         if let RunResourceOutcome::PreparationFailed { resource_id, error }
         | RunResourceOutcome::Failed { resource_id, error } = outcome
@@ -581,7 +1074,12 @@ fn run_batch_output(
         document = document.blank_line().append(resource_document);
     }
     let report = RunBatchReport {
-        input_authority: "resource_set",
+        input_authority: if portable_plan.is_some() {
+            "portable_plan"
+        } else {
+            "resource_set"
+        },
+        portable_plan,
         selection,
         counts,
         resources: outcomes,

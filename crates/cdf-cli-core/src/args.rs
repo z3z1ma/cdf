@@ -115,6 +115,7 @@ pub struct ScanArgs {
 pub struct PlanArgs {
     pub selectors: Vec<String>,
     pub exclude: Vec<String>,
+    pub out: Option<PathBuf>,
     pub destination_uri: Option<String>,
     pub projection: Option<Vec<String>>,
     pub filters: Vec<String>,
@@ -127,6 +128,7 @@ pub struct PlanArgs {
 pub struct RunArgs {
     pub selectors: Vec<String>,
     pub exclude: Vec<String>,
+    pub plan: Option<PathBuf>,
     pub locked: bool,
     pub destination_uri: Option<String>,
     pub jobs: Option<u16>,
@@ -586,6 +588,7 @@ fn parse_plan(matches: &ArgMatches) -> Result<PlanArgs, CliError> {
     Ok(PlanArgs {
         selectors,
         exclude: values(matches, "exclude"),
+        out: string_value(matches, "out").map(PathBuf::from),
         destination_uri: string_value(matches, "to"),
         projection,
         filters: values(matches, "filter"),
@@ -598,18 +601,43 @@ fn parse_plan(matches: &ArgMatches) -> Result<PlanArgs, CliError> {
 }
 
 fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
+    let selectors = values(matches, "selectors");
+    let exclude = values(matches, "exclude");
+    let plan = string_value(matches, "plan").map(PathBuf::from);
+    let locked = matches.get_flag("locked");
+    let destination_uri = string_value(matches, "to");
+    let loop_mode = matches.get_flag("loop");
+    let segmentation = parse_segmentation(matches)?;
+    if plan.is_some()
+        && (!selectors.is_empty()
+            || !exclude.is_empty()
+            || locked
+            || destination_uri.is_some()
+            || loop_mode
+            || segmentation != SegmentationArgs::default())
+    {
+        return Err(CliError::usage(
+            "run --plan cannot be combined with resource selectors, --exclude, --locked, --to, --loop, or segmentation flags; create a new portable plan to change execution semantics",
+        ));
+    }
+    if plan.is_none() && selectors.is_empty() {
+        return Err(CliError::usage(
+            "run requires resource selectors or --plan <PATH>",
+        ));
+    }
     Ok(RunArgs {
-        selectors: values(matches, "selectors"),
-        exclude: values(matches, "exclude"),
-        locked: matches.get_flag("locked"),
-        destination_uri: string_value(matches, "to"),
+        selectors,
+        exclude,
+        plan,
+        locked,
+        destination_uri,
         jobs: string_value(matches, "jobs")
             .map(|value| parse_nonzero_u16("--jobs", &value))
             .transpose()?,
         stats_profile: matches.get_flag("stats_profile"),
         explain_memory: matches.get_flag("explain_memory"),
-        loop_mode: matches.get_flag("loop"),
-        segmentation: parse_segmentation(matches)?,
+        loop_mode,
+        segmentation,
     })
 }
 
@@ -1047,6 +1075,7 @@ fn plan_command() -> ClapCommand {
             .after_help("Examples:\n  cdf plan local.events\n  cdf plan 'warehouse.*' --exclude warehouse.experimental")
             .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
             .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+            .arg(option("out", "out", "PATH"))
             .arg(option("projection", "select", "FIELDS"))
             .arg(append_option("filter", "filter", "EXPR"))
             .arg(option("limit", "limit", "N"))
@@ -1060,6 +1089,7 @@ fn run_command() -> ClapCommand {
         cmd("run")
             .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
             .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+            .arg(option("plan", "plan", "PATH"))
             .arg(flag("locked", "locked"))
             .arg(option("to", "to", "DEST"))
             .arg(option("jobs", "jobs", "N"))
@@ -1292,6 +1322,8 @@ fn option_help(long: &str) -> &'static str {
         "explain-memory" => "Include memory-ledger detail in the run report",
         "loop" => "Continue polling for work",
         "exclude" => "Exclude resources matching this glob; may be repeated",
+        "out" => "Write a canonical portable plan artifact without replacing terminal output",
+        "plan" => "Execute a canonical portable plan artifact",
         "dry-run" => "Show the proposed change without writing it",
         "locked" => "Require sufficient unchanged cdf.lock authority",
         "execute" => "Apply the planned operation",
@@ -1859,6 +1891,41 @@ mod run_jobs_tests {
         let error = Cli::parse(["cdf", "run", "local.events", "--jobs", "0"].map(OsString::from))
             .unwrap_err();
         assert!(error.message.contains("--jobs must be an integer from 1"));
+    }
+
+    #[test]
+    fn run_plan_is_an_exclusive_semantic_authority() {
+        let cli =
+            Cli::parse(["cdf", "run", "--plan", "plan.json", "--jobs", "2"].map(OsString::from))
+                .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.plan, Some(std::path::PathBuf::from("plan.json")));
+        assert_eq!(args.jobs, Some(2));
+
+        for conflicting in [
+            vec!["cdf", "run", "local.events", "--plan", "plan.json"],
+            vec![
+                "cdf",
+                "run",
+                "--plan",
+                "plan.json",
+                "--to",
+                "duckdb://other.db",
+            ],
+            vec![
+                "cdf",
+                "run",
+                "--plan",
+                "plan.json",
+                "--segment-max-rows",
+                "10",
+            ],
+        ] {
+            let error = Cli::parse(conflicting.into_iter().map(OsString::from)).unwrap_err();
+            assert!(error.message.contains("run --plan cannot be combined"));
+        }
     }
 
     #[test]

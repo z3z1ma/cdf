@@ -22,7 +22,10 @@ use crate::{
     args::{Cli, PlanArgs, ScanArgs},
     commands::json_cli_error,
     context::ProjectContext,
-    destination_uri::{EnvironmentDestination, redact_error_value, resolve_selected_destination},
+    destination_uri::{
+        EnvironmentDestination, redact_error_value, resolve_selected_destination,
+        resolve_selected_destination_with_services,
+    },
     error_catalog,
     output::{CliError, CommandOutput},
     project_run_resource::{
@@ -39,6 +42,7 @@ pub(crate) struct PreparedSchemaForCli {
     pub(crate) source_plan: cdf_runtime::CompiledSourcePlan,
     pub(crate) schema_snapshot: Option<SchemaSnapshotActionReport>,
     pub(crate) prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+    pub(crate) schema_artifact_files: Vec<(String, Vec<u8>)>,
 }
 
 impl PreparedSchemaForCli {
@@ -46,6 +50,7 @@ impl PreparedSchemaForCli {
         resource: CompiledResource,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
         prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+        schema_artifact_files: Vec<(String, Vec<u8>)>,
     ) -> Result<Self, CliError> {
         let source_plan = resource.source_plan().clone();
         validate_resource_source_authority(&resource, &source_plan)?;
@@ -65,6 +70,7 @@ impl PreparedSchemaForCli {
             source_plan,
             schema_snapshot,
             prepared_payloads,
+            schema_artifact_files,
         })
     }
 }
@@ -137,12 +143,25 @@ pub(crate) fn plan(
         cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
             .map_err(crate::compile_command::resource_selection_error)?;
     let mut resources = Vec::with_capacity(selection.resources.len());
+    let mut portable_resources = Vec::with_capacity(selection.resources.len());
     for selected in &selection.resources {
         let resource_id = selected.resource_id.to_string();
-        match plan_one(cli, &args, &resource_id, execution, destinations) {
-            Ok(report) => resources.push(PlanResourceOutcome::Ready {
-                report: Box::new(report),
-            }),
+        match plan_one(
+            cli,
+            &args,
+            &resource_id,
+            execution,
+            destinations,
+            args.out.is_some(),
+        ) {
+            Ok(planned) => {
+                if let Some(portable) = planned.portable {
+                    portable_resources.push(portable);
+                }
+                resources.push(PlanResourceOutcome::Ready {
+                    report: Box::new(planned.report),
+                });
+            }
             Err(error) => resources.push(PlanResourceOutcome::Failed {
                 resource_id,
                 error: PlanResourceError::from(error),
@@ -154,6 +173,25 @@ pub(crate) fn plan(
         .filter(|result| matches!(result, PlanResourceOutcome::Ready { .. }))
         .count();
     let failed = resources.len() - ready;
+    let artifact = if failed == 0 {
+        args.out
+            .as_deref()
+            .map(|path| {
+                crate::portable_plan_command::build_artifact(
+                    &root,
+                    &config,
+                    &environment,
+                    selection.selection.clone(),
+                    portable_resources,
+                )
+                .and_then(|artifact| {
+                    crate::portable_plan_command::publish_artifact(path, &artifact)
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let report = PlanReport {
         project: config.project.name,
         environment: environment.name,
@@ -164,6 +202,7 @@ pub(crate) fn plan(
             failed,
         },
         resources,
+        artifact,
     };
     CommandOutput::rendered_with_exit_code(
         "plan",
@@ -179,7 +218,8 @@ fn plan_one(
     resource_id: &str,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<ScanPlanReport, CliError> {
+    portable: bool,
+) -> Result<PlannedResource, CliError> {
     let scan = ScanArgs {
         resource_id: resource_id.to_owned(),
         destination_uri: args.destination_uri.clone(),
@@ -189,7 +229,12 @@ fn plan_one(
         order_by: args.order_by.clone(),
         segmentation: args.segmentation.clone(),
     };
-    scan_one(cli, &scan, "plan", execution, destinations)
+    scan_one_with_portable(cli, &scan, "plan", execution, destinations, portable)
+}
+
+struct PlannedResource {
+    report: ScanPlanReport,
+    portable: Option<crate::portable_plan_command::PortablePlanResourceMaterial>,
 }
 
 pub(crate) fn plan_or_explain(
@@ -210,6 +255,18 @@ pub(crate) fn scan_one(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<ScanPlanReport, CliError> {
+    scan_one_with_portable(cli, args, command, execution, destinations, false)
+        .map(|planned| planned.report)
+}
+
+fn scan_one_with_portable(
+    cli: &Cli,
+    args: &ScanArgs,
+    command: &'static str,
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+    portable: bool,
+) -> Result<PlannedResource, CliError> {
     let context = ProjectContext::load_selected_read_only(
         cli.project.as_ref(),
         cli.env.as_deref(),
@@ -239,6 +296,7 @@ pub(crate) fn scan_one(
         &target,
         args.destination_uri.as_deref(),
         command,
+        portable.then_some(execution),
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
     let committed_frontier = planning_frontier(
@@ -254,6 +312,23 @@ pub(crate) fn scan_one(
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
+    let portable = portable
+        .then(|| {
+            let destination_uri = args
+                .destination_uri
+                .as_deref()
+                .unwrap_or(&context.environment.destination);
+            crate::portable_plan_command::build_resource_material(
+                &context,
+                &prepared,
+                plan.clone(),
+                &resolved,
+                &target,
+                destination_uri,
+                inspection_root.path(),
+            )
+        })
+        .transpose()?;
     let report = scan_report(
         &context,
         &prepared.resource,
@@ -269,7 +344,7 @@ pub(crate) fn scan_one(
         execution,
         prepared.schema_snapshot,
     )?;
-    Ok(report)
+    Ok(PlannedResource { report, portable })
 }
 
 pub(crate) fn preview(
@@ -309,6 +384,7 @@ pub(crate) fn preview(
         &target,
         args.destination_uri.as_deref(),
         "preview",
+        None,
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
@@ -360,6 +436,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 discovery,
             }),
             prepared_payloads,
+            Vec::new(),
         );
     }
     let probe_resource = resource.clone();
@@ -371,6 +448,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             finalize_resource_query_for_cli(context, resource.clone())?,
             None,
             prepared_payloads,
+            Vec::new(),
         );
     }
     let options = match resource.descriptor().schema_source.pinned_snapshot() {
@@ -410,6 +488,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
         .as_ref()
         .map(DiscoveryCoverageReport::from_manifest);
     let artifact = artifacts.discovery.snapshot.artifact.clone();
+    let schema_artifact_files = artifacts.canonical_artifact_files()?;
     let outcome = if commit_schema {
         "added"
     } else {
@@ -461,6 +540,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             discovery: discovery_coverage,
         }),
         prepared_payloads,
+        schema_artifact_files,
     )
 }
 
@@ -541,7 +621,16 @@ pub(crate) fn planning_frontier(
 ) -> Result<Option<SourcePosition>, CliError> {
     let state_path = context.state_store_path()?;
     let ownership = context.state_store_path_ownership();
-    if !cdf_state_sqlite::database_path_exists(&state_path, ownership)? {
+    planning_frontier_at(&state_path, ownership, descriptor, pipeline_id)
+}
+
+pub(crate) fn planning_frontier_at(
+    state_path: &std::path::Path,
+    ownership: cdf_state_sqlite::StateStorePathOwnership,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    pipeline_id: &PipelineId,
+) -> Result<Option<SourcePosition>, CliError> {
+    if !cdf_state_sqlite::database_path_exists(state_path, ownership)? {
         return Ok(None);
     }
     let frontier =
@@ -740,8 +829,19 @@ fn resolve_scan_destination(
     target: &TargetName,
     destination_uri: Option<&str>,
     command: &'static str,
+    services: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<EnvironmentDestination, CliError> {
-    resolve_selected_destination(destinations, context, target, destination_uri).map_err(|error| {
+    let resolved = match services {
+        Some(services) => resolve_selected_destination_with_services(
+            destinations,
+            context,
+            target,
+            destination_uri,
+            Some(services),
+        ),
+        None => resolve_selected_destination(destinations, context, target, destination_uri),
+    };
+    resolved.map_err(|error| {
         plan_destination_resolution_error(command, context, destination_uri, error)
     })
 }
@@ -915,6 +1015,8 @@ pub(super) struct PlanReport {
     pub(super) selection: cdf_project::ProjectResourceSelection,
     pub(super) counts: PlanCounts,
     pub(super) resources: Vec<PlanResourceOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) artifact: Option<crate::portable_plan_command::PortablePlanWriteReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

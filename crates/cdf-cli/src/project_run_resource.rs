@@ -1,13 +1,15 @@
 use cdf_declarative::CompiledResource;
 use cdf_kernel::QueryableResource;
-use cdf_project::ProjectRunSource;
+use cdf_project::{DefaultSecretProvider, EnvSecretProvider, FileSecretProvider, ProjectRunSource};
 use std::{path::Path, sync::Arc};
 
 use crate::{context::ProjectContext, output::CliError};
 
 pub(crate) struct PreparedRuntimeResourceForCli {
     pub(crate) resource: CliProjectRunSource,
+    pub(crate) compiled_resource: CompiledResource,
     pub(crate) schema_snapshot: Option<crate::reports::SchemaSnapshotActionReport>,
+    pub(crate) schema_artifact_files: Vec<(String, Vec<u8>)>,
 }
 
 pub(crate) struct CliProjectRunSource {
@@ -18,7 +20,7 @@ pub(crate) struct CliProjectRunSource {
 }
 
 impl CliProjectRunSource {
-    fn from_shared(
+    pub(crate) fn from_shared(
         resource: Arc<dyn QueryableResource>,
         source_plan: cdf_runtime::CompiledSourcePlan,
         execution_extent: cdf_kernel::ExecutionExtent,
@@ -53,6 +55,45 @@ impl CliProjectRunSource {
     ) -> Option<&cdf_contract::RelationalExpressionPlan> {
         self.relational_expression_plan.as_ref()
     }
+}
+
+pub(crate) fn build_project_run_resource_from_compilation(
+    context: &crate::context::ProjectCompilationContext,
+    resource: &CompiledResource,
+    artifact_root: &Path,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CliProjectRunSource, CliError> {
+    let source_plan = resource.source_plan().clone();
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let source_schema = resource
+        .relational_expression_plan()
+        .map(|plan| plan.input_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| resource.schema().as_ref().clone());
+    source_plan.validate_schema_authority(
+        resource.descriptor(),
+        &source_schema,
+        resource.effective_schema_runtime(),
+        resource.baseline_observation_schema_catalog(),
+    )?;
+    let secrets = DefaultSecretProvider::new(
+        EnvSecretProvider::process(),
+        FileSecretProvider::new(context.root.clone()),
+    );
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        Arc::new(secrets),
+        execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_artifact_root(artifact_root)
+    .with_driver_options(context.compilation.config.driver_options.clone());
+    Ok(CliProjectRunSource::from_shared(
+        registry.resolve(&source_plan, &resolution)?,
+        source_plan,
+        resource.execution_extent().clone(),
+        resource.relational_expression_plan().cloned(),
+    ))
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
@@ -90,16 +131,19 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
         execution,
         artifact_root,
     )?;
+    let runtime = build_project_run_resource_with_artifact_root(
+        context,
+        &prepared.resource,
+        prepared.source_plan.clone(),
+        execution,
+        prepared.prepared_payloads.clone(),
+        artifact_root,
+    )?;
     Ok(PreparedRuntimeResourceForCli {
-        resource: build_project_run_resource_with_artifact_root(
-            context,
-            &prepared.resource,
-            prepared.source_plan,
-            execution,
-            prepared.prepared_payloads,
-            artifact_root,
-        )?,
+        resource: runtime,
+        compiled_resource: prepared.resource,
         schema_snapshot: prepared.schema_snapshot,
+        schema_artifact_files: prepared.schema_artifact_files,
     })
 }
 

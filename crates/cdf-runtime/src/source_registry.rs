@@ -291,6 +291,13 @@ impl SourceRegistry {
         driver.validate_portable_plan(plan)
     }
 
+    /// Validates an inline portable plan through the same adapter-owned authority used by
+    /// isolated worker artifacts, without inventing a content-store reference for inline bytes.
+    pub fn validate_inline_portable_source_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        let driver = self.driver_for_plan(plan)?;
+        driver.validate_portable_plan(plan)
+    }
+
     /// Routes isolated-worker source admission through the same registered driver that owns the
     /// compiled plan. Generic orchestration therefore never grows a parallel source-specific
     /// verification switch or adapter registry.

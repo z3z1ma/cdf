@@ -69,6 +69,7 @@ mod lockfile;
 mod manifest;
 mod models;
 mod observation_cache;
+mod portable_plan;
 mod project_files;
 mod project_inputs;
 mod promotion;
@@ -98,8 +99,10 @@ pub use compilation::{
     COMPILED_RESOURCE_DIRECTORY, CompilationArtifactReference, CompilationDiagnostic,
     CompilationIndex, CompilationIndexEntry, CompilationSnapshot, CompilationStatus,
     CompiledResourceArtifact, CompiledResourceArtifactRequest, compile_resource_artifact,
-    compiled_resource_artifact_path, load_compilation_snapshot, parse_compilation_index,
+    compiled_resource_artifact_path, effective_environment_binding_hash,
+    hydrate_compiled_resource_artifact, load_compilation_snapshot, parse_compilation_index,
     parse_compiled_resource_artifact, validate_compilation_index_authority,
+    validate_compiled_resource_artifact_current,
 };
 pub use discovery_manifest::{
     DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE, DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES,
@@ -151,6 +154,13 @@ pub use observation_cache::{
     ObservationCacheEntry, ObservationCacheKey, ObservationCacheLookup, ObservationCacheMissReason,
     ObservationCachePolicy, ObservationCacheStore, ObservationCacheStoreOutcome,
     StrongObservationSourceIdentity,
+};
+pub use portable_plan::{
+    PORTABLE_PLAN_MAX_BYTES, PORTABLE_PLAN_VERSION, PortableDestinationBinding,
+    PortableHostRequirements, PortableInlineArtifact, PortableLockPrecondition,
+    PortablePlanArtifact, PortablePlanFailurePolicy, PortablePlanResource, PortableSchemaAuthority,
+    PortableTaskSetArtifact, lock_precondition as portable_plan_lock_precondition,
+    parse_portable_plan, sha256 as portable_plan_sha256,
 };
 pub use project_files::{
     ProjectFileExpectation, ProjectFileGuard, ProjectFileTransactionReport, ProjectFileWrite,

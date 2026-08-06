@@ -273,6 +273,84 @@ pub(crate) fn prepare_selected_resource(
     compile_one(cli, selected, locked_only, destinations, execution).map(|_| ())
 }
 
+pub(crate) struct PortableCompilationMaterial {
+    pub(crate) artifact: cdf_project::CompiledResourceArtifact,
+    pub(crate) lock_binding: cdf_project::LockedResource,
+    pub(crate) proposed_lock: Option<cdf_project::CdfLock>,
+}
+
+pub(crate) fn prepare_portable_compilation(
+    context: &ProjectContext,
+    resource: &cdf_declarative::CompiledResource,
+    destination_id: &str,
+    destination_sheet: cdf_kernel::DestinationSheetArtifact,
+) -> Result<PortableCompilationMaterial, CliError> {
+    let resource_id = resource.descriptor().resource_id.as_str();
+    let mut entry = compiled_entry(context, resource_id)?;
+    entry.resource = resource.clone();
+    entry.query.relational_plan = resource.relational_expression_plan().cloned();
+    let mut next_lock = upsert_compiled_resource_in_lockfile(
+        &context.config,
+        context.lock.as_ref(),
+        std::slice::from_ref(&destination_sheet),
+        resource,
+        &context.semantic_catalog,
+    )?;
+    let authored = captured_authored_inputs(&entry)?;
+    let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
+        config: &context.config,
+        environment: &context.environment,
+        lock: &next_lock,
+        resource: &entry,
+        authored_inputs: authored
+            .iter()
+            .map(|input| input.manifest.clone())
+            .collect(),
+        semantic_catalog: &context.semantic_catalog,
+        semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
+        selected_destination_id: destination_id,
+        diagnostics: Vec::new(),
+    })?;
+    let current = context
+        .lock
+        .as_ref()
+        .and_then(|lock| lock.resources.get(resource_id));
+    if let Some(current) = current {
+        if current.compiled_artifact_hash.as_deref() != Some(artifact.artifact_hash.as_str()) {
+            return Err(CdfError::contract(format!(
+                "resource `{resource_id}` changed after its locked compilation; run `cdf compile {resource_id}` before exporting a portable plan"
+            ))
+            .into());
+        }
+        let mut expected = current.clone();
+        expected.compiled_artifact_hash = None;
+        if expected != artifact.lock_binding {
+            return Err(CdfError::contract(format!(
+                "resource `{resource_id}` no longer matches its locked portable authority; run `cdf compile {resource_id}`"
+            ))
+            .into());
+        }
+        return Ok(PortableCompilationMaterial {
+            artifact,
+            lock_binding: current.clone(),
+            proposed_lock: None,
+        });
+    }
+    bind_compiled_resource_artifact(&mut next_lock, resource_id, artifact.artifact_hash.clone())?;
+    let lock_binding = next_lock
+        .resources
+        .get(resource_id)
+        .cloned()
+        .ok_or_else(|| {
+            CdfError::internal("portable compilation lost its proposed resource lock binding")
+        })?;
+    Ok(PortableCompilationMaterial {
+        artifact,
+        lock_binding,
+        proposed_lock: Some(next_lock),
+    })
+}
+
 fn compiled_entry(
     context: &ProjectContext,
     resource_id: &str,
