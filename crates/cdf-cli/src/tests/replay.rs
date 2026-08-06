@@ -181,7 +181,7 @@ fn replay_package_duckdb_replays_from_artifacts_without_source_contact() {
 }
 
 #[test]
-fn replay_package_duckdb_duplicate_reports_no_op() {
+fn replay_package_duckdb_same_state_duplicate_reports_no_op() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let first = replay_package_command(
@@ -191,7 +191,6 @@ fn replay_package_duckdb_duplicate_reports_no_op() {
     );
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
 
-    remove_state_store(&project);
     let second = replay_package_command(
         &project,
         &package_dir,

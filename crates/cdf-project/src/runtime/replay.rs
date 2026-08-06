@@ -1634,16 +1634,21 @@ where
         .map_err(|error| CdfError::internal(format!("replay segment count overflow: {error}")))?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
-    propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
+    let checkpoint = propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
+    let checkpoint_already_committed = checkpoint.status == CheckpointStatus::Committed;
     let destination_started = Instant::now();
     let settlement = (|| {
-        notify_destination_replay_stage(
-            &hooks,
-            PackageReplayStage::CheckpointProposed {
-                delta: &inputs.state_delta,
-            },
-        )?;
-        package.reader_mut().update_status(PackageStatus::Loading)?;
+        if !checkpoint_already_committed {
+            notify_destination_replay_stage(
+                &hooks,
+                PackageReplayStage::CheckpointProposed {
+                    delta: &inputs.state_delta,
+                },
+            )?;
+        }
+        if !checkpoint_already_committed {
+            package.reader_mut().update_status(PackageStatus::Loading)?;
+        }
         notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
 
         let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
@@ -1737,7 +1742,7 @@ where
         Ok((receipt, receipt_policy))
     })();
     let (receipt, receipt_policy) = settlement.map_err(|error| {
-        if hooks.interrupted_by_stage_hook.replace(false) {
+        if checkpoint_already_committed || hooks.interrupted_by_stage_hook.replace(false) {
             error
         } else {
             abandon_checkpoint_after_failure(checkpoint_store, &checkpoint_id, error)
@@ -1761,7 +1766,11 @@ where
     )?;
 
     let checkpoint_started = Instant::now();
-    let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
+    let checkpoint = commit_or_reuse_committed_checkpoint(
+        checkpoint_store,
+        &inputs.state_delta,
+        receipt.clone(),
+    )?;
     let package_status =
         mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
     let checkpoint_metric =
@@ -2633,6 +2642,14 @@ where
                     if checkpoint.status == CheckpointStatus::Proposed
                         && !checkpoint.is_head
                         && checkpoint.receipt.is_none()
+                        && checkpoint.delta == *delta =>
+                {
+                    Ok(checkpoint)
+                }
+                Some(checkpoint)
+                    if checkpoint.status == CheckpointStatus::Committed
+                        && checkpoint.is_head
+                        && checkpoint.receipt.is_some()
                         && checkpoint.delta == *delta =>
                 {
                     Ok(checkpoint)

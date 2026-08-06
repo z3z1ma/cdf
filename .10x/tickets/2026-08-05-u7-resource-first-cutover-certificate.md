@@ -123,6 +123,23 @@ findings before judging closure. The review range includes U6b.
   required product smoke script initially named two tests using superseded pin/autopin language;
   updated those selectors, then the matrix passed 5 CLI product cells, 2 project incrementality/
   destination cells, preview/run parity, and 3 Iceberg projection-authority cells.
+- 2026-08-06: Built the published artifact shape with bundled DuckDB and no developer linkage
+  override. A disposable copy of the supplied sandbox then passed static selected validate,
+  selected resource discovery, source generation with explicit `id`/`updated_at` projection and
+  an `unchanged` second create-or-verify, human selected plan with a 164 KiB portable artifact,
+  `run --plan` first-use publication, a direct selected run, package-only execution from a project
+  containing no authored resources/data/lock/manifest/compiled artifacts, a bare no-interrupted-run
+  no-op, and scoped source doctor. Live TTY rendering advanced elapsed time and showed real rows,
+  bytes, segments, batches, rates, and final phase measurements.
+- 2026-08-06: The release journeys falsified two additional same-machine lifecycle assumptions.
+  Re-running an exact package against its already committed head rejected the exact matching
+  checkpoint instead of letting destination idempotency and receipt equality prove a no-op; the
+  narrow repair now admits only the exact committed head, never abandons it on retry failure, and
+  reuses it only after the returned receipt matches. A focused CLI regression and the settlement
+  state-machine properties pass. Resource doctor also treated legitimate historical DuckDB mirror
+  rows from earlier committed checkpoints as drift because it compared only current heads; it now
+  compares the complete committed checkpoint history. The existing corrupt/missing/extra tests and
+  a new two-run historical-mirror regression pass.
 
 ## Blockers
 
@@ -145,6 +162,14 @@ None.
   --with-metadata` passed after removing the unused `cdf-cli` `flate2` dev dependency.
 - Product barrier: `DUCKDB_DOWNLOAD_LIB=1 tools/product-smoke-matrix.sh` passed every selected
   product cell after correcting its two stale current-test selectors.
+- Release sandbox: `cargo build -p cdf-cli --release --locked --features bundled-duckdb` completed
+  without `DUCKDB_DOWNLOAD_LIB`; the bundled binary passed all named sandbox journeys in
+  `target/u7-sandbox-certificate`. The package-only project contained only `cdf.toml`, `.cdf`
+  destination/state, and the explicit external package path; the no-work resume project contained
+  no run, package, source, compiler, or destination authority.
+- Release findings: the same-state exact-package regression passed 1/1; the replay settlement
+  model tests passed 2/2; the doctor drift set passed its three existing negative/clean cases and
+  the new multi-commit historical case.
 - Limits: these focused observations establish the repaired seams only. The required post-repair
   workspace suite, quality gates, release journeys, and final review remain below.
 

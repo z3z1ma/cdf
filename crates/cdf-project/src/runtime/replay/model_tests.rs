@@ -220,7 +220,8 @@ impl SettlementFixture {
                 self.model.checkpoint = ModelCheckpoint::Proposed;
             }
             ModelCheckpoint::Committed(_) => {
-                prop_assert!(result.is_err());
+                let checkpoint = result.map_err(test_failure)?;
+                prop_assert_eq!(checkpoint.status, CheckpointStatus::Committed);
             }
         }
         Ok(())

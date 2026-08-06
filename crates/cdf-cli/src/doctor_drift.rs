@@ -30,7 +30,7 @@ pub(crate) enum DriftStatus {
 }
 
 #[derive(Clone, Debug)]
-struct LedgerHead {
+struct LedgerCheckpoint {
     checkpoint_id: String,
     delta: StateDelta,
     receipt: Receipt,
@@ -69,7 +69,7 @@ struct ExpectedState {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct DriftCounts {
-    ledger_heads: usize,
+    ledger_checkpoints: usize,
     expected_loads: usize,
     expected_state_rows: usize,
     mirror_loads: usize,
@@ -121,38 +121,38 @@ pub(crate) fn probe(context: &ProjectOperationalContext) -> Result<DriftProbe, C
         ));
     }
 
-    let ledger_heads = read_committed_heads(&state_path, state_path_ownership)?;
+    let ledger_checkpoints = read_committed_checkpoints(&state_path, state_path_ownership)?;
     let destination = DuckDbDestination::new(&duckdb_path)?;
     let mirror = destination.read_mirror_snapshot_read_only()?;
 
     let mut expected_loads = BTreeMap::new();
     let mut expected_states = BTreeMap::new();
-    for head in &ledger_heads {
-        let target = head.receipt.target.as_str().to_owned();
+    for checkpoint in &ledger_checkpoints {
+        let target = checkpoint.receipt.target.as_str().to_owned();
         let load_key = LoadKey {
             target: target.clone(),
-            idempotency_token: head.receipt.idempotency_token.as_str().to_owned(),
+            idempotency_token: checkpoint.receipt.idempotency_token.as_str().to_owned(),
         };
         expected_loads.insert(
             load_key,
             ExpectedLoad {
-                checkpoint_id: head.checkpoint_id.clone(),
-                package_hash: head.receipt.package_hash.as_str().to_owned(),
-                receipt_id: head.receipt.receipt_id.as_str().to_owned(),
-                receipt_json: head.receipt_json.clone(),
+                checkpoint_id: checkpoint.checkpoint_id.clone(),
+                package_hash: checkpoint.receipt.package_hash.as_str().to_owned(),
+                receipt_id: checkpoint.receipt.receipt_id.as_str().to_owned(),
+                receipt_json: checkpoint.receipt_json.clone(),
             },
         );
 
-        for segment in &head.delta.segments {
+        for segment in &checkpoint.delta.segments {
             let key = StateKey {
                 target: target.clone(),
-                package_hash: head.delta.package_hash.as_str().to_owned(),
+                package_hash: checkpoint.delta.package_hash.as_str().to_owned(),
                 segment_id: segment.segment_id.as_str().to_owned(),
             };
             expected_states.insert(
                 key,
                 ExpectedState {
-                    checkpoint_id: head.checkpoint_id.clone(),
+                    checkpoint_id: checkpoint.checkpoint_id.clone(),
                     scope_json: serde_json::to_string(&segment.scope)
                         .map_err(private_json_error)?,
                     output_position_json: serde_json::to_string(&segment.output_position)
@@ -193,7 +193,7 @@ pub(crate) fn probe(context: &ProjectOperationalContext) -> Result<DriftProbe, C
         .collect::<BTreeMap<_, _>>();
 
     let mut counts = DriftCounts {
-        ledger_heads: ledger_heads.len(),
+        ledger_checkpoints: ledger_checkpoints.len(),
         expected_loads: expected_loads.len(),
         expected_state_rows: expected_states.len(),
         mirror_loads: mirror.loads.len(),
@@ -238,8 +238,8 @@ pub(crate) fn probe(context: &ProjectOperationalContext) -> Result<DriftProbe, C
         Ok(DriftProbe {
             status: DriftStatus::Passed,
             message: format!(
-                "ledger/destination mirrors match: {} committed head(s), {} state segment row(s)",
-                ledger_heads.len(),
+                "ledger/destination mirrors match: {} committed checkpoint(s), {} state segment row(s)",
+                ledger_checkpoints.len(),
                 mirror.state.len()
             ),
             details,
@@ -264,10 +264,10 @@ fn skipped(message: &str, state_path: PathBuf, duckdb_path: PathBuf) -> DriftPro
     }
 }
 
-fn read_committed_heads(
+fn read_committed_checkpoints(
     path: &PathBuf,
     ownership: cdf_state_sqlite::StateStorePathOwnership,
-) -> Result<Vec<LedgerHead>, CliError> {
+) -> Result<Vec<LedgerCheckpoint>, CliError> {
     let open_path = cdf_state_sqlite::database_open_path(path, ownership)?;
     let conn = Connection::open_with_flags(
         open_path,
@@ -299,7 +299,7 @@ fn read_committed_heads(
         .prepare(
             "SELECT checkpoint_id, delta_json, receipt_json \
              FROM cdf_checkpoints \
-             WHERE status = 'committed' AND is_head = 1 AND receipt_json IS NOT NULL \
+             WHERE status = 'committed' AND receipt_json IS NOT NULL \
              ORDER BY sequence",
         )
         .map_err(sqlite_error)?;
@@ -312,9 +312,9 @@ fn read_committed_heads(
                 .map_err(|error| private_json_from_sql("checkpoint delta", error))?;
             let receipt: Receipt = serde_json::from_str(&receipt_json)
                 .map_err(|error| private_json_from_sql("checkpoint receipt", error))?;
-            validate_private_ledger_head(&checkpoint_id, &delta, &receipt)
+            validate_private_ledger_checkpoint(&checkpoint_id, &delta, &receipt)
                 .map_err(private_state_from_sql)?;
-            Ok(LedgerHead {
+            Ok(LedgerCheckpoint {
                 checkpoint_id,
                 delta,
                 receipt,
@@ -326,7 +326,7 @@ fn read_committed_heads(
         .map_err(sqlite_error)
 }
 
-fn validate_private_ledger_head(
+fn validate_private_ledger_checkpoint(
     checkpoint_id: &str,
     delta: &StateDelta,
     receipt: &Receipt,
@@ -770,7 +770,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let error = read_committed_heads(
+        let error = read_committed_checkpoints(
             &state_path,
             cdf_state_sqlite::StateStorePathOwnership::CdfManaged,
         )
