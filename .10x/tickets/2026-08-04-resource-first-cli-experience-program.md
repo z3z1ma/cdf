@@ -37,7 +37,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 6. **U5 — source discovery, generation, and add.** Add source/resource discovery and canonical
    artifacts, adapter-owned catalog enumeration, thin create-or-verify generation, then reconcile
    the single-location add path against the ratified authoring model.
-   Owner: `.10x/tickets/2026-08-05-u5-source-resource-discovery-generation-add.md`.
+   Owner: `.10x/tickets/done/2026-08-05-u5-source-resource-discovery-generation-add.md`.
 7. **U6 — operational and recovery command coherence.** Implement scoped doctor; fold package
    execution and interrupted-run recovery into explicit `run` input modes; audit
    preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
@@ -121,6 +121,10 @@ entire tranche is frozen. Focused tests/check/Clippy run during each child.
   exact first-use authority publication, and execution with aggregate plan-hash evidence. Three
   PostgreSQL executable-backfill schema-coercion test failures observed in the broader planning
   module are explicitly owned by U6's backfill coherence audit.
+- 2026-08-05: U5 completed directly on `main`: configured-source and authored-resource discovery
+  are explicit scopes, Files and SQLite provide bounded adapter-owned catalogs, selected schema
+  observation remains temporary, generation creates or verifies explicit field projections with
+  an honest star fallback, and add no longer compiles unrelated project resources.
 
 ## Blockers
 

@@ -172,7 +172,7 @@ pub use project_files::{
 pub use project_inputs::{
     ProjectResourceInput, ProjectResourceInventory, ProjectResourceName, ProjectResourceNamespace,
     ProjectResourcePath, ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
-    inventory_project_resources,
+    effective_project_source_config, inventory_project_resources,
 };
 pub use promotion::{
     CorrectionStrategySelection, CorrectionStrategySelectionRule,

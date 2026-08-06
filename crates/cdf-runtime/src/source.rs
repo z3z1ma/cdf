@@ -2347,6 +2347,190 @@ pub trait SourceDiscoverySession: Send + Sync {
     ) -> Result<SourceSchemaObservation>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceCatalogRequest {
+    pub configured_source: String,
+    pub source_options: BTreeMap<String, serde_json::Value>,
+    pub maximum_candidates: usize,
+}
+
+impl SourceCatalogRequest {
+    pub fn validate(&self) -> Result<()> {
+        validate_catalog_resource_token(&self.configured_source)?;
+        if self.maximum_candidates == 0 || self.maximum_candidates > 100_000 {
+            return Err(CdfError::contract(
+                "source catalog discovery requires a configured source token and a 1..=100000 candidate bound",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCatalogCandidate {
+    pub relation_id: String,
+    pub display_label: String,
+    pub relation_kind: String,
+    pub resource_token: Option<String>,
+    pub resource_options: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<cdf_kernel::CanonicalArrowSchema>,
+}
+
+impl SourceCatalogCandidate {
+    pub fn validate(&self) -> Result<()> {
+        if self.relation_id.is_empty()
+            || self.relation_id.len() > 4096
+            || self.relation_id.chars().any(char::is_control)
+            || self.display_label.is_empty()
+            || self.display_label.len() > 4096
+            || self.display_label.chars().any(char::is_control)
+            || self.relation_kind.is_empty()
+            || self.relation_kind.len() > 64
+            || !self
+                .relation_kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(CdfError::contract(
+                "source catalog candidate identity, label, or relation kind is invalid",
+            ));
+        }
+        if let Some(token) = &self.resource_token {
+            validate_catalog_resource_token(token)?;
+        }
+        if let Some(schema) = &self.schema {
+            schema.to_arrow()?;
+        }
+        if serde_json::to_vec(&self.resource_options)
+            .map_err(|error| {
+                CdfError::internal(format!("serialize source catalog options: {error}"))
+            })?
+            .len()
+            > 1024 * 1024
+        {
+            return Err(CdfError::contract(
+                "source catalog candidate resource options exceed the 1 MiB bound",
+            ));
+        }
+        reject_catalog_secret_values(&serde_json::to_value(&self.resource_options).map_err(
+            |error| CdfError::internal(format!("serialize source catalog options: {error}")),
+        )?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCatalogDiscovery {
+    pub identity_space: String,
+    pub candidates: Vec<SourceCatalogCandidate>,
+    pub complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<String>,
+    pub generation: String,
+}
+
+impl SourceCatalogDiscovery {
+    pub fn new(
+        request: &SourceCatalogRequest,
+        identity_space: impl Into<String>,
+        candidates: Vec<SourceCatalogCandidate>,
+        complete: bool,
+        continuation: Option<String>,
+    ) -> Result<Self> {
+        request.validate()?;
+        let identity_space = identity_space.into();
+        let generation = crate::artifact_hash(&serde_json::json!({
+            "configured_source": &request.configured_source,
+            "source_options": &request.source_options,
+            "identity_space": &identity_space,
+            "candidates": &candidates,
+            "complete": complete,
+            "continuation": &continuation,
+        }))?;
+        let discovery = Self {
+            identity_space,
+            candidates,
+            complete,
+            continuation,
+            generation,
+        };
+        discovery.validate(request.maximum_candidates)?;
+        Ok(discovery)
+    }
+
+    pub fn validate(&self, maximum_candidates: usize) -> Result<()> {
+        if self.identity_space.is_empty()
+            || self.identity_space.len() > 256
+            || self.identity_space.chars().any(char::is_control)
+            || self.candidates.len() > maximum_candidates
+            || (!self.complete && self.continuation.is_none())
+            || (self.complete && self.continuation.is_some())
+        {
+            return Err(CdfError::contract(
+                "source catalog discovery identity, bound, or continuation evidence is invalid",
+            ));
+        }
+        let mut previous = None;
+        for candidate in &self.candidates {
+            candidate.validate()?;
+            if previous.is_some_and(|value: &str| value >= candidate.relation_id.as_str()) {
+                return Err(CdfError::contract(
+                    "source catalog candidates must be strictly ordered by canonical relation id",
+                ));
+            }
+            previous = Some(candidate.relation_id.as_str());
+        }
+        crate::validate_artifact_hash("source catalog generation", &self.generation)
+    }
+}
+
+pub trait SourceCatalogDiscoverer: Send + Sync {
+    fn discover_catalog(
+        &self,
+        request: &SourceCatalogRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<SourceCatalogDiscovery>;
+
+    fn discover_catalog_schema(
+        &self,
+        _request: &SourceCatalogRequest,
+        candidate: &SourceCatalogCandidate,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<CanonicalArrowSchema>> {
+        Ok(candidate.schema.clone())
+    }
+}
+
+fn validate_catalog_resource_token(value: &str) -> Result<()> {
+    let mut bytes = value.bytes();
+    if value.len() > 128
+        || !bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        || bytes.any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    {
+        return Err(CdfError::contract(
+            "source catalog resource token must match [a-z][a-z0-9_]{0,127}",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_catalog_secret_values(value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::String(value) if value.starts_with("secret://") => Err(
+            CdfError::contract("source catalog resource options cannot contain secret references"),
+        ),
+        serde_json::Value::Array(values) => {
+            values.iter().try_for_each(reject_catalog_secret_values)
+        }
+        serde_json::Value::Object(values) => {
+            values.values().try_for_each(reject_catalog_secret_values)
+        }
+        _ => Ok(()),
+    }
+}
+
 pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
     artifact_root: &'a Path,
@@ -2522,6 +2706,9 @@ pub trait SourceDriver: Send + Sync {
         output: &mut dyn SourceHealthSink,
     ) -> Result<()>;
     fn add_planner(&self) -> Option<&dyn crate::SourceAddPlanner> {
+        None
+    }
+    fn catalog_discoverer(&self) -> Option<&dyn SourceCatalogDiscoverer> {
         None
     }
     fn discovery_session(

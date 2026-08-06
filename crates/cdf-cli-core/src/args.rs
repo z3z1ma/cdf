@@ -15,9 +15,9 @@ use crate::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
-    "help", "version", "init", "add", "compile", "validate", "plan", "explain", "run", "preview",
-    "sql", "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill",
-    "package", "doctor", "status",
+    "help", "version", "init", "add", "discover", "compile", "validate", "plan", "explain", "run",
+    "preview", "sql", "inspect", "diff", "schema", "contract", "state", "resume", "replay",
+    "backfill", "package", "doctor", "status",
 ];
 const INSPECT_NOUNS: &[&str] = &[
     "project",
@@ -34,6 +34,7 @@ const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
 const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
+const DISCOVER_SUBCOMMANDS: &[&str] = &["source", "resource"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cli {
@@ -52,6 +53,7 @@ pub enum Command {
     Version,
     Init(InitArgs),
     Add(AddArgs),
+    Discover(DiscoverCommand),
     Compile(CompileArgs),
     Validate(ValidateArgs),
     Plan(PlanArgs),
@@ -84,7 +86,30 @@ pub struct AddArgs {
     pub resource_id: String,
     pub location: String,
     pub dry_run: bool,
+    pub source: Option<String>,
     pub options: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiscoverCommand {
+    Source(DiscoverSourceArgs),
+    Resource(DiscoverResourceArgs),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverSourceArgs {
+    pub configured_source: String,
+    pub selectors: Vec<String>,
+    pub out: Option<PathBuf>,
+    pub generate: bool,
+    pub namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverResourceArgs {
+    pub selectors: Vec<String>,
+    pub exclude: Vec<String>,
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -446,6 +471,7 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         }
         Some(("init", subcommand)) => parse_init(subcommand).map(Command::Init),
         Some(("add", subcommand)) => parse_add(subcommand).map(Command::Add),
+        Some(("discover", subcommand)) => parse_discover(subcommand).map(Command::Discover),
         Some(("compile", subcommand)) => Ok(Command::Compile(CompileArgs {
             selectors: values(subcommand, "selectors"),
             exclude: values(subcommand, "exclude"),
@@ -528,8 +554,50 @@ fn parse_add(matches: &ArgMatches) -> Result<AddArgs, CliError> {
         resource_id: operands[0].clone(),
         location: operands[1].clone(),
         dry_run: matches.get_flag("dry_run"),
+        source: string_value(matches, "source"),
         options,
     })
+}
+
+fn parse_discover(matches: &ArgMatches) -> Result<DiscoverCommand, CliError> {
+    let Some((subcommand, matches)) = matches.subcommand() else {
+        return Err(CliError::usage("discover requires `source` or `resource`"));
+    };
+    match subcommand {
+        "source" => {
+            let values = values(matches, "values");
+            let Some(configured_source) = values.first() else {
+                return Err(CliError::usage(
+                    "discover source requires a configured source name",
+                ));
+            };
+            let generate = matches.get_flag("generate");
+            let namespace = string_value(matches, "namespace");
+            if namespace.is_some() && !generate {
+                return Err(CliError::usage(
+                    "discover source --namespace requires --generate",
+                ));
+            }
+            Ok(DiscoverCommand::Source(DiscoverSourceArgs {
+                configured_source: configured_source.clone(),
+                selectors: values.into_iter().skip(1).collect(),
+                out: string_value(matches, "out").map(PathBuf::from),
+                generate,
+                namespace,
+            }))
+        }
+        "resource" => Ok(DiscoverCommand::Resource(DiscoverResourceArgs {
+            selectors: values(matches, "selectors"),
+            exclude: values(matches, "exclude"),
+            out: string_value(matches, "out").map(PathBuf::from),
+        })),
+        other => Err(unknown_subcommand_error(
+            &["discover"],
+            other,
+            DISCOVER_SUBCOMMANDS,
+            "unknown discover subcommand",
+        )),
+    }
 }
 
 fn parse_scan(
@@ -1004,8 +1072,10 @@ pub fn cli_command() -> ClapCommand {
             cmd("add")
                 .arg(values_arg("values").value_names(["RESOURCE_ID", "URL_OR_PATH"]))
                 .arg(flag("dry_run", "dry-run"))
+                .arg(option("source", "source", "CONFIGURED_SOURCE"))
                 .arg(append_option("source_option", "option", "KEY=VALUE")),
         )
+        .subcommand(discover_command())
         .subcommand(
             cmd("compile")
                 .about("Prepare independently verified compiled resource artifacts")
@@ -1053,6 +1123,25 @@ pub fn cli_command() -> ClapCommand {
         .subcommand(package_command())
         .subcommand(cmd("doctor").arg(values_arg("extra").hide(true)))
         .subcommand(cmd("status").arg(values_arg("extra").hide(true)))
+}
+
+fn discover_command() -> ClapCommand {
+    cmd("discover")
+        .subcommand(
+            cmd("source")
+                .about("Discover relations exposed by one configured source")
+                .arg(values_arg("values").value_names(["CONFIGURED_SOURCE", "RELATION_SELECTOR"]))
+                .arg(option("out", "out", "PATH"))
+                .arg(flag("generate", "generate"))
+                .arg(option("namespace", "namespace", "NAMESPACE")),
+        )
+        .subcommand(
+            cmd("resource")
+                .about("Discover schema for selected authored resources")
+                .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+                .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+                .arg(option("out", "out", "PATH")),
+        )
 }
 
 fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
@@ -1223,6 +1312,7 @@ fn cmd(name: &'static str) -> ClapCommand {
         "version" => "Print the cdf version",
         "init" => "Create a new cdf project",
         "add" => "Add a source resource to the project",
+        "discover" => "Discover source relations or authored resource schemas",
         "compile" => "Compile a verified local project manifest",
         "validate" => "Statically validate project configuration and resources",
         "plan" => "Plan a resource run without executing it",
@@ -1322,7 +1412,7 @@ fn option_help(long: &str) -> &'static str {
         "explain-memory" => "Include memory-ledger detail in the run report",
         "loop" => "Continue polling for work",
         "exclude" => "Exclude resources matching this glob; may be repeated",
-        "out" => "Write a canonical portable plan artifact without replacing terminal output",
+        "out" => "Write the command's canonical artifact without replacing terminal output",
         "plan" => "Execute a canonical portable plan artifact",
         "dry-run" => "Show the proposed change without writing it",
         "locked" => "Require sufficient unchanged cdf.lock authority",
@@ -1340,6 +1430,9 @@ fn option_help(long: &str) -> &'static str {
         "package" => "Package directory",
         "receipt" => "Receipt identifier",
         "option" => "Source-driver option as KEY=VALUE; may be repeated",
+        "source" => "Configured source name; defaults to the resource namespace",
+        "generate" => "Create or verify resource files for matched source relations",
+        "namespace" => "Generated resource namespace; defaults to the configured source",
         "color" => "Color policy: auto, always, or never",
         "progress" => "Progress policy: auto, always, or never",
         "unicode" => "Unicode policy: auto, always, or never",
@@ -1633,6 +1726,65 @@ mod run_jobs_tests {
         };
         assert_eq!(sql.query, "--color --progress --unicode -q -vv");
         assert_eq!(cli.terminal, TerminalPolicy::default());
+    }
+
+    #[test]
+    fn discover_parser_keeps_source_and_resource_identity_spaces_explicit() {
+        let source = Cli::parse(
+            [
+                "cdf",
+                "discover",
+                "source",
+                "warehouse",
+                "public.*",
+                "--generate",
+                "--namespace",
+                "raw",
+                "--out",
+                "discovery.json",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Discover(super::DiscoverCommand::Source(source)) = source.command else {
+            panic!("expected source discovery");
+        };
+        assert_eq!(source.configured_source, "warehouse");
+        assert_eq!(source.selectors, ["public.*"]);
+        assert_eq!(source.namespace.as_deref(), Some("raw"));
+        assert!(source.generate);
+
+        let resource = Cli::parse(
+            [
+                "cdf",
+                "discover",
+                "resource",
+                "raw.*",
+                "--exclude",
+                "raw.private",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Discover(super::DiscoverCommand::Resource(resource)) = resource.command else {
+            panic!("expected resource discovery");
+        };
+        assert_eq!(resource.selectors, ["raw.*"]);
+        assert_eq!(resource.exclude, ["raw.private"]);
+
+        let error = Cli::parse(
+            [
+                "cdf",
+                "discover",
+                "source",
+                "warehouse",
+                "--namespace",
+                "raw",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("requires --generate"));
     }
 
     #[test]

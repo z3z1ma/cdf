@@ -42,6 +42,22 @@ pub(crate) fn discover_sqlite_table(
     discover_sqlite_table_on_connection(&connection, resource_id, table)
 }
 
+pub(crate) fn discover_sqlite_tables(database_path: &Path, maximum: usize) -> Result<Vec<String>> {
+    validate_source_file(database_path)?;
+    let connection = open_read_only(database_path, "open SQLite catalog for relation discovery")?;
+    let limit = i64::try_from(maximum.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut statement = connection
+        .prepare(
+            "SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT ?1",
+        )
+        .map_err(|error| classify_sqlite_error("prepare SQLite relation catalog query", error))?;
+    statement
+        .query_map(params![limit], |row| row.get::<_, String>(0))
+        .map_err(|error| classify_sqlite_error("query SQLite relation catalog", error))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| classify_sqlite_error("decode SQLite relation catalog", error))
+}
+
 pub(crate) fn discover_sqlite_table_on_connection(
     connection: &Connection,
     resource_id: &ResourceId,

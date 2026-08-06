@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-05
 
 # Source discovery and resource generation
 
@@ -79,16 +79,22 @@ cdf/<namespace>/<resource-token>.cdf.sql
 The default namespace is the configured source name. `--namespace <name>` replaces that default
 with an exact valid namespace token; it does not rename or reconfigure the source.
 
-Generated SQL is the smallest current query:
+Generated SQL exposes the discovered top-level field inventory so the file is immediately useful
+for projection editing and per-field expressions:
 
 ```sql
-SELECT *
+SELECT
+  "order_id",
+  "updated_at"
 FROM upstream(source => '<configured-source>', <driver-owned relation arguments>);
 ```
 
-No schema fields, destination URI, credentials, secret values/references, explicit resource id,
-compatibility metadata, or speculative policies are generated. Path authority supplies the CDF
-resource id. First plan/run supplies schema and applicable defaults through ordinary compilation.
+Discovery-order top-level field names are safely quoted and MUST NOT be expanded into nested-field
+projections. `SELECT *` is the explicit fallback only when the adapter cannot supply any schema
+summary; the report identifies that fallback. No destination URI, credentials, secret
+values/references, explicit resource id, compatibility metadata, or speculative policies are
+generated. Path authority supplies the CDF resource id. First plan/run supplies applicable
+defaults through ordinary compilation.
 
 The adapter proposes a resource token because it owns relation structure. The generic layer
 validates the strict token, path uniqueness, and deterministic candidate-to-path mapping. When two
@@ -169,4 +175,6 @@ is evidence/proposal, never execution or lock authority.
 ## Ratification status
 
 The user confirmed the two discovery scopes, read-only default, explicit thin-resource generation,
-namespace override, and useful partial generation success on 2026-08-04.
+namespace override, and useful partial generation success on 2026-08-04. On 2026-08-05 the user
+superseded star-first generation: generated resources make a best effort to enumerate discovered
+top-level fields, with `SELECT *` only when schema is unavailable.

@@ -75,6 +75,10 @@ fn dispatch(
             let (_, services) = default_services(&cli)?;
             crate::add_command::add(&cli, args, &services, destinations)
         }
+        Command::Discover(command) => {
+            let (_, services) = default_services(&cli)?;
+            crate::discover_command::discover(&cli, command, &services, destinations)
+        }
         Command::Compile(args) => crate::compile_command::compile(&cli, args, destinations),
         Command::Sql(_) => {
             Err(CdfError::internal("sql must use registry-free command dispatch").into())

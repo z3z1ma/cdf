@@ -1170,6 +1170,7 @@ dependencies = [
  "duckdb",
  "flate2",
  "futures-util",
+ "glob",
  "mimalloc",
  "postgres",
  "rusqlite",

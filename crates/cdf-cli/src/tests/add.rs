@@ -27,14 +27,15 @@ fn add_local_parquet_writes_query_resource_and_shared_source_configuration() {
     assert_eq!(report["resource_path"], "cdf/tlc/yellow.cdf.sql");
     assert_eq!(report["location"], "data");
     assert_eq!(report["selection"], "yellow.parquet");
-    assert_eq!(report["write_disposition"], "append");
+    assert_eq!(report["policy"], "project defaults");
     assert_eq!(report["writes"]["resource_sql"], true);
     assert_eq!(report["writes"]["configured_source"], true);
     assert_eq!(report["writes"]["lockfile"], false);
-    assert_eq!(report["next_command"], "cdf compile tlc.yellow");
+    assert_eq!(report["next_command"], "cdf plan tlc.yellow");
 
     let sql = fs::read_to_string(project.root.join("cdf/tlc/yellow.cdf.sql")).unwrap();
-    assert!(sql.contains("DISPOSITION APPEND"));
+    assert!(!sql.contains("DISPOSITION"));
+    assert!(sql.starts_with("SELECT *\nFROM upstream("));
     assert!(sql.contains("source => 'tlc'"));
     assert!(sql.contains("glob => 'yellow.parquet'"));
     assert!(sql.contains("format => 'parquet'"));
@@ -87,6 +88,66 @@ fn add_reuses_matching_configured_source_without_rewriting_project_configuration
     let sql = fs::read_to_string(project.root.join("cdf/local/more.cdf.sql")).unwrap();
     assert!(sql.contains("source => 'local'"));
     assert!(sql.contains("glob => 'more.ndjson'"));
+}
+
+#[test]
+fn add_keeps_resource_namespace_distinct_from_explicit_configured_source() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("data/more.ndjson"),
+        "{\"id\":3,\"updated_at\":1783296060000001}\n",
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "raw.more",
+        project.root.join("data/more.ndjson").to_str().unwrap(),
+        "--source",
+        "local",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let report = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(report["result"]["namespace"], "raw");
+    assert_eq!(report["result"]["configured_source"], "local");
+    let sql = fs::read_to_string(project.root.join("cdf/raw/more.cdf.sql")).unwrap();
+    assert!(sql.contains("source => 'local'"));
+    assert!(!sql.contains("source => 'raw'"));
+}
+
+#[test]
+fn add_does_not_compile_unrelated_resources() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf/local/events.cdf.sql"),
+        "this is intentionally invalid project SQL\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("data/more.ndjson"),
+        "{\"id\":3,\"updated_at\":1783296060000001}\n",
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "raw.more",
+        project.root.join("data/more.ndjson").to_str().unwrap(),
+        "--source",
+        "local",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(project.root.join("cdf/raw/more.cdf.sql").exists());
 }
 
 #[test]

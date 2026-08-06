@@ -1,16 +1,18 @@
-use std::{collections::BTreeMap, env, fs};
+use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use cdf_kernel::CdfError;
 use cdf_project::{
-    PROJECT_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, parse_cdf_toml,
-    parse_resource_file, publish_project_files_transactionally,
+    PROJECT_FILE_NAME, ProjectFileExpectation, ProjectFileGuard, ProjectFileWrite, parse_cdf_toml,
+    parse_resource_file, project_file_transaction_generation,
+    publish_project_files_transactionally, publish_project_files_transactionally_guarded,
+    recover_project_file_transaction,
 };
 use cdf_runtime::{PlannedSourceAdd, SourceAddRequest, SourceRegistry};
 use serde::Serialize;
 
 use crate::{
     args::{AddArgs, Cli},
-    context::{ProjectContext, project_authority_read_error},
+    context::{project_authority_read_error, project_location},
     error_catalog,
     output::{CliError, CommandOutput},
 };
@@ -19,24 +21,9 @@ pub(crate) fn add(
     cli: &Cli,
     args: AddArgs,
     _execution: &cdf_runtime::ExecutionServices,
-    destinations: &cdf_runtime::DestinationRegistry,
+    _destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = if args.dry_run {
-        ProjectContext::load_for_command_with_destination_registry(
-            "add",
-            cli.project.as_ref(),
-            cli.env.as_deref(),
-            true,
-            destinations,
-        )?
-    } else {
-        ProjectContext::load_for_command_with_recovery_and_destination_registry(
-            "add",
-            cli.project.as_ref(),
-            cli.env.as_deref(),
-            destinations,
-        )?
-    };
+    let context = AddProjectContext::load(cli, args.dry_run)?;
     let registry = crate::source_registry::builtin_source_registry()?;
     let request = AddResourceRequest::from_args(&context, registry, &args)?;
     ensure_add_is_available(&context, &request)?;
@@ -46,6 +33,46 @@ pub(crate) fn add(
         publish_add(&context, &request, &proposal)?;
     }
     CommandOutput::rendered("add", render::document(&report), report)
+}
+
+struct AddProjectContext {
+    root: PathBuf,
+    project_bytes: Vec<u8>,
+    config: cdf_project::ProjectConfig,
+    environment: String,
+}
+
+impl AddProjectContext {
+    fn load(cli: &Cli, dry_run: bool) -> Result<Self, CliError> {
+        let (root, project_path) = project_location(cli.project.as_ref())?;
+        if dry_run {
+            project_file_transaction_generation(&root)?;
+        } else {
+            recover_project_file_transaction(&root)?;
+        }
+        let project_bytes = fs::read(&project_path).map_err(|error| {
+            add_project_read_error("read project configuration", &project_path, error)
+        })?;
+        let project_text = std::str::from_utf8(&project_bytes).map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("parse {PROJECT_FILE_NAME} as UTF-8: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        let config = parse_cdf_toml(project_text)?;
+        let environment = cli
+            .env
+            .as_deref()
+            .unwrap_or(&config.project.default_environment)
+            .to_owned();
+        config.effective_environment(&environment)?;
+        Ok(Self {
+            root,
+            project_bytes,
+            config,
+            environment,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -61,11 +88,13 @@ struct AddResourceRequest {
 
 impl AddResourceRequest {
     fn from_args(
-        context: &ProjectContext,
+        context: &AddProjectContext,
         registry: &SourceRegistry,
         args: &AddArgs,
     ) -> Result<Self, CliError> {
         let (namespace, resource) = split_resource_id(&args.resource_id)?;
+        let configured_source = args.source.clone().unwrap_or_else(|| namespace.clone());
+        validate_sql_name("configured source", &configured_source)?;
         let current_dir = env::current_dir().map_err(|error| {
             CdfError::environment(format!(
                 "read current directory: {error}; change to an accessible directory before retrying"
@@ -74,7 +103,7 @@ impl AddResourceRequest {
         let plan = registry
             .plan_add(
                 SourceAddRequest {
-                    source_name: namespace.clone(),
+                    source_name: configured_source.clone(),
                     resource_name: resource.clone(),
                     location: args.location.clone(),
                     project_root: context.root.clone(),
@@ -87,7 +116,7 @@ impl AddResourceRequest {
             .map_err(|error| CliError::usage_with(error.message, error_catalog::USAGE))?;
         Ok(Self {
             resource_id: args.resource_id.clone(),
-            configured_source: namespace.clone(),
+            configured_source,
             resource_path: format!("cdf/{namespace}/{resource}.cdf.sql"),
             namespace,
             resource,
@@ -106,14 +135,11 @@ struct ProposedResource {
 
 impl ProposedResource {
     fn compile(
-        context: &ProjectContext,
+        context: &AddProjectContext,
         registry: &SourceRegistry,
         request: &AddResourceRequest,
     ) -> Result<Self, CliError> {
-        let project_path = context.root.join(PROJECT_FILE_NAME);
-        let project_prior = fs::read(&project_path).map_err(|error| {
-            add_project_read_error("read project configuration", &project_path, error)
-        })?;
+        let project_prior = context.project_bytes.clone();
         let project_text = std::str::from_utf8(&project_prior).map_err(|error| {
             CliError::mapped(
                 CdfError::contract(format!("parse {PROJECT_FILE_NAME} as UTF-8: {error}")),
@@ -153,18 +179,9 @@ impl ProposedResource {
 }
 
 fn ensure_add_is_available(
-    context: &ProjectContext,
+    context: &AddProjectContext,
     request: &AddResourceRequest,
 ) -> Result<(), CliError> {
-    if context.has_resource(&request.resource_id) {
-        return Err(CliError::usage_with(
-            format!(
-                "resource `{}` is already compiled; choose a new `<namespace>.<resource>` id",
-                request.resource_id
-            ),
-            error_catalog::USAGE,
-        ));
-    }
     let resource_path = context.root.join(&request.resource_path);
     if add_target_exists(&resource_path)? {
         return Err(CliError::usage_with(
@@ -190,7 +207,7 @@ fn ensure_add_is_available(
 }
 
 fn project_with_source(
-    context: &ProjectContext,
+    context: &AddProjectContext,
     project_text: &str,
     request: &AddResourceRequest,
 ) -> Result<(String, bool), CliError> {
@@ -203,6 +220,20 @@ fn project_with_source(
                 format!(
                     "configured source `{}` already exists with different type or options; choose a distinct namespace/resource id or edit its shared [sources.{}] configuration explicitly",
                     request.configured_source, request.configured_source
+                ),
+                error_catalog::USAGE,
+            ));
+        }
+        let effective = cdf_project::effective_project_source_config(
+            &context.config,
+            &context.environment,
+            &request.configured_source,
+        )?;
+        if effective != *existing {
+            return Err(CliError::usage_with(
+                format!(
+                    "configured source `{}` has environment-specific options that differ from the supplied location; use the location represented by that source or choose another configured source",
+                    request.configured_source
                 ),
                 error_catalog::USAGE,
             ));
@@ -227,7 +258,11 @@ fn project_with_source(
 }
 
 fn resource_sql(request: &AddResourceRequest) -> Result<String, CliError> {
-    registered_source_resource_sql(&request.configured_source, &request.plan)
+    crate::discover_command::source_resource_sql(
+        &request.configured_source,
+        &request.plan.proposal.resource_options,
+        None,
+    )
 }
 
 pub(crate) fn registered_source_resource_sql(
@@ -257,7 +292,7 @@ pub(crate) fn registered_source_resource_sql(
     Ok(sql)
 }
 
-fn sql_value(value: &serde_json::Value) -> Result<String, CliError> {
+pub(crate) fn sql_value(value: &serde_json::Value) -> Result<String, CliError> {
     Ok(match value {
         serde_json::Value::Null => "NULL".to_owned(),
         serde_json::Value::Bool(value) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
@@ -311,7 +346,7 @@ fn validate_sql_name(label: &str, value: &str) -> Result<(), CliError> {
 }
 
 fn publish_add(
-    context: &ProjectContext,
+    context: &AddProjectContext,
     request: &AddResourceRequest,
     proposal: &ProposedResource,
 ) -> Result<(), CliError> {
@@ -344,7 +379,19 @@ fn publish_add(
     } else {
         request.resource_path.as_str()
     };
-    publish_project_files_transactionally(&context.root, commit_point, writes)?;
+    if proposal.writes_source_config {
+        publish_project_files_transactionally(&context.root, commit_point, writes)?;
+    } else {
+        publish_project_files_transactionally_guarded(
+            &context.root,
+            commit_point,
+            vec![ProjectFileGuard::exact(
+                PROJECT_FILE_NAME,
+                proposal.project_prior.clone(),
+            )],
+            writes,
+        )?;
+    }
     Ok(())
 }
 
@@ -373,21 +420,20 @@ struct AddReport {
     resource_path: String,
     location: String,
     selection: String,
-    write_disposition: &'static str,
-    cursor: Option<String>,
+    policy: &'static str,
     writes: AddWrites,
     next_command: String,
 }
 
 impl AddReport {
     fn from_parts(
-        context: &ProjectContext,
+        context: &AddProjectContext,
         request: &AddResourceRequest,
         proposal: &ProposedResource,
     ) -> Self {
         Self {
             project: context.root.display().to_string(),
-            environment: context.environment.name.clone(),
+            environment: context.environment.clone(),
             resource_id: request.resource_id.clone(),
             namespace: request.namespace.clone(),
             resource: request.resource.clone(),
@@ -396,13 +442,7 @@ impl AddReport {
             resource_path: request.resource_path.clone(),
             location: request.plan.proposal.display_location.as_str().to_owned(),
             selection: request.plan.proposal.display_selection.clone(),
-            write_disposition: "append",
-            cursor: request
-                .plan
-                .proposal
-                .cursor
-                .as_ref()
-                .map(|cursor| cursor.field.clone()),
+            policy: "project defaults",
             writes: AddWrites {
                 resource_sql: !request.dry_run,
                 configured_source: !request.dry_run && proposal.writes_source_config,
@@ -410,7 +450,7 @@ impl AddReport {
                     && !request.plan.proposal.private_files.is_empty(),
                 lockfile: false,
             },
-            next_command: format!("cdf compile {}", request.resource_id),
+            next_command: format!("cdf plan {}", request.resource_id),
         }
     }
 }

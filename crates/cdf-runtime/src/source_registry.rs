@@ -182,6 +182,50 @@ impl SourceRegistry {
         }))
     }
 
+    pub fn discover_catalog(
+        &self,
+        source_kind: &str,
+        request: &crate::SourceCatalogRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<crate::SourceCatalogDiscovery> {
+        request.validate()?;
+        let driver = self.driver_for_kind(source_kind)?;
+        self.validate_source_configuration(source_kind, &request.source_options)?;
+        let discoverer = driver.catalog_discoverer().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source driver `{}` does not support configured-source catalog discovery",
+                driver.descriptor().driver_id.as_str()
+            ))
+        })?;
+        let discovery = discoverer.discover_catalog(request, context)?;
+        discovery.validate(request.maximum_candidates)?;
+        Ok(discovery)
+    }
+
+    pub fn discover_catalog_schema(
+        &self,
+        source_kind: &str,
+        request: &crate::SourceCatalogRequest,
+        candidate: &crate::SourceCatalogCandidate,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<cdf_kernel::CanonicalArrowSchema>> {
+        request.validate()?;
+        candidate.validate()?;
+        let driver = self.driver_for_kind(source_kind)?;
+        self.validate_source_configuration(source_kind, &request.source_options)?;
+        let discoverer = driver.catalog_discoverer().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source driver `{}` does not support configured-source catalog discovery",
+                driver.descriptor().driver_id.as_str()
+            ))
+        })?;
+        let schema = discoverer.discover_catalog_schema(request, candidate, context)?;
+        if let Some(schema) = &schema {
+            schema.to_arrow()?;
+        }
+        Ok(schema)
+    }
+
     pub fn driver_for_uri(&self, uri: &str) -> Result<&Arc<dyn SourceDriver>> {
         let scheme = uri
             .split_once("://")

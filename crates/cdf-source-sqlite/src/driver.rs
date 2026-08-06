@@ -7,7 +7,8 @@ use std::{
 use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_runtime::{
     CompiledSourcePlan, SourceAddCursor, SourceAddCursorOrdering, SourceAddPlanner,
-    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCompileRequest,
+    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCatalogCandidate,
+    SourceCatalogDiscoverer, SourceCatalogDiscovery, SourceCatalogRequest, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
     SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
@@ -17,7 +18,7 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    catalog::discover_sqlite_table,
+    catalog::{discover_sqlite_table, discover_sqlite_tables},
     identifier::SqliteIdentifier,
     source::{
         SQLITE_MAXIMUM_BATCH_BYTES, SQLITE_SOURCE_BLOCKING_LANE_ID, SqliteTableResource,
@@ -102,6 +103,10 @@ impl SourceDriver for SqliteSourceDriver {
     }
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
+    }
+
+    fn catalog_discoverer(&self) -> Option<&dyn SourceCatalogDiscoverer> {
         Some(self)
     }
 
@@ -261,6 +266,74 @@ impl SourceDriver for SqliteSourceDriver {
         )?;
         Ok(Arc::new(resource))
     }
+}
+
+impl SourceCatalogDiscoverer for SqliteSourceDriver {
+    fn discover_catalog(
+        &self,
+        request: &SourceCatalogRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<SourceCatalogDiscovery> {
+        request.validate()?;
+        context
+            .execution()
+            .ensure_blocking_lanes(&[sqlite_source_blocking_lane()])?;
+        let source: SqliteSourceOptions =
+            decode_options("SQLite source", request.source_options.clone())?;
+        let database_path = resolve_database_path(
+            context.project_root(),
+            &normalize_sqlite_location(&source.location)?,
+        );
+        let maximum = request.maximum_candidates;
+        let discovery_resource = cdf_kernel::ResourceId::new("discovery.catalog")?;
+        let path = database_path.clone();
+        let tables = context
+            .execution()
+            .run_blocking(SQLITE_SOURCE_BLOCKING_LANE_ID, move || {
+                discover_sqlite_tables(&path, maximum)
+            })?;
+        let complete = tables.len() <= maximum;
+        let selected = tables.into_iter().take(maximum).collect::<Vec<_>>();
+        let mut candidates = Vec::with_capacity(selected.len());
+        for table_name in selected {
+            let table = SqliteIdentifier::new(table_name.clone())?;
+            let path = database_path.clone();
+            let resource_id = discovery_resource.clone();
+            let schema = context
+                .execution()
+                .run_blocking(SQLITE_SOURCE_BLOCKING_LANE_ID, move || {
+                    discover_sqlite_table(&path, &resource_id, &table)
+                })?;
+            candidates.push(SourceCatalogCandidate {
+                relation_id: table_name.clone(),
+                display_label: table_name.clone(),
+                relation_kind: "table".to_owned(),
+                resource_token: catalog_resource_token(&table_name),
+                resource_options: BTreeMap::from([(
+                    "table".to_owned(),
+                    serde_json::Value::String(table_name),
+                )]),
+                schema: Some(cdf_kernel::CanonicalArrowSchema::from_arrow(
+                    &schema.schema,
+                )?),
+            });
+        }
+        SourceCatalogDiscovery::new(
+            request,
+            "sqlite_table",
+            candidates,
+            complete,
+            (!complete).then(|| "narrow relation selectors to a complete catalog set".to_owned()),
+        )
+    }
+}
+
+fn catalog_resource_token(value: &str) -> Option<String> {
+    let mut bytes = value.bytes();
+    (value.len() <= 128
+        && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then(|| value.to_owned())
 }
 
 impl SourceAddPlanner for SqliteSourceDriver {

@@ -25,11 +25,7 @@ pub(super) fn document(report: &AddReport) -> RenderDocument {
                 .row("SQL", report.resource_path.clone())
                 .row("location", report.location.clone())
                 .row("selection", report.selection.clone())
-                .row("disposition", report.write_disposition.to_owned())
-                .row(
-                    "cursor",
-                    report.cursor.clone().unwrap_or_else(|| "none".to_owned()),
-                ),
+                .row("policy", report.policy.to_owned()),
         )
         .blank_line()
         .push(NextCommand::new(report.next_command.clone()))

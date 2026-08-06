@@ -14,6 +14,7 @@ mod destination_registry;
 #[cfg(test)]
 mod destination_registry_test_support;
 mod destination_uri;
+mod discover_command;
 mod doctor_command;
 mod doctor_drift;
 mod inspect_command;

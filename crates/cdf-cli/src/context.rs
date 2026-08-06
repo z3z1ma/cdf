@@ -153,22 +153,6 @@ impl ProjectContext {
         )
     }
 
-    pub fn load_for_command_with_recovery_and_destination_registry(
-        command: &str,
-        project_arg: Option<&PathBuf>,
-        env_arg: Option<&str>,
-        destinations: &cdf_runtime::DestinationRegistry,
-    ) -> StdResult<Self, CliError> {
-        Self::load_for_command_with_policy(
-            command,
-            project_arg,
-            env_arg,
-            true,
-            ProjectPublicationRecovery::Complete,
-            destinations,
-        )
-    }
-
     fn load_for_command_with_policy(
         command: &str,
         project_arg: Option<&PathBuf>,

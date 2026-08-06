@@ -15,7 +15,8 @@ use cdf_object_access::{
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
     FormatRegistry, PreparedSourcePayload, PreparedSourcePayloadKey, SourceAddPlanner,
-    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCompileRequest,
+    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCatalogCandidate,
+    SourceCatalogDiscoverer, SourceCatalogDiscovery, SourceCatalogRequest, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
     SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
@@ -133,6 +134,10 @@ impl SourceDriver for FileSourceDriver {
     }
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
+    }
+
+    fn catalog_discoverer(&self) -> Option<&dyn SourceCatalogDiscoverer> {
         Some(self)
     }
 
@@ -323,6 +328,251 @@ impl SourceDriver for FileSourceDriver {
             .with_prepared_inventory_key(prepared_inventory_key),
         ))
     }
+}
+
+impl SourceCatalogDiscoverer for FileSourceDriver {
+    fn discover_catalog(
+        &self,
+        request: &SourceCatalogRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<SourceCatalogDiscovery> {
+        request.validate()?;
+        let source: FileSourceOptions =
+            decode_options("file source", request.source_options.clone())?;
+        let local_root = match file_transport_scheme(&source.root)? {
+            None => PathBuf::from(resolve_runtime_root(&source.root, context.project_root())?),
+            Some(FileTransportScheme::File) => file_url_path(&source.root)?,
+            Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
+                return Err(CdfError::contract(
+                    "HTTP file sources do not expose a listable catalog; pass the known object path to `cdf add` or author its resource explicitly",
+                ));
+            }
+            Some(FileTransportScheme::Remote(_)) => {
+                return Err(CdfError::contract(
+                    "object-store catalog discovery is not available for this file transport",
+                ));
+            }
+        };
+        let canonical_root = fs::canonicalize(&local_root).map_err(|error| {
+            CdfError::data(format!(
+                "open file source catalog root {}: {error}",
+                local_root.display()
+            ))
+        })?;
+        if !canonical_root.is_dir() {
+            return Err(CdfError::data(format!(
+                "file source catalog root {} is not a directory",
+                local_root.display()
+            )));
+        }
+        let mut relations = Vec::new();
+        let mut visited_entries = 0_usize;
+        let maximum_entries = request
+            .maximum_candidates
+            .saturating_mul(32)
+            .max(request.maximum_candidates.saturating_add(1));
+        let mut walk_truncated = false;
+        collect_catalog_files(
+            &canonical_root,
+            &canonical_root,
+            request.maximum_candidates.saturating_add(1),
+            maximum_entries,
+            &mut visited_entries,
+            &mut walk_truncated,
+            &mut relations,
+        )?;
+        relations.sort();
+        relations.dedup();
+        let complete = !walk_truncated && relations.len() <= request.maximum_candidates;
+        let candidates = relations
+            .into_iter()
+            .take(request.maximum_candidates)
+            .filter_map(|relation_id| {
+                let format = infer_add_format(&relation_id).ok()?;
+                Some(SourceCatalogCandidate {
+                    relation_id: relation_id.clone(),
+                    display_label: relation_id.clone(),
+                    relation_kind: "file".to_owned(),
+                    resource_token: file_catalog_resource_token(&relation_id),
+                    resource_options: BTreeMap::from([
+                        ("glob".to_owned(), serde_json::Value::String(relation_id)),
+                        (
+                            "format".to_owned(),
+                            serde_json::Value::String(format.to_owned()),
+                        ),
+                    ]),
+                    schema: None,
+                })
+            })
+            .collect();
+        SourceCatalogDiscovery::new(
+            request,
+            "file_path",
+            candidates,
+            complete,
+            (!complete).then(|| "narrow relation selectors to a complete catalog set".to_owned()),
+        )
+    }
+
+    fn discover_catalog_schema(
+        &self,
+        request: &SourceCatalogRequest,
+        candidate: &SourceCatalogCandidate,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<cdf_kernel::CanonicalArrowSchema>> {
+        if let Some(schema) = &candidate.schema {
+            return Ok(Some(schema.clone()));
+        }
+        request.validate()?;
+        candidate.validate()?;
+        let source: FileSourceOptions =
+            decode_options("file source", request.source_options.clone())?;
+        let root = match file_transport_scheme(&source.root)? {
+            None => PathBuf::from(resolve_runtime_root(&source.root, context.project_root())?),
+            Some(FileTransportScheme::File) => file_url_path(&source.root)?,
+            Some(_) => return Ok(None),
+        };
+        let canonical_root = fs::canonicalize(&root).map_err(|error| {
+            CdfError::data(format!(
+                "open file source catalog root {}: {error}",
+                root.display()
+            ))
+        })?;
+        let path =
+            fs::canonicalize(canonical_root.join(&candidate.relation_id)).map_err(|error| {
+                CdfError::data(format!(
+                    "open discovered file relation {:?}: {error}",
+                    candidate.relation_id
+                ))
+            })?;
+        if !path.starts_with(&canonical_root) || !path.is_file() {
+            return Err(CdfError::data(
+                "discovered file relation no longer resolves to a regular file under its configured root",
+            ));
+        }
+        let format_name = candidate
+            .resource_options
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CdfError::internal("file catalog candidate lost its format"))?;
+        let format = FileFormatDeclaration::named(format_name)?;
+        let driver = self.formats.resolve(format_name)?;
+        let dependencies = configure_runtime_dependencies(
+            (self.runtime_factory)(
+                Arc::clone(context.secret_provider()),
+                context.execution().clone(),
+                context.egress_scope(&self.descriptor.driver_id),
+            )?
+            .with_prepared_payloads(context.prepared_payloads().clone()),
+            context,
+        )?;
+        let transform_name = candidate
+            .relation_id
+            .rsplit_once('.')
+            .and_then(|(_, extension)| dependencies.transforms().by_extension(extension))
+            .map(|driver| driver.descriptor().transform_id.as_str().to_owned())
+            .unwrap_or_else(|| "none".to_owned());
+        let resource_id = cdf_kernel::ResourceId::new("discovery.catalog")?;
+        let probe = discover_local_binary_schema(
+            &path,
+            &candidate.relation_id,
+            &dependencies,
+            0,
+            SchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: &format,
+                format_declared: true,
+                format_options: &serde_json::json!({}),
+                discovery_kind: driver.descriptor().discovery.default_kind,
+                transform_name: &transform_name,
+                maximum_bytes: 64 * 1024 * 1024,
+                maximum_records: 10_000,
+                cancellation: context.cancellation(),
+            },
+        )?;
+        Ok(Some(cdf_kernel::CanonicalArrowSchema::from_arrow(
+            probe.schema.as_ref(),
+        )?))
+    }
+}
+
+fn collect_catalog_files(
+    root: &Path,
+    directory: &Path,
+    maximum_candidates: usize,
+    maximum_entries: usize,
+    visited_entries: &mut usize,
+    truncated: &mut bool,
+    sink: &mut Vec<String>,
+) -> Result<()> {
+    let remaining = maximum_entries.saturating_sub(*visited_entries);
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| CdfError::data(format!("read file source catalog: {error}")))?
+        .take(remaining.saturating_add(1))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| CdfError::data(format!("read file source catalog entry: {error}")))?;
+    if entries.len() > remaining {
+        *truncated = true;
+        return Ok(());
+    }
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        if sink.len() >= maximum_candidates || *visited_entries >= maximum_entries {
+            *truncated = true;
+            break;
+        }
+        *visited_entries = (*visited_entries).saturating_add(1);
+        let file_type = entry.file_type().map_err(|error| {
+            CdfError::data(format!("inspect file source catalog entry: {error}"))
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_catalog_files(
+                root,
+                &entry.path(),
+                maximum_candidates,
+                maximum_entries,
+                visited_entries,
+                truncated,
+                sink,
+            )?;
+            if *truncated {
+                return Ok(());
+            }
+        } else if file_type.is_file() {
+            let entry_path = entry.path();
+            let relative = entry_path.strip_prefix(root).map_err(|_| {
+                CdfError::internal("file source catalog entry escaped its canonical root")
+            })?;
+            let relative = relative
+                .to_str()
+                .ok_or_else(|| CdfError::data("file source catalog path is not valid UTF-8"))?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            if infer_add_format(&relative).is_ok() {
+                sink.push(relative);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn file_catalog_resource_token(relation_id: &str) -> Option<String> {
+    let file_name = relation_id.rsplit('/').next()?;
+    let lower = file_name.to_ascii_lowercase();
+    let without_compression = [".gz", ".zst", ".zstd", ".bz2", ".xz", ".lz4", ".snappy"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(&lower);
+    let stem = without_compression
+        .rsplit_once('.')
+        .map_or(without_compression, |(stem, _)| stem);
+    let mut bytes = stem.bytes();
+    (stem.len() <= 128
+        && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then(|| stem.to_owned())
 }
 
 impl FileSourceDriver {

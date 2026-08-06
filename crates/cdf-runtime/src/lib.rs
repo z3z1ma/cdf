@@ -122,6 +122,7 @@ pub use source::{
     CompiledSourceCompilerBinding, CompiledSourceExecutionPlan, CompiledSourceIdentities,
     CompiledSourcePlan, CompiledSourcePlanInput, PreparedSourcePayload, PreparedSourcePayloadKey,
     PreparedSourcePayloads, SourceAttestationStrength, SourceBatchMemoryContract,
+    SourceCatalogCandidate, SourceCatalogDiscoverer, SourceCatalogDiscovery, SourceCatalogRequest,
     SourceCompileContext, SourceCompileRequest, SourceContentDigest, SourceCursorPushdown,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEgressAuthorizer,

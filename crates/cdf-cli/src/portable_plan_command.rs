@@ -215,7 +215,7 @@ pub(crate) fn publish_artifact(
         }
     };
     Ok(PortablePlanWriteReport {
-        path: crate::render::redaction::redact_uri_userinfo(&path.display().to_string()),
+        path: crate::render::redaction::redact_uri_userinfo(path.display().to_string()),
         plan_hash: artifact.plan_hash.clone(),
         bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
         resources: artifact.resources.len(),

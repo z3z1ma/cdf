@@ -2648,6 +2648,7 @@ fn set_mode(path: &Path, mode: u32) {
 
 mod add;
 mod contract;
+mod discover;
 mod doctor;
 mod doctor_drift;
 mod errors;

@@ -253,6 +253,36 @@ pub(crate) fn current_project_source_configuration(
     })
 }
 
+/// Resolves one configured source for an environment without loading or compiling project
+/// resources. Discovery and other source-scoped commands use this contact-free boundary so an
+/// unrelated resource cannot prevent work on the selected source.
+pub fn effective_project_source_config(
+    config: &ProjectConfig,
+    environment: &str,
+    source_name: &str,
+) -> Result<ProjectSourceConfig> {
+    let source_name = ProjectSourceName::new(source_name, "configured source")?;
+    let selected_environment = config.environments.get(environment).ok_or_else(|| {
+        CdfError::contract(format!("environment `{environment}` is not declared"))
+    })?;
+    let configured_sources = validate_source_configuration_shape(config)?;
+    let base = configured_sources.get(&source_name).ok_or_else(|| {
+        CdfError::contract(format!(
+            "configured source {:?} is not declared in cdf.toml",
+            source_name.as_str()
+        ))
+    })?;
+    let overlay = selected_environment.sources.get(source_name.as_str());
+    let mut options = base.options.clone();
+    if let Some(overlay) = overlay {
+        options.extend(overlay.options.clone());
+    }
+    Ok(ProjectSourceConfig {
+        source_type: base.source_type.clone(),
+        options,
+    })
+}
+
 #[derive(Serialize)]
 struct SourceConfigurationHashInput<'a> {
     phase: &'static str,
