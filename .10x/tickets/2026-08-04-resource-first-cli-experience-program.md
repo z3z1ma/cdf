@@ -42,6 +42,7 @@ resources, and every adjacent command has one scope and effect ceiling.
    execution and interrupted-run recovery into explicit `run` input modes; audit
    preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
    command-effect contract.
+   Owner: `.10x/tickets/2026-08-05-u6-operational-recovery-command-coherence.md`.
 8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
 
@@ -125,6 +126,8 @@ entire tranche is frozen. Focused tests/check/Clippy run during each child.
   are explicit scopes, Files and SQLite provide bounded adapter-owned catalogs, selected schema
   observation remains temporary, generation creates or verifies explicit field projections with
   an honest star fallback, and add no longer compiles unrelated project resources.
+- 2026-08-05: U6 activated on `main` with the ratified single-run-verb and scoped-doctor model,
+  including explicit ownership of the release-mode sandbox schema/progress regression certificate.
 
 ## Blockers
 
