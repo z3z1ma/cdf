@@ -29,7 +29,7 @@ const INSPECT_NOUNS: &[&str] = &[
     "run",
 ];
 const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
-const SCHEMA_SUBCOMMANDS: &[&str] = &["discover", "pin", "show", "diff", "promote"];
+const SCHEMA_SUBCOMMANDS: &[&str] = &["show", "diff", "promote"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
@@ -54,7 +54,7 @@ pub enum Command {
     Add(AddArgs),
     Compile(CompileArgs),
     Validate(ValidateArgs),
-    Plan(ScanArgs),
+    Plan(PlanArgs),
     Explain(ScanArgs),
     Run(RunArgs),
     Preview(ScanArgs),
@@ -108,13 +108,26 @@ pub struct ScanArgs {
     pub filters: Vec<String>,
     pub limit: Option<u64>,
     pub order_by: Vec<String>,
-    pub no_pin: bool,
+    pub segmentation: SegmentationArgs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanArgs {
+    pub selectors: Vec<String>,
+    pub exclude: Vec<String>,
+    pub destination_uri: Option<String>,
+    pub projection: Option<Vec<String>>,
+    pub filters: Vec<String>,
+    pub limit: Option<u64>,
+    pub order_by: Vec<String>,
     pub segmentation: SegmentationArgs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RunArgs {
-    pub resource_id: Option<String>,
+    pub selectors: Vec<String>,
+    pub exclude: Vec<String>,
+    pub locked: bool,
     pub destination_uri: Option<String>,
     pub jobs: Option<u16>,
     pub stats_profile: bool,
@@ -158,8 +171,6 @@ pub enum InspectNoun {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchemaCommand {
-    Discover(SchemaDiscoverArgs),
-    Pin(SchemaResourceArgs),
     Show(SchemaResourceArgs),
     Diff(SchemaResourceArgs),
     Promote(SchemaPromoteArgs),
@@ -170,11 +181,6 @@ pub struct SchemaPromoteArgs {
     pub resource_id: String,
     pub types: Vec<String>,
     pub execute: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchemaDiscoverArgs {
-    pub resource_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -447,7 +453,7 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
             selectors: values(subcommand, "selectors"),
             exclude: values(subcommand, "exclude"),
         })),
-        Some(("plan", subcommand)) => parse_scan("plan", subcommand, true).map(Command::Plan),
+        Some(("plan", subcommand)) => parse_plan(subcommand).map(Command::Plan),
         Some(("explain", subcommand)) => {
             parse_scan("explain", subcommand, true).map(Command::Explain)
         }
@@ -558,18 +564,44 @@ fn parse_scan(
         filters: values(matches, "filter"),
         limit,
         order_by: values(matches, "order_by"),
-        no_pin: accepts_target && matches.get_flag("no_pin"),
+        segmentation: parse_segmentation(matches)?,
+    })
+}
+
+fn parse_plan(matches: &ArgMatches) -> Result<PlanArgs, CliError> {
+    let selectors = values(matches, "selectors");
+    if selectors.is_empty() {
+        return Err(CliError::usage(
+            "plan requires at least one resource selector",
+        ));
+    }
+    let projection = string_value(matches, "projection").map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    });
+    Ok(PlanArgs {
+        selectors,
+        exclude: values(matches, "exclude"),
+        destination_uri: string_value(matches, "to"),
+        projection,
+        filters: values(matches, "filter"),
+        limit: string_value(matches, "limit")
+            .map(|value| parse_u64("--limit", &value))
+            .transpose()?,
+        order_by: values(matches, "order_by"),
         segmentation: parse_segmentation(matches)?,
     })
 }
 
 fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
     Ok(RunArgs {
-        resource_id: single_positional_arg(
-            "run",
-            &values(matches, "resource_arg"),
-            "accepts at most one resource id",
-        )?,
+        selectors: values(matches, "selectors"),
+        exclude: values(matches, "exclude"),
+        locked: matches.get_flag("locked"),
         destination_uri: string_value(matches, "to"),
         jobs: string_value(matches, "jobs")
             .map(|value| parse_nonzero_u16("--jobs", &value))
@@ -697,17 +729,10 @@ fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
 fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
     let Some((subcommand, matches)) = matches.subcommand() else {
         return Err(CliError::usage(
-            "schema requires one of discover, pin, show, diff, or promote",
+            "schema requires one of show, diff, or promote",
         ));
     };
     match subcommand {
-        "discover" => {
-            let resource_id = parse_schema_resource("schema discover", matches)?;
-            Ok(SchemaCommand::Discover(SchemaDiscoverArgs { resource_id }))
-        }
-        "pin" => Ok(SchemaCommand::Pin(SchemaResourceArgs {
-            resource_id: parse_schema_resource("schema pin", matches)?,
-        })),
         "show" => Ok(SchemaCommand::Show(SchemaResourceArgs {
             resource_id: parse_schema_resource("schema show", matches)?,
         })),
@@ -970,7 +995,7 @@ pub fn cli_command() -> ClapCommand {
                 .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
                 .arg(append_option("exclude", "exclude", "RESOURCE_GLOB")),
         )
-        .subcommand(scan_command("plan", true))
+        .subcommand(plan_command())
         .subcommand(scan_command("explain", true))
         .subcommand(run_command())
         .subcommand(scan_command("preview", false))
@@ -1010,17 +1035,32 @@ fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
         .arg(option("limit", "limit", "N"))
         .arg(append_option("order_by", "order-by", "FIELD[:asc|desc]"));
     if accepts_target {
-        command = command
-            .arg(option("to", "to", "DEST"))
-            .arg(flag("no_pin", "no-pin"));
+        command = command.arg(option("to", "to", "DEST"));
     }
     segmentation_options(command)
+}
+
+fn plan_command() -> ClapCommand {
+    segmentation_options(
+        cmd("plan")
+            .about("Prepare and inspect selected resource runs without writing")
+            .after_help("Examples:\n  cdf plan local.events\n  cdf plan 'warehouse.*' --exclude warehouse.experimental")
+            .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+            .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+            .arg(option("projection", "select", "FIELDS"))
+            .arg(append_option("filter", "filter", "EXPR"))
+            .arg(option("limit", "limit", "N"))
+            .arg(append_option("order_by", "order-by", "FIELD[:asc|desc]"))
+            .arg(option("to", "to", "DEST")),
+    )
 }
 
 fn run_command() -> ClapCommand {
     segmentation_options(
         cmd("run")
-            .arg(values_arg("resource_arg").value_name("RESOURCE"))
+            .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+            .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
+            .arg(flag("locked", "locked"))
             .arg(option("to", "to", "DEST"))
             .arg(option("jobs", "jobs", "N"))
             .arg(flag("stats_profile", "stats-profile"))
@@ -1055,8 +1095,6 @@ fn segmentation_options(command: ClapCommand) -> ClapCommand {
 
 fn schema_command() -> ClapCommand {
     cmd("schema")
-        .subcommand(schema_resource_command("discover"))
-        .subcommand(schema_resource_command("pin"))
         .subcommand(schema_resource_command("show"))
         .subcommand(schema_resource_command("diff"))
         .subcommand(
@@ -1164,7 +1202,7 @@ fn cmd(name: &'static str) -> ClapCommand {
         "sql" => "Query verified project and operational artifacts",
         "inspect" => "Inspect durable project and run evidence",
         "diff" => "Compare durable schemas",
-        "schema" => "Discover, pin, compare, and promote schemas",
+        "schema" => "Inspect, compare, and promote schemas",
         "contract" => "Freeze, show, and test contracts",
         "state" => "Inspect and recover checkpoint state",
         "resume" => "Resume interrupted work from the run ledger",
@@ -1173,8 +1211,6 @@ fn cmd(name: &'static str) -> ClapCommand {
         "package" => "List, verify, archive, and collect packages",
         "doctor" => "Check local runtime and destination health",
         "status" => "Summarize project freshness and run state",
-        "discover" => "Discover the current physical source schema",
-        "pin" => "Pin a discovered schema into the project contract",
         "show" => "Show the selected durable record",
         "promote" => "Plan or execute residual schema promotion",
         "freeze" => "Freeze a contract snapshot",
@@ -1265,7 +1301,6 @@ fn option_help(long: &str) -> &'static str {
         "from" => "Inclusive cursor lower bound",
         "slice-size" => "Rows per backfill slice",
         "format" => "Archive output format",
-        "no-pin" => "Do not pin newly discovered schema",
         "type" => "Residual field pointer and Arrow type",
         "contract" => "Contract name",
         "trust" => "Trust level to show",
@@ -1764,6 +1799,38 @@ mod run_jobs_tests {
             panic!("expected backfill command");
         };
         assert_eq!(backfill.segmentation.target_bytes, Some(384 * 1024 * 1024));
+    }
+
+    #[test]
+    fn plan_preserves_batch_selectors_and_scan_options() {
+        let cli = Cli::parse(
+            [
+                "cdf",
+                "plan",
+                "warehouse.*",
+                "--exclude",
+                "warehouse.experimental",
+                "--select",
+                "id,updated_at",
+                "--filter",
+                "id > 10",
+                "--limit",
+                "5",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Plan(args) = cli.command else {
+            panic!("expected plan command");
+        };
+        assert_eq!(args.selectors, ["warehouse.*"]);
+        assert_eq!(args.exclude, ["warehouse.experimental"]);
+        assert_eq!(
+            args.projection,
+            Some(vec!["id".to_owned(), "updated_at".to_owned()])
+        );
+        assert_eq!(args.filters, ["id > 10"]);
+        assert_eq!(args.limit, Some(5));
     }
 
     #[test]

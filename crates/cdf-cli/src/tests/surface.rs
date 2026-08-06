@@ -87,19 +87,18 @@ fn parser_provides_subcommand_help_at_nested_layers() {
 
     assert_eq!(plan.exit_code, 0);
     assert!(plan.stdout.contains("Usage: cdf plan"));
-    assert!(plan.stdout.contains("[RESOURCE]"));
+    assert!(plan.stdout.contains("[RESOURCE_SELECTOR]"));
+    assert!(plan.stdout.contains("--exclude <RESOURCE_GLOB>"));
     assert!(plan.stdout.contains("--to <DEST>"));
     assert!(!plan.stdout.contains("--resource"));
     assert!(!plan.stdout.contains("--target"));
 
-    let schema = run(["cdf", "schema", "discover", "--help"]);
+    for removed in ["discover", "pin"] {
+        let result = run(["cdf", "schema", removed, "--help"]);
+        assert_ne!(result.exit_code, 0);
+    }
 
-    assert_eq!(schema.exit_code, 0);
-    assert!(schema.stdout.contains("Usage: cdf schema discover"));
-    assert!(schema.stdout.contains("[RESOURCE]"));
-    assert!(!schema.stdout.contains("--resource"));
-
-    for subcommand in ["pin", "show", "diff", "promote"] {
+    for subcommand in ["show", "diff", "promote"] {
         let result = run(["cdf", "schema", subcommand, "--help"]);
 
         assert_eq!(result.exit_code, 0);

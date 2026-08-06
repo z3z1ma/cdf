@@ -737,7 +737,9 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
     let output = crate::run_command::run(
         &cli,
         cdf_cli_core::args::RunArgs {
-            resource_id: Some("local.events".to_owned()),
+            selectors: vec!["local.events".to_owned()],
+            exclude: Vec::new(),
+            locked: false,
             destination_uri: None,
             jobs: None,
             stats_profile: false,

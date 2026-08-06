@@ -9,6 +9,45 @@ use crate::{
     reports::discovery_coverage_panel,
 };
 
+pub(super) fn plan_report_document(report: &PlanReport) -> RenderDocument {
+    let status = if report.counts.failed == 0 {
+        StatusKind::Success
+    } else {
+        StatusKind::Error
+    };
+    let mut document = RenderDocument::new()
+        .push(StatusLine::new(
+            status,
+            format!(
+                "planned {}/{} selected resource(s)",
+                report.counts.ready, report.counts.selected
+            ),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Plan readiness")
+                .row("project", &report.project)
+                .row("environment", &report.environment)
+                .row("selected", report.counts.selected.to_string())
+                .row("ready", report.counts.ready.to_string())
+                .row("failed", report.counts.failed.to_string()),
+        );
+    for outcome in &report.resources {
+        document = match outcome {
+            PlanResourceOutcome::Ready { report } => {
+                document.blank_line().append(scan_report_document(report))
+            }
+            PlanResourceOutcome::Failed { resource_id, error } => {
+                document.blank_line().push(StatusLine::new(
+                    StatusKind::Error,
+                    format!("failed {resource_id} [{}]: {}", error.code, error.message),
+                ))
+            }
+        };
+    }
+    document
+}
+
 pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
     let pushed = report.pushdown.pushed.len();
     let inexact = report.pushdown.inexact.len();

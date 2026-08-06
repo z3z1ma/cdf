@@ -40,14 +40,14 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a source resource to the project')
             [CompletionResult]::new('compile', 'compile', [CompletionResultType]::ParameterValue, 'Prepare independently verified compiled resource artifacts')
             [CompletionResult]::new('validate', 'validate', [CompletionResultType]::ParameterValue, 'Statically validate project configuration and selected resources')
-            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Plan a resource run without executing it')
+            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Prepare and inspect selected resource runs without writing')
             [CompletionResult]::new('explain', 'explain', [CompletionResultType]::ParameterValue, 'Explain resolution, capabilities, and execution choices')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Execute a governed resource run')
             [CompletionResult]::new('preview', 'preview', [CompletionResultType]::ParameterValue, 'Read a bounded preview without committing data')
             [CompletionResult]::new('sql', 'sql', [CompletionResultType]::ParameterValue, 'Query verified project and operational artifacts')
             [CompletionResult]::new('inspect', 'inspect', [CompletionResultType]::ParameterValue, 'Inspect durable project and run evidence')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Compare durable schemas')
-            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Discover, pin, compare, and promote schemas')
+            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Inspect, compare, and promote schemas')
             [CompletionResult]::new('contract', 'contract', [CompletionResultType]::ParameterValue, 'Freeze, show, and test contracts')
             [CompletionResult]::new('state', 'state', [CompletionResultType]::ParameterValue, 'Inspect and recover checkpoint state')
             [CompletionResult]::new('resume', 'resume', [CompletionResultType]::ParameterValue, 'Resume interrupted work from the run ledger')
@@ -150,6 +150,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;plan' {
+            [CompletionResult]::new('--exclude', '--exclude', [CompletionResultType]::ParameterName, 'Exclude resources matching this glob; may be repeated')
             [CompletionResult]::new('--select', '--select', [CompletionResultType]::ParameterName, 'Comma-separated projected fields')
             [CompletionResult]::new('--filter', '--filter', [CompletionResultType]::ParameterName, 'Filter expression; may be repeated')
             [CompletionResult]::new('--limit', '--limit', [CompletionResultType]::ParameterName, 'Maximum rows to read')
@@ -168,7 +169,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('--no-pin', '--no-pin', [CompletionResultType]::ParameterName, 'Do not pin newly discovered schema')
             [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
@@ -196,7 +196,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('--no-pin', '--no-pin', [CompletionResultType]::ParameterName, 'Do not pin newly discovered schema')
             [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
@@ -206,6 +205,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;run' {
+            [CompletionResult]::new('--exclude', '--exclude', [CompletionResultType]::ParameterName, 'Exclude resources matching this glob; may be repeated')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
             [CompletionResult]::new('--jobs', '--jobs', [CompletionResultType]::ParameterName, 'Maximum concurrent jobs')
             [CompletionResult]::new('--segment-target-rows', '--segment-target-rows', [CompletionResultType]::ParameterName, 'Set the value named in this command''s usage')
@@ -221,6 +221,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
+            [CompletionResult]::new('--locked', '--locked', [CompletionResultType]::ParameterName, 'Require sufficient unchanged cdf.lock authority')
             [CompletionResult]::new('--stats-profile', '--stats-profile', [CompletionResultType]::ParameterName, 'Write the typed statistics profile artifact')
             [CompletionResult]::new('--explain-memory', '--explain-memory', [CompletionResultType]::ParameterName, 'Include memory-ledger detail in the run report')
             [CompletionResult]::new('--loop', '--loop', [CompletionResultType]::ParameterName, 'Continue polling for work')
@@ -403,7 +404,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Discover, pin, compare, and promote schemas')
+            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Inspect, compare, and promote schemas')
             break
         }
         'cdf;diff;schema' {
@@ -432,39 +433,9 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'Discover the current physical source schema')
-            [CompletionResult]::new('pin', 'pin', [CompletionResultType]::ParameterValue, 'Pin a discovered schema into the project contract')
             [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show the selected durable record')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Compare durable schemas')
             [CompletionResult]::new('promote', 'promote', [CompletionResultType]::ParameterValue, 'Plan or execute residual schema promotion')
-            break
-        }
-        'cdf;schema;discover' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'cdf;schema;pin' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;schema;show' {

@@ -31,7 +31,7 @@ are validated and quoted by the adapter; predicate and cursor values are bound p
 
 ```bash
 cdf add local.events sqlite://data/events.sqlite --option table=events
-cdf schema discover local.events
+cdf plan local.events
 cdf plan local.events
 cdf preview local.events --limit 20
 cdf run local.events

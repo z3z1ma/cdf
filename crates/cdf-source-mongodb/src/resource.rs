@@ -278,7 +278,7 @@ pub(crate) fn validate_compiled_schema_evidence(
         && compiled.baseline_observation_schema_catalog.is_empty()
     {
         return Err(CdfError::data(
-            "MongoDB execution requires sampled physical schema evidence; run schema discovery and pin the resource before resolving it",
+            "MongoDB execution requires sampled physical schema evidence established during resource preparation",
         ));
     }
     Ok(())

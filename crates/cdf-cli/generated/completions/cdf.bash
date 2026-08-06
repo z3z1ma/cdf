@@ -133,12 +133,6 @@ _cdf() {
             cdf__subcmd__schema,diff)
                 cmd="cdf__subcmd__schema__subcmd__diff"
                 ;;
-            cdf__subcmd__schema,discover)
-                cmd="cdf__subcmd__schema__subcmd__discover"
-                ;;
-            cdf__subcmd__schema,pin)
-                cmd="cdf__subcmd__schema__subcmd__pin"
-                ;;
             cdf__subcmd__schema,promote)
                 cmd="cdf__subcmd__schema__subcmd__promote"
                 ;;
@@ -594,7 +588,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__explain)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --select --filter --limit --order-by --to --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1198,12 +1192,16 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__plan)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --exclude --select --filter --limit --order-by --to --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --exclude)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --select)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -1476,12 +1474,16 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__run)
-            opts="-q -v -h --to --jobs --stats-profile --explain-memory --loop --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --exclude --locked --to --jobs --stats-profile --explain-memory --loop --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --exclude)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --to)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -1550,7 +1552,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help discover pin show diff promote"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help show diff promote"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1584,74 +1586,6 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__diff)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
-                --color)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --progress)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --unicode)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --memory-budget)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --spill-budget)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
-        cdf__subcmd__schema__subcmd__discover)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
-                --color)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --progress)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --unicode)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --memory-budget)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --spill-budget)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
-        cdf__subcmd__schema__subcmd__pin)
             opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

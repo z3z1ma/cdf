@@ -21,6 +21,7 @@ use cdf_project::{
     RunTelemetryConfig, SchemaSnapshotStore, publish_project_files_transactionally,
     run_project_with_scheduler_and_telemetry,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -32,9 +33,13 @@ use crate::{
         resolve_selected_destination_with_services,
     },
     error_catalog,
-    output::{CliError, CommandOutput},
+    output::{CliError, CommandOutput, HumanOutput},
     progress::{ProgressDelivery, human_progress_sink},
-    project_run_resource::prepare_runtime_resource_for_cli,
+    project_run_resource::{PreparedRuntimeResourceForCli, prepare_runtime_resource_for_cli},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, StatusKind, StatusLine},
+    },
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
     },
@@ -60,18 +65,164 @@ pub(crate) fn run(
             error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
     }
+    if args.selectors.is_empty() {
+        return Err(CliError::usage_with(
+            "run requires at least one resource selector",
+            error_catalog::RUN_ARGUMENT,
+        ));
+    }
+    if args.selectors.len() == 1 && looks_like_adhoc_location(&args.selectors[0])? {
+        if !args.exclude.is_empty() {
+            return Err(CliError::usage_with(
+                "run --exclude cannot be combined with an ad-hoc location",
+                error_catalog::RUN_ARGUMENT,
+            ));
+        }
+        let prepared = prepare_single(
+            cli,
+            args.selectors[0].clone(),
+            args,
+            services,
+            destinations,
+            true,
+            true,
+        )?;
+        return execute_prepared(cli, prepared, host, progress_delivery);
+    }
+    let (root, _) = crate::context::project_location(cli.project.as_ref())?;
+    let selection =
+        cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
+            .map_err(crate::compile_command::resource_selection_error)?;
+    let mut outcomes = Vec::with_capacity(selection.resources.len());
+    let mut prepared_runs = Vec::with_capacity(selection.resources.len());
+    for selected in &selection.resources {
+        let resource_id = selected.resource_id.to_string();
+        let prepared = if args.locked {
+            crate::compile_command::prepare_selected_resource(
+                cli,
+                selected,
+                true,
+                destinations,
+                services,
+            )
+            .and_then(|()| {
+                prepare_single(
+                    cli,
+                    resource_id.clone(),
+                    args.clone(),
+                    services,
+                    destinations,
+                    false,
+                    false,
+                )
+            })
+        } else {
+            prepare_single(
+                cli,
+                resource_id.clone(),
+                args.clone(),
+                services,
+                destinations,
+                false,
+                true,
+            )
+            .and_then(|prepared| {
+                crate::compile_command::prepare_selected_resource(
+                    cli,
+                    selected,
+                    false,
+                    destinations,
+                    services,
+                )
+                .map(|()| prepared)
+            })
+        };
+        match prepared {
+            Ok(prepared) => prepared_runs.push((resource_id, prepared)),
+            Err(error) => outcomes.push(RunResourceOutcome::PreparationFailed {
+                resource_id,
+                error: RunResourceError::from(error),
+            }),
+        }
+    }
+    if !outcomes.is_empty() {
+        outcomes.extend(
+            prepared_runs
+                .into_iter()
+                .map(|(resource_id, _)| RunResourceOutcome::PreparationBlocked { resource_id }),
+        );
+        outcomes.sort_by(|left, right| left.resource_id().cmp(right.resource_id()));
+        return run_batch_output(selection.selection, outcomes, Vec::new(), None);
+    }
+
+    let mut documents = Vec::with_capacity(prepared_runs.len());
+    let mut buffered_progress = None;
+    for (resource_id, prepared) in prepared_runs {
+        match execute_prepared(cli, prepared, host, progress_delivery) {
+            Ok(output) => {
+                let CommandOutput { human, json, .. } = output;
+                documents.push(match human {
+                    HumanOutput::Rendered(document) => document,
+                    HumanOutput::RenderedWithProgress { progress, document } => {
+                        buffered_progress = Some(progress);
+                        document
+                    }
+                });
+                outcomes.push(RunResourceOutcome::Completed {
+                    resource_id,
+                    result: json,
+                });
+            }
+            Err(error) => outcomes.push(RunResourceOutcome::Failed {
+                resource_id,
+                error: RunResourceError::from(error),
+            }),
+        }
+    }
+    run_batch_output(selection.selection, outcomes, documents, buffered_progress)
+}
+
+struct PreparedRun {
+    context: ProjectContext,
+    explicit: ResolvedRunArgs,
+    run_services: cdf_runtime::ExecutionServices,
+    prepared: PreparedRuntimeResourceForCli,
+    state_store_path: std::path::PathBuf,
+    destination: cdf_project::ResolvedProjectDestination,
+    secret_redaction: Option<String>,
+    plan: cdf_engine::EnginePlan,
+    scheduler: cdf_runtime::RuntimeSchedulerResolution,
+    destination_report: RunDestinationReport,
+    adhoc: Option<AdhocRunReport>,
+    explain_memory: bool,
+}
+
+fn prepare_single(
+    cli: &Cli,
+    requested: String,
+    args: RunArgs,
+    services: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+    adhoc_mode: bool,
+    commit_schema: bool,
+) -> Result<PreparedRun, CliError> {
     let explain_memory = args.explain_memory;
-    let mut args = args;
-    let requested = args.resource_id.clone().ok_or_else(|| {
-        CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
-    })?;
-    let mut context = ProjectContext::load_for_command_with_destination_registry(
-        "run",
-        cli.project.as_ref(),
-        cli.env.as_deref(),
-        true,
-        destinations,
-    )?;
+    let mut context = if adhoc_mode {
+        ProjectContext::load_for_command_with_destination_registry(
+            "run",
+            cli.project.as_ref(),
+            cli.env.as_deref(),
+            true,
+            destinations,
+        )?
+    } else {
+        ProjectContext::load_selected_for_mutation(
+            cli.project.as_ref(),
+            cli.env.as_deref(),
+            &requested,
+            destinations,
+        )?
+    };
     let adhoc = if context.has_resource(&requested) {
         None
     } else if looks_like_adhoc_location(&requested)? {
@@ -82,12 +233,15 @@ pub(crate) fn run(
             ));
         }
         let synthesized = synthesize_adhoc_source(&mut context, &requested)?;
-        args.resource_id = Some(synthesized.resource_id.clone());
         Some(synthesized.report)
     } else {
         None
     };
-    let explicit = resolved_run_args(&context, args)?;
+    let resource_id = adhoc
+        .as_ref()
+        .map(|report| report.resource_id.clone())
+        .unwrap_or(requested);
+    let explicit = resolved_run_args(&context, resource_id, args)?;
     let host_jobs = services.capabilities().logical_cpu_slots;
     let provisional_jobs = explicit.jobs.unwrap_or(host_jobs).min(host_jobs);
     let run_services = services
@@ -97,7 +251,7 @@ pub(crate) fn run(
         destinations,
         &context,
         &explicit.resource_id,
-        false,
+        commit_schema,
         Some(&run_services),
     )?;
     let state_store_path = context.state_store_path()?;
@@ -126,7 +280,6 @@ pub(crate) fn run(
             filters: Vec::new(),
             limit: None,
             order_by: Vec::new(),
-            no_pin: false,
             segmentation: explicit.segmentation.clone(),
         },
         Some(&explicit.package_id),
@@ -147,6 +300,42 @@ pub(crate) fn run(
     run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
+    Ok(PreparedRun {
+        context,
+        explicit,
+        run_services,
+        prepared,
+        state_store_path,
+        destination,
+        secret_redaction: resolved.secret_redaction,
+        plan,
+        scheduler,
+        destination_report,
+        adhoc,
+        explain_memory,
+    })
+}
+
+fn execute_prepared(
+    cli: &Cli,
+    prepared_run: PreparedRun,
+    host: &cdf_engine::StandaloneExecutionHost,
+    progress_delivery: ProgressDelivery,
+) -> Result<CommandOutput, CliError> {
+    let PreparedRun {
+        context,
+        explicit,
+        run_services,
+        prepared,
+        state_store_path,
+        destination,
+        secret_redaction,
+        plan,
+        scheduler,
+        destination_report,
+        adhoc,
+        explain_memory,
+    } = prepared_run;
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match host
@@ -169,7 +358,7 @@ pub(crate) fn run(
             Some(scheduler),
             RunTelemetryConfig::phase_metrics().with_statistics_profile(explicit.stats_profile),
         ))
-        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
+        .map_err(|error| redact_error_value(error, secret_redaction.as_deref()))
     {
         Ok(report) => report,
         Err(error) => {
@@ -259,8 +448,159 @@ fn run_destination_resolution_error(
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct RunBatchReport {
+    input_authority: &'static str,
+    selection: cdf_project::ProjectResourceSelection,
+    counts: RunBatchCounts,
+    resources: Vec<RunResourceOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunBatchCounts {
+    selected: usize,
+    completed: usize,
+    blocked: usize,
+    failed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RunResourceOutcome {
+    Completed {
+        resource_id: String,
+        result: serde_json::Value,
+    },
+    PreparationFailed {
+        resource_id: String,
+        error: RunResourceError,
+    },
+    PreparationBlocked {
+        resource_id: String,
+    },
+    Failed {
+        resource_id: String,
+        error: RunResourceError,
+    },
+}
+
+impl RunResourceOutcome {
+    fn resource_id(&self) -> &str {
+        match self {
+            Self::Completed { resource_id, .. }
+            | Self::PreparationFailed { resource_id, .. }
+            | Self::PreparationBlocked { resource_id }
+            | Self::Failed { resource_id, .. } => resource_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunResourceError {
+    code: String,
+    kind: cdf_kernel::ErrorKind,
+    message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    suggestions: Vec<String>,
+}
+
+impl From<CliError> for RunResourceError {
+    fn from(error: CliError) -> Self {
+        Self {
+            code: error.code,
+            kind: error.kind,
+            message: error.message,
+            suggestions: error.suggestions.into_vec(),
+        }
+    }
+}
+
+fn run_batch_output(
+    selection: cdf_project::ProjectResourceSelection,
+    outcomes: Vec<RunResourceOutcome>,
+    documents: Vec<RenderDocument>,
+    progress: Option<crate::progress::ProgressSnapshot>,
+) -> Result<CommandOutput, CliError> {
+    let completed = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, RunResourceOutcome::Completed { .. }))
+        .count();
+    let failed = outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome,
+                RunResourceOutcome::PreparationFailed { .. } | RunResourceOutcome::Failed { .. }
+            )
+        })
+        .count();
+    let blocked = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, RunResourceOutcome::PreparationBlocked { .. }))
+        .count();
+    let counts = RunBatchCounts {
+        selected: outcomes.len(),
+        completed,
+        blocked,
+        failed,
+    };
+    let mut document = RenderDocument::new()
+        .push(StatusLine::new(
+            if failed == 0 {
+                StatusKind::Success
+            } else {
+                StatusKind::Error
+            },
+            format!("ran {completed}/{} selected resource(s)", counts.selected),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Run summary")
+                .row("selected", counts.selected.to_string())
+                .row("completed", counts.completed.to_string())
+                .row("blocked", counts.blocked.to_string())
+                .row("failed", counts.failed.to_string()),
+        );
+    for outcome in &outcomes {
+        if let RunResourceOutcome::PreparationFailed { resource_id, error }
+        | RunResourceOutcome::Failed { resource_id, error } = outcome
+        {
+            document = document.blank_line().push(StatusLine::new(
+                StatusKind::Error,
+                format!("failed {resource_id} [{}]: {}", error.code, error.message),
+            ));
+        }
+        if let RunResourceOutcome::PreparationBlocked { resource_id } = outcome {
+            document = document.blank_line().push(StatusLine::new(
+                StatusKind::Warning,
+                format!("not run {resource_id}: another selected resource failed preparation"),
+            ));
+        }
+    }
+    for resource_document in documents {
+        document = document.blank_line().append(resource_document);
+    }
+    let report = RunBatchReport {
+        input_authority: "resource_set",
+        selection,
+        counts,
+        resources: outcomes,
+    };
+    match progress {
+        Some(progress) => CommandOutput::rendered_with_progress_and_exit_code(
+            "run",
+            document,
+            report,
+            progress,
+            i32::from(failed != 0),
+        ),
+        None => {
+            CommandOutput::rendered_with_exit_code("run", document, report, i32::from(failed != 0))
+        }
+    }
+}
+
 struct SynthesizedAdhoc {
-    resource_id: String,
     report: AdhocRunReport,
 }
 
@@ -522,7 +862,6 @@ fn synthesize_adhoc_source(
     context.register_adhoc_resource(resource_id.clone());
 
     Ok(SynthesizedAdhoc {
-        resource_id: resource_id.clone(),
         report: AdhocRunReport {
             resource_id: resource_id.clone(),
             definition_path,
@@ -898,10 +1237,11 @@ fn shell_argument(value: &str) -> String {
     }
 }
 
-fn resolved_run_args(context: &ProjectContext, args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
-    let resource_id = args.resource_id.ok_or_else(|| {
-        CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
-    })?;
+fn resolved_run_args(
+    context: &ProjectContext,
+    resource_id: String,
+    args: RunArgs,
+) -> Result<ResolvedRunArgs, CliError> {
     let suffix = minted_run_suffix(&resource_id)?;
     let package_id = format!("pkg-{suffix}");
     let checkpoint_id = format!("checkpoint-{suffix}");

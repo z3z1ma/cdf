@@ -706,9 +706,9 @@ fn discover_registered_resource_schema(
         return Err(CdfError::contract(format!(
             "{} for resource `{}` found incompatible files; candidate verdicts: {file_reports}; incompatibilities: {incompatibilities}",
             if selection.file_coverage == DiscoveryFileCoverage::SampledFiles {
-                "initial sampled schema pin"
+                "initial sampled schema baseline"
             } else {
-                "initial all-files schema pin"
+                "initial all-files schema baseline"
             },
             resource.descriptor().resource_id,
         )));
@@ -1705,7 +1705,7 @@ fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {
         return Ok(());
     }
     Err(CdfError::contract(format!(
-        "cdf schema discover supports resources in discover schema mode; resource `{}` already has a declared or pinned schema",
+        "schema observation requires discover mode; resource `{}` already has declared or locked schema authority",
         resource.descriptor().resource_id
     )))
 }

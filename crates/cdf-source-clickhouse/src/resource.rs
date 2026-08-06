@@ -169,7 +169,7 @@ pub(crate) fn validate_compiled_schema_evidence(
 ) -> Result<()> {
     if compiled.effective_schema_runtime.is_none() {
         return Err(CdfError::data(
-            "ClickHouse execution requires catalog-backed physical schema evidence; run schema discovery before resolving the resource",
+            "ClickHouse execution requires catalog-backed physical schema evidence established during resource preparation",
         ));
     }
     Ok(())

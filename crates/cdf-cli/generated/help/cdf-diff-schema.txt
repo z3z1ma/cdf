@@ -1,4 +1,4 @@
-Discover, pin, compare, and promote schemas
+Inspect, compare, and promote schemas
 
 Usage: cdf diff schema [OPTIONS]
 

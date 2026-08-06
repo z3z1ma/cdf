@@ -3,26 +3,26 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Plan a resource run without executing it
+Prepare and inspect selected resource runs without writing
 
-Usage: cdf plan [OPTIONS] [RESOURCE]...
+Usage: cdf plan [OPTIONS] [RESOURCE_SELECTOR]...
 
 Arguments:
-  [RESOURCE]...  Resource identifier
+  [RESOURCE_SELECTOR]...  Exact or glob resource selectors; quote shell-sensitive globs
 
 Options:
+      --exclude <RESOURCE_GLOB>       Exclude resources matching this glob; may be repeated
   -q, --quiet                         Suppress progress and non-primary success narration
       --select <FIELDS>               Comma-separated projected fields
-      --filter <EXPR>                 Filter expression; may be repeated
   -v, --verbose...                    Show evidence detail; repeat for diagnostics
       --color <WHEN>                  Color policy: auto, always, or never [possible values: auto, always, never]
+      --filter <EXPR>                 Filter expression; may be repeated
       --limit <N>                     Maximum rows to read
-      --order-by <FIELD[:asc|desc]>   Ordering field and optional direction
       --progress <WHEN>               Progress policy: auto, always, or never [possible values: auto, always, never]
-      --to <DEST>                     Destination URI or cursor upper bound, as shown in usage
+      --order-by <FIELD[:asc|desc]>   Ordering field and optional direction
       --unicode <WHEN>                Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>         Process memory budget, e.g. 4GiB or 512MiB
-      --no-pin                        Do not pin newly discovered schema
+      --to <DEST>                     Destination URI or cursor upper bound, as shown in usage
       --segment-target-rows <ROWS>    Set the value named in this command's usage
       --spill-budget <BYTES>          Spill/disk budget, e.g. 64GiB or 512MiB
       --segment-target-bytes <BYTES>  Set the value named in this command's usage
@@ -33,4 +33,8 @@ Options:
       --microbatch-min-bytes <BYTES>  Set the value named in this command's usage
       --microbatch-max-bytes <BYTES>  Set the value named in this command's usage
   -h, --help                          Print help
+
+Examples:
+  cdf plan local.events
+  cdf plan 'warehouse.*' --exclude warehouse.experimental
 ```

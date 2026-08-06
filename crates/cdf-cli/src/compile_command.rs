@@ -263,6 +263,16 @@ fn compile_one(
     })
 }
 
+pub(crate) fn prepare_selected_resource(
+    cli: &Cli,
+    selected: &ProjectResourcePath,
+    locked_only: bool,
+    destinations: &cdf_runtime::DestinationRegistry,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<(), CliError> {
+    compile_one(cli, selected, locked_only, destinations, execution).map(|_| ())
+}
+
 fn compiled_entry(
     context: &ProjectContext,
     resource_id: &str,
@@ -525,7 +535,7 @@ fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn resource_selection_error(error: ProjectResourceSelectionError) -> CliError {
+pub(crate) fn resource_selection_error(error: ProjectResourceSelectionError) -> CliError {
     match error {
         ProjectResourceSelectionError::Project(error) => error.into(),
         ProjectResourceSelectionError::ExactNoMatch {

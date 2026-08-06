@@ -1,6 +1,6 @@
 mod render;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs};
 
 use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
@@ -19,7 +19,7 @@ use cdf_kernel::{
 use serde::Serialize;
 
 use crate::{
-    args::{Cli, ScanArgs},
+    args::{Cli, PlanArgs, ScanArgs},
     commands::json_cli_error,
     context::ProjectContext,
     destination_uri::{EnvironmentDestination, redact_error_value, resolve_selected_destination},
@@ -107,10 +107,89 @@ fn validate_recorded_source_authority(
         || &recorded_discovery_binding != discovery_binding
     {
         return Err(CdfError::data(format!(
-            "registered-source schema snapshot authority `{recorded_driver}`/{recorded_version}/{recorded_discovery_binding} does not match compiled source authority `{driver_id}`/{driver_version}/{discovery_binding}; repin the schema against the current source configuration",
+            "locked schema authority `{recorded_driver}`/{recorded_version}/{recorded_discovery_binding} does not match source authority `{driver_id}`/{driver_version}/{discovery_binding}; run `cdf schema diff` for the selected resource, then promote or recompile as appropriate",
         )));
     }
     Ok(())
+}
+
+pub(crate) fn plan(
+    cli: &Cli,
+    args: PlanArgs,
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let (root, project_file) = crate::context::project_location(cli.project.as_ref())?;
+    let project_text = fs::read_to_string(&project_file).map_err(|error| {
+        crate::context::project_authority_read_error(
+            "read project configuration",
+            &project_file,
+            error,
+        )
+    })?;
+    let config = cdf_project::parse_cdf_toml(&project_text)?;
+    let environment = config.effective_environment(
+        cli.env
+            .as_deref()
+            .unwrap_or(&config.project.default_environment),
+    )?;
+    let selection =
+        cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
+            .map_err(crate::compile_command::resource_selection_error)?;
+    let mut resources = Vec::with_capacity(selection.resources.len());
+    for selected in &selection.resources {
+        let resource_id = selected.resource_id.to_string();
+        match plan_one(cli, &args, &resource_id, execution, destinations) {
+            Ok(report) => resources.push(PlanResourceOutcome::Ready {
+                report: Box::new(report),
+            }),
+            Err(error) => resources.push(PlanResourceOutcome::Failed {
+                resource_id,
+                error: PlanResourceError::from(error),
+            }),
+        }
+    }
+    let ready = resources
+        .iter()
+        .filter(|result| matches!(result, PlanResourceOutcome::Ready { .. }))
+        .count();
+    let failed = resources.len() - ready;
+    let report = PlanReport {
+        project: config.project.name,
+        environment: environment.name,
+        selection: selection.selection,
+        counts: PlanCounts {
+            selected: resources.len(),
+            ready,
+            failed,
+        },
+        resources,
+    };
+    CommandOutput::rendered_with_exit_code(
+        "plan",
+        render::plan_report_document(&report),
+        &report,
+        i32::from(failed != 0),
+    )
+}
+
+fn plan_one(
+    cli: &Cli,
+    args: &PlanArgs,
+    resource_id: &str,
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<ScanPlanReport, CliError> {
+    let scan = ScanArgs {
+        resource_id: resource_id.to_owned(),
+        destination_uri: args.destination_uri.clone(),
+        projection: args.projection.clone(),
+        filters: args.filters.clone(),
+        limit: args.limit,
+        order_by: args.order_by.clone(),
+        segmentation: args.segmentation.clone(),
+    };
+    scan_one(cli, &scan, "plan", execution, destinations)
 }
 
 pub(crate) fn plan_or_explain(
@@ -120,33 +199,39 @@ pub(crate) fn plan_or_explain(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_destination_registry(
-        command,
+    let report = scan_one(cli, &args, command, execution, destinations)?;
+    CommandOutput::rendered(command, render::scan_report_document(&report), report)
+}
+
+pub(crate) fn scan_one(
+    cli: &Cli,
+    args: &ScanArgs,
+    command: &'static str,
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<ScanPlanReport, CliError> {
+    let context = ProjectContext::load_selected_read_only(
         cli.project.as_ref(),
         cli.env.as_deref(),
-        !args.no_pin,
+        &args.resource_id,
         destinations,
     )?;
-    let inspection_root = args
-        .no_pin
-        .then(|| tempfile::Builder::new().prefix("cdf-inspection-").tempdir())
-        .transpose()
+    let inspection_root = tempfile::Builder::new()
+        .prefix("cdf-plan-")
+        .tempdir()
         .map_err(|error| {
             CdfError::environment(format!(
                 "create inspection artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
             ))
         })?;
-    let artifact_root = inspection_root
-        .as_ref()
-        .map_or(context.root.as_path(), tempfile::TempDir::path);
-    let target = scan_target(&context, &args)?;
+    let target = scan_target(&context, args)?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         &context,
         &args.resource_id,
-        args.no_pin,
+        false,
         Some(execution),
-        artifact_root,
+        inspection_root.path(),
     )?;
     let resolved = resolve_scan_destination(
         destinations,
@@ -163,7 +248,7 @@ pub(crate) fn plan_or_explain(
     )?;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
-        &args,
+        args,
         None,
         committed_frontier,
         identifier_policy.as_ref(),
@@ -184,7 +269,7 @@ pub(crate) fn plan_or_explain(
         execution,
         prepared.schema_snapshot,
     )?;
-    CommandOutput::rendered(command, render::scan_report_document(&report), report)
+    Ok(report)
 }
 
 pub(crate) fn preview(
@@ -250,15 +335,13 @@ pub(crate) fn prepare_resource_schema_for_cli(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
-    no_pin: bool,
+    commit_schema: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
     artifact_root: &std::path::Path,
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
     let source_plan = compile_source_plan_for_cli(resource)?;
-    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
-        && !no_pin
-    {
+    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
         let prepared =
             cdf_project::prepare_pinned_resource_schema_artifacts(&context.root, resource)?;
         let discovery = prepared
@@ -279,24 +362,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             prepared_payloads,
         );
     }
-    let probe_resource = if no_pin
-        && resource
-            .descriptor()
-            .schema_source
-            .pinned_snapshot()
-            .is_some()
-    {
-        let unpinned_source = resource
-            .descriptor()
-            .schema_source
-            .without_pinned_snapshot()
-            .ok_or_else(|| {
-                CdfError::internal("pinned schema source cannot be inspected unpinned")
-            })?;
-        resource.with_schema_source_and_schema(unpinned_source, resource.schema())
-    } else {
-        resource.clone()
-    };
+    let probe_resource = resource.clone();
     if !matches!(
         probe_resource.descriptor().schema_source,
         SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
@@ -344,8 +410,12 @@ pub(crate) fn prepare_resource_schema_for_cli(
         .as_ref()
         .map(DiscoveryCoverageReport::from_manifest);
     let artifact = artifacts.discovery.snapshot.artifact.clone();
-    let outcome = if no_pin { "inspection_only" } else { "added" };
-    let (snapshot_written, lockfile_written) = if no_pin {
+    let outcome = if commit_schema {
+        "added"
+    } else {
+        "inspection_only"
+    };
+    let (snapshot_written, lockfile_written) = if !commit_schema {
         (false, false)
     } else {
         let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
@@ -603,15 +673,16 @@ fn scan_report(
                 .iter()
                 .map(partition_report)
                 .collect(),
-            projection: plan.scan.request.projection.clone().unwrap_or_default(),
-            filters: plan
-                .scan
-                .request
-                .filters
-                .iter()
-                .map(|predicate| predicate.expression.clone())
-                .collect(),
-            limit: plan.scan.request.limit,
+            projection: plan.final_projection.clone().unwrap_or_default(),
+            filters: (if plan.residual_predicates.is_empty() {
+                &plan.scan.request.filters
+            } else {
+                &plan.residual_predicates
+            })
+            .iter()
+            .map(|predicate| predicate.expression.clone())
+            .collect(),
+            limit: plan.final_limit.or(plan.scan.request.limit),
         },
         pushdown: PushdownReport {
             pushed: plan.explain.pushed_predicates.clone(),
@@ -838,7 +909,55 @@ struct ScanReportPresentation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct ScanPlanReport {
+pub(super) struct PlanReport {
+    pub(super) project: String,
+    pub(super) environment: String,
+    pub(super) selection: cdf_project::ProjectResourceSelection,
+    pub(super) counts: PlanCounts,
+    pub(super) resources: Vec<PlanResourceOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct PlanCounts {
+    pub(super) selected: usize,
+    pub(super) ready: usize,
+    pub(super) failed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum PlanResourceOutcome {
+    Ready {
+        report: Box<ScanPlanReport>,
+    },
+    Failed {
+        resource_id: String,
+        error: PlanResourceError,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct PlanResourceError {
+    pub(super) code: String,
+    pub(super) kind: cdf_kernel::ErrorKind,
+    pub(super) message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) suggestions: Vec<String>,
+}
+
+impl From<CliError> for PlanResourceError {
+    fn from(error: CliError) -> Self {
+        Self {
+            code: error.code,
+            kind: error.kind,
+            message: error.message,
+            suggestions: error.suggestions.into_vec(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ScanPlanReport {
     #[serde(skip)]
     human_command: &'static str,
     #[serde(skip)]

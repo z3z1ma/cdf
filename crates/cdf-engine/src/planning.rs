@@ -335,7 +335,7 @@ impl Planner {
             &input.segmentation,
             &input.package_id,
         );
-        let explain = explain_data(
+        let mut explain = explain_data(
             &scan,
             &input.execution_extent,
             &operator_chain,
@@ -344,6 +344,18 @@ impl Planner {
             finish.estimate_support,
             finish.source_boundary,
         );
+        if input.relational_expression_plan.is_some() {
+            explain.projected_fields = final_projection.clone().unwrap_or_default();
+            explain.limit = final_limit;
+            explain.unsupported_predicates = residual_predicates
+                .iter()
+                .map(|predicate| PredicateExplain {
+                    predicate_id: predicate.predicate_id.as_str().to_owned(),
+                    expression: predicate.expression.clone(),
+                    fidelity: PushdownFidelity::Unsupported,
+                })
+                .collect();
+        }
 
         Ok(EnginePlan {
             scan,

@@ -82,7 +82,7 @@ fn dispatch(
         Command::Validate(args) => crate::project_command::validate(&cli, args),
         Command::Plan(args) => {
             let (_, services) = default_services(&cli)?;
-            crate::scan_command::plan_or_explain(&cli, args, "plan", &services, destinations)
+            crate::scan_command::plan(&cli, args, &services, destinations)
         }
         Command::Explain(args) => {
             let (_, services) = default_services(&cli)?;

@@ -62,15 +62,51 @@ enum ProjectPublicationRecovery {
 }
 
 impl ProjectContext {
+    pub fn load_selected_read_only(
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        resource_id: &str,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> StdResult<Self, CliError> {
+        Self::load_selected_with_policy(
+            project_arg,
+            env_arg,
+            resource_id,
+            ProjectPublicationRecovery::FailClosed,
+            destinations,
+        )
+    }
+
     pub fn load_selected_for_mutation(
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
         resource_id: &str,
         destinations: &cdf_runtime::DestinationRegistry,
     ) -> StdResult<Self, CliError> {
+        Self::load_selected_with_policy(
+            project_arg,
+            env_arg,
+            resource_id,
+            ProjectPublicationRecovery::Complete,
+            destinations,
+        )
+    }
+
+    fn load_selected_with_policy(
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        resource_id: &str,
+        recovery: ProjectPublicationRecovery,
+        destinations: &cdf_runtime::DestinationRegistry,
+    ) -> StdResult<Self, CliError> {
         let (root, project_file) = project_location(project_arg)?;
         for attempt in 0..3 {
-            let generation_before = recover_project_file_transaction(&root)?;
+            let generation_before = match recovery {
+                ProjectPublicationRecovery::FailClosed => {
+                    project_file_transaction_generation(&root)?
+                }
+                ProjectPublicationRecovery::Complete => recover_project_file_transaction(&root)?,
+            };
             let loaded = Self::load_selected_observed_project(
                 &root,
                 &project_file,
@@ -78,7 +114,12 @@ impl ProjectContext {
                 resource_id,
                 destinations,
             );
-            let generation_after = recover_project_file_transaction(&root)?;
+            let generation_after = match recovery {
+                ProjectPublicationRecovery::FailClosed => {
+                    project_file_transaction_generation(&root)?
+                }
+                ProjectPublicationRecovery::Complete => recover_project_file_transaction(&root)?,
+            };
             if generation_before == generation_after {
                 return loaded.map_err(CliError::from);
             }

@@ -8,7 +8,7 @@ Compare durable schemas
 Usage: cdf diff [OPTIONS] [COMMAND]
 
 Commands:
-  schema  Discover, pin, compare, and promote schemas
+  schema  Inspect, compare, and promote schemas
 
 Options:
   -q, --quiet                  Suppress progress and non-primary success narration

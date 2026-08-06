@@ -8,18 +8,17 @@ use cdf_kernel::{
     SchemaSource, TargetName,
 };
 use cdf_project::{
-    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore, LOCK_FILE_NAME,
+    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore,
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions,
     SchemaPromotionExecutionRequest, SchemaSnapshotArtifact, SchemaSnapshotDataType,
     SchemaSnapshotField, SchemaSnapshotStore, execute_schema_promotion,
-    load_resumable_schema_promotion, load_schema_promotion_recovery_status, lock_to_toml,
-    parse_lock, pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
+    load_resumable_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
 };
 use cdf_state_sqlite::SqlitePromotionSettlementStore;
 use serde::Serialize;
 
 use crate::{
-    args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaPromoteArgs, SchemaResourceArgs},
+    args::{Cli, SchemaCommand, SchemaPromoteArgs, SchemaResourceArgs},
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination_with_services},
     output::{CliError, CommandOutput},
@@ -33,8 +32,6 @@ pub(crate) fn schema(
     destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     match command {
-        SchemaCommand::Discover(args) => discover(cli, args, execution, destination_registry),
-        SchemaCommand::Pin(args) => pin(cli, args, execution, destination_registry),
         SchemaCommand::Show(args) => show(cli, args, destination_registry),
         SchemaCommand::Diff(args) => diff(cli, args, execution, destination_registry),
         SchemaCommand::Promote(args) => promote(cli, args, execution, destination_registry),
@@ -56,7 +53,10 @@ fn promote(
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
     let lock = context.lock.as_ref().ok_or_else(|| {
-        CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
+        CdfError::contract(format!(
+            "schema promote requires locked schema authority; run `cdf compile {}` first",
+            args.resource_id
+        ))
     })?;
     let authority = context.lock_authority.as_ref().ok_or_else(|| {
         CdfError::contract("schema promote requires an exact cdf.lock precondition")
@@ -140,7 +140,10 @@ fn execute_promotion(
             .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
         let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
         let lock = context.lock.as_ref().ok_or_else(|| {
-            CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
+            CdfError::contract(format!(
+                "schema promote requires locked schema authority; run `cdf compile {}` first",
+                args.resource_id
+            ))
         })?;
         let inspection_root = inspection_artifact_root("schema-promote-execute")?;
         let fresh_discovery = match discover_artifacts_for_cli_at(
@@ -236,100 +239,6 @@ fn execute_promotion(
         render::schema_promotion_execution_document(&result),
         result,
     )
-}
-
-fn discover(
-    cli: &Cli,
-    args: SchemaDiscoverArgs,
-    execution: &cdf_runtime::ExecutionServices,
-    destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema discover", destinations)?;
-    let resource = context.resource(&args.resource_id)?;
-    let inspection_root = inspection_artifact_root("schema-discover")?;
-    let artifacts =
-        discover_artifacts_for_cli_at(&context, resource, execution, inspection_root.path())?;
-    let discovery = &artifacts.discovery;
-    let report = SchemaDiscoverReport::from_discovery(
-        &context,
-        &args.resource_id,
-        &discovery.snapshot.artifact,
-        &discovery.snapshot.source_identity,
-        artifacts.discovery_manifest.as_ref(),
-    );
-    CommandOutput::rendered(
-        "schema discover",
-        render::schema_discover_document(&report),
-        report,
-    )
-}
-
-fn pin(
-    cli: &Cli,
-    args: SchemaResourceArgs,
-    execution: &cdf_runtime::ExecutionServices,
-    destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<CommandOutput, CliError> {
-    let context = load_context(cli, "schema pin", destinations)?;
-    let resource = context.resource(&args.resource_id)?;
-    let previous = pinned_snapshot_reference(&context, resource).cloned();
-    let previous_artifact = previous
-        .as_ref()
-        .map(|reference| SchemaSnapshotStore::new(&context.root).read(reference))
-        .transpose()?;
-    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
-    let unchanged = previous_artifact
-        .as_ref()
-        .zip(artifacts.discovery_manifest.as_ref())
-        .map(|(previous_snapshot, fresh_manifest)| {
-            has_same_discovery_observation(&context, previous_snapshot, fresh_manifest)
-        })
-        .transpose()?
-        .unwrap_or(false);
-    let (snapshot, normalized_schema, snapshot_written) = if unchanged {
-        let previous_snapshot = previous_artifact.as_ref().ok_or_else(|| {
-            CdfError::internal("unchanged schema pin lost its verified previous snapshot")
-        })?;
-        (
-            previous_snapshot,
-            Arc::new(previous_snapshot.schema.to_arrow()?),
-            false,
-        )
-    } else {
-        let writes = write_schema_discovery_artifacts(&context.root, &artifacts)?;
-        (
-            &artifacts.discovery.snapshot.artifact,
-            Arc::clone(&artifacts.discovery.normalized_schema),
-            writes.snapshot_written,
-        )
-    };
-    let pinned_source = resource
-        .descriptor()
-        .schema_source
-        .with_pinned_snapshot(snapshot.reference())
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-                "resource `{}` does not support schema pinning",
-                resource.descriptor().resource_id
-            ))
-        })?;
-    let pinned_resource = resource.with_schema_source_and_schema(pinned_source, normalized_schema);
-    let lockfile = update_lockfile(destinations, &context, &pinned_resource)?;
-    let status = match previous {
-        Some(_) if unchanged => "unchanged",
-        Some(previous) if previous.schema_hash == snapshot.schema_hash => "unchanged",
-        Some(_) => "refreshed",
-        None => "added",
-    };
-    let report = SchemaPinReport::from_pin(
-        SchemaSnapshotReportBase::from_artifact(&context, &args.resource_id, snapshot),
-        status,
-        &artifacts.discovery.snapshot.source_identity,
-        snapshot_written,
-        lockfile,
-        artifacts.discovery_manifest.as_ref(),
-    );
-    CommandOutput::rendered("schema pin", render::schema_pin_document(&report), report)
 }
 
 fn show(
@@ -498,40 +407,6 @@ fn inspection_artifact_root(command: &str) -> Result<tempfile::TempDir, CliError
         })
 }
 
-fn update_lockfile(
-    destinations: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
-    pinned_resource: &CompiledResource,
-) -> Result<SchemaLockfileWrite, CliError> {
-    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
-        destinations,
-        context,
-        &context.environment.destination,
-    )?;
-    let updated = pin_schema_snapshot_in_project_lockfile(
-        &context.config,
-        &context.resources,
-        context.lock.as_ref(),
-        &destination_artifacts,
-        pinned_resource,
-        &context.semantic_catalog,
-    )?;
-    let encoded = lock_to_toml(&updated)?;
-    let path = context.root.join(LOCK_FILE_NAME);
-    let written = context
-        .lock_authority
-        .as_ref()
-        .map(|authority| authority.bytes.as_slice())
-        != Some(encoded.as_bytes());
-    if written {
-        cdf_project::write_lock_file_guarded(&path, context.lock_authority.as_ref(), encoded)?;
-    }
-    Ok(SchemaLockfileWrite {
-        written,
-        unsupported_reason: None,
-    })
-}
-
 fn pinned_snapshot_reference<'a>(
     context: &'a ProjectContext,
     resource: &'a CompiledResource,
@@ -554,32 +429,8 @@ fn pinned_snapshot_reference<'a>(
 
 fn no_pinned_snapshot_error(resource_id: &str) -> CliError {
     CliError::from(CdfError::contract(format!(
-        "no pinned schema snapshot exists for resource `{resource_id}`; run `cdf schema pin {resource_id}` to create one"
+        "no locked schema snapshot exists for resource `{resource_id}`; run `cdf compile {resource_id}` to prepare it"
     )))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct SchemaDiscoverReport {
-    #[serde(flatten)]
-    snapshot: SchemaSnapshotReportBase,
-    source_identity: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    discovery: Option<DiscoveryCoverageReport>,
-    writes: SchemaWrites,
-    next_command: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct SchemaPinReport {
-    #[serde(flatten)]
-    snapshot: SchemaSnapshotReportBase,
-    status: String,
-    source_identity: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    discovery: Option<DiscoveryCoverageReport>,
-    writes: SchemaWrites,
-    unsupported: Vec<String>,
-    next_command: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -672,59 +523,6 @@ struct SchemaWrites {
     package: bool,
     destination: bool,
     checkpoint: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SchemaLockfileWrite {
-    written: bool,
-    unsupported_reason: Option<String>,
-}
-
-impl SchemaDiscoverReport {
-    fn from_discovery(
-        context: &ProjectContext,
-        resource_id: &str,
-        artifact: &SchemaSnapshotArtifact,
-        source_identity: &BTreeMap<String, String>,
-        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
-    ) -> Self {
-        Self {
-            snapshot: SchemaSnapshotReportBase::from_artifact(context, resource_id, artifact),
-            source_identity: source_identity.clone(),
-            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
-            writes: SchemaWrites::none(),
-            next_command: format!("cdf plan {resource_id}"),
-        }
-    }
-}
-
-impl SchemaPinReport {
-    fn from_pin(
-        snapshot: SchemaSnapshotReportBase,
-        status: &str,
-        source_identity: &BTreeMap<String, String>,
-        snapshot_written: bool,
-        lockfile: SchemaLockfileWrite,
-        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
-    ) -> Self {
-        let unsupported = lockfile.unsupported_reason.into_iter().collect::<Vec<_>>();
-        let resource_id = snapshot.resource_id.clone();
-        Self {
-            snapshot,
-            status: status.to_owned(),
-            source_identity: source_identity.clone(),
-            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
-            writes: SchemaWrites {
-                schema_snapshot: snapshot_written,
-                lockfile: lockfile.written,
-                package: false,
-                destination: false,
-                checkpoint: false,
-            },
-            unsupported,
-            next_command: format!("cdf schema show {resource_id}"),
-        }
-    }
 }
 
 impl SchemaShowReport {

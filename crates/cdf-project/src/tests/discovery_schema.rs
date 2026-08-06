@@ -3681,7 +3681,7 @@ fn sampled_initial_pin_reports_every_selected_incompatibility_without_writes() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("initial sampled schema pin"));
+    assert!(error.contains("initial sampled schema baseline"));
     assert!(error.contains("a.parquet"));
     assert!(error.contains("z.parquet"));
     assert!(error.contains("candidate verdicts"));

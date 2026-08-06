@@ -4,19 +4,19 @@
 .SH NAME
 cdf\-run \- Execute a governed resource run
 .SH SYNOPSIS
-\fBcdf run\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-explain\-memory\fR] [\fB\-\-progress\fR] [\fB\-\-loop\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf run\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-locked\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-\-progress\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-unicode\fR] [\fB\-\-explain\-memory\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-loop\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
 Execute a governed resource run
 .SH OPTIONS
 .TP
+\fB\-\-exclude\fR \fI<RESOURCE_GLOB>\fR
+Exclude resources matching this glob; may be repeated
+.TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-to\fR \fI<DEST>\fR
-Destination URI or cursor upper bound, as shown in usage
-.TP
-\fB\-\-jobs\fR \fI<N>\fR
-Maximum concurrent jobs
+\fB\-\-locked\fR
+Require sufficient unchanged cdf.lock authority
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,11 +36,11 @@ always
 never
 .RE
 .TP
-\fB\-\-stats\-profile\fR
-Write the typed statistics profile artifact
+\fB\-\-to\fR \fI<DEST>\fR
+Destination URI or cursor upper bound, as shown in usage
 .TP
-\fB\-\-explain\-memory\fR
-Include memory\-ledger detail in the run report
+\fB\-\-jobs\fR \fI<N>\fR
+Maximum concurrent jobs
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -57,8 +57,8 @@ always
 never
 .RE
 .TP
-\fB\-\-loop\fR
-Continue polling for work
+\fB\-\-stats\-profile\fR
+Write the typed statistics profile artifact
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never
@@ -75,17 +75,23 @@ always
 never
 .RE
 .TP
+\fB\-\-explain\-memory\fR
+Include memory\-ledger detail in the run report
+.TP
 \fB\-\-memory\-budget\fR \fI<BYTES>\fR
 Process memory budget, e.g. 4GiB or 512MiB
+.TP
+\fB\-\-loop\fR
+Continue polling for work
+.TP
+\fB\-\-spill\-budget\fR \fI<BYTES>\fR
+Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-\-segment\-target\-rows\fR \fI<ROWS>\fR
 Set the value named in this command\*(Aqs usage
 .TP
 \fB\-\-segment\-target\-bytes\fR \fI<BYTES>\fR
 Set the value named in this command\*(Aqs usage
-.TP
-\fB\-\-spill\-budget\fR \fI<BYTES>\fR
-Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-\-segment\-max\-rows\fR \fI<ROWS>\fR
 Set the value named in this command\*(Aqs usage
@@ -108,5 +114,5 @@ Set the value named in this command\*(Aqs usage
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
-[\fIRESOURCE\fR]
-Resource identifier
+[\fIRESOURCE_SELECTOR\fR]
+Exact or glob resource selectors; quote shell\-sensitive globs

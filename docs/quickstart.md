@@ -97,7 +97,7 @@ Refresh the intentional schema authority and review its diff:
 
 ```bash
 "$CDF" schema diff tlc.yellow
-"$CDF" schema pin tlc.yellow
+"$CDF" compile tlc.yellow
 "$CDF" plan tlc.yellow
 "$CDF" run tlc.yellow
 ```
@@ -141,7 +141,7 @@ cargo test -p cdf-cli governed_evolve_quarantines_incompatible_file_with_exact_a
 Refresh the baseline only after reviewing the diff:
 
 ```bash
-"$CDF" schema pin tlc.yellow
+"$CDF" compile tlc.yellow
 ```
 
 ## 5. Replay a package without source contact

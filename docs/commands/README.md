@@ -25,8 +25,6 @@ Generated from the CLI's clap definitions. Do not edit these pages by hand.
 - [`cdf diff`](cdf-diff.md)
 - [`cdf diff schema`](cdf-diff-schema.md)
 - [`cdf schema`](cdf-schema.md)
-- [`cdf schema discover`](cdf-schema-discover.md)
-- [`cdf schema pin`](cdf-schema-pin.md)
 - [`cdf schema show`](cdf-schema-show.md)
 - [`cdf schema diff`](cdf-schema-diff.md)
 - [`cdf schema promote`](cdf-schema-promote.md)

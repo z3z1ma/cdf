@@ -1,5 +1,77 @@
 use super::*;
 
+fn single_plan(report: &serde_json::Value) -> &serde_json::Value {
+    &report["result"]["resources"][0]["report"]
+}
+
+#[test]
+fn plan_expands_globs_without_writes_and_reports_each_resource() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf/local/users.cdf.sql"),
+        RESOURCE.replace("TARGET events", "TARGET users"),
+    )
+    .unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.*",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
+    assert_project_tree_unchanged(&project.root, &before);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["counts"]["selected"], 2);
+    assert_eq!(json["result"]["counts"]["ready"], 2);
+    assert_eq!(
+        json["result"]["resources"][0]["report"]["resource_id"],
+        "local.events"
+    );
+    assert_eq!(
+        json["result"]["resources"][1]["report"]["resource_id"],
+        "local.users"
+    );
+}
+
+#[test]
+fn run_preparation_failure_creates_no_package_for_any_selected_resource() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf/local/missing.cdf.sql"),
+        RESOURCE
+            .replace("TARGET events", "TARGET missing")
+            .replace("*.ndjson", "missing-*.ndjson"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.*",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(
+        !project.root.join(".cdf/packages").exists(),
+        "the all-selected preparation barrier must precede package creation"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["counts"]["completed"], 0);
+    assert_eq!(json["result"]["counts"]["failed"], 1);
+    assert_eq!(
+        json["result"]["resources"][1]["status"],
+        "preparation_failed"
+    );
+}
+
 #[test]
 fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
     let project = TestProject::new();
@@ -29,7 +101,7 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
         "plan must not create destination data"
     );
     let json = stderr_or_stdout_json(&result.stdout);
-    let result = &json["result"];
+    let result = single_plan(&json);
     assert_eq!(result["resource_id"], "local.events");
     assert!(
         result["resource_schema"]["schema_hash"]
@@ -100,7 +172,7 @@ fn plan_uses_the_compiled_resource_target() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let report = stderr_or_stdout_json(&result.stdout);
     assert_eq!(
-        report["result"]["destination"]["target"],
+        single_plan(&report)["destination"]["target"],
         "warehouse.userdata"
     );
 }
@@ -161,7 +233,6 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
             filters: vec!["id > 10".to_owned()],
             limit: Some(5),
             order_by: Vec::new(),
-            no_pin: false,
             segmentation: cdf_cli_core::args::SegmentationArgs::default(),
         },
         "plan",
@@ -236,7 +307,7 @@ fn explain_json_exposes_destination_plan_without_writes() {
     assert!(!override_path.exists());
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "explain");
-    let report = &json["result"];
+    let report = single_plan(&json);
     assert_eq!(report["destination"]["target"], "events");
     assert!(
         report["destination"]["label"]
@@ -692,7 +763,7 @@ fn plan_json_derives_merge_guarantee_per_key() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_plan(&json);
     assert_eq!(report["destination"]["disposition"], "merge");
     assert_eq!(report["delivery_guarantee"], "effectively_once_per_key");
     assert_eq!(report["delivery_guarantee_detail"]["qualifier"], "per_key");
@@ -720,8 +791,10 @@ fn plan_unsupported_destination_disposition_fails_closed_without_writes() {
     ]);
 
     assert_ne!(result.exit_code, 0);
-    let json = stderr_or_stdout_json(&result.stderr);
-    let message = json["error"]["message"].as_str().unwrap();
+    let json = stderr_or_stdout_json(&result.stdout);
+    let message = json["result"]["resources"][0]["error"]["message"]
+        .as_str()
+        .unwrap();
     assert!(message.contains("parquet_object_store"), "{message}");
     assert!(message.contains("does not support Merge"), "{message}");
     assert!(

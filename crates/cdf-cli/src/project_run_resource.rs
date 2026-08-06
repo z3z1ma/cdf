@@ -59,7 +59,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource_id: &str,
-    no_pin: bool,
+    commit_schema: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
     let artifact_root = context.root.clone();
@@ -67,7 +67,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
         destinations,
         context,
         resource_id,
-        no_pin,
+        commit_schema,
         execution,
         &artifact_root,
     )
@@ -77,7 +77,7 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource_id: &str,
-    no_pin: bool,
+    commit_schema: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
     artifact_root: &Path,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
@@ -86,7 +86,7 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         context,
         compiled,
-        no_pin,
+        commit_schema,
         execution,
         artifact_root,
     )?;

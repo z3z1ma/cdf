@@ -80,6 +80,11 @@ impl RenderDocument {
         self
     }
 
+    pub fn append(mut self, mut other: Self) -> Self {
+        self.blocks.append(&mut other.blocks);
+        self
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
         Self::new().push(TextBlock::new(text))
     }

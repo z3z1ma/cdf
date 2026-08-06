@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-05
 
 # Resource-first CLI experience program
 
@@ -29,6 +29,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 4. **U3 — shared selected preparation and multi-resource plan/run.** Route plan/run/compile through
    one prepared-resource seam, remove refresh/pin/discover/no-pin legacy grammar, enforce the
    all-selected preparation barrier, and retain independent runtime outcomes.
+   Owner: `.10x/tickets/done/2026-08-05-u3-selected-preparation-multi-resource-plan-run.md`.
 5. **U4 — portable plan export/consumption.** Add `plan --out`, canonical plan artifact authority,
    `run --plan`, strict portability validation, and whole-plan no-repair preflight while preserving
    the existing terminal plan document.
@@ -113,6 +114,9 @@ closure.
   portable-plan, package, and interrupted-run authority; exact confirmation remains U6-only.
 - 2026-08-04: The user confirmed the revised one-run-verb model. The command-intent/effects spec is
   active and no behavioral ratification blocker remains for U5/U6.
+- 2026-08-05: U3 completed directly on `main`: selected plan/run share one preparation authority,
+  run enforces a complete preparation barrier and retains exact first-use payloads, plan remains
+  read-only, and the superseded pin/discover/no-pin command grammar is deleted. U4 is now unblocked.
 
 ## Blockers
 

@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Discover, pin, compare, and promote schemas
+Inspect, compare, and promote schemas
 
 Usage: cdf diff schema [OPTIONS]
 

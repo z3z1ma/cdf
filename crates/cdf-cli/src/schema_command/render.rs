@@ -7,39 +7,6 @@ use crate::{
     reports::discovery_coverage_panel,
 };
 
-pub(super) fn schema_discover_document(report: &SchemaDiscoverReport) -> RenderDocument {
-    schema_snapshot_document(
-        "discovered",
-        &format!("discovered schema for {}", report.snapshot.resource_id),
-        SnapshotDocumentData {
-            base: &report.snapshot,
-            writes: &report.writes,
-            source_identity: Some(&report.source_identity),
-            discovery: report.discovery.as_ref(),
-            unsupported: &[],
-            next_command: Some(&report.next_command),
-        },
-    )
-}
-
-pub(super) fn schema_pin_document(report: &SchemaPinReport) -> RenderDocument {
-    schema_snapshot_document(
-        "pinned",
-        &format!(
-            "{} pinned schema for {}",
-            report.status, report.snapshot.resource_id
-        ),
-        SnapshotDocumentData {
-            base: &report.snapshot,
-            writes: &report.writes,
-            source_identity: Some(&report.source_identity),
-            discovery: report.discovery.as_ref(),
-            unsupported: &report.unsupported,
-            next_command: Some(&report.next_command),
-        },
-    )
-}
-
 pub(super) fn schema_show_document(report: &SchemaShowReport) -> RenderDocument {
     schema_snapshot_document(
         "pinned",

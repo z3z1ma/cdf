@@ -45,14 +45,14 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "init" -d 'Create a new cdf 
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "add" -d 'Add a source resource to the project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Prepare independently verified compiled resource artifacts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Statically validate project configuration and selected resources'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Plan a resource run without executing it'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Prepare and inspect selected resource runs without writing'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "explain" -d 'Explain resolution, capabilities, and execution choices'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "run" -d 'Execute a governed resource run'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "preview" -d 'Read a bounded preview without committing data'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "sql" -d 'Query verified project and operational artifacts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "inspect" -d 'Inspect durable project and run evidence'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "diff" -d 'Compare durable schemas'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "schema" -d 'Discover, pin, compare, and promote schemas'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "schema" -d 'Inspect, compare, and promote schemas'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "contract" -d 'Freeze, show, and test contracts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "state" -d 'Inspect and recover checkpoint state'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "resume" -d 'Resume interrupted work from the run ledger'
@@ -152,6 +152,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand validate" -l spill-budget -d 'Sp
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l select -d 'Comma-separated projected fields' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l filter -d 'Filter expression; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l limit -d 'Maximum rows to read' -r
@@ -176,7 +177,6 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand plan" -l no-pin -d 'Do not pin newly discovered schema'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -s h -l help -d 'Print help'
@@ -204,10 +204,10 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand explain" -l no-pin -d 'Do not pin newly discovered schema'
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l jobs -d 'Maximum concurrent jobs' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
@@ -229,6 +229,7 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l locked -d 'Require sufficient unchanged cdf.lock authority'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l stats-profile -d 'Write the typed statistics profile artifact'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l explain-memory -d 'Include memory-ledger detail in the run report'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l loop -d 'Continue polling for work'
@@ -408,7 +409,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcom
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -f -a "schema" -d 'Discover, pin, compare, and promote schemas'
+complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -f -a "schema" -d 'Inspect, compare, and promote schemas'
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -423,53 +424,23 @@ complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "discover" -d 'Discover the current physical source schema'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "pin" -d 'Pin a discovered schema into the project contract'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "show" -d 'Show the selected durable record'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "diff" -d 'Compare durable schemas'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "promote" -d 'Plan or execute residual schema promotion'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -f -a "show" -d 'Show the selected durable record'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -f -a "diff" -d 'Compare durable schemas'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from show diff promote" -f -a "promote" -d 'Plan or execute residual schema promotion'
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from show" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

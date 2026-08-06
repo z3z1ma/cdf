@@ -101,7 +101,7 @@ files:
 
 ```bash
 cdf add warehouse.events clickhouses://user:password@warehouse.example:8443/analytics/events
-cdf schema discover warehouse.events
+cdf plan warehouse.events
 cdf plan warehouse.events
 cdf preview warehouse.events --limit 20
 cdf run warehouse.events

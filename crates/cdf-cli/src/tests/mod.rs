@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     env,
     ffi::OsString,
     fs,
@@ -15,7 +15,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::{FileWriter, StreamWriter};
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
     CDF_VARIANT_SEMANTIC, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
@@ -53,7 +53,6 @@ use cdf_state_sqlite::{
     SqliteCheckpointStore, SqlitePromotionSettlementStore, SqliteRunLedger,
 };
 use duckdb::Connection as DuckConnection;
-use flate2::{Compression, write::GzEncoder};
 use postgres::{Client, NoTls};
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -186,6 +185,29 @@ impl TestProject {
     }
 }
 
+fn compile_resource(
+    project: &TestProject,
+    resource_id: &str,
+) -> cdf_cli_core::output::InvocationResult {
+    run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "compile",
+        resource_id,
+    ])
+}
+
+fn locked_schema_hash(project: &TestProject, resource_id: &str) -> String {
+    let lock = cdf_project::parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap())
+        .unwrap();
+    lock.resources[resource_id]
+        .schema_hash
+        .clone()
+        .expect("compiled resource must bind a schema hash")
+}
+
 fn assert_no_preview_writes(project: &TestProject) {
     assert!(
         !project.root.join(".cdf/packages").exists(),
@@ -297,16 +319,16 @@ fn assert_no_run_writes(project: &TestProject) {
     );
 }
 
-fn assert_no_schema_discovery_writes(project: &TestProject) {
-    assert!(!project.root.join(".cdf/schemas").exists());
-    assert!(!project.root.join("cdf.lock").exists());
-    assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join(".cdf/dev.duckdb").exists());
-}
-
 fn run_package_id(result: &cdf_cli_core::output::InvocationResult) -> String {
-    stderr_or_stdout_json(&result.stdout)["result"]["package_id"]
+    let json = stderr_or_stdout_json(&result.stdout);
+    let result = &json["result"];
+    let result = result
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|resources| resources.first())
+        .and_then(|resource| resource.get("result"))
+        .unwrap_or(result);
+    result["package_id"]
         .as_str()
         .expect("successful run report must name its minted package")
         .to_owned()
@@ -320,23 +342,6 @@ fn run_package_dir(
         .root
         .join(".cdf/packages")
         .join(run_package_id(result))
-}
-
-fn collect_package_segments_for_test(
-    reader: &PackageReader,
-) -> Vec<(SegmentEntry, Vec<RecordBatch>)> {
-    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
-        cdf_memory::DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new())
-            .unwrap(),
-    );
-    reader
-        .verified_segment_stream(memory, 64 * 1024 * 1024)
-        .unwrap()
-        .map(|segment| {
-            let segment = segment.unwrap();
-            (segment.entry, segment.batches)
-        })
-        .collect()
 }
 
 fn single_package_dir(project: &TestProject) -> PathBuf {
@@ -881,62 +886,6 @@ FROM upstream(source => 'local', glob => '{glob}', format => 'parquet');
     .unwrap();
 }
 
-fn write_arrow_ipc_discover_resource(project: &TestProject, glob: &str) {
-    for entry in fs::read_dir(project.root.join("data")).unwrap() {
-        fs::remove_file(entry.unwrap().path()).unwrap();
-    }
-    fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
-        format!(
-            r#"RESOURCE
-DISPOSITION APPEND
-TRUST GOVERNED
-EXECUTION BOUNDED
-AS
-SELECT *
-FROM upstream(source => 'local', glob => '{glob}', format => 'arrow_ipc');
-"#
-        ),
-    )
-    .unwrap();
-}
-
-fn write_protobuf_resource(project: &TestProject) {
-    for entry in fs::read_dir(project.root.join("data")).unwrap() {
-        fs::remove_file(entry.unwrap().path()).unwrap();
-    }
-    fs::remove_file(project.root.join("cdf/local/events.cdf.sql")).unwrap();
-    fs::write(
-        project.root.join("cdf/local/rows.cdf.sql"),
-        r#"RESOURCE
-DISPOSITION APPEND
-TRUST GOVERNED
-EXECUTION BOUNDED
-AS
-SELECT *
-FROM upstream(
-  source => 'local',
-  glob => 'rows.pb',
-  format => 'protobuf',
-  format_options => OBJECT(
-    descriptor_set_base64 => 'CkQKCWRldi9zdGRpbhIEdGVzdCIpCgNSb3cSDgoCaWQYASABKANSAmlkEhIKBG5hbWUYAiABKAlSBG5hbWViBnByb3RvMw==',
-    message => 'test.Row',
-    framing => 'length_delimited'
-  )
-);
-"#,
-    )
-    .unwrap();
-    fs::write(
-        project.root.join("data/rows.pb"),
-        [
-            0x09, 0x08, 0x2a, 0x12, 0x05, b'a', b'l', b'i', b'c', b'e', 0x07, 0x08, 0x07, 0x12,
-            0x03, b'b', b'o', b'b',
-        ],
-    )
-    .unwrap();
-}
-
 fn remove_resource_format(project: &TestProject, format: &str) {
     let path = project.root.join("cdf/local/events.cdf.sql");
     let text = fs::read_to_string(&path).unwrap();
@@ -949,61 +898,6 @@ fn remove_resource_format(project: &TestProject, format: &str) {
         text.replacen(&inline, "", 1)
     };
     fs::write(path, updated).unwrap();
-}
-
-fn write_vendor_arrow_ipc(project: &TestProject, filename: &str) {
-    let schema = Arc::new(Schema::new_with_metadata(
-        vec![
-            Field::new("VendorID", DataType::Int32, false).with_metadata(HashMap::from([(
-                "source-tag".to_owned(),
-                "vendor".to_owned(),
-            )])),
-            Field::new("Note", DataType::Utf8, true),
-        ],
-        HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
-    ));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
-            Arc::new(StringArray::from(vec![Some("first"), Some("second")])),
-        ],
-    )
-    .unwrap();
-    write_arrow_ipc_source(project, filename, batch);
-}
-
-fn write_large_vendor_arrow_ipc(project: &TestProject, filename: &str) {
-    let schema = Arc::new(Schema::new_with_metadata(
-        vec![
-            Field::new("VendorID", DataType::Int32, false).with_metadata(HashMap::from([(
-                "source-tag".to_owned(),
-                "vendor".to_owned(),
-            )])),
-            Field::new("Note", DataType::Utf8, true),
-        ],
-        HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
-    ));
-    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
-    let mut payload = String::with_capacity(1_000_000);
-    for _ in 0..1_000_000 {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        payload.push(char::from(b'a' + (state % 26) as u8));
-    }
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
-            Arc::new(StringArray::from(vec![
-                Some(payload),
-                Some("second".to_owned()),
-            ])),
-        ],
-    )
-    .unwrap();
-    write_arrow_ipc_source(project, filename, batch);
 }
 
 fn write_arrow_ipc_source(project: &TestProject, filename: &str, batch: RecordBatch) {
@@ -2026,20 +1920,6 @@ FROM upstream(source => 'warehouse', table => '{table}');
     )
 }
 
-fn postgres_resource_sql_with_vendor_cursor(table: &str) -> String {
-    format!(
-        r#"RESOURCE
-DISPOSITION APPEND
-CURSOR vendor_id
-TRUST GOVERNED
-EXECUTION BOUNDED
-AS
-SELECT *
-FROM upstream(source => 'warehouse', table => '{table}');
-"#
-    )
-}
-
 fn seed_ordered_cursor_table(postgres: &LivePostgres, table: &str, values: &str) -> String {
     let table = postgres.table(table);
     let mut client = postgres.client();
@@ -2083,39 +1963,22 @@ fn write_pinned_postgres_project_with_secret(
         postgres_resource_sql(table, true),
     )
     .unwrap();
-    let pin = run([
+    let compile = run([
         "cdf",
         "--json",
         "--project",
         project.root_str(),
-        "schema",
-        "pin",
+        "compile",
         "warehouse.orders",
     ]);
-    assert_eq!(pin.exit_code, 0, "{}{}", pin.stdout, pin.stderr);
-    assert_secret_absent(&pin, &source_dsn);
+    assert_eq!(compile.exit_code, 0, "{}{}", compile.stdout, compile.stderr);
+    assert_secret_absent(&compile, &source_dsn);
     source_dsn
 }
 
 fn assert_secret_absent(result: &cdf_cli_core::output::InvocationResult, secret: &str) {
     assert!(!result.stdout.contains(secret), "stdout leaked {secret}");
     assert!(!result.stderr.contains(secret), "stderr leaked {secret}");
-}
-
-fn assert_no_key_nudge(result: &cdf_cli_core::output::InvocationResult) {
-    let output = format!("{}{}", result.stdout, result.stderr).to_ascii_lowercase();
-    for forbidden in [
-        "primary_key",
-        "merge_key",
-        "missing key",
-        "add a key",
-        "invent a key",
-    ] {
-        assert!(
-            !output.contains(forbidden),
-            "keyless append output contained {forbidden:?}:\n{output}"
-        );
-    }
 }
 
 fn write_minimal_lockfile(project: &TestProject) {
@@ -2797,7 +2660,6 @@ mod recovery;
 mod replay;
 mod run;
 mod run_adapters;
-mod schema_discovery;
 mod schema_promotion;
 mod source_planning;
 mod sql;

@@ -140,16 +140,8 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
         &parse_url,
         "secret://file/rest-token",
     );
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        parse_project.root_str(),
-        "schema",
-        "pin",
-        "api.items",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}{}", pin.stdout, pin.stderr);
+    let compile = compile_resource(&parse_project, "api.items");
+    assert_eq!(compile.exit_code, 0, "{}{}", compile.stdout, compile.stderr);
 
     let parse = run_valid_run_resource(&parse_project, "api.items");
 

@@ -6,21 +6,12 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let pin_json = stderr_or_stdout_json(&pin.stdout);
-    let pinned_hash = pin_json["result"]["schema_hash"].as_str().unwrap();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let pinned_hash = locked_schema_hash(&project, "local.events");
 
     write_vendor_score_parquet(&source_path);
-    write_schema_promote_package_fixture(&project, pinned_hash);
+    write_schema_promote_package_fixture(&project, &pinned_hash);
     let before = project_tree_snapshot(&project.root);
 
     let planned = run([
@@ -211,21 +202,9 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
     .unwrap();
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let pin_json = stderr_or_stdout_json(&pin.stdout);
-    let old_hash = pin_json["result"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
 
@@ -325,20 +304,9 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture_for_target(
         &project,
@@ -484,20 +452,11 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         write_parquet_discover_resource(&project, "*.parquet");
         let source_path = project.root.join("data/events.parquet");
         write_vendor_parquet(&source_path);
-        let pin = run([
-            "cdf",
-            "--json",
-            "--project",
-            project.root_str(),
-            "schema",
-            "pin",
-            "local.events",
-        ]);
-        assert_eq!(pin.exit_code, 0, "{failpoint:?}: {}", pin.stderr);
-        let pin_json = stderr_or_stdout_json(&pin.stdout);
-        let old_hash = pin_json["result"]["schema_hash"].as_str().unwrap();
+        let compile = compile_resource(&project, "local.events");
+        assert_eq!(compile.exit_code, 0, "{failpoint:?}: {}", compile.stderr);
+        let old_hash = locked_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
-        write_schema_promote_package_fixture(&project, old_hash);
+        write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
             "cdf",
             "--json",
@@ -641,20 +600,9 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
@@ -724,20 +672,9 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         write_parquet_discover_resource(&project, "*.parquet");
         let source_path = project.root.join("data/events.parquet");
         write_vendor_parquet(&source_path);
-        let pin = run([
-            "cdf",
-            "--json",
-            "--project",
-            project.root_str(),
-            "schema",
-            "pin",
-            "local.events",
-        ]);
-        assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-        let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let compile = compile_resource(&project, "local.events");
+        assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+        let old_hash = locked_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -861,20 +798,9 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
     let dry = run([
@@ -964,20 +890,9 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         write_parquet_discover_resource(&project, "*.parquet");
         let source_path = project.root.join("data/events.parquet");
         write_vendor_parquet(&source_path);
-        let pin = run([
-            "cdf",
-            "--json",
-            "--project",
-            project.root_str(),
-            "schema",
-            "pin",
-            "local.events",
-        ]);
-        assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-        let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let compile = compile_resource(&project, "local.events");
+        assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+        let old_hash = locked_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -1085,18 +1000,9 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let pin_json = stderr_or_stdout_json(&pin.stdout);
-    let old_hash = pin_json["result"]["schema_hash"].as_str().unwrap();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     let target = TargetName::new("events").unwrap();
     let policy = cdf_project::DestinationPolicy::default();
     let services = test_execution_services();
@@ -1129,7 +1035,7 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
         &project,
         "pkg-promote-source",
         "events",
-        old_hash,
+        &old_hash,
         false,
     );
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
@@ -1213,20 +1119,9 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "local.events",
-    ]);
-    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
-    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let old_hash = locked_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     let target = postgres.table("events_promotion");
     write_schema_promote_package_fixture_for_target_with_commit(
@@ -1399,18 +1294,9 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
     )
     .unwrap();
 
-    let pin = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "api.items",
-    ]);
-
-    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
-    assert_secret_absent(&pin, "rest-diff-secret");
+    let compile = compile_resource(&project, "api.items");
+    assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
+    assert_secret_absent(&compile, "rest-diff-secret");
     let pinned_snapshot_count = fs::read_dir(project.root.join(".cdf/schemas"))
         .unwrap()
         .count();
@@ -1455,7 +1341,7 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
 }
 
 #[test]
-fn schema_pin_postgres_catalog_updates_lock_without_secret_leak() {
+fn compile_postgres_catalog_updates_lock_without_secret_leak() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -1473,11 +1359,10 @@ fn schema_pin_postgres_catalog_updates_lock_without_secret_leak() {
 
     let project = TestProject::new();
     write_minimal_lockfile(&project);
-    let source_dsn = postgres.url.replacen(
-        "postgresql://cdf@",
-        "postgresql://cdf:schema-pin-secret@",
-        1,
-    );
+    let source_dsn =
+        postgres
+            .url
+            .replacen("postgresql://cdf@", "postgresql://cdf:compile-secret@", 1);
     fs::write(project.root.join("postgres-dsn"), format!("{source_dsn}\n")).unwrap();
     write_secret_project(
         &project,
@@ -1491,32 +1376,14 @@ fn schema_pin_postgres_catalog_updates_lock_without_secret_leak() {
     )
     .unwrap();
 
-    let result = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "pin",
-        "warehouse.orders",
-    ]);
+    let result = compile_resource(&project, "warehouse.orders");
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert_secret_absent(&result, "schema-pin-secret");
-    let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
-    assert_eq!(report["writes"]["schema_snapshot"], true);
-    assert_eq!(report["writes"]["lockfile"], true);
-    assert_eq!(
-        report["snapshot_metadata"]["probe"],
-        "registered-source-discovery"
-    );
-    assert_eq!(report["source_identity"]["driver.table"], table);
-    assert_eq!(report["fields"][0]["source_name"], "VendorID");
+    assert_secret_absent(&result, "compile-secret");
     let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
     assert!(!lock_text.contains(&source_dsn));
-    assert!(!lock_text.contains("schema-pin-secret"));
+    assert!(!lock_text.contains("compile-secret"));
     assert!(
         parse_lock(&lock_text)
             .unwrap()

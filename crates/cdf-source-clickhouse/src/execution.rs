@@ -183,7 +183,7 @@ fn execution_physical_schema(
 ) -> Result<SchemaRef> {
     let Some(runtime) = &input.effective_schema_runtime else {
         return Err(CdfError::data(
-            "ClickHouse execution has no catalog-backed physical schema observation; run schema discovery before execution",
+            "ClickHouse execution has no catalog-backed physical schema observation from resource preparation",
         ));
     };
     let observation_id = partition_schema_observation_id(&input.partition);

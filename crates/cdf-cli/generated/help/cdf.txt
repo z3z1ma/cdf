@@ -9,14 +9,14 @@ Commands:
   add       Add a source resource to the project
   compile   Prepare independently verified compiled resource artifacts
   validate  Statically validate project configuration and selected resources
-  plan      Plan a resource run without executing it
+  plan      Prepare and inspect selected resource runs without writing
   explain   Explain resolution, capabilities, and execution choices
   run       Execute a governed resource run
   preview   Read a bounded preview without committing data
   sql       Query verified project and operational artifacts
   inspect   Inspect durable project and run evidence
   diff      Compare durable schemas
-  schema    Discover, pin, compare, and promote schemas
+  schema    Inspect, compare, and promote schemas
   contract  Freeze, show, and test contracts
   state     Inspect and recover checkpoint state
   resume    Resume interrupted work from the run ledger
