@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-05
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
-Depends-On: `.10x/tickets/2026-08-06-u6b-default-live-telemetry.md`
+Depends-On: `.10x/tickets/done/2026-08-06-u6b-default-live-telemetry.md`
 
 # U7 resource-first cutover certificate
 
@@ -83,6 +83,9 @@ findings before judging closure. The review range includes U6b.
   transcript, plus terminal U1/U2 records still stored under the active ticket directory.
 - 2026-08-06: Re-gated behind U6b after the user required useful default phase telemetry before the
   final cutover certificate.
+- 2026-08-06: U6b closed after focused quality checks and a bundled-release FineWeb certificate;
+  U7 is now unblocked. Its broad suite and final review remain intentionally deferred to this
+  ticket.
 
 ## Blockers
 

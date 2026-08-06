@@ -45,7 +45,8 @@ resources, and every adjacent command has one scope and effect ceiling.
    Owner: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`.
 8. **U6b — useful default live telemetry.** Add typed phase-local metrics, clock-driven TTY and
    headless liveness, immediate retry/wait status, and stable completed/failure telemetry without
-   durable animation events. Owner: `.10x/tickets/2026-08-06-u6b-default-live-telemetry.md`.
+   durable animation events. Owner:
+   `.10x/tickets/done/2026-08-06-u6b-default-live-telemetry.md`.
 9. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
    Owner: `.10x/tickets/2026-08-05-u7-resource-first-cutover-certificate.md`.
