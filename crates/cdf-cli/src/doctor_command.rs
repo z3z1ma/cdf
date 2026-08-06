@@ -3,13 +3,37 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::{
-    context::{DestinationRuntime, ProjectContext},
+    args::DoctorCommand,
+    context::{DestinationRuntime, ProjectContext, ProjectOperationalContext},
     doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput},
     render::{humanize::humanize_bytes, redaction::redact_uri_userinfo},
 };
 
 pub(crate) fn doctor(
+    cli: &cdf_cli_core::args::Cli,
+    scope: DoctorCommand,
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    match scope {
+        DoctorCommand::Runtime => finish_doctor(
+            "runtime",
+            vec![runtime_memory_budget_check(cli, execution)],
+            Vec::new(),
+        ),
+        DoctorCommand::Destination => doctor_destination(cli, destinations),
+        DoctorCommand::Source { configured_sources } => {
+            doctor_sources(cli, &configured_sources, execution)
+        }
+        DoctorCommand::Resource { selectors, exclude } => {
+            doctor_resources(cli, &selectors, &exclude, execution, destinations)
+        }
+        DoctorCommand::All => doctor_all(cli, execution, destinations),
+    }
+}
+
+fn doctor_all(
     cli: &cdf_cli_core::args::Cli,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
@@ -54,27 +78,169 @@ pub(crate) fn doctor(
         &context,
         source_registry,
         execution,
+        false,
     ));
     checks.extend(destination_checks(
         context.destination_runtime(destinations),
     ));
     checks.push(runtime_memory_budget_check(cli, execution));
-    checks.push(ledger_destination_drift_check(&context));
+    let operational = ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    checks.push(ledger_destination_drift_check(&operational));
+    let mut contacted = context
+        .resource_queries
+        .iter()
+        .map(|query| format!("source:{}", query.configured_source.configured_source))
+        .collect::<Vec<_>>();
+    contacted.push(destination_authority(&context.environment.destination));
+    contacted.sort();
+    contacted.dedup();
+    finish_doctor("all", checks, contacted)
+}
 
-    let failed = checks
-        .iter()
-        .filter(|check| matches!(check.status, CheckStatus::Failed))
-        .count();
-    let unsupported = checks
-        .iter()
-        .filter(|check| matches!(check.status, CheckStatus::Unsupported))
-        .count();
-    let report = DoctorReport {
+fn doctor_destination(
+    cli: &cdf_cli_core::args::Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let context = ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let mut checks = destination_checks(context.destination_runtime(destinations));
+    checks.push(ledger_destination_drift_check(&context));
+    finish_doctor(
+        "destination",
         checks,
-        failed,
-        unsupported,
+        vec![destination_authority(&context.environment.destination)],
+    )
+}
+
+fn doctor_sources(
+    cli: &cdf_cli_core::args::Cli,
+    configured_sources: &[String],
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
+    let mut names = configured_sources.to_vec();
+    names.sort();
+    names.dedup();
+    let mut checks = Vec::with_capacity(names.len());
+    for name in &names {
+        match crate::discover_command::probe_configured_source(cli, name, execution) {
+            Ok(probe) => checks.push(
+                DoctorCheck::passed(
+                    format!("source.{}", probe.configured_source),
+                    format!(
+                        "{} catalog exposed {} candidate(s) in {} identity space{}",
+                        probe.source_driver,
+                        probe.candidate_count,
+                        probe.identity_space,
+                        if probe.complete {
+                            ""
+                        } else {
+                            "; result truncated"
+                        }
+                    ),
+                )
+                .with_details(json!({
+                    "configured_source": probe.configured_source,
+                    "driver": probe.source_driver,
+                    "candidate_count": probe.candidate_count,
+                    "complete": probe.complete,
+                    "identity_space": probe.identity_space,
+                })),
+            ),
+            Err(error)
+                if error
+                    .message
+                    .contains("does not support configured-source catalog discovery") =>
+            {
+                checks.push(DoctorCheck::warned(
+                    format!("source.{name}"),
+                    "configured source has no source-level readiness probe; select one of its resources with `cdf doctor resource <selector>`",
+                ));
+            }
+            Err(error) => checks.push(DoctorCheck::failed(format!("source.{name}"), error.message)),
+        }
+    }
+    finish_doctor(
+        "source",
+        checks,
+        names
+            .into_iter()
+            .map(|name| format!("source:{name}"))
+            .collect(),
+    )
+}
+
+fn doctor_resources(
+    cli: &cdf_cli_core::args::Cli,
+    selectors: &[String],
+    exclude: &[String],
+    execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
+    let (root, _) = crate::context::project_location(cli.project.as_ref())?;
+    let selection = cdf_project::resolve_project_resource_selection(&root, selectors, exclude)
+        .map_err(crate::compile_command::resource_selection_error)?;
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let mut checks = Vec::new();
+    let mut contacted = Vec::new();
+    for selected in &selection.resources {
+        let resource_id = selected.resource_id.as_str();
+        match ProjectContext::load_selected_read_only(
+            cli.project.as_ref(),
+            cli.env.as_deref(),
+            resource_id,
+            destinations,
+        ) {
+            Ok(context) => {
+                contacted.extend(
+                    context.resource_queries.iter().map(|query| {
+                        format!("source:{}", query.configured_source.configured_source)
+                    }),
+                );
+                let resource_checks =
+                    source_driver_health_checks(&context, registry, execution, true);
+                checks.extend(resource_checks.into_iter().map(|mut check| {
+                    check.name = format!("resource.{resource_id}.{}", check.name);
+                    check
+                }));
+            }
+            Err(error) => checks.push(DoctorCheck::failed(
+                format!("resource.{resource_id}.preflight"),
+                error.message,
+            )),
+        }
+    }
+    let operational = ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    checks.extend(destination_checks(
+        operational.destination_runtime(destinations),
+    ));
+    checks.push(runtime_memory_budget_check(cli, execution));
+    checks.push(ledger_destination_drift_check(&operational));
+    contacted.push(destination_authority(&operational.environment.destination));
+    contacted.sort();
+    contacted.dedup();
+    finish_doctor("resource", checks, contacted)
+}
+
+fn destination_authority(uri: &str) -> String {
+    let kind = uri
+        .split_once("://")
+        .map_or("configured", |(scheme, _)| scheme);
+    format!("destination:{kind}")
+}
+
+fn finish_doctor(
+    scope: impl Into<String>,
+    checks: Vec<DoctorCheck>,
+    external_authorities_contacted: Vec<String>,
+) -> Result<CommandOutput, CliError> {
+    let counts = DoctorCounts::from_checks(&checks);
+    let exit_code = i32::from(counts.failed != 0);
+    let report = DoctorReport {
+        scope: scope.into(),
+        effect_ceiling: "observe",
+        external_authorities_contacted,
+        checks,
+        counts,
     };
-    let exit_code = if failed == 0 { 0 } else { 1 };
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
 }
 
@@ -114,7 +280,7 @@ fn runtime_memory_budget_check(
     if report.has_enforced_memory_authority() {
         DoctorCheck::passed("runtime_memory_budget", message).with_details(details)
     } else {
-        DoctorCheck::unsupported("runtime_memory_budget", message).with_details(details)
+        DoctorCheck::warned("runtime_memory_budget", message).with_details(details)
     }
 }
 
@@ -142,6 +308,7 @@ fn source_driver_health_checks(
     context: &ProjectContext,
     registry: &cdf_runtime::SourceRegistry,
     execution: &cdf_runtime::ExecutionServices,
+    scoped: bool,
 ) -> Vec<DoctorCheck> {
     let plans = context
         .resources
@@ -176,13 +343,24 @@ fn source_driver_health_checks(
         std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_driver_options(context.config.driver_options.clone());
-    match registry.health_checks(
-        &resolution,
-        &plans,
-        &configured_resources,
-        cdf_runtime::SourceHealthLimits::default(),
-        cdf_runtime::RunCancellation::default(),
-    ) {
+    let health = if scoped {
+        registry.health_checks_scoped(
+            &resolution,
+            &plans,
+            &configured_resources,
+            cdf_runtime::SourceHealthLimits::default(),
+            cdf_runtime::RunCancellation::default(),
+        )
+    } else {
+        registry.health_checks(
+            &resolution,
+            &plans,
+            &configured_resources,
+            cdf_runtime::SourceHealthLimits::default(),
+            cdf_runtime::RunCancellation::default(),
+        )
+    };
+    match health {
         Ok(results) => results
             .into_iter()
             .map(|result| {
@@ -197,7 +375,7 @@ fn source_driver_health_checks(
                         DoctorCheck::skipped(result.probe_id, result.message)
                     }
                     cdf_runtime::SourceHealthStatus::Unsupported => {
-                        DoctorCheck::unsupported(result.probe_id, result.message)
+                        DoctorCheck::warned(result.probe_id, result.message)
                     }
                 };
                 check.with_details(redact_json_uri_userinfo(result.details))
@@ -212,7 +390,7 @@ fn source_driver_health_checks(
 
 fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
     if let Some(error) = runtime.error {
-        return vec![DoctorCheck::unsupported("destination", error)];
+        return vec![DoctorCheck::warned("destination", error)];
     }
     let mut checks = runtime
         .health
@@ -230,7 +408,7 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
                     DoctorCheck::skipped(result.probe_id, message)
                 }
                 cdf_runtime::DestinationHealthStatus::Unsupported => {
-                    DoctorCheck::unsupported(result.probe_id, message)
+                    DoctorCheck::warned(result.probe_id, message)
                 }
             };
             check.with_details(redact_json_uri_userinfo(json!(result.details)))
@@ -244,13 +422,13 @@ fn destination_bulk_path_check(
     capabilities: Option<cdf_runtime::DestinationRuntimeCapabilities>,
 ) -> DoctorCheck {
     let Some(capabilities) = capabilities else {
-        return DoctorCheck::unsupported(
+        return DoctorCheck::warned(
             "destination_bulk_paths",
             "destination does not publish runtime bulk-path capabilities",
         );
     };
     if capabilities.bulk_paths.is_empty() {
-        return DoctorCheck::unsupported(
+        return DoctorCheck::warned(
             "destination_bulk_paths",
             "destination publishes no bulk path descriptors",
         );
@@ -301,7 +479,7 @@ fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
+fn ledger_destination_drift_check(context: &ProjectOperationalContext) -> DoctorCheck {
     match doctor_drift::probe(context) {
         Ok(probe) => {
             let message = redact_uri_userinfo(&probe.message);
@@ -317,8 +495,7 @@ fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
                     DoctorCheck::skipped("ledger_destination_drift", message).with_details(details)
                 }
                 DriftStatus::Unsupported => {
-                    DoctorCheck::unsupported("ledger_destination_drift", message)
-                        .with_details(details)
+                    DoctorCheck::warned("ledger_destination_drift", message).with_details(details)
                 }
             }
         }
@@ -331,24 +508,47 @@ fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct DoctorReport {
+    scope: String,
+    effect_ceiling: &'static str,
+    external_authorities_contacted: Vec<String>,
     checks: Vec<DoctorCheck>,
-    failed: usize,
-    unsupported: usize,
+    counts: DoctorCounts,
 }
 
-impl DoctorReport {
-    fn passed_count(&self) -> usize {
-        self.checks
-            .iter()
-            .filter(|check| matches!(check.status, CheckStatus::Passed))
-            .count()
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct DoctorCounts {
+    attempted: usize,
+    passed: usize,
+    warned: usize,
+    failed: usize,
+    skipped: usize,
+}
 
-    fn skipped_count(&self) -> usize {
-        self.checks
+impl DoctorCounts {
+    fn from_checks(checks: &[DoctorCheck]) -> Self {
+        let passed = checks
             .iter()
-            .filter(|check| matches!(check.status, CheckStatus::Skipped))
-            .count()
+            .filter(|check| check.status == CheckStatus::Passed)
+            .count();
+        let warned = checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Warned)
+            .count();
+        let failed = checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Failed)
+            .count();
+        let skipped = checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Skipped)
+            .count();
+        Self {
+            attempted: checks.len() - skipped,
+            passed,
+            warned,
+            failed,
+            skipped,
+        }
     }
 }
 
@@ -379,9 +579,11 @@ mod tests {
         };
         let checks = destination_checks(runtime);
         let report = DoctorReport {
+            scope: "destination".to_owned(),
+            effect_ceiling: "observe",
+            external_authorities_contacted: vec!["destination:quasar".to_owned()],
+            counts: DoctorCounts::from_checks(&checks),
             checks,
-            failed: 0,
-            unsupported: 0,
         };
 
         let json = serde_json::to_string(&report).unwrap();
@@ -432,7 +634,7 @@ mod tests {
         assert_eq!(check.details.unwrap()["selected_path"], "quasar_native");
 
         let unavailable = destination_bulk_path_check(None);
-        assert_eq!(unavailable.status, CheckStatus::Unsupported);
+        assert_eq!(unavailable.status, CheckStatus::Warned);
         assert!(unavailable.message.contains("does not publish"));
     }
 }
@@ -474,10 +676,10 @@ impl DoctorCheck {
         }
     }
 
-    fn unsupported(name: impl Into<String>, message: impl Into<String>) -> Self {
+    fn warned(name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            status: CheckStatus::Unsupported,
+            status: CheckStatus::Warned,
             message: message.into(),
             details: None,
         }
@@ -493,18 +695,18 @@ impl DoctorCheck {
 #[serde(rename_all = "snake_case")]
 enum CheckStatus {
     Passed,
+    Warned,
     Failed,
     Skipped,
-    Unsupported,
 }
 
 impl CheckStatus {
     fn name(&self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::Warned => "warned",
             Self::Failed => "failed",
             Self::Skipped => "skipped",
-            Self::Unsupported => "unsupported",
         }
     }
 }

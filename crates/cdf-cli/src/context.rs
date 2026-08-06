@@ -43,6 +43,15 @@ pub struct ProjectCompilationContext {
     pub compilation: CompilationSnapshot,
 }
 
+/// Project/environment authority for operational commands that must not inventory or compile
+/// authored resources.
+#[derive(Debug)]
+pub struct ProjectOperationalContext {
+    pub root: PathBuf,
+    pub config: ProjectConfig,
+    pub environment: EffectiveEnvironment,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DestinationRuntime {
     pub kind: String,
@@ -439,41 +448,11 @@ impl ProjectContext {
         )
     }
 
-    pub fn execution_with_state_authorities(
-        &self,
-        execution: &cdf_runtime::ExecutionServices,
-    ) -> CdfResult<cdf_runtime::ExecutionServices> {
-        let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> = std::sync::Arc::new(
-            cdf_state_sqlite::SqliteScopeLeaseStore::open_with_path_ownership(
-                self.state_store_path()?,
-                self.state_store_path_ownership(),
-            )?,
-        );
-        let execution = execution.with_staging_lease_authority(std::sync::Arc::new(
-            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-        ))?;
-        Ok(
-            execution.with_content_reachability_store(std::sync::Arc::new(
-                cdf_state_sqlite::SqliteContentReachabilityStore::open_with_path_ownership(
-                    self.state_store_path()?,
-                    self.state_store_path_ownership(),
-                )?,
-            )),
-        )
-    }
-
     pub fn destination_runtime(
         &self,
         registry: &cdf_runtime::DestinationRegistry,
     ) -> DestinationRuntime {
         crate::destination_registry::inspect_destination_runtime(registry, self)
-    }
-
-    pub fn duckdb_destination_path(&self) -> Option<PathBuf> {
-        self.environment
-            .destination
-            .strip_prefix("duckdb://")
-            .map(|path| absolute_under_root(&self.root, path))
     }
 
     fn resource_suggestions(&self, id: &str) -> Vec<String> {
@@ -519,6 +498,103 @@ impl ProjectCompilationContext {
 
     pub fn state_store_path_ownership(&self) -> cdf_state_sqlite::StateStorePathOwnership {
         state_store_path_ownership(&self.environment.state)
+    }
+}
+
+impl ProjectOperationalContext {
+    pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> StdResult<Self, CliError> {
+        let (root, project_file) = project_location(project_arg)?;
+        for attempt in 0..3 {
+            let generation_before = project_file_transaction_generation(&root)?;
+            let loaded = (|| {
+                let project_text = fs::read_to_string(&project_file).map_err(|error| {
+                    project_authority_read_error("read project configuration", &project_file, error)
+                })?;
+                let config = parse_cdf_toml(&project_text)?;
+                let environment_name = env_arg.unwrap_or(&config.project.default_environment);
+                let environment = config.effective_environment(environment_name)?;
+                Ok::<_, CdfError>(Self {
+                    root: root.clone(),
+                    config,
+                    environment,
+                })
+            })();
+            let generation_after = project_file_transaction_generation(&root)?;
+            if generation_before == generation_after {
+                return loaded.map_err(Into::into);
+            }
+            if attempt == 2 {
+                return Err(CdfError::contract(
+                    "project authority changed repeatedly while loading operational input",
+                )
+                .into());
+            }
+        }
+        Err(CdfError::internal(
+            "operational project load retry loop exited without stable authority",
+        )
+        .into())
+    }
+
+    pub fn secret_provider(&self) -> DefaultSecretProvider {
+        DefaultSecretProvider::new(
+            EnvSecretProvider::process(),
+            FileSecretProvider::new(self.root.clone()),
+        )
+    }
+
+    pub fn state_store_path(&self) -> CdfResult<PathBuf> {
+        sqlite_uri_path(&self.root, &self.environment.state)
+    }
+
+    pub fn state_store_path_ownership(&self) -> cdf_state_sqlite::StateStorePathOwnership {
+        state_store_path_ownership(&self.environment.state)
+    }
+
+    pub fn state_store(&self) -> CdfResult<SqliteCheckpointStore> {
+        SqliteCheckpointStore::open_with_path_ownership(
+            self.state_store_path()?,
+            self.state_store_path_ownership(),
+        )
+    }
+
+    pub fn execution_with_state_authorities(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> CdfResult<cdf_runtime::ExecutionServices> {
+        let scopes: Arc<dyn cdf_kernel::ScopeLeaseStore> = Arc::new(
+            cdf_state_sqlite::SqliteScopeLeaseStore::open_with_path_ownership(
+                self.state_store_path()?,
+                self.state_store_path_ownership(),
+            )?,
+        );
+        let execution = execution.with_staging_lease_authority(Arc::new(
+            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
+        ))?;
+        Ok(execution.with_content_reachability_store(Arc::new(
+            cdf_state_sqlite::SqliteContentReachabilityStore::open_with_path_ownership(
+                self.state_store_path()?,
+                self.state_store_path_ownership(),
+            )?,
+        )))
+    }
+
+    pub fn destination_runtime(
+        &self,
+        registry: &cdf_runtime::DestinationRegistry,
+    ) -> DestinationRuntime {
+        crate::destination_registry::inspect_destination_runtime_for_environment(
+            registry,
+            &self.root,
+            &self.environment,
+        )
+    }
+
+    pub fn duckdb_destination_path(&self) -> Option<PathBuf> {
+        self.environment
+            .destination
+            .strip_prefix("duckdb://")
+            .map(|path| absolute_under_root(&self.root, path))
     }
 }
 

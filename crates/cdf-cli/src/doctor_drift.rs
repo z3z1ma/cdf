@@ -10,7 +10,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{context::ProjectContext, error_catalog, output::CliError};
+use crate::{context::ProjectOperationalContext, error_catalog, output::CliError};
 
 const EXAMPLE_LIMIT: usize = 5;
 
@@ -94,7 +94,7 @@ struct DriftExample {
     field: Option<&'static str>,
 }
 
-pub(crate) fn probe(context: &ProjectContext) -> Result<DriftProbe, CliError> {
+pub(crate) fn probe(context: &ProjectOperationalContext) -> Result<DriftProbe, CliError> {
     let Some(duckdb_path) = context.duckdb_destination_path() else {
         return Ok(DriftProbe {
             status: DriftStatus::Unsupported,

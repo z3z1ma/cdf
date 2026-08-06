@@ -1,9 +1,9 @@
-Resume interrupted work from the run ledger
+Operate on cdf project evidence
 
-Usage: cdf resume [OPTIONS] [RUN_ID]...
+Usage: cdf doctor source [OPTIONS] [CONFIGURED_SOURCE]...
 
 Arguments:
-  [RUN_ID]...  Run identifier; omit to scan interrupted work
+  [CONFIGURED_SOURCE]...  Configured source identity
 
 Options:
   -q, --quiet                  Suppress progress and non-primary success narration

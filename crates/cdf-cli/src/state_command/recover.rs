@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, StateRecoverArgs},
     output::{CliError, CommandOutput},
-    replay_command::{
+    package_run::{
         PackageReplayDestinationArgs, build_replay_destination, load_package_replay_context,
     },
     reports::{RunCheckpointReport, RunDestinationReport, RunReceiptReport},
@@ -20,7 +20,7 @@ pub(super) fn recover(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let package = load_package_replay_context(cli, &args.package_dir, destinations)?;
+    let package = load_package_replay_context(cli, &args.package_dir)?;
     let selected_receipt = select_recovery_receipt(&package.reader, args.receipt_id.as_deref())?;
     let selection = selected_receipt.selection;
     let selected_receipt_id = selected_receipt.receipt.receipt_id.to_string();

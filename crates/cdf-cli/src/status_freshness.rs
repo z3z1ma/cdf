@@ -11,7 +11,7 @@ use cdf_state_sqlite::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use serde::Serialize;
 
-use crate::{context::ProjectContext, error_catalog, output::CliError};
+use crate::{context::ProjectCompilationContext, error_catalog, output::CliError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct StatusReport {
@@ -129,12 +129,15 @@ pub(crate) enum ReceiptFreshnessSource {
     PackageReceipt,
 }
 
-pub(crate) fn evaluate(context: &ProjectContext) -> Result<StatusReport, CliError> {
+pub(crate) fn evaluate(context: &ProjectCompilationContext) -> Result<StatusReport, CliError> {
     let resources = context
-        .resources
-        .iter()
+        .compilation
+        .lock
+        .as_ref()
+        .into_iter()
+        .flat_map(|lock| lock.resources.values())
         .filter_map(|resource| {
-            let descriptor = resource.descriptor();
+            let descriptor = &resource.descriptor;
             let freshness = descriptor.freshness.as_ref()?;
             if descriptor.trust_level != TrustLevel::Serving {
                 return None;

@@ -4,7 +4,7 @@ These pages describe the operational workflows that are implemented or have a
 current conformance proof.
 
 - [Recovery](recovery.md)
-- [Replay](replay.md)
+- [Package delivery](package-delivery.md)
 - [SQLite destination](sqlite-destination.md)
 - [Backfill](backfill.md)
 - [Doctor and Status in Cron](doctor-status-cron.md)

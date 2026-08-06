@@ -32,10 +32,10 @@ The CLI/project/security surface is
    before data movement.
 3. `cdf run` executes a resource through the run spine, writes a package,
    commits to a destination, verifies a receipt, then commits checkpoint state.
-4. `cdf resume` uses run-ledger events, package artifacts, destination receipts,
-   and checkpoint rows to drain interrupted work.
-5. `cdf replay package` drives an existing package into a destination without
-   contacting the source.
+4. `cdf run --resume [<run-id>]` uses run-ledger events, package artifacts,
+   destination receipts, and checkpoint rows to drain interrupted work.
+5. `cdf run --package <package> --to <destination>` drives an existing package
+   into a destination without contacting the source.
 6. `cdf sql` verifies that manifest against the selected environment and
    `cdf.lock`, then queries its project/resource/field/semantic/lineage facts
    alongside package and checkpoint evidence without recompiling or loading a

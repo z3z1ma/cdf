@@ -34,11 +34,18 @@ pub(crate) fn inspect_destination_runtime(
     registry: &DestinationRegistry,
     context: &ProjectContext,
 ) -> DestinationRuntime {
-    let uri = &context.environment.destination;
-    let resolution =
-        cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
-            .with_environment_name(&context.environment.name)
-            .with_destination_policy(&context.environment.destination_policy);
+    inspect_destination_runtime_for_environment(registry, &context.root, &context.environment)
+}
+
+pub(crate) fn inspect_destination_runtime_for_environment(
+    registry: &DestinationRegistry,
+    root: &std::path::Path,
+    environment: &cdf_project::EffectiveEnvironment,
+) -> DestinationRuntime {
+    let uri = &environment.destination;
+    let resolution = cdf_runtime::DestinationResolutionContext::for_project_inspection(root)
+        .with_environment_name(&environment.name)
+        .with_destination_policy(&environment.destination_policy);
     let inspection = match registry.inspect(uri, &resolution) {
         Ok(inspection) => inspection,
         Err(error) => return unsupported_runtime(uri, error.to_string()),

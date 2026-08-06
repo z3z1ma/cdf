@@ -82,20 +82,20 @@ receipts remain verifiable after a later replace or overlapping merge because
 verification does not pretend the mutable current target is immutable commit
 evidence. Checkpoint commit occurs only after verification succeeds.
 
-Replay requires an explicit table target because a package does not authorize
+Package execution requires an explicit table target because a package does not authorize
 CDF to infer one from the database:
 
 ```bash
-cdf --project /path/to/project replay package \
-  /path/to/package \
+cdf --project /path/to/project run \
+  --package /path/to/package \
   --to sqlite://.cdf/replay.sqlite \
   --target events
 ```
 
-Replaying the same finalized package to the same target returns the exact stored
+Running the same finalized package to the same target returns the exact stored
 receipt and does not rewrite rows. A process failure before SQLite commit leaves
 no target or mirror mutation. If the process exits after SQLite commit but
-before returning the receipt, replay discovers and verifies the committed
+before returning the receipt, recovery discovers and verifies the committed
 receipt without source contact.
 
 ## Failure ownership and remediation
@@ -124,7 +124,7 @@ the open transaction rolls back on cancellation.
 
 Do not delete `_cdf_*` tables or edit their JSON manually. Use `cdf package
 verify`, `cdf inspect package`, `cdf state history`, and the standard
-[recovery](recovery.md) and [replay](replay.md) workflows to establish which
+[recovery](recovery.md) and [package delivery](package-delivery.md) workflows to establish which
 artifact is authoritative.
 
 ## Performance evidence

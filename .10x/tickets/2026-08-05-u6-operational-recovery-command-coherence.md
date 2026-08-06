@@ -84,6 +84,22 @@ long-running work. Use a release build for the end-to-end sandbox check.
 - 2026-08-05: Activated after U5 completed and was pushed. Source inspection confirmed that CLI
   grammar still exposes top-level `resume` and `replay package`, bare doctor still loads the whole
   project operational context, and run has only resource-set and portable-plan modes.
+- 2026-08-05: Folded exact-package and interrupted-run authority into mutually exclusive `run`
+  modes, removed the top-level replay/resume grammar and modules, introduced project-operational
+  loading for package/recovery/inspect paths, and split doctor into runtime, resource, source,
+  destination, and all scopes.
+- 2026-08-05: Reproduced the three live PostgreSQL executable-backfill failures. The coercion
+  evidence validator treated a preserved field's source-native `cdf:physical_type` (`bigint`) as
+  though it were the pre-coercion Arrow type (`Int64`). Preserved fields now validate against their
+  unchanged Arrow type while non-preserved decisions still require physical Arrow provenance.
+- 2026-08-05: Traced the apparent post-package execution wedge to the interactive progress worker.
+  A destination-start event received inside the redraw throttle window was retained in state but
+  never rendered unless another event arrived. The worker now performs bounded timed refreshes for
+  deferred phases, so a long destination commit displays `Loaded` without waiting for completion.
+- 2026-08-05: Audited preview, backfill, status, and inspect authority loading. Preview/backfill and
+  singular resource inspection use selected read-only compilation; status reads lock/state
+  authority; package and run inspection use operational or artifact authority; only explicit
+  resource inventory keeps whole-project loading.
 
 ## Blockers
 
@@ -91,7 +107,20 @@ None.
 
 ## Evidence
 
-Pending implementation.
+- `cargo test -p cdf-contract --lib
+  preserved_schema_coercion_accepts_source_native_physical_type_metadata --locked` passed 1/1.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib backfill_execute_ --locked --
+  --test-threads=1` passed the three live PostgreSQL execution cells, including window commit,
+  multi-slice progress, and failed-repeat recovery guidance.
+- `cargo test -p cdf-cli-core --lib --locked` passed 54/54 parser, report, and progress tests.
+- Focused `cdf-cli` module runs passed: inspect 9/9, status 2/2, recovery 18/18, package execution
+  15/15, planning/backfill 23/23, and the preview observe-only regression 1/1.
+- Affected-package `cargo check --all-targets` and strict `cargo clippy --all-targets -- -D
+  warnings` passed for `cdf-cli-core`, `cdf-cli`, `cdf-contract`, and `cdf-runtime` with the required
+  developer DuckDB linkage setting. The explicit cognitive-complexity diagnostic reported only
+  existing functions outside this change set.
+- Generated CLI artifact and documentation checks, `cargo fmt --all -- --check`, and `git diff
+  --check` passed.
 
 ## Review
 

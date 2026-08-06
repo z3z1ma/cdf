@@ -29,11 +29,10 @@ pub(crate) fn backfill(
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_destination_registry(
-        "backfill",
+    let context = ProjectContext::load_selected_read_only(
         cli.project.as_ref(),
         cli.env.as_deref(),
-        true,
+        &args.resource_id,
         destinations,
     )?;
     let resource = context.resource(&args.resource_id)?;
@@ -193,7 +192,7 @@ fn annotate_backfill_slice_error(
     let recovery_command = progress
         .as_ref()
         .and_then(|progress| progress.latest_run_id_for_package(&slice.package_id))
-        .map(|run_id| format!("cdf resume {run_id}"));
+        .map(|run_id| format!("cdf run --resume {run_id}"));
     let mutation_status = if recovery_command.is_some() {
         "run ledger recorded this slice; package, destination, receipt, or checkpoint artifacts may need recovery"
     } else {

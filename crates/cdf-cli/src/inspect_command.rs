@@ -2,12 +2,14 @@ mod render;
 
 use std::{collections::BTreeMap, path::PathBuf};
 
-use cdf_project::{EffectiveEnvironment, LockedDestination, ProjectConfig};
+use cdf_project::{
+    EffectiveEnvironment, LockedDestination, ProjectConfig, resolve_project_resource_selection,
+};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     args::{Cli, InspectArgs, InspectNoun},
-    context::{ProjectContext, require_lock},
+    context::{ProjectCompilationContext, ProjectContext, ProjectOperationalContext},
     output::{CliError, CommandOutput},
     render::redaction::redact_uri_userinfo,
 };
@@ -19,86 +21,93 @@ pub(crate) fn inspect(
 ) -> Result<CommandOutput, CliError> {
     match args.noun {
         InspectNoun::Package(path) => inspect_package(path),
-        noun => {
+        InspectNoun::Run(id) => {
+            let context =
+                ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            crate::inspect_run_command::inspect_run(&context, id)
+        }
+        InspectNoun::Project => {
+            let context =
+                ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let resource_count = resolve_project_resource_selection(&context.root, &[], &[])
+                .map_err(|error| match error {
+                    cdf_project::ProjectResourceSelectionError::Project(error) => error,
+                    error => cdf_kernel::CdfError::contract(error.to_string()),
+                })?
+                .resources
+                .len();
+            let report = InspectProjectReport {
+                root: context.root,
+                config: redact_typed(context.config)?,
+                environment: redact_typed(context.environment)?,
+                resource_count,
+            };
+            CommandOutput::rendered("inspect project", render::project_document(&report), report)
+        }
+        InspectNoun::Resource(id) => {
+            let context = ProjectContext::load_selected_read_only(
+                cli.project.as_ref(),
+                cli.env.as_deref(),
+                &id,
+                destinations,
+            )?;
+            let report = resource_summary(&context, &id)?;
+            CommandOutput::rendered(
+                "inspect resource",
+                render::resource_document(&report),
+                report,
+            )
+        }
+        InspectNoun::Lock => {
+            let context =
+                ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let lock = context.compilation.lock.ok_or_else(|| {
+                cdf_kernel::CdfError::contract(format!(
+                    "cdf.lock is not present under {}",
+                    context.root.display()
+                ))
+            })?;
+            let report = InspectLockReport(redact_typed(lock)?);
+            CommandOutput::rendered("inspect lock", render::lock_document(&report), report)
+        }
+        InspectNoun::Destinations => {
+            let operational =
+                ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let runtime = redact_destination_runtime(operational.destination_runtime(destinations));
+            let compilation =
+                ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let report = InspectDestinationsReport {
+                environment_destination: redact_uri_userinfo(&operational.environment.destination),
+                runtime,
+                locked: redact_typed(
+                    compilation
+                        .compilation
+                        .lock
+                        .map(|lock| lock.destination_bindings())
+                        .transpose()?,
+                )?,
+            };
+            CommandOutput::rendered(
+                "inspect destinations",
+                render::destinations_document(&report),
+                report,
+            )
+        }
+        InspectNoun::Resources => {
             let context = ProjectContext::load_for_command_with_destination_registry(
-                inspect_command_name(&noun),
+                "inspect resources",
                 cli.project.as_ref(),
                 cli.env.as_deref(),
                 true,
                 destinations,
             )?;
-            match noun {
-                InspectNoun::Project => {
-                    let resource_count = context.resources.len();
-                    let report = InspectProjectReport {
-                        root: context.root,
-                        config: redact_typed(context.config)?,
-                        environment: redact_typed(context.environment)?,
-                        resource_count,
-                    };
-                    CommandOutput::rendered(
-                        "inspect project",
-                        render::project_document(&report),
-                        report,
-                    )
-                }
-                InspectNoun::Resources => {
-                    let report = InspectResourcesReport(resource_summaries(&context)?);
-                    CommandOutput::rendered(
-                        "inspect resources",
-                        render::resources_document(&report),
-                        report,
-                    )
-                }
-                InspectNoun::Resource(id) => {
-                    let report = resource_summary(&context, &id)?;
-                    CommandOutput::rendered(
-                        "inspect resource",
-                        render::resource_document(&report),
-                        report,
-                    )
-                }
-                InspectNoun::Lock => {
-                    let report = InspectLockReport(redact_typed(require_lock(&context)?.clone())?);
-                    CommandOutput::rendered("inspect lock", render::lock_document(&report), report)
-                }
-                InspectNoun::Destinations => {
-                    let runtime =
-                        redact_destination_runtime(context.destination_runtime(destinations));
-                    let report = InspectDestinationsReport {
-                        environment_destination: redact_uri_userinfo(
-                            &context.environment.destination,
-                        ),
-                        runtime,
-                        locked: redact_typed(
-                            context
-                                .lock
-                                .map(|lock| lock.destination_bindings())
-                                .transpose()?,
-                        )?,
-                    };
-                    CommandOutput::rendered(
-                        "inspect destinations",
-                        render::destinations_document(&report),
-                        report,
-                    )
-                }
-                InspectNoun::Run(id) => crate::inspect_run_command::inspect_run(&context, id),
-                InspectNoun::Package(_) => unreachable!("package noun handled before project load"),
-            }
+            let report = InspectResourcesReport(resource_summaries(&context)?);
+            CommandOutput::rendered(
+                "inspect resources",
+                render::resources_document(&report),
+                report,
+            )
         }
-    }
-}
-
-fn inspect_command_name(noun: &InspectNoun) -> &'static str {
-    match noun {
-        InspectNoun::Project => "inspect project",
-        InspectNoun::Resources => "inspect resources",
-        InspectNoun::Resource(_) => "inspect resource",
-        InspectNoun::Lock => "inspect lock",
-        InspectNoun::Destinations => "inspect destinations",
-        InspectNoun::Run(_) => "inspect run",
-        InspectNoun::Package(_) => "inspect package",
     }
 }
 

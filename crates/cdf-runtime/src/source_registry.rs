@@ -467,6 +467,52 @@ impl SourceRegistry {
         limits: crate::SourceHealthLimits,
         cancellation: crate::RunCancellation,
     ) -> Result<Vec<SourceHealthResult>> {
+        self.health_checks_selected(
+            context,
+            compiled_plans,
+            configured_resources,
+            limits,
+            cancellation,
+            None,
+        )
+    }
+
+    pub fn health_checks_scoped(
+        &self,
+        context: &SourceResolutionContext<'_>,
+        compiled_plans: &[CompiledSourcePlan],
+        configured_resources: &[SourceHealthTarget],
+        limits: crate::SourceHealthLimits,
+        cancellation: crate::RunCancellation,
+    ) -> Result<Vec<SourceHealthResult>> {
+        let selected_drivers = compiled_plans
+            .iter()
+            .map(|plan| plan.driver.driver_id.clone())
+            .chain(
+                configured_resources
+                    .iter()
+                    .map(|target| target.driver_id().clone()),
+            )
+            .collect::<BTreeSet<_>>();
+        self.health_checks_selected(
+            context,
+            compiled_plans,
+            configured_resources,
+            limits,
+            cancellation,
+            Some(&selected_drivers),
+        )
+    }
+
+    fn health_checks_selected(
+        &self,
+        context: &SourceResolutionContext<'_>,
+        compiled_plans: &[CompiledSourcePlan],
+        configured_resources: &[SourceHealthTarget],
+        limits: crate::SourceHealthLimits,
+        cancellation: crate::RunCancellation,
+        selected_drivers: Option<&BTreeSet<SourceDriverId>>,
+    ) -> Result<Vec<SourceHealthResult>> {
         let budget =
             crate::SourceHealthBudget::new(limits, context.execution().clone(), cancellation)?;
         let mut plans = BTreeMap::<SourceDriverId, Vec<CompiledSourcePlan>>::new();
@@ -497,6 +543,9 @@ impl SourceRegistry {
         let mut results = Vec::new();
         let mut probe_ids = BTreeSet::new();
         for (driver_id, driver) in &self.drivers {
+            if selected_drivers.is_some_and(|selected| !selected.contains(driver_id)) {
+                continue;
+            }
             let project_options = context.driver_options(driver_id).cloned();
             if let Some(options) = &project_options {
                 driver.validate_project_options(options)?;

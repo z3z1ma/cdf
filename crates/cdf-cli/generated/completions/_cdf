@@ -89,6 +89,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (add)
 _arguments "${_arguments_options[@]}" : \
+'--source=[Configured source name; defaults to the resource namespace]:CONFIGURED_SOURCE:_default' \
 '*--option=[Source-driver option as KEY=VALUE; may be repeated]:KEY=VALUE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -104,6 +105,70 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
 && ret=0
+;;
+(discover)
+_arguments "${_arguments_options[@]}" : \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__discover_commands" \
+"*::: :->discover" \
+&& ret=0
+
+    case $state in
+    (discover)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-discover-command-$line[1]:"
+        case $line[1] in
+            (source)
+_arguments "${_arguments_options[@]}" : \
+'--out=[Write the command'\''s canonical artifact without replacing terminal output]:PATH:_default' \
+'--namespace=[Generated resource namespace; defaults to the configured source]:NAMESPACE:_default' \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'--generate[Create or verify resource files for matched source relations]' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values -- Identifiers or paths shown in usage:_default' \
+&& ret=0
+;;
+(resource)
+_arguments "${_arguments_options[@]}" : \
+'*--exclude=[Exclude resources matching this glob; may be repeated]:RESOURCE_GLOB:_default' \
+'--out=[Write the command'\''s canonical artifact without replacing terminal output]:PATH:_default' \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::selectors -- Exact or glob resource selectors; quote shell-sensitive globs:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
 ;;
 (compile)
 _arguments "${_arguments_options[@]}" : \
@@ -143,6 +208,7 @@ _arguments "${_arguments_options[@]}" : \
 (plan)
 _arguments "${_arguments_options[@]}" : \
 '*--exclude=[Exclude resources matching this glob; may be repeated]:RESOURCE_GLOB:_default' \
+'--out=[Write the command'\''s canonical artifact without replacing terminal output]:PATH:_default' \
 '--select=[Comma-separated projected fields]:FIELDS:_default' \
 '*--filter=[Filter expression; may be repeated]:EXPR:_default' \
 '--limit=[Maximum rows to read]:N:_default' \
@@ -202,7 +268,11 @@ _arguments "${_arguments_options[@]}" : \
 (run)
 _arguments "${_arguments_options[@]}" : \
 '*--exclude=[Exclude resources matching this glob; may be repeated]:RESOURCE_GLOB:_default' \
+'--plan=[Execute a canonical portable plan artifact]:PATH:_default' \
+'--package=[Package directory]:DIR:_default' \
+'--resume=[Resume interrupted run authority; omit RUN_ID only when exactly one run is recoverable]::RUN_ID:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
+'--target=[Destination target or table]:TARGET:_default' \
 '--jobs=[Maximum concurrent jobs]:N:_default' \
 '--segment-target-rows=[Set the value named in this command'\''s usage]:ROWS:_default' \
 '--segment-target-bytes=[Set the value named in this command'\''s usage]:BYTES:_default' \
@@ -713,67 +783,6 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
-(resume)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::run_arg -- Run identifier; omit to scan interrupted work:_default' \
-&& ret=0
-;;
-(replay)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-":: :_cdf__subcmd__replay_commands" \
-"*::: :->replay" \
-&& ret=0
-
-    case $state in
-    (replay)
-        words=($line[1] "${words[@]}")
-        (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:cdf-replay-command-$line[1]:"
-        case $line[1] in
-            (package)
-_arguments "${_arguments_options[@]}" : \
-'--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
-'--target=[Destination target or table]:TARGET:_default' \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::package_dir -- Package directory:_default' \
-&& ret=0
-;;
-        esac
-    ;;
-esac
-;;
 (backfill)
 _arguments "${_arguments_options[@]}" : \
 '--from=[Inclusive cursor lower bound]:CURSOR:_default' \
@@ -907,10 +916,99 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+":: :_cdf__subcmd__doctor_commands" \
+"*::: :->doctor" \
+&& ret=0
+
+    case $state in
+    (doctor)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-doctor-command-$line[1]:"
+        case $line[1] in
+            (runtime)
+_arguments "${_arguments_options[@]}" : \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Unexpected operands:_default' \
 && ret=0
+;;
+(resource)
+_arguments "${_arguments_options[@]}" : \
+'*--exclude=[Exclude resources matching this glob; may be repeated]:RESOURCE_GLOB:_default' \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::selectors -- Exact or glob resource selectors; quote shell-sensitive globs:_default' \
+&& ret=0
+;;
+(source)
+_arguments "${_arguments_options[@]}" : \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::configured_sources -- Configured source identity:_default' \
+&& ret=0
+;;
+(destination)
+_arguments "${_arguments_options[@]}" : \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(all)
+_arguments "${_arguments_options[@]}" : \
+'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
+'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
+'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
+'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
 ;;
 (status)
 _arguments "${_arguments_options[@]}" : \
@@ -940,6 +1038,7 @@ _cdf_commands() {
 'version:Print the cdf version' \
 'init:Create a new cdf project' \
 'add:Add a source resource to the project' \
+'discover:Discover source relations or authored resource schemas' \
 'compile:Prepare independently verified compiled resource artifacts' \
 'validate:Statically validate project configuration and selected resources' \
 'plan:Prepare and inspect selected resource runs without writing' \
@@ -952,11 +1051,9 @@ _cdf_commands() {
 'schema:Inspect, compare, and promote schemas' \
 'contract:Freeze, show, and test contracts' \
 'state:Inspect and recover checkpoint state' \
-'resume:Resume interrupted work from the run ledger' \
-'replay:Replay a verified package' \
 'backfill:Plan or execute a bounded cursor backfill' \
 'package:List, verify, archive, and collect packages' \
-'doctor:Check local runtime and destination health' \
+'doctor:Check explicitly scoped operational readiness' \
 'status:Summarize project freshness and run state' \
     )
     _describe -t commands 'cdf commands' commands "$@"
@@ -1012,10 +1109,59 @@ _cdf__subcmd__diff__subcmd__schema_commands() {
     local commands; commands=()
     _describe -t commands 'cdf diff schema commands' commands "$@"
 }
+(( $+functions[_cdf__subcmd__discover_commands] )) ||
+_cdf__subcmd__discover_commands() {
+    local commands; commands=(
+'source:Discover relations exposed by one configured source' \
+'resource:Discover schema for selected authored resources' \
+    )
+    _describe -t commands 'cdf discover commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__discover__subcmd__resource_commands] )) ||
+_cdf__subcmd__discover__subcmd__resource_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf discover resource commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__discover__subcmd__source_commands] )) ||
+_cdf__subcmd__discover__subcmd__source_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf discover source commands' commands "$@"
+}
 (( $+functions[_cdf__subcmd__doctor_commands] )) ||
 _cdf__subcmd__doctor_commands() {
-    local commands; commands=()
+    local commands; commands=(
+'runtime:Operate on cdf project evidence' \
+'resource:Show one resolved resource' \
+'source:Operate on cdf project evidence' \
+'destination:Operate on cdf project evidence' \
+'all:Operate on cdf project evidence' \
+    )
     _describe -t commands 'cdf doctor commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor__subcmd__all_commands] )) ||
+_cdf__subcmd__doctor__subcmd__all_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor all commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor__subcmd__destination_commands] )) ||
+_cdf__subcmd__doctor__subcmd__destination_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor destination commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor__subcmd__resource_commands] )) ||
+_cdf__subcmd__doctor__subcmd__resource_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor resource commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor__subcmd__runtime_commands] )) ||
+_cdf__subcmd__doctor__subcmd__runtime_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor runtime commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor__subcmd__source_commands] )) ||
+_cdf__subcmd__doctor__subcmd__source_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor source commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__explain_commands] )) ||
 _cdf__subcmd__explain_commands() {
@@ -1119,23 +1265,6 @@ _cdf__subcmd__plan_commands() {
 _cdf__subcmd__preview_commands() {
     local commands; commands=()
     _describe -t commands 'cdf preview commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__replay_commands] )) ||
-_cdf__subcmd__replay_commands() {
-    local commands; commands=(
-'package:List, verify, archive, and collect packages' \
-    )
-    _describe -t commands 'cdf replay commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__replay__subcmd__package_commands] )) ||
-_cdf__subcmd__replay__subcmd__package_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf replay package commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__resume_commands] )) ||
-_cdf__subcmd__resume_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf resume commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__run_commands] )) ||
 _cdf__subcmd__run_commands() {

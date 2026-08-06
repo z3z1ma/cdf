@@ -99,8 +99,10 @@ has an `author` ceiling, with bounded `observe` work permitted only against that
 - The driver owns location probing and canonical source/relation options. Generic code owns bounds,
   redaction, conflicts, guarded publication, and reporting.
 - Successful add writes only the required `[sources.<name>]` entry, explicit secret reference/private
-  secret state allowed by existing policy, and one thin `SELECT * FROM upstream(...)` resource.
-  It does not discover/pin a schema, compile, write `cdf.lock`, or publish a project index.
+  secret state allowed by existing policy, and one thin resource whose projection enumerates the
+  discovered top-level columns for immediate editing. `SELECT *` is permitted only as an explicit
+  reported fallback when the bounded location probe cannot return schema fields. Add does not pin
+  the observed schema, compile, write `cdf.lock`, or publish a project index.
 - `--dry-run` runs the same proposal/preflight and writes nothing. It reports exact proposed effects.
 - The next action is `cdf plan <resource-id>`, never compile/refresh/pin folklore.
 
@@ -152,8 +154,9 @@ their named authority. None may hide an effectful repair behind a read-only comm
    validate reports both valid and invalid counts without source I/O.
 3. Bare doctor checks only local runtime; resource doctor for one resource resolves/contacts only
    its reachable authorities; `doctor all` is the sole whole-project probe.
-4. Add creates one thin resource and source proposal without lock/compiled artifacts, then points to
-   plan. An unrelated invalid resource or missing secret does not block it.
+4. Add creates one thin resource with an explicit discovered top-level projection and source
+   proposal without lock/compiled artifacts, then points to plan. An unrelated invalid resource or
+   missing secret does not block it; a star projection is an explicit schema-unavailable fallback.
 5. `run --package` succeeds when authored project SQL is broken and source credentials are absent,
    because package authority is sufficient.
 6. `run --resume` after package finalization performs zero source/compiler calls and follows

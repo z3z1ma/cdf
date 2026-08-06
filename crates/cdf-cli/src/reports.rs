@@ -671,6 +671,8 @@ pub(crate) struct PreparedReplayReportRef<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ReplayPackageCliReport {
     command: &'static str,
+    input_authority: &'static str,
+    effect_ceiling: &'static str,
     run_id: String,
     package_id: String,
     package_dir: String,
@@ -716,7 +718,9 @@ impl ReplayPackageCliReport {
             .map(|segment| segment.byte_count)
             .sum();
         Self {
-            command: "replay package",
+            command: "run",
+            input_authority: "package",
+            effect_ceiling: "execute",
             run_id,
             package_id,
             package_dir: package_dir.display().to_string(),
@@ -763,7 +767,7 @@ impl ReplayPackageCliReport {
                     format!("Package {} was already loaded", self.package_id)
                 } else {
                     format!(
-                        "Replayed {} rows from {}",
+                        "Loaded {} rows from {}",
                         humanize_rows(self.row_count),
                         self.package_id
                     )
@@ -773,6 +777,8 @@ impl ReplayPackageCliReport {
             .push(
                 KeyValuePanel::summary()
                     .row("outcome", outcome)
+                    .row("input authority", self.input_authority)
+                    .row("effect ceiling", self.effect_ceiling)
                     .row("destination", self.destination.summary())
                     .row("rows", humanize_rows(self.row_count))
                     .row("data", humanize_bytes(self.byte_count))
@@ -794,7 +800,7 @@ impl ReplayPackageCliReport {
             )
             .blank_line()
             .push_verbose(
-                KeyValuePanel::new("Replay detail")
+                KeyValuePanel::new("Package run detail")
                     .row("run", self.run_id.clone())
                     .row("status", self.package_status.clone())
                     .row("hash", self.package_hash.clone())

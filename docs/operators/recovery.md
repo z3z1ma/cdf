@@ -6,21 +6,22 @@ rather than contacting the source again.
 
 ## Resume an Interrupted Run
 
-Use `cdf resume` when the selected environment has a run-ledger entry for the
+Use `cdf run --resume` when the selected environment has a run-ledger entry for the
 interrupted run:
 
 ```bash
-cdf --project /path/to/project resume <run-id>
+cdf --project /path/to/project run --resume <run-id>
 ```
 
-Equivalent parser form:
+When exactly one interrupted run exists, the id may be omitted:
 
 ```bash
-cdf --project /path/to/project resume --run <run-id>
+cdf --project /path/to/project run --resume
 ```
 
-`resume` fails closed if the state database is missing or the run id is absent
-from the selected environment run ledger.
+Bare resume is a clean no-op when no run ledger or interrupted run exists, and
+reports every candidate without mutation when several interrupted runs exist.
+An explicit id fails closed when the state database or run id is absent.
 
 The deterministic conformance proof for the crash window is:
 
@@ -29,7 +30,7 @@ cargo test -p cdf-conformance mvp_acceptance_demo --locked
 ```
 
 That fixture simulates a crash after destination receipt verification and before
-checkpoint commit, then proves `cdf resume` commits the checkpoint without new
+checkpoint commit, then proves `cdf run --resume` commits the checkpoint without new
 source contact.
 
 ## Recover State From a Package Receipt

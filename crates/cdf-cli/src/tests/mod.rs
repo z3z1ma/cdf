@@ -375,10 +375,7 @@ fn run_valid_run_resource(
 fn create_replay_package_fixture(project: &TestProject) -> PathBuf {
     let result = run_valid_run_args(project);
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    let package_id = stderr_or_stdout_json(&result.stdout)["result"]["package_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let package_id = run_package_id(&result);
     fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
     remove_state_store(project);
     project.root.join(".cdf/packages").join(package_id)
@@ -403,8 +400,8 @@ fn replay_package_command_with_target(
         "--json".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "replay".to_owned(),
-        "package".to_owned(),
+        "run".to_owned(),
+        "--package".to_owned(),
         package_dir.to_str().unwrap().to_owned(),
         "--to".to_owned(),
         destination_uri.to_owned(),
@@ -458,7 +455,8 @@ fn resume_command(project: &TestProject, run_id: &str) -> cdf_cli_core::output::
         "--json".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "resume".to_owned(),
+        "run".to_owned(),
+        "--resume".to_owned(),
         run_id.to_owned(),
     ])
 }

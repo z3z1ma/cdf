@@ -1,9 +1,11 @@
-Replay a verified package
+# `cdf doctor destination`
 
-Usage: cdf replay [OPTIONS] [COMMAND]
+Generated from the CLI's clap definitions.
 
-Commands:
-  package  List, verify, archive, and collect packages
+```text
+Operate on cdf project evidence
+
+Usage: cdf doctor destination [OPTIONS]
 
 Options:
   -q, --quiet                  Suppress progress and non-primary success narration
@@ -14,3 +16,4 @@ Options:
       --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
       --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB
   -h, --help                   Print help
+```

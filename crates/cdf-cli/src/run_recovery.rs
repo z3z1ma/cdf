@@ -10,8 +10,8 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
 use crate::{
-    args::{Cli, ResumeArgs},
-    context::ProjectContext,
+    args::Cli,
+    context::ProjectOperationalContext,
     error_catalog,
     output::{CliError, CommandOutput},
     progress::{CliProgressSink, ProgressDelivery, human_progress_sink},
@@ -22,21 +22,20 @@ use self::{
     report::{bare_resume_document, finish_resume_report},
 };
 
-pub(crate) fn resume(
+pub(crate) fn run_resume(
     cli: &Cli,
-    args: ResumeArgs,
+    requested_run_id: Option<String>,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_with_destination_registry(
-        cli.project.as_ref(),
-        cli.env.as_deref(),
-        destinations,
-    )?;
+    let context = ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
     let state_path_ownership = context.state_store_path_ownership();
     if !cdf_state_sqlite::database_path_exists(&state_path, state_path_ownership)? {
+        if requested_run_id.is_none() {
+            return no_interrupted_runs_report();
+        }
         return Err(CliError::mapped(
             CdfError::data(format!(
                 "run ledger state database {} is missing",
@@ -45,14 +44,14 @@ pub(crate) fn resume(
             error_catalog::RESUME_LEDGER,
         ));
     }
-    let run_id = match args.run_id {
+    let run_id = match requested_run_id {
         Some(run_id) => RunId::new(run_id)?,
         None => match select_resume_run(&state_path, state_path_ownership)? {
             ResumeSelection::None => return no_interrupted_runs_report(),
             ResumeSelection::One(run_id) => run_id,
             ResumeSelection::Many(run_ids) => {
                 return Err(CliError::not_supported_with(
-                    "resume",
+                    "run --resume",
                     format!(
                         "bare resume found {} interrupted runs ({}); pass RUN_ID to resume one explicitly",
                         run_ids.len(),
@@ -78,7 +77,7 @@ pub(crate) fn resume(
 
 fn resume_run(
     destinations: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
+    context: &ProjectOperationalContext,
     state_path: &std::path::Path,
     run_id: RunId,
     cli: &Cli,
@@ -191,6 +190,8 @@ fn resume_sqlite_error(action: &str, error: rusqlite::Error) -> CliError {
 
 #[derive(Serialize)]
 struct BareResumeReport {
+    input_authority: &'static str,
+    effect_ceiling: &'static str,
     state: &'static str,
     interrupted_runs: Vec<String>,
     writes: crate::reports::WriteEffects,
@@ -198,9 +199,11 @@ struct BareResumeReport {
 
 fn no_interrupted_runs_report() -> Result<CommandOutput, CliError> {
     let report = BareResumeReport {
+        input_authority: "interrupted_run",
+        effect_ceiling: "recover",
         state: "no_interrupted_runs",
         interrupted_runs: Vec::new(),
         writes: crate::reports::WriteEffects::none(),
     };
-    CommandOutput::rendered("resume", bare_resume_document(&report), report)
+    CommandOutput::rendered("run", bare_resume_document(&report), report)
 }

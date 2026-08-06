@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH cdf-doctor 1  "cdf-doctor "
 .SH NAME
-cdf\-doctor \- Check local runtime and destination health
+cdf\-doctor \- Check explicitly scoped operational readiness
 .SH SYNOPSIS
-\fBcdf doctor\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
+\fBcdf doctor\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Check local runtime and destination health
+Check host\-dependent readiness without writing project, destination, package, receipt, checkpoint, or run authority. Bare doctor checks only the local runtime; doctor all is the only implicit whole\-project probe.
 .SH OPTIONS
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
@@ -67,4 +67,20 @@ Process memory budget, e.g. 4GiB or 512MiB
 Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+cdf\-doctor\-runtime(1)
+Operate on cdf project evidence
+.TP
+cdf\-doctor\-resource(1)
+Show one resolved resource
+.TP
+cdf\-doctor\-source(1)
+Operate on cdf project evidence
+.TP
+cdf\-doctor\-destination(1)
+Operate on cdf project evidence
+.TP
+cdf\-doctor\-all(1)
+Operate on cdf project evidence

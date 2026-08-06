@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn replay_package_without_to_uses_environment_destination_without_source_contact() {
+fn run_package_requires_and_uses_explicit_destination_without_source_contact() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let package_id = PackageReader::open(&package_dir)
@@ -10,14 +10,30 @@ fn replay_package_without_to_uses_environment_destination_without_source_contact
         .identity
         .package_id
         .clone();
+    fs::write(
+        project.root.join("cdf/local/events.cdf.sql"),
+        "this authored SQL is deliberately invalid after package finalization",
+    )
+    .unwrap();
+    let config = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
+    fs::write(
+        project.root.join("cdf.toml"),
+        config.replace(
+            "root = \"data\"",
+            "root = \"https://source.example.invalid/data\"\ncredentials = \"secret://env/CDF_TEST_MISSING_SOURCE_SECRET\"",
+        ),
+    )
+    .unwrap();
     let result = run([
         "cdf",
         "--json",
         "--project",
         project.root_str(),
-        "replay",
-        "package",
+        "run",
+        "--package",
         package_dir.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/dev.duckdb",
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -74,8 +90,10 @@ fn replay_package_duckdb_replays_from_artifacts_without_source_contact() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
-    assert_eq!(json["command"], "replay package");
-    assert_eq!(report["command"], "replay package");
+    assert_eq!(json["command"], "run");
+    assert_eq!(report["command"], "run");
+    assert_eq!(report["input_authority"], "package");
+    assert_eq!(report["effect_ceiling"], "execute");
     assert!(!report["run_id"].as_str().unwrap().is_empty());
     assert_eq!(report["package_id"], manifest.identity.package_id.as_str());
     assert_eq!(report["package_hash"], manifest.package_hash);
@@ -264,8 +282,8 @@ fn replay_package_failure_human_stderr_includes_progress_context() {
         "cdf".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "replay".to_owned(),
-        "package".to_owned(),
+        "run".to_owned(),
+        "--package".to_owned(),
         package_dir.to_str().unwrap().to_owned(),
         "--to".to_owned(),
         "duckdb://.cdf/replay-progress-human-failure-again.duckdb".to_owned(),
@@ -298,8 +316,8 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
         "cdf".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "replay".to_owned(),
-        "package".to_owned(),
+        "run".to_owned(),
+        "--package".to_owned(),
         package_dir.to_str().unwrap().to_owned(),
         "--to".to_owned(),
         "duckdb://.cdf/replay-human.duckdb".to_owned(),
@@ -311,8 +329,8 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
         "cdf".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "replay".to_owned(),
-        "package".to_owned(),
+        "run".to_owned(),
+        "--package".to_owned(),
         package_dir.to_str().unwrap().to_owned(),
         "--to".to_owned(),
         "duckdb://.cdf/replay-human.duckdb".to_owned(),
@@ -357,13 +375,11 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
     let package_id = reader.manifest().identity.package_id.clone();
     let checkpoint_id = reader.replay_inputs().unwrap().state_delta.checkpoint_id;
     let cli = test_cli(&project);
-    let output = crate::replay_command::replay_package(
+    let output = crate::package_run::run_package(
         &cli,
-        cdf_cli_core::args::ReplayPackageArgs {
-            package_dir,
-            destination_uri: Some("duckdb://.cdf/replay-rich.duckdb".to_owned()),
-            target: None,
-        },
+        package_dir,
+        "duckdb://.cdf/replay-rich.duckdb".to_owned(),
+        None,
         &test_execution_services(),
         &test_destination_registry(),
         cdf_cli_core::progress::ProgressDelivery::Buffered,
@@ -373,7 +389,7 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        &format!("Replayed 2 rows from {package_id}"),
+        &format!("Loaded 2 rows from {package_id}"),
         "Summary",
         "destination",
         "Proof",
@@ -514,8 +530,9 @@ fn replay_package_postgres_replays_from_artifacts_without_source_contact() {
     assert_secret_absent(&result, &postgres.url);
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
-    assert_eq!(json["command"], "replay package");
-    assert_eq!(report["command"], "replay package");
+    assert_eq!(json["command"], "run");
+    assert_eq!(report["command"], "run");
+    assert_eq!(report["input_authority"], "package");
     assert_eq!(report["package_id"], manifest.identity.package_id.as_str());
     assert_eq!(report["package_hash"], manifest.package_hash);
     assert_eq!(report["destination"]["kind"], "postgres");
@@ -592,8 +609,9 @@ fn replay_package_parquet_replays_from_artifacts_without_source_contact() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
-    assert_eq!(json["command"], "replay package");
-    assert_eq!(report["command"], "replay package");
+    assert_eq!(json["command"], "run");
+    assert_eq!(report["command"], "run");
+    assert_eq!(report["input_authority"], "package");
     assert_eq!(report["package_id"], manifest.identity.package_id.as_str());
     assert_eq!(report["package_hash"], manifest.package_hash);
     assert_eq!(report["destination"]["kind"], "parquet");

@@ -16,8 +16,8 @@ use crate::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
     "help", "version", "init", "add", "discover", "compile", "validate", "plan", "explain", "run",
-    "preview", "sql", "inspect", "diff", "schema", "contract", "state", "resume", "replay",
-    "backfill", "package", "doctor", "status",
+    "preview", "sql", "inspect", "diff", "schema", "contract", "state", "backfill", "package",
+    "doctor", "status",
 ];
 const INSPECT_NOUNS: &[&str] = &[
     "project",
@@ -32,7 +32,6 @@ const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
 const SCHEMA_SUBCOMMANDS: &[&str] = &["show", "diff", "promote"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "recover"];
-const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
 const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 const DISCOVER_SUBCOMMANDS: &[&str] = &["source", "resource"];
 
@@ -66,11 +65,9 @@ pub enum Command {
     Schema(SchemaCommand),
     Contract(ContractCommand),
     State(StateCommand),
-    Resume(ResumeArgs),
-    ReplayPackage(ReplayPackageArgs),
     Backfill(BackfillArgs),
     Package(PackageCommand),
-    Doctor,
+    Doctor(DoctorCommand),
     Status,
 }
 
@@ -154,8 +151,12 @@ pub struct RunArgs {
     pub selectors: Vec<String>,
     pub exclude: Vec<String>,
     pub plan: Option<PathBuf>,
+    pub package: Option<PathBuf>,
+    pub resume: bool,
+    pub resume_run_id: Option<String>,
     pub locked: bool,
     pub destination_uri: Option<String>,
+    pub target: Option<String>,
     pub jobs: Option<u16>,
     pub stats_profile: bool,
     pub explain_memory: bool,
@@ -253,16 +254,18 @@ pub struct StateRecoverArgs {
     pub target: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct ResumeArgs {
-    pub run_id: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayPackageArgs {
-    pub package_dir: PathBuf,
-    pub destination_uri: Option<String>,
-    pub target: Option<String>,
+pub enum DoctorCommand {
+    Runtime,
+    Resource {
+        selectors: Vec<String>,
+        exclude: Vec<String>,
+    },
+    Source {
+        configured_sources: Vec<String>,
+    },
+    Destination,
+    All,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -495,14 +498,9 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         Some(("schema", subcommand)) => parse_schema(subcommand).map(Command::Schema),
         Some(("contract", subcommand)) => parse_contract(subcommand).map(Command::Contract),
         Some(("state", subcommand)) => parse_state(subcommand).map(Command::State),
-        Some(("resume", subcommand)) => parse_resume(subcommand).map(Command::Resume),
-        Some(("replay", subcommand)) => parse_replay(subcommand),
         Some(("backfill", subcommand)) => parse_backfill(subcommand).map(Command::Backfill),
         Some(("package", subcommand)) => parse_package(subcommand).map(Command::Package),
-        Some(("doctor", subcommand)) => {
-            no_extra_values("doctor", &values(subcommand, "extra"))?;
-            Ok(Command::Doctor)
-        }
+        Some(("doctor", subcommand)) => parse_doctor(subcommand).map(Command::Doctor),
         Some(("status", subcommand)) => {
             no_extra_values("status", &values(subcommand, "extra"))?;
             Ok(Command::Status)
@@ -672,38 +670,90 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
     let selectors = values(matches, "selectors");
     let exclude = values(matches, "exclude");
     let plan = string_value(matches, "plan").map(PathBuf::from);
+    let package = string_value(matches, "package").map(PathBuf::from);
+    let resume = matches.contains_id("resume");
+    let resume_run_id = string_value(matches, "resume");
     let locked = matches.get_flag("locked");
     let destination_uri = string_value(matches, "to");
+    let target = string_value(matches, "target");
+    let jobs = string_value(matches, "jobs")
+        .map(|value| parse_nonzero_u16("--jobs", &value))
+        .transpose()?;
+    let stats_profile = matches.get_flag("stats_profile");
+    let explain_memory = matches.get_flag("explain_memory");
     let loop_mode = matches.get_flag("loop");
     let segmentation = parse_segmentation(matches)?;
+    let input_modes = usize::from(!selectors.is_empty())
+        + usize::from(plan.is_some())
+        + usize::from(package.is_some())
+        + usize::from(resume);
+    if input_modes != 1 {
+        return Err(CliError::usage(
+            "run requires exactly one input authority: resource selectors, --plan <PATH>, --package <DIR>, or --resume[=<RUN_ID>]",
+        ));
+    }
     if plan.is_some()
-        && (!selectors.is_empty()
-            || !exclude.is_empty()
+        && (!exclude.is_empty()
             || locked
             || destination_uri.is_some()
+            || target.is_some()
             || loop_mode
             || segmentation != SegmentationArgs::default())
     {
         return Err(CliError::usage(
-            "run --plan cannot be combined with resource selectors, --exclude, --locked, --to, --loop, or segmentation flags; create a new portable plan to change execution semantics",
+            "run --plan cannot be combined with --exclude, --locked, --to, --target, --loop, or segmentation flags; create a new portable plan to change execution semantics",
         ));
     }
-    if plan.is_none() && selectors.is_empty() {
+    if package.is_some() {
+        if destination_uri.is_none() {
+            return Err(CliError::usage("run --package requires --to <DESTINATION>"));
+        }
+        if !exclude.is_empty()
+            || locked
+            || jobs.is_some()
+            || stats_profile
+            || explain_memory
+            || loop_mode
+            || segmentation != SegmentationArgs::default()
+        {
+            return Err(CliError::usage(
+                "run --package cannot be combined with resource selection, preparation, or source-execution tuning flags",
+            ));
+        }
+    }
+    if resume
+        && (!exclude.is_empty()
+            || locked
+            || destination_uri.is_some()
+            || target.is_some()
+            || jobs.is_some()
+            || stats_profile
+            || explain_memory
+            || loop_mode
+            || segmentation != SegmentationArgs::default())
+    {
         return Err(CliError::usage(
-            "run requires resource selectors or --plan <PATH>",
+            "run --resume cannot be combined with resource selection, preparation, destination, or execution tuning flags",
+        ));
+    }
+    if !selectors.is_empty() && target.is_some() {
+        return Err(CliError::usage(
+            "run resource selectors use their declared target; --target is only valid with --package",
         ));
     }
     Ok(RunArgs {
         selectors,
         exclude,
         plan,
+        package,
+        resume,
+        resume_run_id,
         locked,
         destination_uri,
-        jobs: string_value(matches, "jobs")
-            .map(|value| parse_nonzero_u16("--jobs", &value))
-            .transpose()?,
-        stats_profile: matches.get_flag("stats_profile"),
-        explain_memory: matches.get_flag("explain_memory"),
+        target,
+        jobs,
+        stats_profile,
+        explain_memory,
         loop_mode,
         segmentation,
     })
@@ -940,43 +990,37 @@ fn parse_state_recover(matches: &ArgMatches) -> Result<StateRecoverArgs, CliErro
     })
 }
 
-fn parse_resume(matches: &ArgMatches) -> Result<ResumeArgs, CliError> {
-    Ok(ResumeArgs {
-        run_id: single_positional_arg(
-            "resume",
-            &values(matches, "run_arg"),
-            "accepts at most one run id",
-        )?,
-    })
-}
-
-fn parse_replay(matches: &ArgMatches) -> Result<Command, CliError> {
-    match matches.subcommand() {
-        Some(("package", subcommand)) => {
-            parse_replay_package(subcommand).map(Command::ReplayPackage)
+fn parse_doctor(matches: &ArgMatches) -> Result<DoctorCommand, CliError> {
+    let Some((scope, matches)) = matches.subcommand() else {
+        return Ok(DoctorCommand::Runtime);
+    };
+    match scope {
+        "runtime" => Ok(DoctorCommand::Runtime),
+        "resource" => {
+            let selectors = values(matches, "selectors");
+            if selectors.is_empty() {
+                return Err(CliError::usage(
+                    "doctor resource requires at least one resource selector",
+                ));
+            }
+            Ok(DoctorCommand::Resource {
+                selectors,
+                exclude: values(matches, "exclude"),
+            })
         }
-        Some((other, _)) => Err(unknown_subcommand_error(
-            &["replay"],
-            other,
-            REPLAY_SUBCOMMANDS,
-            "unknown replay subcommand",
-        )),
-        None => Err(CliError::usage("replay requires subcommand `package`")),
+        "source" => {
+            let configured_sources = values(matches, "configured_sources");
+            if configured_sources.is_empty() {
+                return Err(CliError::usage(
+                    "doctor source requires at least one configured source",
+                ));
+            }
+            Ok(DoctorCommand::Source { configured_sources })
+        }
+        "destination" => Ok(DoctorCommand::Destination),
+        "all" => Ok(DoctorCommand::All),
+        other => Err(CliError::usage(format!("unknown doctor scope `{other}`"))),
     }
-}
-
-fn parse_replay_package(matches: &ArgMatches) -> Result<ReplayPackageArgs, CliError> {
-    let package_dir = required_single_path(
-        "replay package",
-        &values(matches, "package_dir"),
-        "requires a package directory",
-        "accepts exactly one package directory",
-    )?;
-    Ok(ReplayPackageArgs {
-        package_dir,
-        destination_uri: string_value(matches, "to"),
-        target: string_value(matches, "target"),
-    })
 }
 
 fn parse_backfill(matches: &ArgMatches) -> Result<BackfillArgs, CliError> {
@@ -1110,18 +1154,9 @@ pub fn cli_command() -> ClapCommand {
         .subcommand(schema_command())
         .subcommand(contract_command())
         .subcommand(state_command())
-        .subcommand(resume_command())
-        .subcommand(
-            cmd("replay").subcommand(
-                cmd("package")
-                    .arg(values_arg("package_dir").value_name("DIR"))
-                    .arg(option("to", "to", "DEST"))
-                    .arg(option("target", "target", "TARGET")),
-            ),
-        )
         .subcommand(backfill_command())
         .subcommand(package_command())
-        .subcommand(cmd("doctor").arg(values_arg("extra").hide(true)))
+        .subcommand(doctor_command())
         .subcommand(cmd("status").arg(values_arg("extra").hide(true)))
 }
 
@@ -1179,8 +1214,18 @@ fn run_command() -> ClapCommand {
             .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
             .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
             .arg(option("plan", "plan", "PATH"))
+            .arg(option("package", "package", "DIR"))
+            .arg(
+                Arg::new("resume")
+                    .long("resume")
+                    .value_name("RUN_ID")
+                    .num_args(0..=1)
+                    .action(ArgAction::Set)
+                    .help("Resume interrupted run authority; omit RUN_ID only when exactly one run is recoverable"),
+            )
             .arg(flag("locked", "locked"))
             .arg(option("to", "to", "DEST"))
+            .arg(option("target", "target", "TARGET"))
             .arg(option("jobs", "jobs", "N"))
             .arg(flag("stats_profile", "stats-profile"))
             .arg(flag("explain_memory", "explain-memory"))
@@ -1277,8 +1322,22 @@ fn state_scope_command(name: &'static str) -> ClapCommand {
         .arg(option("scope_json", "scope-json", "JSON"))
 }
 
-fn resume_command() -> ClapCommand {
-    cmd("resume").arg(values_arg("run_arg").value_name("RUN_ID"))
+fn doctor_command() -> ClapCommand {
+    cmd("doctor")
+        .about("Check explicitly scoped operational readiness")
+        .long_about("Check host-dependent readiness without writing project, destination, package, receipt, checkpoint, or run authority. Bare doctor checks only the local runtime; doctor all is the only implicit whole-project probe.")
+        .subcommand(cmd("runtime"))
+        .subcommand(
+            cmd("resource")
+                .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
+                .arg(append_option("exclude", "exclude", "RESOURCE_GLOB")),
+        )
+        .subcommand(
+            cmd("source")
+                .arg(values_arg("configured_sources").value_name("CONFIGURED_SOURCE")),
+        )
+        .subcommand(cmd("destination"))
+        .subcommand(cmd("all"))
 }
 
 fn backfill_command() -> ClapCommand {
@@ -1325,8 +1384,6 @@ fn cmd(name: &'static str) -> ClapCommand {
         "schema" => "Inspect, compare, and promote schemas",
         "contract" => "Freeze, show, and test contracts",
         "state" => "Inspect and recover checkpoint state",
-        "resume" => "Resume interrupted work from the run ledger",
-        "replay" => "Replay a verified package",
         "backfill" => "Plan or execute a bounded cursor backfill",
         "package" => "List, verify, archive, and collect packages",
         "doctor" => "Check local runtime and destination health",
@@ -1451,7 +1508,7 @@ fn positional_help(id: &str) -> &'static str {
         "query" => "SQL query text",
         "resource_arg" => "Resource identifier",
         "selectors" => "Exact or glob resource selectors; quote shell-sensitive globs",
-        "run_arg" => "Run identifier; omit to scan interrupted work",
+        "configured_sources" => "Configured source identity",
         "package_dir" | "packages_dir" => "Package directory",
         "value" => "Contract or trust selector shown in usage",
         "values" => "Identifiers or paths shown in usage",
@@ -1620,7 +1677,6 @@ fn command_suggestions(args: &[String]) -> Vec<String> {
         "diff" => command_path_suggestions(&["diff"], second, DIFF_SUBCOMMANDS),
         "contract" => command_path_suggestions(&["contract"], second, CONTRACT_SUBCOMMANDS),
         "state" => command_path_suggestions(&["state"], second, STATE_SUBCOMMANDS),
-        "replay" => command_path_suggestions(&["replay"], second, REPLAY_SUBCOMMANDS),
         "package" => command_path_suggestions(&["package"], second, PACKAGE_SUBCOMMANDS),
         _ => Vec::new(),
     }
@@ -1656,11 +1712,11 @@ fn mint_cli_id(prefix: &str) -> String {
 
 #[cfg(test)]
 mod run_jobs_tests {
-    use std::ffi::OsString;
+    use std::{ffi::OsString, path::PathBuf};
 
     use clap::error::ErrorKind;
 
-    use super::{Cli, Command, cli_command, parse_byte_size};
+    use super::{Cli, Command, DoctorCommand, cli_command, parse_byte_size};
     use crate::terminal::{PolicyMode, TerminalPolicy, Verbosity};
 
     #[test]
@@ -1817,7 +1873,6 @@ mod run_jobs_tests {
             vec!["cdf", "plan", "local.events", "--projection", "id"],
             vec!["cdf", "run", "--resource", "local.events"],
             vec!["cdf", "run", "local.events", "--pipeline", "pipeline"],
-            vec!["cdf", "run", "local.events", "--target", "events"],
             vec!["cdf", "run", "local.events", "--package-id", "package"],
             vec![
                 "cdf",
@@ -1828,15 +1883,6 @@ mod run_jobs_tests {
             ],
             vec!["cdf", "schema", "show", "--resource", "local.events"],
             vec!["cdf", "contract", "show", "--trust", "governed"],
-            vec!["cdf", "resume", "--run-id", "run"],
-            vec![
-                "cdf",
-                "replay",
-                "package",
-                "package-dir",
-                "--merge-dedup",
-                "fail",
-            ],
             vec![
                 "cdf",
                 "state",
@@ -1881,6 +1927,18 @@ mod run_jobs_tests {
             .try_get_matches_from(["cdf", "inspect", "destination"])
             .unwrap_err();
         assert_eq!(removed_noun.kind(), ErrorKind::InvalidSubcommand);
+
+        for removed_command in ["resume", "replay"] {
+            let error = cli_command()
+                .try_get_matches_from(["cdf", removed_command])
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+        }
+
+        let target_error =
+            Cli::parse(["cdf", "run", "local.events", "--target", "events"].map(OsString::from))
+                .unwrap_err();
+        assert!(target_error.message.contains("only valid with --package"));
     }
 
     #[test]
@@ -2076,8 +2134,112 @@ mod run_jobs_tests {
             ],
         ] {
             let error = Cli::parse(conflicting.into_iter().map(OsString::from)).unwrap_err();
-            assert!(error.message.contains("run --plan cannot be combined"));
+            assert!(
+                error.message.contains("exactly one input authority")
+                    || error.message.contains("run --plan cannot be combined")
+            );
         }
+    }
+
+    #[test]
+    fn run_package_and_resume_are_explicit_exclusive_input_authorities() {
+        let package = Cli::parse(
+            [
+                "cdf",
+                "run",
+                "--package",
+                "package-dir",
+                "--to",
+                "duckdb://target.db",
+                "--target",
+                "events",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Run(package) = package.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(package.package, Some(PathBuf::from("package-dir")));
+        assert_eq!(package.target.as_deref(), Some("events"));
+
+        let resume = Cli::parse(["cdf", "run", "--resume", "run-42"].map(OsString::from)).unwrap();
+        let Command::Run(resume) = resume.command else {
+            panic!("expected run command");
+        };
+        assert!(resume.resume);
+        assert_eq!(resume.resume_run_id.as_deref(), Some("run-42"));
+
+        let bare = Cli::parse(["cdf", "run", "--resume"].map(OsString::from)).unwrap();
+        let Command::Run(bare) = bare.command else {
+            panic!("expected run command");
+        };
+        assert!(bare.resume);
+        assert_eq!(bare.resume_run_id, None);
+
+        let missing_destination =
+            Cli::parse(["cdf", "run", "--package", "package-dir"].map(OsString::from)).unwrap_err();
+        assert!(missing_destination.message.contains("requires --to"));
+
+        let conflict =
+            Cli::parse(["cdf", "run", "local.events", "--resume"].map(OsString::from)).unwrap_err();
+        assert!(conflict.message.contains("exactly one input authority"));
+
+        for ignored in [
+            vec![
+                "cdf",
+                "run",
+                "--package",
+                "package-dir",
+                "--to",
+                "duckdb://target.db",
+                "--jobs",
+                "2",
+            ],
+            vec!["cdf", "run", "--resume", "--stats-profile"],
+        ] {
+            let error = Cli::parse(ignored.into_iter().map(OsString::from)).unwrap_err();
+            assert!(
+                error.message.contains("run --package cannot be combined")
+                    || error.message.contains("run --resume cannot be combined")
+            );
+        }
+    }
+
+    #[test]
+    fn doctor_defaults_to_runtime_and_parses_explicit_scopes() {
+        let bare = Cli::parse(["cdf", "doctor"].map(OsString::from)).unwrap();
+        assert!(matches!(
+            bare.command,
+            Command::Doctor(DoctorCommand::Runtime)
+        ));
+
+        let resources = Cli::parse(
+            [
+                "cdf",
+                "doctor",
+                "resource",
+                "warehouse.*",
+                "--exclude",
+                "warehouse.scratch",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Doctor(DoctorCommand::Resource { selectors, exclude }) = resources.command
+        else {
+            panic!("expected doctor resource");
+        };
+        assert_eq!(selectors, ["warehouse.*"]);
+        assert_eq!(exclude, ["warehouse.scratch"]);
+
+        let sources =
+            Cli::parse(["cdf", "doctor", "source", "warehouse", "events"].map(OsString::from))
+                .unwrap();
+        let Command::Doctor(DoctorCommand::Source { configured_sources }) = sources.command else {
+            panic!("expected doctor source");
+        };
+        assert_eq!(configured_sources, ["warehouse", "events"]);
     }
 
     #[test]

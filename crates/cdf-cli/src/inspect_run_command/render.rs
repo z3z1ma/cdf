@@ -146,7 +146,7 @@ impl InspectRunReport {
                 .unwrap_or_else(|| "cdf run <resource>".to_owned()),
             "replay_package_without_source_contact"
             | "verify_receipt_then_commit_checkpoint"
-            | "update_package_status" => format!("cdf resume {}", self.run_id),
+            | "update_package_status" => format!("cdf run --resume {}", self.run_id),
             _ => format!("cdf inspect run {}", self.run_id),
         }
     }

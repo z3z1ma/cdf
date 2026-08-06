@@ -13,18 +13,19 @@ Arguments:
 Options:
       --exclude <RESOURCE_GLOB>       Exclude resources matching this glob; may be repeated
   -q, --quiet                         Suppress progress and non-primary success narration
-      --select <FIELDS>               Comma-separated projected fields
+      --out <PATH>                    Write the command's canonical artifact without replacing terminal output
   -v, --verbose...                    Show evidence detail; repeat for diagnostics
       --color <WHEN>                  Color policy: auto, always, or never [possible values: auto, always, never]
+      --select <FIELDS>               Comma-separated projected fields
       --filter <EXPR>                 Filter expression; may be repeated
-      --limit <N>                     Maximum rows to read
       --progress <WHEN>               Progress policy: auto, always, or never [possible values: auto, always, never]
-      --order-by <FIELD[:asc|desc]>   Ordering field and optional direction
+      --limit <N>                     Maximum rows to read
       --unicode <WHEN>                Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>         Process memory budget, e.g. 4GiB or 512MiB
+      --order-by <FIELD[:asc|desc]>   Ordering field and optional direction
+      --spill-budget <BYTES>          Spill/disk budget, e.g. 64GiB or 512MiB
       --to <DEST>                     Destination URI or cursor upper bound, as shown in usage
       --segment-target-rows <ROWS>    Set the value named in this command's usage
-      --spill-budget <BYTES>          Spill/disk budget, e.g. 64GiB or 512MiB
       --segment-target-bytes <BYTES>  Set the value named in this command's usage
       --segment-max-rows <ROWS>       Set the value named in this command's usage
       --segment-max-bytes <BYTES>     Set the value named in this command's usage

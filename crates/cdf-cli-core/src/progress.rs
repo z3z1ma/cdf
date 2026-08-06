@@ -3,7 +3,7 @@ use std::{
     io::Write,
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, SyncSender, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -614,8 +614,12 @@ fn spawn_live_progress_worker(
         .name("cdf-cli-progress".to_owned())
         .spawn(move || {
             let mut renderer = LiveProgressRenderer::new(config, state, writer);
-            while let Ok(event) = receiver.recv() {
-                renderer.process(&event);
+            loop {
+                match receiver.recv_timeout(INTERACTIVE_REFRESH_INTERVAL) {
+                    Ok(event) => renderer.process(&event),
+                    Err(RecvTimeoutError::Timeout) => renderer.refresh_if_due(),
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
             for event in terminal_receiver.try_iter() {
                 renderer.process(&event);
@@ -630,6 +634,7 @@ struct LiveProgressRenderer {
     writer: Box<dyn Write + Send>,
     interactive: bool,
     last_refresh: Instant,
+    pending_redraw: bool,
     rendered_lines: usize,
     headless_run_id: Option<String>,
     emitted_headless_phases: BTreeSet<ProgressPhase>,
@@ -651,6 +656,7 @@ impl LiveProgressRenderer {
             writer,
             interactive,
             last_refresh,
+            pending_redraw: false,
             rendered_lines: 0,
             headless_run_id: None,
             emitted_headless_phases: BTreeSet::new(),
@@ -669,6 +675,12 @@ impl LiveProgressRenderer {
             if terminal || self.last_refresh.elapsed() >= INTERACTIVE_REFRESH_INTERVAL {
                 self.redraw();
                 self.last_refresh = Instant::now();
+                self.pending_redraw = false;
+            } else if matches!(
+                disposition,
+                ProgressEventDisposition::Accepted | ProgressEventDisposition::Terminal
+            ) {
+                self.pending_redraw = true;
             }
         } else if matches!(
             disposition,
@@ -697,6 +709,17 @@ impl LiveProgressRenderer {
         }
     }
 
+    fn refresh_if_due(&mut self) {
+        if self.interactive
+            && self.pending_redraw
+            && self.last_refresh.elapsed() >= INTERACTIVE_REFRESH_INTERVAL
+        {
+            self.redraw();
+            self.last_refresh = Instant::now();
+            self.pending_redraw = false;
+        }
+    }
+
     fn redraw(&mut self) {
         self.rendered_lines = redraw_live_progress(
             &self.state,
@@ -709,6 +732,7 @@ impl LiveProgressRenderer {
     fn finish(&mut self) {
         if self.interactive {
             self.redraw();
+            self.pending_redraw = false;
         }
     }
 }
@@ -1174,6 +1198,33 @@ mod tests {
             Some("run-progress-slice-0999")
         );
         assert_eq!(renderer.emitted_headless_phases.len(), 1);
+    }
+
+    #[test]
+    fn interactive_progress_refreshes_a_deferred_phase_without_another_event() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let mut renderer = LiveProgressRenderer::new(
+            ProgressConfig::new(tty_config(), DisplayVerbosity::Normal),
+            state,
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+
+        renderer.process(&event(1, RunEventKind::PackageFinalized));
+        renderer.process(&event(2, RunEventKind::DestinationCommitStarted));
+        assert!(renderer.pending_redraw);
+
+        renderer.last_refresh = Instant::now()
+            .checked_sub(INTERACTIVE_REFRESH_INTERVAL)
+            .unwrap();
+        renderer.refresh_if_due();
+
+        assert!(!renderer.pending_redraw);
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("Loaded"), "{rendered:?}");
     }
 
     #[test]

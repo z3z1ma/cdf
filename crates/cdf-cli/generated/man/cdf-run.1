@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-run \- Execute a governed resource run
 .SH SYNOPSIS
-\fBcdf run\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-locked\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-\-progress\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-unicode\fR] [\fB\-\-explain\-memory\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-loop\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
+\fBcdf run\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-plan\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-package\fR] [\fB\-\-progress\fR] [\fB\-\-resume\fR] [\fB\-\-locked\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-to\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-target\fR] [\fB\-\-jobs\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-explain\-memory\fR] [\fB\-\-loop\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
 Execute a governed resource run
 .SH OPTIONS
@@ -15,8 +15,8 @@ Exclude resources matching this glob; may be repeated
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-locked\fR
-Require sufficient unchanged cdf.lock authority
+\fB\-\-plan\fR \fI<PATH>\fR
+Execute a canonical portable plan artifact
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,11 +36,8 @@ always
 never
 .RE
 .TP
-\fB\-\-to\fR \fI<DEST>\fR
-Destination URI or cursor upper bound, as shown in usage
-.TP
-\fB\-\-jobs\fR \fI<N>\fR
-Maximum concurrent jobs
+\fB\-\-package\fR \fI<DIR>\fR
+Package directory
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -57,8 +54,11 @@ always
 never
 .RE
 .TP
-\fB\-\-stats\-profile\fR
-Write the typed statistics profile artifact
+\fB\-\-resume\fR [\fI<RUN_ID>\fR]
+Resume interrupted run authority; omit RUN_ID only when exactly one run is recoverable
+.TP
+\fB\-\-locked\fR
+Require sufficient unchanged cdf.lock authority
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never
@@ -75,17 +75,29 @@ always
 never
 .RE
 .TP
-\fB\-\-explain\-memory\fR
-Include memory\-ledger detail in the run report
-.TP
 \fB\-\-memory\-budget\fR \fI<BYTES>\fR
 Process memory budget, e.g. 4GiB or 512MiB
 .TP
-\fB\-\-loop\fR
-Continue polling for work
+\fB\-\-to\fR \fI<DEST>\fR
+Destination URI or cursor upper bound, as shown in usage
 .TP
 \fB\-\-spill\-budget\fR \fI<BYTES>\fR
 Spill/disk budget, e.g. 64GiB or 512MiB
+.TP
+\fB\-\-target\fR \fI<TARGET>\fR
+Destination target or table
+.TP
+\fB\-\-jobs\fR \fI<N>\fR
+Maximum concurrent jobs
+.TP
+\fB\-\-stats\-profile\fR
+Write the typed statistics profile artifact
+.TP
+\fB\-\-explain\-memory\fR
+Include memory\-ledger detail in the run report
+.TP
+\fB\-\-loop\fR
+Continue polling for work
 .TP
 \fB\-\-segment\-target\-rows\fR \fI<ROWS>\fR
 Set the value named in this command\*(Aqs usage

@@ -120,20 +120,6 @@ fn dispatch(
             let (_, services) = default_services(&cli)?;
             crate::state_command::state(&cli, command, &services, destinations)
         }
-        Command::Resume(args) => {
-            let (_, services) = default_services(&cli)?;
-            crate::resume_command::resume(&cli, args, &services, destinations, progress_delivery)
-        }
-        Command::ReplayPackage(args) => {
-            let (_, services) = default_services(&cli)?;
-            crate::replay_command::replay_package(
-                &cli,
-                args,
-                &services,
-                destinations,
-                progress_delivery,
-            )
-        }
         Command::Backfill(args) => {
             let (host, services) = default_services(&cli)?;
             crate::backfill_command::backfill(
@@ -145,11 +131,11 @@ fn dispatch(
             )
         }
         Command::Package(command) => crate::package_command::package(&cli, command, destinations),
-        Command::Doctor => {
+        Command::Doctor(scope) => {
             let (_, services) = default_services(&cli)?;
-            crate::doctor_command::doctor(&cli, &services, destinations)
+            crate::doctor_command::doctor(&cli, scope, &services, destinations)
         }
-        Command::Status => crate::status_command::status(&cli, destinations),
+        Command::Status => crate::status_command::status(&cli),
     }
 }
 

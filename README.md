@@ -119,9 +119,9 @@ cdf sql "select state, count(*) from github.issues group by 1"
 cdf inspect resource|sheet|package|run|receipt <id>
 cdf contract freeze|show|test github.issues
 cdf state show|history|rewind|migrate|recover github.issues
-cdf resume
-cdf replay package <pkg> --to postgres://...
-cdf doctor
+cdf run --resume [<run-id>]
+cdf run --package <pkg> --to postgres://... --target schema.table
+cdf doctor [runtime|resource|source|destination|all]
 cdf status
 ```
 

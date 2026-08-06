@@ -85,6 +85,7 @@ fn portable_plan_runs_after_whole_plan_preflight_and_publishes_first_use_authori
     assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["input_authority"], "portable_plan");
+    assert_eq!(json["result"]["effect_ceiling"], "execute");
     assert_eq!(
         json["result"]["portable_plan"]["plan_hash"],
         artifact.plan_hash
@@ -970,7 +971,7 @@ fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
         );
     }
     assert!(!second.stderr.contains("suggestions:"));
-    assert!(!second.stderr.contains("cdf resume "));
+    assert!(!second.stderr.contains("cdf run --resume "));
 }
 
 #[test]

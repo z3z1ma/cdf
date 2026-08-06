@@ -15,9 +15,11 @@ use cdf_project::{
 use cdf_state_sqlite::{SqliteCheckpointStore, SqliteRunLedger};
 
 use crate::{
-    args::{Cli, ReplayPackageArgs},
-    context::ProjectContext,
-    destination_uri::{destination_error_suggestions, redact_destination_uri, redact_error_value},
+    args::Cli,
+    context::ProjectOperationalContext,
+    destination_uri::{
+        operational_destination_error_suggestions, redact_destination_uri, redact_error_value,
+    },
     error_catalog,
     output::{CliError, CommandOutput},
     progress::{ProgressDelivery, human_progress_sink},
@@ -41,7 +43,7 @@ pub(crate) struct ReplayDestination {
 }
 
 pub(crate) struct PackageReplayContext {
-    pub(crate) project: ProjectContext,
+    pub(crate) project: ProjectOperationalContext,
     pub(crate) reader: PackageReader,
     pub(crate) package_id: String,
     pub(crate) inputs: PackageReplayInputs,
@@ -374,13 +376,8 @@ fn u64_from_usize(value: usize) -> cdf_kernel::Result<u64> {
 pub(crate) fn load_package_replay_context(
     cli: &Cli,
     package_dir: &Path,
-    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<PackageReplayContext, CliError> {
-    let project = ProjectContext::load_with_destination_registry(
-        cli.project.as_ref(),
-        cli.env.as_deref(),
-        destinations,
-    )?;
+    let project = ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let reader = PackageReader::open(package_dir)?;
     let package_id = reader.manifest().identity.package_id.clone();
     let inputs = reader.replay_inputs()?;
@@ -404,7 +401,7 @@ fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_
 
 pub(crate) fn build_replay_destination(
     registry: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
+    context: &ProjectOperationalContext,
     args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
     execution: &cdf_runtime::ExecutionServices,
@@ -430,8 +427,8 @@ pub(crate) fn build_replay_destination(
             .as_deref()
             .unwrap_or("TARGET");
         return Err(CliError::usage_with(
-            format!("replay package to {display_name} requires --target {target_hint}"),
-            error_catalog::REPLAY_ARGUMENT,
+            format!("run --package to {display_name} requires --target {target_hint}"),
+            error_catalog::RUN_PACKAGE_ARGUMENT,
         ));
     }
     let target = if inspection.runtime.replay_requires_explicit_target {
@@ -442,23 +439,23 @@ pub(crate) fn build_replay_destination(
             .unwrap_or("TARGET");
         let explicit = args.target.ok_or_else(|| {
             CliError::usage_with(
-                format!("replay package to {display_name} requires --target {target_hint}"),
-                error_catalog::REPLAY_ARGUMENT,
+                format!("run --package to {display_name} requires --target {target_hint}"),
+                error_catalog::RUN_PACKAGE_ARGUMENT,
             )
         })?;
         let target = registry.replay_target(uri, explicit).map_err(|_| {
             CliError::usage_with(
-                format!("replay package to {display_name} requires --target {target_hint}"),
-                error_catalog::REPLAY_ARGUMENT,
+                format!("run --package to {display_name} requires --target {target_hint}"),
+                error_catalog::RUN_PACKAGE_ARGUMENT,
             )
         })?;
         if target != inputs.destination_commit.target {
             return Err(CliError::mapped(
                 CdfError::contract(format!(
-                    "explicit {display_name} replay target {target} does not match package destination commit target {}",
+                    "explicit {display_name} package target {target} does not match package destination commit target {}",
                     inputs.destination_commit.target
                 )),
-                error_catalog::REPLAY_PACKAGE_CONTRACT,
+                error_catalog::RUN_PACKAGE_CONTRACT,
             ));
         }
         target
@@ -494,7 +491,7 @@ fn destination_display_name(label: &str) -> String {
 }
 
 fn replay_destination_resolution_error(
-    context: &ProjectContext,
+    context: &ProjectOperationalContext,
     requested_destination: Option<&str>,
     error: CdfError,
     uri: &str,
@@ -502,15 +499,15 @@ fn replay_destination_resolution_error(
     let error = redact_error_value(error, None);
     if error.message.contains("no destination driver registered") {
         CliError::not_supported_with(
-            "replay package",
+            "run --package",
             format!(
-                "destination URI `{}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://...",
+                "destination URI `{}` is unsupported for package execution; supported destinations are duckdb://path, parquet://root, and postgres://...",
                 redact_destination_uri(uri)
             ),
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
-        .with_suggestions(destination_error_suggestions(
+        .with_suggestions(operational_destination_error_suggestions(
             context,
             requested_destination,
         ))
@@ -518,12 +515,12 @@ fn replay_destination_resolution_error(
         || error.message.contains("is missing a scheme")
     {
         CliError::not_supported_with(
-            "replay package",
+            "run --package",
             error.message,
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
-        .with_suggestions(destination_error_suggestions(
+        .with_suggestions(operational_destination_error_suggestions(
             context,
             requested_destination,
         ))
@@ -532,20 +529,22 @@ fn replay_destination_resolution_error(
     }
 }
 
-pub(crate) fn replay_package(
+pub(crate) fn run_package(
     cli: &Cli,
-    args: ReplayPackageArgs,
+    package_dir: PathBuf,
+    destination_uri: String,
+    target: Option<String>,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let package = load_package_replay_context(cli, &args.package_dir, destinations)?;
+    let package = load_package_replay_context(cli, &package_dir)?;
     let mut replay_destination = build_replay_destination(
         destinations,
         &package.project,
         PackageReplayDestinationArgs {
-            destination_uri: args.destination_uri.as_deref(),
-            target: args.target.as_deref(),
+            destination_uri: Some(&destination_uri),
+            target: target.as_deref(),
         },
         &package.inputs,
         execution,
@@ -564,16 +563,11 @@ pub(crate) fn replay_package(
     let store = package.project.state_store()?;
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
-    let progress_recorder = ReplayProgressRecorder::new(
-        &run_ledger,
-        &run.run_id,
-        event_sink,
-        &package,
-        &args.package_dir,
-    );
+    let progress_recorder =
+        ReplayProgressRecorder::new(&run_ledger, &run.run_id, event_sink, &package, &package_dir);
 
     let replay_report =
-        match replay_destination.replay(args.package_dir.clone(), &store, &progress_recorder) {
+        match replay_destination.replay(package_dir.clone(), &store, &progress_recorder) {
             Ok(report) => report,
             Err(error) => {
                 let error = match progress {
@@ -591,7 +585,7 @@ pub(crate) fn replay_package(
     event.scope = Some(package.inputs.state_delta.scope.clone());
     event.package_id = Some(package.package_id.clone());
     event.package_hash = Some(package_hash.clone());
-    event.package_path = Some(args.package_dir.display().to_string());
+    event.package_path = Some(package_dir.display().to_string());
     event.checkpoint_id = Some(report.checkpoint.delta.checkpoint_id.clone());
     event.receipt_id = Some(report.receipt.receipt_id.clone());
     event.destination_id = Some(report.receipt.destination.clone());
@@ -611,7 +605,7 @@ pub(crate) fn replay_package(
     let cli_report = ReplayPackageCliReport::from_report(
         run.run_id.to_string(),
         package.package_id,
-        args.package_dir,
+        package_dir,
         report,
         receipt_source,
         destination_report,
@@ -619,12 +613,9 @@ pub(crate) fn replay_package(
     );
     let document = cli_report.render_document();
     match progress {
-        Some(progress) => CommandOutput::rendered_with_progress(
-            "replay package",
-            document,
-            cli_report,
-            progress.finish(),
-        ),
-        None => CommandOutput::rendered("replay package", document, cli_report),
+        Some(progress) => {
+            CommandOutput::rendered_with_progress("run", document, cli_report, progress.finish())
+        }
+        None => CommandOutput::rendered("run", document, cli_report),
     }
 }

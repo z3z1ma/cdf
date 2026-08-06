@@ -19,30 +19,40 @@ impl DoctorReport {
 
         RenderDocument::new()
             .push(StatusLine::new(
-                if self.failed > 0 {
+                if self.counts.failed > 0 {
                     StatusKind::Error
-                } else if self.unsupported > 0 {
+                } else if self.counts.warned > 0 {
                     StatusKind::Warning
                 } else {
                     StatusKind::Success
                 },
-                if self.failed == 0 {
-                    format!(
-                        "doctor completed with {} unsupported check(s)",
-                        self.unsupported
-                    )
+                if self.counts.failed == 0 {
+                    format!("doctor {} completed", self.scope)
                 } else {
-                    format!("doctor found {} failed check(s)", self.failed)
+                    format!(
+                        "doctor {} found {} failed check(s)",
+                        self.scope, self.counts.failed
+                    )
                 },
             ))
             .blank_line()
             .push(
                 KeyValuePanel::new("Doctor")
-                    .row("checks", self.checks.len().to_string())
-                    .row("failed", self.failed.to_string())
-                    .row("unsupported", self.unsupported.to_string())
-                    .row("passed", self.passed_count().to_string())
-                    .row("skipped", self.skipped_count().to_string()),
+                    .row("scope", self.scope.clone())
+                    .row("effect ceiling", self.effect_ceiling)
+                    .row("attempted", self.counts.attempted.to_string())
+                    .row("passed", self.counts.passed.to_string())
+                    .row("warned", self.counts.warned.to_string())
+                    .row("failed", self.counts.failed.to_string())
+                    .row("skipped", self.counts.skipped.to_string())
+                    .row(
+                        "external authorities",
+                        if self.external_authorities_contacted.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            self.external_authorities_contacted.join(", ")
+                        },
+                    ),
             )
             .blank_line()
             .push(table)

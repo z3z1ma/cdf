@@ -3,28 +3,39 @@ use super::*;
 #[test]
 fn resume_bare_noops_when_no_interrupted_runs_and_accepts_positional_terminal_noop() {
     let project = TestProject::new();
-    SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
 
-    let bare = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+    let bare = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "--resume",
+    ]);
 
     assert_eq!(bare.exit_code, 0, "stderr: {}", bare.stderr);
     let bare_json = stderr_or_stdout_json(&bare.stdout);
-    assert_eq!(bare_json["command"], "resume");
+    assert_eq!(bare_json["command"], "run");
+    assert_eq!(bare_json["result"]["input_authority"], "interrupted_run");
+    assert_eq!(bare_json["result"]["effect_ceiling"], "recover");
     assert_eq!(bare_json["result"]["state"], "no_interrupted_runs");
     assert_eq!(bare_json["result"]["writes"]["package"], false);
     assert_eq!(bare_json["result"]["writes"]["destination"], false);
     assert_eq!(bare_json["result"]["writes"]["checkpoint"], false);
+    assert!(!project.root.join(".cdf/state.db").exists());
 
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
-    let run_id = run_json["result"]["run_id"].as_str().unwrap();
+    let run_id = run_json["result"]["resources"][0]["result"]["run_id"]
+        .as_str()
+        .unwrap();
 
     let result = resume_command(&project, run_id);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["command"], "resume");
+    assert_eq!(json["command"], "run");
     assert_eq!(json["result"]["state"], "terminal_success");
     assert_eq!(json["result"]["action"], "no_op");
     assert_eq!(json["result"]["source_contact"], false);
@@ -41,7 +52,8 @@ fn resume_missing_state_path_error_has_code_and_project_path_context() {
         "--json",
         "--project",
         project.root_str(),
-        "resume",
+        "run",
+        "--resume",
         "run-missing-state",
     ]);
 
@@ -64,7 +76,14 @@ fn resume_bare_selects_single_interrupted_run_and_fails_closed() {
         &[RunEventKind::RunStarted, RunEventKind::RunFailed],
     );
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "--resume",
+    ]);
 
     assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -83,7 +102,14 @@ fn resume_bare_multiple_interrupted_runs_fails_closed_without_mutation() {
         create_resume_run_with_events(&project, run_id, &[RunEventKind::RunStarted]);
     }
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "--resume",
+    ]);
 
     assert_eq!(result.exit_code, 78);
     let json = stderr_or_stdout_json(&result.stderr);
@@ -140,7 +166,8 @@ fn resume_human_headless_render_uses_recovery_panels_and_redacts_destination_uri
         "cdf",
         "--project",
         project.root_str(),
-        "resume",
+        "run",
+        "--resume",
         run_id.as_str(),
     ]);
 
@@ -153,7 +180,7 @@ fn resume_human_headless_render_uses_recovery_panels_and_redacts_destination_uri
         result.stderr
     );
     for expected in [
-        "ERR resume run run-resume-human-no-package failed closed",
+        "ERR run run-resume-human-no-package failed closed",
         "Recovery",
         "Durable artifacts",
         "State",
@@ -179,11 +206,9 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
         "run-resume-rich-no-package",
         &[RunEventKind::RunStarted, RunEventKind::RunFailed],
     );
-    let output = crate::resume_command::resume(
+    let output = crate::run_recovery::run_resume(
         &test_cli(&project),
-        cdf_cli_core::args::ResumeArgs {
-            run_id: Some(run_id.to_string()),
-        },
+        Some(run_id.to_string()),
         &test_execution_services(),
         &test_destination_registry(),
         cdf_cli_core::progress::ProgressDelivery::Buffered,
@@ -193,7 +218,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
 
     assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     for expected in [
-        "resume run run-resume-rich-no-package failed closed",
+        "run run-resume-rich-no-package failed closed",
         "Recovery",
         "Durable artifacts",
         "State",
@@ -225,7 +250,7 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         vec!["contract".to_owned(), "freeze".to_owned()],
         vec!["diff".to_owned(), "schema".to_owned()],
         vec!["inspect".to_owned(), "destinations".to_owned()],
-        vec!["doctor".to_owned()],
+        vec!["doctor".to_owned(), "all".to_owned()],
         vec!["plan".to_owned(), "local.events".to_owned()],
         vec!["package".to_owned(), "ls".to_owned()],
     ];
@@ -316,8 +341,8 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         &project,
         &registry,
         vec![
-            "replay".to_owned(),
-            "package".to_owned(),
+            "run".to_owned(),
+            "--package".to_owned(),
             package_dir.display().to_string(),
             "--to".to_owned(),
             userinfo_uri.clone(),
@@ -343,8 +368,8 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         &project,
         &registry,
         vec![
-            "replay".to_owned(),
-            "package".to_owned(),
+            "run".to_owned(),
+            "--package".to_owned(),
             package_dir.display().to_string(),
             "--to".to_owned(),
             userinfo_uri.clone(),
@@ -358,8 +383,8 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         &project,
         &registry,
         vec![
-            "replay".to_owned(),
-            "package".to_owned(),
+            "run".to_owned(),
+            "--package".to_owned(),
             project.root.join("missing-package").display().to_string(),
             "--to".to_owned(),
             userinfo_uri,
@@ -391,7 +416,7 @@ fn injected_quasar_destination_resume_replays_finalized_package_without_source_c
     let result = run_injected_dynamic(
         &project,
         &registry,
-        vec!["resume".to_owned(), run_id.to_string()],
+        vec!["run".to_owned(), "--resume".to_owned(), run_id.to_string()],
     );
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -439,7 +464,7 @@ fn injected_quasar_destination_resume_verifies_durable_receipt_without_duplicate
     let result = run_injected_dynamic(
         &project,
         &registry,
-        vec!["resume".to_owned(), run_id.to_string()],
+        vec!["run".to_owned(), "--resume".to_owned(), run_id.to_string()],
     );
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -512,7 +537,8 @@ fn resume_finalized_package_human_progress_replays_without_source_contact() {
         "cdf".to_owned(),
         "--project".to_owned(),
         project.root_str().to_owned(),
-        "resume".to_owned(),
+        "run".to_owned(),
+        "--resume".to_owned(),
         run_id.to_string(),
     ]);
 
@@ -531,7 +557,7 @@ fn resume_finalized_package_human_progress_replays_without_source_contact() {
         );
     }
     for expected in [
-        "OK resume run run-resume-progress completed",
+        "OK run run-resume-progress completed",
         "source contact",
         "mutation performed  yes",
     ] {

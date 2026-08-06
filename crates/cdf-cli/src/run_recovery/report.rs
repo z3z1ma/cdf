@@ -2,7 +2,7 @@ use cdf_kernel::{Checkpoint, CheckpointStatus, Receipt};
 use serde::Serialize;
 
 use crate::{
-    context::ProjectContext,
+    context::ProjectOperationalContext,
     output::{CliError, CommandOutput},
     progress::ProgressSnapshot,
     render::{
@@ -23,6 +23,8 @@ pub(super) fn bare_resume_document(report: &BareResumeReport) -> RenderDocument 
         .blank_line()
         .push(
             KeyValuePanel::new("Resume")
+                .row("input authority", report.input_authority)
+                .row("effect ceiling", report.effect_ceiling)
                 .row("state", report.state)
                 .row(
                     "interrupted runs",
@@ -46,15 +48,17 @@ pub(super) fn finish_resume_report(
     let document = report.render_document();
     match progress {
         Some(progress) => CommandOutput::rendered_with_progress_and_exit_code(
-            "resume", document, report, progress, exit_code,
+            "run", document, report, progress, exit_code,
         ),
-        None => CommandOutput::rendered_with_exit_code("resume", document, report, exit_code),
+        None => CommandOutput::rendered_with_exit_code("run", document, report, exit_code),
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct ResumeReport {
     pub(super) command: &'static str,
+    pub(super) input_authority: &'static str,
+    pub(super) effect_ceiling: &'static str,
     pub(super) run_id: String,
     pub(super) state: String,
     pub(super) action: String,
@@ -89,7 +93,7 @@ impl ResumeReport {
             .push(StatusLine::new(
                 status,
                 format!(
-                    "resume run {} {}",
+                    "run {} {}",
                     self.run_id,
                     if self.recovery.result == "success" {
                         "completed"
@@ -101,6 +105,8 @@ impl ResumeReport {
             .blank_line()
             .push(
                 KeyValuePanel::recovery()
+                    .row("input authority", self.input_authority)
+                    .row("effect ceiling", self.effect_ceiling)
                     .row("failed phase", self.state.clone())
                     .row("action", self.action.clone())
                     .row("result", self.recovery.result.clone())
@@ -252,7 +258,7 @@ pub(super) struct ResumeDestinationPointer {
 }
 
 impl ResumeDestinationPointer {
-    pub(super) fn from_context(context: &ProjectContext) -> Self {
+    pub(super) fn from_context(context: &ProjectOperationalContext) -> Self {
         let uri = context.environment.destination.clone();
         let kind = uri
             .split_once("://")

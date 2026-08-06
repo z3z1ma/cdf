@@ -2,10 +2,10 @@ use cdf_kernel::{CdfError, TargetName};
 use cdf_project::ResolvedProjectDestination;
 
 use crate::{
-    context::ProjectContext,
+    context::ProjectOperationalContext,
     destination_uri::{
-        destination_error_suggestions, redact_error_value,
-        resolve_selected_destination_with_services,
+        operational_destination_error_suggestions, redact_error_value,
+        resolve_operational_destination_with_services,
     },
     error_catalog,
     output::CliError,
@@ -19,17 +19,17 @@ pub(super) struct SelectedDestination {
 impl SelectedDestination {
     pub(super) fn from_context(
         destinations: &cdf_runtime::DestinationRegistry,
-        context: &ProjectContext,
+        context: &ProjectOperationalContext,
         command: &'static str,
         target: &TargetName,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self, CliError> {
-        let resolved = resolve_selected_destination_with_services(
+        let resolved = resolve_operational_destination_with_services(
             destinations,
             context,
             target,
             None,
-            Some(execution),
+            execution,
         )
         .map_err(|error| resume_destination_resolution_error(context, error, command))?;
         Ok(Self {
@@ -50,7 +50,7 @@ impl SelectedDestination {
 }
 
 fn resume_destination_resolution_error(
-    context: &ProjectContext,
+    context: &ProjectOperationalContext,
     error: CdfError,
     command: &'static str,
 ) -> CliError {
@@ -67,7 +67,7 @@ fn resume_destination_resolution_error(
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
-        .with_suggestions(destination_error_suggestions(context, None))
+        .with_suggestions(operational_destination_error_suggestions(context, None))
     } else {
         error.into()
     }

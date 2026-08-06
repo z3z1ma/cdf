@@ -900,9 +900,11 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
         "--json",
         "--project",
         project.root_str(),
-        "replay",
-        "package",
+        "run",
+        "--package",
         package_dir.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/dev.duckdb",
     ]);
     assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
     fs::write(

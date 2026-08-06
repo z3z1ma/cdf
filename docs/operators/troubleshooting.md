@@ -31,14 +31,14 @@ cdf --project /path/to/project sql \
   'select package_id, status from packages order by package_id'
 ```
 
-## Replay Collides With an Existing Checkpoint
+## Package Execution Collides With an Existing Checkpoint
 
-If replaying a package into the same project ledger reports a duplicate
-checkpoint id, use a clean replay project/ledger for the replay target:
+If executing a package against the same project ledger reports a duplicate
+checkpoint id, use a clean delivery project and ledger for the destination:
 
 ```bash
-cdf init /tmp/cdf-replay --name cdf_replay
-cdf --project /tmp/cdf-replay replay package /path/to/package --to duckdb://.cdf/replay.duckdb
+cdf init /tmp/cdf-delivery --name cdf_delivery
+cdf --project /tmp/cdf-delivery run --package /path/to/package --to duckdb://.cdf/delivery.duckdb
 ```
 
 ## Missing Generated References

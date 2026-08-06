@@ -397,9 +397,13 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
     let observed = decision.observed_type.as_deref().ok_or_else(|| {
         invalid_coercion_evidence(format!("field {source:?} has no observed type"))
     })?;
-    let expected_observed = physical_type(field)
-        .map(str::to_owned)
-        .unwrap_or_else(|| field.data_type().to_string());
+    let expected_observed = if decision.decision == FieldCoercionDecision::Preserved {
+        field.data_type().to_string()
+    } else {
+        physical_type(field)
+            .map(str::to_owned)
+            .unwrap_or_else(|| field.data_type().to_string())
+    };
 
     if decision.source_name != source
         || decision.output_name.as_deref() != Some(field.name())
@@ -409,8 +413,16 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
         || !decision.operator_fixes.is_empty()
     {
         return Err(invalid_coercion_evidence(format!(
-            "field {:?} does not match reconciled schema identity or types",
-            decision.source_name
+            "field {:?} expects source {:?}, output {:?}, observed type {:?}, and constraint type {:?}, but the batch field has source {:?}, output {:?}, physical type {:?}, and constraint type {:?}",
+            decision.source_name,
+            decision.source_name,
+            decision.output_name,
+            decision.observed_type,
+            decision.constraint_type,
+            source,
+            field.name(),
+            expected_observed,
+            field.data_type().to_string(),
         )));
     }
 

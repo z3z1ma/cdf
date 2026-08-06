@@ -144,7 +144,7 @@ Refresh the baseline only after reviewing the diff:
 "$CDF" compile tlc.yellow
 ```
 
-## 5. Replay a package without source contact
+## 5. Run from a package without source contact
 
 List package identities and choose the package to replay:
 
@@ -152,17 +152,17 @@ List package identities and choose the package to replay:
 "$CDF" package ls
 ```
 
-Replay into a clean local project/ledger so the original checkpoint identity does not collide:
+Deliver it into a clean local project/ledger so the original checkpoint identity does not collide:
 
 ```bash
 REPLAY_WORKDIR="$(mktemp -d)"
 "$CDF" init "$REPLAY_WORKDIR" --name tlc_replay
-"$CDF" --project "$REPLAY_WORKDIR" replay package \
-  "$WORKDIR/.cdf/packages/<package-id>" \
+"$CDF" --project "$REPLAY_WORKDIR" run \
+  --package "$WORKDIR/.cdf/packages/<package-id>" \
   --to duckdb://.cdf/replay.duckdb
 ```
 
-Replay verifies the stored package and manifest, writes through the destination protocol, records a new receipt, and commits the package's checkpoint delta without contacting the TLC source.
+Package execution verifies the stored package and manifest, writes through the destination protocol, records a new receipt, and commits the package's checkpoint delta without contacting the TLC source.
 
 ## 6. Run focused conformance checks
 

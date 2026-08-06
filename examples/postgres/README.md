@@ -18,7 +18,8 @@ Store the DSN outside TOML, run the example, and remove the temporary secret fil
 ```bash
 printf '%s\n' "$CDF_EXAMPLE_POSTGRES_DSN" > postgres-dsn
 chmod 600 postgres-dsn
-cdf validate --deep
+cdf validate
+cdf doctor resource warehouse.orders
 cdf plan warehouse.orders
 cdf run warehouse.orders
 cdf sql 'select * from package_files'

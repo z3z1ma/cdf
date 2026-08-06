@@ -1,12 +1,12 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH cdf-replay 1  "cdf-replay "
+.TH cdf-doctor-all 1  "cdf-doctor-all "
 .SH NAME
-cdf\-replay \- Replay a verified package
+cdf\-doctor\-all \- Operate on cdf project evidence
 .SH SYNOPSIS
-\fBcdf replay\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+\fBcdf doctor all\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR]
 .SH DESCRIPTION
-Replay a verified package
+Operate on cdf project evidence
 .SH OPTIONS
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
@@ -68,7 +68,3 @@ Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
-.SH SUBCOMMANDS
-.TP
-cdf\-replay\-package(1)
-List, verify, archive, and collect packages

@@ -39,7 +39,7 @@ fn migrated_command_family_errors_include_code_and_remediation() {
         "postgres://localhost/db",
         None,
     );
-    assert_json_error_code(&replay, "CDF-PACKAGE-REPLAY-ARGUMENT");
+    assert_json_error_code(&replay, "CDF-RUN-PACKAGE-ARGUMENT");
 
     let package = run([
         "cdf", "--json", "package", "archive", ".", "--format", "json",

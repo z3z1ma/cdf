@@ -193,20 +193,20 @@ pub const RUN_ARTIFACT_INTERNAL: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub const REPLAY_ARGUMENT: ErrorMapping = ErrorMapping {
-    code: "CDF-PACKAGE-REPLAY-ARGUMENT",
+pub const RUN_PACKAGE_ARGUMENT: ErrorMapping = ErrorMapping {
+    code: "CDF-RUN-PACKAGE-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
-        summary: "Provide the replay package destination arguments required by the destination.",
-        steps: &["For Postgres replay, pass `--target schema.table`."],
+        summary: "Provide the package destination arguments required by the destination.",
+        steps: &["For Postgres package execution, pass `--target schema.table`."],
     }),
 };
 
-pub const REPLAY_PACKAGE_CONTRACT: ErrorMapping = ErrorMapping {
-    code: "CDF-PACKAGE-REPLAY-CONTRACT",
+pub const RUN_PACKAGE_CONTRACT: ErrorMapping = ErrorMapping {
+    code: "CDF-RUN-PACKAGE-CONTRACT",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
-        summary: "Make replay arguments match the package replay contract.",
+        summary: "Make run arguments match the package delivery contract.",
         steps: &["Use the package destination target recorded at package creation time."],
     }),
 };
@@ -225,7 +225,7 @@ pub const RESUME_MULTI_RUN_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     exit_code: 78,
     remediation: Some(RemediationTemplate {
         summary: "Resume one interrupted run explicitly.",
-        steps: &["Pass `cdf resume RUN_ID` for the run you want to drain."],
+        steps: &["Pass `cdf run --resume RUN_ID` for the run you want to drain."],
     }),
 };
 
@@ -326,8 +326,8 @@ pub fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
         ("RUN_LOOP_NOT_SUPPORTED", RUN_LOOP_NOT_SUPPORTED),
         ("RUN_ARTIFACT_PATH", RUN_ARTIFACT_PATH),
         ("RUN_ARTIFACT_INTERNAL", RUN_ARTIFACT_INTERNAL),
-        ("REPLAY_ARGUMENT", REPLAY_ARGUMENT),
-        ("REPLAY_PACKAGE_CONTRACT", REPLAY_PACKAGE_CONTRACT),
+        ("RUN_PACKAGE_ARGUMENT", RUN_PACKAGE_ARGUMENT),
+        ("RUN_PACKAGE_CONTRACT", RUN_PACKAGE_CONTRACT),
         ("RESUME_LEDGER", RESUME_LEDGER),
         (
             "RESUME_MULTI_RUN_NOT_SUPPORTED",

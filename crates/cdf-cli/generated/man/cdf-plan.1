@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-plan \- Prepare and inspect selected resource runs without writing
 .SH SYNOPSIS
-\fBcdf plan\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-select\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-filter\fR] [\fB\-\-limit\fR] [\fB\-\-progress\fR] [\fB\-\-order\-by\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-to\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
+\fBcdf plan\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-out\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-select\fR] [\fB\-\-filter\fR] [\fB\-\-progress\fR] [\fB\-\-limit\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-order\-by\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-to\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
 Prepare and inspect selected resource runs without writing
 .SH OPTIONS
@@ -15,8 +15,8 @@ Exclude resources matching this glob; may be repeated
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-select\fR \fI<FIELDS>\fR
-Comma\-separated projected fields
+\fB\-\-out\fR \fI<PATH>\fR
+Write the command\*(Aqs canonical artifact without replacing terminal output
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,11 +36,11 @@ always
 never
 .RE
 .TP
+\fB\-\-select\fR \fI<FIELDS>\fR
+Comma\-separated projected fields
+.TP
 \fB\-\-filter\fR \fI<EXPR>\fR
 Filter expression; may be repeated
-.TP
-\fB\-\-limit\fR \fI<N>\fR
-Maximum rows to read
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -57,8 +57,8 @@ always
 never
 .RE
 .TP
-\fB\-\-order\-by\fR \fI<FIELD[:asc|desc]>\fR
-Ordering field and optional direction
+\fB\-\-limit\fR \fI<N>\fR
+Maximum rows to read
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never
@@ -78,14 +78,17 @@ never
 \fB\-\-memory\-budget\fR \fI<BYTES>\fR
 Process memory budget, e.g. 4GiB or 512MiB
 .TP
+\fB\-\-order\-by\fR \fI<FIELD[:asc|desc]>\fR
+Ordering field and optional direction
+.TP
+\fB\-\-spill\-budget\fR \fI<BYTES>\fR
+Spill/disk budget, e.g. 64GiB or 512MiB
+.TP
 \fB\-\-to\fR \fI<DEST>\fR
 Destination URI or cursor upper bound, as shown in usage
 .TP
 \fB\-\-segment\-target\-rows\fR \fI<ROWS>\fR
 Set the value named in this command\*(Aqs usage
-.TP
-\fB\-\-spill\-budget\fR \fI<BYTES>\fR
-Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-\-segment\-target\-bytes\fR \fI<BYTES>\fR
 Set the value named in this command\*(Aqs usage

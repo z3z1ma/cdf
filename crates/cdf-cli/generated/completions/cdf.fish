@@ -43,6 +43,7 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "help" -d 'Show help for a c
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "version" -d 'Print the cdf version'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "init" -d 'Create a new cdf project'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "add" -d 'Add a source resource to the project'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "discover" -d 'Discover source relations or authored resource schemas'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "compile" -d 'Prepare independently verified compiled resource artifacts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate" -d 'Statically validate project configuration and selected resources'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan" -d 'Prepare and inspect selected resource runs without writing'
@@ -55,11 +56,9 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "diff" -d 'Compare durable s
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "schema" -d 'Inspect, compare, and promote schemas'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "contract" -d 'Freeze, show, and test contracts'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "state" -d 'Inspect and recover checkpoint state'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "resume" -d 'Resume interrupted work from the run ledger'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "replay" -d 'Replay a verified package'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "backfill" -d 'Plan or execute a bounded cursor backfill'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "package" -d 'List, verify, archive, and collect packages'
-complete -c cdf -n "__fish_cdf_needs_command" -f -a "doctor" -d 'Check local runtime and destination health'
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "doctor" -d 'Check explicitly scoped operational readiness'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "status" -d 'Summarize project freshness and run state'
 complete -c cdf -n "__fish_cdf_using_subcommand help" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
@@ -105,6 +104,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand init" -l force -d 'Replace an ex
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l source -d 'Configured source name; defaults to the resource namespace' -r
 complete -c cdf -n "__fish_cdf_using_subcommand add" -l option -d 'Source-driver option as KEY=VALUE; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand add" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
@@ -121,6 +121,55 @@ complete -c cdf -n "__fish_cdf_using_subcommand add" -l dry-run -d 'Show the pro
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -f -a "source" -d 'Discover relations exposed by one configured source'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and not __fish_seen_subcommand_from source resource" -f -a "resource" -d 'Discover schema for selected authored resources'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l out -d 'Write the command\'s canonical artifact without replacing terminal output' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l namespace -d 'Generated resource namespace; defaults to the configured source' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -l generate -d 'Create or verify resource files for matched source relations'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from source" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l out -d 'Write the command\'s canonical artifact without replacing terminal output' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand discover; and __fish_seen_subcommand_from resource" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
@@ -153,6 +202,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand validate" -s q -l quiet -d 'Supp
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l out -d 'Write the command\'s canonical artifact without replacing terminal output' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l select -d 'Comma-separated projected fields' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l filter -d 'Filter expression; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l limit -d 'Maximum rows to read' -r
@@ -208,7 +258,11 @@ complete -c cdf -n "__fish_cdf_using_subcommand explain" -s q -l quiet -d 'Suppr
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l plan -d 'Execute a canonical portable plan artifact' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l package -d 'Package directory' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l resume -d 'Resume interrupted run authority; omit RUN_ID only when exactly one run is recoverable' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l target -d 'Destination target or table' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l jobs -d 'Maximum concurrent jobs' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
@@ -632,51 +686,6 @@ complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcomman
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand resume" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -f -a "package" -d 'List, verify, archive, and collect packages'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l target -d 'Destination target or table' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l from -d 'Inclusive cursor lower bound' -r
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l target -d 'Destination target or table' -r
@@ -780,20 +789,96 @@ complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcomm
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from archive" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from archive" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from archive" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand doctor" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -f -a "runtime" -d 'Operate on cdf project evidence'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -f -a "resource" -d 'Show one resolved resource'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -f -a "source" -d 'Operate on cdf project evidence'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -f -a "destination" -d 'Operate on cdf project evidence'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and not __fish_seen_subcommand_from runtime resource source destination all" -f -a "all" -d 'Operate on cdf project evidence'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from runtime" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l exclude -d 'Exclude resources matching this glob; may be repeated' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from resource" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from source" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from destination" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+always\t''
+never\t''"
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand doctor; and __fish_seen_subcommand_from all" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand status" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

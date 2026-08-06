@@ -11,7 +11,8 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory fixtures
 Then run CDF from a second terminal (set `CDF` to the built binary when it is not on `PATH`):
 
 ```bash
-cdf validate --deep
+cdf validate
+cdf doctor resource api.events
 cdf plan api.events
 cdf run api.events
 cdf sql 'select * from package_files'

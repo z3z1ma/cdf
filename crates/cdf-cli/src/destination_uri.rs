@@ -5,7 +5,7 @@ use cdf_project::{
 };
 
 use crate::{
-    context::ProjectContext,
+    context::{ProjectContext, ProjectOperationalContext},
     render::redaction::{redact_exact, redact_uri_userinfo},
     suggestions,
 };
@@ -79,6 +79,28 @@ pub(crate) fn resolve_selected_destination_with_services(
     })
 }
 
+pub(crate) fn resolve_operational_destination_with_services(
+    registry: &cdf_runtime::DestinationRegistry,
+    context: &ProjectOperationalContext,
+    target: &TargetName,
+    destination_uri: Option<&str>,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<EnvironmentDestination, CdfError> {
+    let secret_provider = context.secret_provider();
+    let destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
+        .with_environment_name(&context.environment.name)
+        .with_destination_policy(&context.environment.destination_policy)
+        .with_secret_provider(&secret_provider)
+        .with_execution_services(services);
+    let uri = destination_uri.unwrap_or(context.environment.destination.as_str());
+    let destination = resolve_project_run_destination(registry, uri, &destination_context)?;
+    let secret_redaction = destination.secret_redaction().map(str::to_owned);
+    Ok(EnvironmentDestination {
+        destination,
+        secret_redaction,
+    })
+}
+
 pub(crate) fn redact_error_value(mut error: CdfError, secret: Option<&str>) -> CdfError {
     error.message = redact_uri_userinfo(&error.message);
     if let Some(secret) = secret
@@ -97,15 +119,26 @@ pub(crate) fn destination_error_suggestions(
     context: &ProjectContext,
     requested_destination: Option<&str>,
 ) -> Vec<String> {
+    destination_error_suggestions_for_config(&context.config, requested_destination)
+}
+
+pub(crate) fn operational_destination_error_suggestions(
+    context: &ProjectOperationalContext,
+    requested_destination: Option<&str>,
+) -> Vec<String> {
+    destination_error_suggestions_for_config(&context.config, requested_destination)
+}
+
+fn destination_error_suggestions_for_config(
+    config: &cdf_project::ProjectConfig,
+    requested_destination: Option<&str>,
+) -> Vec<String> {
     let mut values = Vec::new();
     if let Some(requested_destination) = requested_destination {
         values.extend(
-            suggestions::nearest(
-                requested_destination,
-                context.config.environments.keys().cloned(),
-            )
-            .into_iter()
-            .map(|environment| format!("--env {environment}")),
+            suggestions::nearest(requested_destination, config.environments.keys().cloned())
+                .into_iter()
+                .map(|environment| format!("--env {environment}")),
         );
     }
 

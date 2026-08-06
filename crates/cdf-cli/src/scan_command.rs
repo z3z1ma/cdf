@@ -354,11 +354,10 @@ pub(crate) fn preview(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_destination_registry(
-        "preview",
+    let context = ProjectContext::load_selected_read_only(
         cli.project.as_ref(),
         cli.env.as_deref(),
-        true,
+        &args.resource_id,
         destinations,
     )?;
     let inspection_root = tempfile::Builder::new()

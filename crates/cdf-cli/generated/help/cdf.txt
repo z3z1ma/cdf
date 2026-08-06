@@ -7,6 +7,7 @@ Commands:
   version   Print the cdf version
   init      Create a new cdf project
   add       Add a source resource to the project
+  discover  Discover source relations or authored resource schemas
   compile   Prepare independently verified compiled resource artifacts
   validate  Statically validate project configuration and selected resources
   plan      Prepare and inspect selected resource runs without writing
@@ -19,11 +20,9 @@ Commands:
   schema    Inspect, compare, and promote schemas
   contract  Freeze, show, and test contracts
   state     Inspect and recover checkpoint state
-  resume    Resume interrupted work from the run ledger
-  replay    Replay a verified package
   backfill  Plan or execute a bounded cursor backfill
   package   List, verify, archive, and collect packages
-  doctor    Check local runtime and destination health
+  doctor    Check explicitly scoped operational readiness
   status    Summarize project freshness and run state
 
 Options:

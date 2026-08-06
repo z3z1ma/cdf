@@ -1006,6 +1006,27 @@ fn schema_coercion_plan_from_reconciled_schema_records_widened_and_preserved_fie
 }
 
 #[test]
+fn preserved_schema_coercion_accepts_source_native_physical_type_metadata() {
+    let observed = Schema::new(vec![with_physical_type(
+        Field::new("id", DataType::Int64, false),
+        "bigint",
+    )]);
+    let constraint = observed.clone();
+
+    let reconciliation =
+        reconcile_schema(&observed, &constraint, &ContractPolicy::default().types).unwrap();
+
+    assert_eq!(
+        physical_type(reconciliation.schema.field_with_name("id").unwrap()),
+        Some("bigint")
+    );
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&reconciliation.schema),
+        Ok(Some(reconciliation.plan))
+    );
+}
+
+#[test]
 fn schema_reconciliation_missing_fields_fail_with_operator_fixes() {
     let observed = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     let constraint = Schema::new(vec![

@@ -21,12 +21,38 @@ fn inspect_run_parser_rejects_missing_and_extra_args() {
 }
 
 #[test]
+fn inspect_project_does_not_parse_authored_resource_sql() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf/local/events.cdf.sql"),
+        "this is not resource SQL",
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "project",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&result.stdout)["command"],
+        "inspect project"
+    );
+}
+
+#[test]
 fn inspect_run_reports_completed_run_json_and_human() {
     let project = TestProject::new();
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
-    let run_id = run_json["result"]["run_id"].as_str().unwrap();
+    let run_report = &run_json["result"]["resources"][0]["result"];
+    let run_id = run_report["run_id"].as_str().unwrap();
 
     let result = run([
         "cdf",
@@ -52,11 +78,11 @@ fn inspect_run_reports_completed_run_json_and_human() {
     assert_eq!(report["pointers"]["resource_ids"], json!(["local.events"]));
     assert_eq!(
         report["pointers"]["package_ids"],
-        json!([run_json["result"]["package_id"].clone()])
+        json!([run_report["package_id"].clone()])
     );
     assert_eq!(
         report["pointers"]["checkpoint_ids"],
-        json!([run_json["result"]["checkpoint_id"].clone()])
+        json!([run_report["checkpoint_id"].clone()])
     );
     let events = report["events"].as_array().unwrap();
     assert!(!events.is_empty());
@@ -76,7 +102,7 @@ fn inspect_run_reports_completed_run_json_and_human() {
     assert_eq!(report["artifacts"]["receipt"]["status"], "available");
     assert_eq!(
         report["artifacts"]["receipt"]["package_receipt_ids"][0],
-        run_json["result"]["receipt_id"]
+        run_report["receipt_id"]
     );
     assert_eq!(report["artifacts"]["checkpoint"]["status"], "committed");
     assert_eq!(report["duplicate"]["status"], "unknown");
@@ -119,7 +145,9 @@ fn inspect_run_marks_missing_package_artifact() {
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
-    let run_id = run_json["result"]["run_id"].as_str().unwrap();
+    let run_id = run_json["result"]["resources"][0]["result"]["run_id"]
+        .as_str()
+        .unwrap();
     fs::remove_dir_all(run_package_dir(&project, &run_result)).unwrap();
 
     let result = run([
@@ -178,13 +206,11 @@ fn inspect_run_human_rich_render_uses_recovery_and_artifact_panels() {
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
-    let run_id = run_json["result"]["run_id"].as_str().unwrap();
-    let context = crate::context::ProjectContext::load_with_destination_registry(
-        Some(&project.root),
-        None,
-        &test_destination_registry(),
-    )
-    .unwrap();
+    let run_id = run_json["result"]["resources"][0]["result"]["run_id"]
+        .as_str()
+        .unwrap();
+    let context =
+        crate::context::ProjectOperationalContext::load(Some(&project.root), None).unwrap();
 
     let output = crate::inspect_run_command::inspect_run(&context, run_id.to_owned()).unwrap();
     let result = render_rich(output);

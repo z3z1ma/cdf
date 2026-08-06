@@ -1,11 +1,90 @@
 use super::*;
 
 #[test]
+fn bare_doctor_is_project_free_runtime_only() {
+    let root = tempfile::tempdir().unwrap();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        root.path().to_str().unwrap(),
+        "doctor",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["scope"], "runtime");
+    assert_eq!(json["result"]["effect_ceiling"], "observe");
+    assert_eq!(
+        json["result"]["external_authorities_contacted"],
+        serde_json::json!([])
+    );
+    assert_eq!(json["result"]["checks"][0]["name"], "runtime_memory_budget");
+    assert!(!root.path().join("cdf.toml").exists());
+    assert!(!root.path().join(".cdf").exists());
+}
+
+#[test]
+fn resource_and_source_doctor_ignore_unselected_invalid_resource() {
+    let project = TestProject::new();
+    fs::create_dir_all(project.root.join("cdf/broken")).unwrap();
+    fs::write(
+        project.root.join("cdf/broken/resource.cdf.sql"),
+        "this is deliberately invalid resource SQL",
+    )
+    .unwrap();
+
+    let resource = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "resource",
+        "local.events",
+    ]);
+    assert_eq!(resource.exit_code, 0, "stderr: {}", resource.stderr);
+    let resource_json = stderr_or_stdout_json(&resource.stdout);
+    assert_eq!(resource_json["result"]["scope"], "resource");
+    assert!(
+        resource_json["result"]["external_authorities_contacted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|authority| authority == "source:local")
+    );
+
+    let source = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "source",
+        "local",
+    ]);
+    assert_eq!(source.exit_code, 0, "stderr: {}", source.stderr);
+    let source_json = stderr_or_stdout_json(&source.stdout);
+    assert_eq!(source_json["result"]["scope"], "source");
+    assert_eq!(
+        source_json["result"]["external_authorities_contacted"],
+        serde_json::json!(["source:local"])
+    );
+}
+
+#[test]
 fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
     let project = TestProject::new();
     let state_path = project.root.join(".cdf/state.db");
     let duckdb_path = project.root.join(".cdf/dev.duckdb");
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(!state_path.exists(), "doctor must not create state DB");
@@ -38,7 +117,14 @@ fn doctor_reports_lockfile_presence_when_lock_exists() {
     let project = TestProject::new();
     write_minimal_lockfile(&project);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -70,7 +156,14 @@ FROM upstream(source => 'local', glob => 'events.parquet', format => 'parquet');
     )
     .unwrap();
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(
         result.exit_code, 1,
@@ -113,7 +206,14 @@ fn doctor_reports_resolved_secret_references_without_values() {
         Some("secret://file/postgres-dsn"),
     );
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(
         result.exit_code, 1,
@@ -138,7 +238,7 @@ fn doctor_reports_resolved_secret_references_without_values() {
             "missing secret reference {reference}"
         );
     }
-    assert_eq!(json["result"]["failed"], 2);
+    assert_eq!(json["result"]["counts"]["failed"], 2);
     assert_eq!(
         named_check(&json, "source.postgres.warehouse.orders")["status"],
         "failed"
@@ -180,7 +280,14 @@ fn doctor_later_secret_failure_does_not_leak_already_resolved_secrets() {
     );
     fs::write(project_file, project_text).unwrap();
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     assert_secret_absent(&result, "already-resolved-destination-value");
@@ -209,7 +316,14 @@ fn doctor_fails_missing_and_unavailable_secrets_without_leaking_values() {
         let project = TestProject::new();
         write_secret_failure_project(&project, case);
 
-        let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+        let result = run([
+            "cdf",
+            "--json",
+            "--project",
+            project.root_str(),
+            "doctor",
+            "all",
+        ]);
 
         assert_eq!(result.exit_code, 1, "case {case:?}");
         assert_secret_absent(&result, "would-be-token-value");
@@ -230,7 +344,14 @@ fn doctor_runs_duckdb_icu_probe_for_existing_database_with_safe_details() {
         .probe_icu()
         .unwrap();
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert!(duckdb_path.exists(), "fixture should create the DuckDB DB");
     let json = stderr_or_stdout_json(&result.stdout);
@@ -251,7 +372,14 @@ fn doctor_runs_duckdb_icu_probe_for_existing_database_with_safe_details() {
 #[test]
 fn doctor_skips_python_without_interpreter_or_python_resources() {
     let project = TestProject::new();
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -271,7 +399,14 @@ fn doctor_passes_gil_enabled_python_interpreter_with_details() {
     );
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -299,7 +434,14 @@ fn doctor_passes_when_free_threaded_required_and_gil_disabled() {
     );
     write_python_config_project(&project, "fake-python", true);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -321,7 +463,14 @@ fn doctor_fails_when_free_threaded_required_but_gil_enabled() {
     );
     write_python_config_project(&project, "fake-python", true);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -347,7 +496,14 @@ fn doctor_fails_when_free_threaded_build_still_has_gil_enabled() {
     );
     write_python_config_project(&project, "fake-python", true);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -363,7 +519,14 @@ fn doctor_fails_when_free_threaded_build_still_has_gil_enabled() {
 fn doctor_fails_missing_python_interpreter() {
     let project = TestProject::new();
     write_python_config_project(&project, "absent-python", true);
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -393,7 +556,14 @@ fn doctor_fails_non_executable_python_interpreter() {
     set_mode(&interpreter, 0o644);
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -414,7 +584,14 @@ fn doctor_fails_unsuccessful_python_probe_without_echoing_output() {
     write_failing_interpreter(&interpreter);
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     assert!(!result.stdout.contains("SUPER_SECRET"));
@@ -437,7 +614,14 @@ fn doctor_fails_invalid_python_probe_json_without_echoing_output() {
     write_fake_interpreter(&interpreter, "not-json SUPER_SECRET");
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     assert!(!result.stdout.contains("SUPER_SECRET"));
@@ -472,7 +656,14 @@ fn doctor_fails_probe_json_with_inconsistent_version_metadata() {
     );
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -506,7 +697,14 @@ fn doctor_fails_probe_json_with_inconsistent_gil_metadata() {
     );
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
@@ -531,7 +729,14 @@ fn doctor_fails_old_python_interpreter_version() {
     );
     write_python_config_project(&project, "fake-python", false);
 
-    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "doctor",
+        "all",
+    ]);
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);

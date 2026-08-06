@@ -8,11 +8,14 @@ use cdf_state_sqlite::{
 use serde::Serialize;
 
 use crate::{
-    context::ProjectContext,
+    context::ProjectOperationalContext,
     output::{CliError, CommandOutput},
 };
 
-pub(crate) fn inspect_run(context: &ProjectContext, id: String) -> Result<CommandOutput, CliError> {
+pub(crate) fn inspect_run(
+    context: &ProjectOperationalContext,
+    id: String,
+) -> Result<CommandOutput, CliError> {
     let run_id = RunId::new(id)?;
     let state_path = context.state_store_path()?;
     let ledger = SqliteRunLedger::open_read_only_with_path_ownership(
@@ -46,7 +49,7 @@ struct InspectRunReport {
 
 impl InspectRunReport {
     fn from_snapshot(
-        context: &ProjectContext,
+        context: &ProjectOperationalContext,
         snapshot: &RunLedgerSnapshot,
     ) -> Result<Self, CliError> {
         let pointers = RunPointerReport::from_events(&snapshot.events)?;
@@ -214,7 +217,10 @@ struct PackageAvailabilityReport {
 }
 
 impl PackageAvailabilityReport {
-    fn inspect(context: &ProjectContext, pointer: PackagePointer) -> Result<Self, CliError> {
+    fn inspect(
+        context: &ProjectOperationalContext,
+        pointer: PackagePointer,
+    ) -> Result<Self, CliError> {
         let resolved = resolve_project_path(&context.root, &pointer.path);
         if package_path_is_missing(&resolved)? {
             return Ok(Self {
@@ -506,10 +512,10 @@ impl RecoveryGuidanceReport {
         if package_finalized && !receipt_recorded {
             return Self {
                 state: "package_finalized_without_receipt".to_owned(),
-                action: "replay_package_without_source_contact".to_owned(),
+                action: "run_package_without_source_contact".to_owned(),
                 source_contact: false,
                 mutation_required: true,
-                guidance: "package is finalized but no receipt is recorded; replay the package without contacting the source".to_owned(),
+                guidance: "package is finalized but no receipt is recorded; run the package without contacting the source".to_owned(),
             };
         }
         if receipt_recorded && !checkpoint_committed {
@@ -564,7 +570,7 @@ struct PackagePointer {
 }
 
 fn inspect_package_artifacts(
-    context: &ProjectContext,
+    context: &ProjectOperationalContext,
     events: &[RunEvent],
 ) -> Result<Vec<PackageAvailabilityReport>, CliError> {
     package_pointers(events)

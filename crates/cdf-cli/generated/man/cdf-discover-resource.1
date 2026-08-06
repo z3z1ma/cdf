@@ -1,16 +1,22 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH cdf-resume 1  "cdf-resume "
+.TH cdf-discover-resource 1  "cdf-discover-resource "
 .SH NAME
-cdf\-resume \- Resume interrupted work from the run ledger
+cdf\-discover\-resource \- Discover schema for selected authored resources
 .SH SYNOPSIS
-\fBcdf resume\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRUN_ID\fR]
+\fBcdf discover resource\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-out\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
-Resume interrupted work from the run ledger
+Discover schema for selected authored resources
 .SH OPTIONS
+.TP
+\fB\-\-exclude\fR \fI<RESOURCE_GLOB>\fR
+Exclude resources matching this glob; may be repeated
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
+.TP
+\fB\-\-out\fR \fI<PATH>\fR
+Write the command\*(Aqs canonical artifact without replacing terminal output
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -69,5 +75,5 @@ Spill/disk budget, e.g. 64GiB or 512MiB
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
-[\fIRUN_ID\fR]
-Run identifier; omit to scan interrupted work
+[\fIRESOURCE_SELECTOR\fR]
+Exact or glob resource selectors; quote shell\-sensitive globs

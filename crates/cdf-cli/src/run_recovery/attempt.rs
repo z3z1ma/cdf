@@ -11,7 +11,7 @@ use cdf_state_sqlite::{
     RunEventAppend, RunEventKind, RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger,
 };
 
-use crate::{context::ProjectContext, output::CliError};
+use crate::{context::ProjectOperationalContext, output::CliError};
 
 use super::{
     destination::SelectedDestination,
@@ -32,7 +32,7 @@ use super::{
 
 pub(super) struct ResumeAttempt<'a> {
     destinations: &'a cdf_runtime::DestinationRegistry,
-    context: &'a ProjectContext,
+    context: &'a ProjectOperationalContext,
     run_ledger: &'a SqliteRunLedger,
     snapshot: &'a RunLedgerSnapshot,
     event_sink: Option<&'a dyn RunEventSink>,
@@ -48,7 +48,7 @@ pub(super) struct ResumeAttempt<'a> {
 impl<'a> ResumeAttempt<'a> {
     pub(super) fn new(
         destinations: &'a cdf_runtime::DestinationRegistry,
-        context: &'a ProjectContext,
+        context: &'a ProjectOperationalContext,
         run_ledger: &'a SqliteRunLedger,
         snapshot: &'a RunLedgerSnapshot,
         event_sink: Option<&'a dyn RunEventSink>,
@@ -272,7 +272,7 @@ impl<'a> ResumeAttempt<'a> {
         match SelectedDestination::from_context(
             self.destinations,
             self.context,
-            "resume",
+            "run --resume",
             target,
             self.execution,
         ) {
@@ -454,7 +454,9 @@ impl<'a> ResumeAttempt<'a> {
             None => ResumeReceiptPointer::default(),
         };
         Ok(ResumeReport {
-            command: "resume",
+            command: "run",
+            input_authority: "interrupted_run",
+            effect_ceiling: "recover",
             run_id: self.run_id.to_string(),
             state: state.into(),
             action: action.into(),

@@ -60,6 +60,31 @@ pub(crate) fn run(
     destinations: &cdf_runtime::DestinationRegistry,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
+    if let Some(package_dir) = args.package.clone() {
+        return crate::package_run::run_package(
+            cli,
+            package_dir,
+            args.destination_uri.clone().ok_or_else(|| {
+                CliError::usage_with(
+                    "run --package requires --to <DESTINATION>",
+                    error_catalog::RUN_ARGUMENT,
+                )
+            })?,
+            args.target.clone(),
+            services,
+            destinations,
+            progress_delivery,
+        );
+    }
+    if args.resume {
+        return crate::run_recovery::run_resume(
+            cli,
+            args.resume_run_id.clone(),
+            services,
+            destinations,
+            progress_delivery,
+        );
+    }
     if args.loop_mode {
         return Err(CliError::not_supported_with(
             "run --loop",
@@ -924,6 +949,7 @@ fn run_destination_resolution_error(
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct RunBatchReport {
     input_authority: &'static str,
+    effect_ceiling: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     portable_plan: Option<PortableRunAuthorityReport>,
     selection: cdf_project::ProjectResourceSelection,
@@ -1028,6 +1054,11 @@ fn run_batch_output(
         blocked,
         failed,
     };
+    let input_authority = if portable_plan.is_some() {
+        "portable_plan"
+    } else {
+        "resource_set"
+    };
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
             if failed == 0 {
@@ -1040,6 +1071,8 @@ fn run_batch_output(
         .blank_line()
         .push(
             KeyValuePanel::new("Run summary")
+                .row("input authority", input_authority)
+                .row("effect ceiling", "execute")
                 .row("selected", counts.selected.to_string())
                 .row("completed", counts.completed.to_string())
                 .row("blocked", counts.blocked.to_string())
@@ -1074,11 +1107,8 @@ fn run_batch_output(
         document = document.blank_line().append(resource_document);
     }
     let report = RunBatchReport {
-        input_authority: if portable_plan.is_some() {
-            "portable_plan"
-        } else {
-            "resource_set"
-        },
+        input_authority,
+        effect_ceiling: "execute",
         portable_plan,
         selection,
         counts,

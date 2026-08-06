@@ -199,6 +199,38 @@ fn source_catalog(
         .map_err(Into::into)
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ConfiguredSourceReadiness {
+    pub(crate) configured_source: String,
+    pub(crate) source_driver: String,
+    pub(crate) candidate_count: usize,
+    pub(crate) complete: bool,
+    pub(crate) identity_space: String,
+}
+
+pub(crate) fn probe_configured_source(
+    cli: &Cli,
+    configured_source: &str,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<ConfiguredSourceReadiness, CliError> {
+    validate_resource_token("configured source", configured_source)?;
+    let project = load_source_project(cli, configured_source, false)?;
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let request = SourceCatalogRequest {
+        configured_source: configured_source.to_owned(),
+        source_options: project.source_options.clone(),
+        maximum_candidates: SOURCE_CATALOG_MAXIMUM_CANDIDATES,
+    };
+    let discovery = source_catalog(&project, registry, &request, execution)?;
+    Ok(ConfiguredSourceReadiness {
+        configured_source: configured_source.to_owned(),
+        source_driver: project.source_type,
+        candidate_count: discovery.candidates.len(),
+        complete: discovery.complete,
+        identity_space: discovery.identity_space,
+    })
+}
+
 fn source_catalog_schema(
     project: &SourceProject,
     registry: &cdf_runtime::SourceRegistry,
