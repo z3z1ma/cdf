@@ -32,8 +32,9 @@ mod worker_task;
 
 pub use execution::{
     DrainEpochExecution, DurableSegmentHook, DurableSegmentPayload, LateDataCarryoverInput,
-    PackagePreFinalizeHook, StreamingFinalizeHook, assemble_isolated_worker_package,
-    execute_drain_epoch_with_hooks, execute_to_package, execute_to_package_with_run_id,
+    PackagePreFinalizeHook, PackageSegmentProgressHook, StreamingFinalizeHook,
+    assemble_isolated_worker_package, execute_drain_epoch_with_hooks, execute_to_package,
+    execute_to_package_with_progress_hook, execute_to_package_with_run_id,
     execute_to_package_with_segment_positions,
     execute_to_package_with_segment_positions_and_pre_finalize,
     execute_to_package_with_streaming_hooks, normalize_record_batch,
@@ -84,7 +85,7 @@ pub use types::{
     EstimateExplain, ExecutionProfile, ExplainData, LineageInputObservation, LineageSummary,
     OperatorNode, PREVIEW_POLICY_BALANCED_STRATIFIED_V1, PartitionExplain,
     PhysicalObservationEvidence, PredicateExplain, SCHEMA_ADMISSION_CACHE_KEY_FIELDS,
-    SchemaQuarantineObservationEvidence, StreamAdmissionCompletion,
+    SchemaQuarantineObservationEvidence, SourceRetryProgressObserver, StreamAdmissionCompletion,
     StreamAdmissionObservationEvidence,
 };
 pub use worker_task::{

@@ -82,6 +82,7 @@ pub(super) struct PartitionOpenRuntime {
     pub(super) services: Option<cdf_runtime::ExecutionServices>,
     pub(super) cancellation: cdf_runtime::RunCancellation,
     pub(super) retry_journal: cdf_runtime::SourceRetryJournal,
+    pub(super) retry_progress: Option<std::sync::Arc<crate::SourceRetryProgressObserver>>,
 }
 
 pub(super) enum ExecutablePartitionPlans {

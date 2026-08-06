@@ -138,6 +138,27 @@ pub(super) async fn execute_to_package_with_streaming_hooks<'a>(
     .await
 }
 
+pub(super) async fn execute_to_package_with_progress_hook<'a>(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    package_progress: &'a mut PackageSegmentProgressHook<'a>,
+    config: EngineExecutionConfig,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let plan = executable_mock_plan(plan, resource)?;
+    let options = executable_mock_options(config)?;
+    super::execute_to_package_with_progress_hook(
+        &plan,
+        resource,
+        package_dir,
+        pre_finalize,
+        package_progress,
+        options,
+    )
+    .await
+}
+
 pub(super) fn terminal_effective_schema_runtime(
     physical_schema: SchemaRef,
     physical_hash: SchemaHash,

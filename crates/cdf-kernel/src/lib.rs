@@ -168,7 +168,8 @@ pub use retention::PayloadRetention;
 pub use run_event::{
     PROMOTION_PUBLICATION_EVENT_VERSION, PromotionPublicationEvent, PromotionPublicationTarget,
     RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventSinkResult,
-    RunEventValue, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus, SecretReference,
+    RunEventValue, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
+    RunProgressObservation, RunProgressObservationKind, RunProgressSink, SecretReference,
 };
 pub use schema_fingerprint::canonical_arrow_schema_hash;
 pub use scope::{ScopeKey, ScopeKind};

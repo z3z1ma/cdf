@@ -4,12 +4,17 @@ use cdf_contract::{AnomalyFact, ValidationDepth, ValidationTransitionTrigger};
 use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, DestinationId, PackageHash, PipelineId, PlanId, Receipt,
     ResourceId, Result, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventValue,
-    RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, SchemaHash, ScopeKey, StateDelta,
+    RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, RunProgressObservation,
+    RunProgressObservationKind, RunProgressSink, SchemaHash, ScopeKey, StateDelta,
 };
 use cdf_package_contract::SegmentEntry;
 use cdf_runtime::SourceRetryEvidence;
 use cdf_state_sqlite::{RunLedgerSnapshot, SqliteRunLedger};
-use std::{collections::BTreeMap, sync::Mutex, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 #[derive(Debug)]
 struct ActivePhase {
@@ -106,7 +111,6 @@ impl<'a> ProjectRunRecorder<'a> {
         &self,
         segment: &SegmentEntry,
         segment_index: u64,
-        segment_count: u64,
     ) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PackageSegmentRecorded);
         let mut details = details_for_phase("package");
@@ -125,10 +129,6 @@ impl<'a> ProjectRunRecorder<'a> {
         details.insert(
             "segment_index".to_owned(),
             RunEventValue::U64(segment_index),
-        );
-        details.insert(
-            "segment_count".to_owned(),
-            RunEventValue::U64(segment_count),
         );
         event.details = RunEventDetails {
             attributes: details,
@@ -211,6 +211,34 @@ impl<'a> ProjectRunRecorder<'a> {
             self.append(event)?;
         }
         Ok(())
+    }
+
+    pub(super) fn source_retry_progress_observer(
+        &self,
+    ) -> Option<Arc<cdf_engine::SourceRetryProgressObserver>> {
+        let sink = self.events.progress_sink()?;
+        let run_id = self.run_id.clone();
+        let resource_id = self.context.resource_id.clone();
+        let scope = self.context.scope.clone();
+        let package_id = self.context.package_id.clone();
+        Some(Arc::new(move |_partition, entry| {
+            let Some(delay_ms) = entry.selected_delay_ms else {
+                return;
+            };
+            let observation = RunProgressObservation {
+                run_id: run_id.clone(),
+                resource_id: resource_id.clone(),
+                scope: scope.clone(),
+                package_id: package_id.clone(),
+                phase: RunPhase::SourceRead,
+                kind: RunProgressObservationKind::SourceRetry {
+                    failed_attempt: entry.failed_attempt,
+                    cause: entry.cause.clone(),
+                    delay_ms,
+                },
+            };
+            let _ = sink.try_emit_progress(&observation);
+        }))
     }
 
     pub(super) fn append_validation_depth_transition_recorded(
@@ -667,6 +695,10 @@ impl<'a> RunEventFanout<'a> {
         self.live.publish(&stored);
         Ok(())
     }
+
+    fn progress_sink(&self) -> Option<Arc<dyn RunProgressSink>> {
+        self.live.progress_sink()
+    }
 }
 
 struct DurableRunLedgerSubscriber<'a> {
@@ -698,6 +730,12 @@ impl<'a> LiveRunEventSubscribers<'a> {
         for subscriber in &self.subscribers {
             let _ = subscriber.try_emit(stored);
         }
+    }
+
+    fn progress_sink(&self) -> Option<Arc<dyn RunProgressSink>> {
+        self.subscribers
+            .iter()
+            .find_map(|subscriber| subscriber.progress_sink())
     }
 }
 

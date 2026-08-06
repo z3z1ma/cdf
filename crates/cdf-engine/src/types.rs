@@ -2219,7 +2219,11 @@ pub struct EngineExecutionInvocation {
     config: EngineExecutionConfig,
     pub(crate) cancellation: cdf_runtime::RunCancellation,
     pub(crate) retry_journal: cdf_runtime::SourceRetryJournal,
+    pub(crate) source_retry_progress: Option<Arc<SourceRetryProgressObserver>>,
 }
+
+pub type SourceRetryProgressObserver =
+    dyn Fn(&cdf_runtime::ScheduledPartition, &cdf_runtime::SourceRetryHistoryEntry) + Send + Sync;
 
 impl EngineExecutionConfig {
     pub const fn with_phase_metrics(mut self, enabled: bool) -> Self {
@@ -2255,6 +2259,7 @@ impl EngineExecutionConfig {
             config: self.clone(),
             cancellation: cdf_runtime::RunCancellation::default(),
             retry_journal: cdf_runtime::SourceRetryJournal::default(),
+            source_retry_progress: None,
         }
     }
 }
@@ -2267,6 +2272,14 @@ impl EngineExecutionInvocation {
 
     pub fn source_retry_evidence(&self) -> cdf_runtime::SourceRetryEvidenceView {
         self.retry_journal.evidence_view()
+    }
+
+    pub fn with_source_retry_progress(
+        mut self,
+        observer: Arc<SourceRetryProgressObserver>,
+    ) -> Self {
+        self.source_retry_progress = Some(observer);
+        self
     }
 }
 

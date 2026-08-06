@@ -69,9 +69,13 @@ pub(super) fn decide_partition_retry(
     plan_id: &str,
     partition: &cdf_runtime::ScheduledPartition,
     journal: &cdf_runtime::SourceRetryJournal,
+    progress: Option<&crate::SourceRetryProgressObserver>,
 ) -> Result<cdf_runtime::SourceRetryDecision> {
     let decision = state.decide_after_failure(error)?;
     journal.record(plan_id, partition, state.history())?;
+    if let (Some(progress), Some(observation)) = (progress, state.history().last()) {
+        progress(partition, observation);
+    }
     Ok(decision)
 }
 
@@ -108,8 +112,9 @@ pub(super) async fn schedule_partition_retry(
     plan_id: &str,
     partition: &cdf_runtime::ScheduledPartition,
     journal: &cdf_runtime::SourceRetryJournal,
+    progress: Option<&crate::SourceRetryProgressObserver>,
 ) -> Result<()> {
-    let decision = decide_partition_retry(state, error, plan_id, partition, journal)?;
+    let decision = decide_partition_retry(state, error, plan_id, partition, journal, progress)?;
     await_partition_retry(
         state,
         decision,

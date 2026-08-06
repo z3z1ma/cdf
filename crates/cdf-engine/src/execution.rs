@@ -9,13 +9,13 @@ mod segment_sink;
 pub use finalization::{PackagePreFinalizeHook, StreamingFinalizeHook};
 pub use orchestration::{
     DrainEpochExecution, LateDataCarryoverInput, assemble_isolated_worker_package,
-    execute_drain_epoch_with_hooks, execute_to_package, execute_to_package_with_run_id,
-    execute_to_package_with_segment_positions,
+    execute_drain_epoch_with_hooks, execute_to_package, execute_to_package_with_progress_hook,
+    execute_to_package_with_run_id, execute_to_package_with_segment_positions,
     execute_to_package_with_segment_positions_and_pre_finalize,
     execute_to_package_with_streaming_hooks, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,
 };
-pub use segment_sink::{DurableSegmentHook, DurableSegmentPayload};
+pub use segment_sink::{DurableSegmentHook, DurableSegmentPayload, PackageSegmentProgressHook};
 
 #[cfg(test)]
 pub(crate) use orchestration::{

@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::{CdfError, Result},
+    error::{CdfError, ErrorKind, Result},
     ids::{
         CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, PromotionId, ReceiptId,
         ResourceId, RunId, SchemaHash, TargetName,
@@ -290,6 +290,27 @@ impl RunPhase {
     }
 }
 
+/// Bounded process-local progress that is useful while work is in flight but is not run-ledger
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunProgressObservation {
+    pub run_id: RunId,
+    pub resource_id: ResourceId,
+    pub scope: ScopeKey,
+    pub package_id: String,
+    pub phase: RunPhase,
+    pub kind: RunProgressObservationKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunProgressObservationKind {
+    SourceRetry {
+        failed_attempt: u16,
+        cause: ErrorKind,
+        delay_ms: u64,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhaseStatus {
@@ -397,6 +418,15 @@ pub enum RunEventSinkResult {
 /// run failure.
 pub trait RunEventSink: Send + Sync {
     fn try_emit(&self, event: &RunEvent) -> RunEventSinkResult;
+
+    fn progress_sink(&self) -> Option<Arc<dyn RunProgressSink>> {
+        None
+    }
+}
+
+/// Non-blocking subscriber for process-local runtime progress observations.
+pub trait RunProgressSink: Send + Sync {
+    fn try_emit_progress(&self, observation: &RunProgressObservation) -> RunEventSinkResult;
 }
 
 fn validate_event_value(key: &str, value: &RunEventValue) -> Result<()> {

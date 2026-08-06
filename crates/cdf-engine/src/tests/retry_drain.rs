@@ -1543,14 +1543,24 @@ fn scheduler_retries_atomic_open_and_records_one_canonical_success() {
     let package = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let observed_retry = Arc::new(Mutex::new(Vec::new()));
+    let retry_progress = Arc::clone(&observed_retry);
+    let options = EngineExecutionConfig::default()
+        .with_execution_services(services)
+        .new_invocation()
+        .with_source_retry_progress(Arc::new(move |_partition, entry| {
+            retry_progress.lock().unwrap().push(entry.clone());
+        }));
 
-    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
-        &plan,
-        &resource,
-        package.path(),
-        &pre_finalize,
-        EngineExecutionConfig::default().with_execution_services(services),
-    ))
+    let output = block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            &plan,
+            &resource,
+            package.path(),
+            &pre_finalize,
+            options,
+        ),
+    )
     .unwrap();
 
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
@@ -1565,6 +1575,10 @@ fn scheduler_retries_atomic_open_and_records_one_canonical_success() {
         retries[0].history()[0].cause,
         cdf_kernel::ErrorKind::Transient
     );
+    let observed_retry = observed_retry.lock().unwrap();
+    assert_eq!(observed_retry.len(), 1);
+    assert_eq!(observed_retry[0], retries[0].history()[0]);
+    assert!(observed_retry[0].selected_delay_ms.is_some());
 }
 
 #[test]

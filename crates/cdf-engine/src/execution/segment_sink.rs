@@ -7,6 +7,7 @@ use cdf_package_contract::SegmentEntry;
 
 pub type DurableSegmentHook<'a> =
     dyn FnMut(&SegmentEntry, DurableSegmentPayload) -> Result<()> + 'a;
+pub type PackageSegmentProgressHook<'a> = dyn FnMut(&SegmentEntry) -> Result<()> + 'a;
 
 /// An owned, accounted handoff from durable package publication to staged ingress.
 ///
@@ -36,6 +37,7 @@ impl DurableSegmentPayload {
 
 pub(super) struct DurableSegmentObserver<'a> {
     pub(super) hook: Option<&'a mut DurableSegmentHook<'a>>,
+    pub(super) progress: Option<&'a mut PackageSegmentProgressHook<'a>>,
 }
 
 impl DurableSegmentObserver<'_> {
@@ -44,6 +46,9 @@ impl DurableSegmentObserver<'_> {
         segment: &SegmentEntry,
         payload: DurableSegmentPayload,
     ) -> Result<()> {
+        if let Some(progress) = self.progress.as_deref_mut() {
+            progress(segment)?;
+        }
         match self.hook.as_deref_mut() {
             Some(hook) => hook(segment, payload),
             None => Ok(()),

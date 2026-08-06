@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     io::Write,
     sync::{
         Arc, Mutex,
@@ -10,7 +10,8 @@ use std::{
 };
 
 use cdf_kernel::{
-    RunEvent, RunEventKind, RunEventSink, RunEventSinkResult, RunEventValue, ScopeKey,
+    RunEvent, RunEventKind, RunEventSink, RunEventSinkResult, RunEventValue, RunPhase,
+    RunProgressObservation, RunProgressObservationKind, RunProgressSink, ScopeKey,
 };
 
 use crate::render::{
@@ -24,6 +25,7 @@ use crate::terminal::{OutputChannel, TerminalPolicy, Verbosity};
 
 const DEFAULT_PROGRESS_CAPACITY: usize = 128;
 const INTERACTIVE_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const HEADLESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProgressDelivery {
@@ -156,11 +158,33 @@ pub struct ProgressMilestone {
     fields: Vec<(String, String)>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProgressMetrics {
+    rows: Option<u64>,
+    bytes: Option<u64>,
+    segments: Option<u64>,
+    batches: Option<u64>,
+    quarantine_rows: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProgressPhaseSnapshot {
+    run_id: String,
+    phase: ProgressPhase,
+    status: ProgressStatus,
+    detail: String,
+    timestamp_ms: i64,
+    elapsed: Duration,
+    metrics: ProgressMetrics,
+    notice: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgressSnapshot {
     current_phase: ProgressPhase,
     terminal: Option<TerminalState>,
     milestones: Vec<ProgressMilestone>,
+    phases: Vec<ProgressPhaseSnapshot>,
     dropped_count: u64,
     last_disposition: Option<ProgressEventDisposition>,
     verbosity: DisplayVerbosity,
@@ -286,19 +310,19 @@ impl ProgressSnapshot {
             }
             document = document.blank_line().push(table);
         } else {
-            for milestone in self.display_milestones(verbosity) {
-                let state = match milestone.status {
+            for phase in &self.phases {
+                let state = match phase.status {
                     ProgressStatus::Running => ActivityState::Active,
                     ProgressStatus::Succeeded => ActivityState::Complete,
                     ProgressStatus::Failed => ActivityState::Failed,
                 };
-                let mut activity = ActivityLine::new(
-                    state,
-                    activity_verb(milestone.phase),
-                    activity_detail(milestone),
-                );
-                for metric in activity_metrics(milestone) {
+                let mut activity =
+                    ActivityLine::new(state, activity_verb(phase.phase), phase.detail.clone());
+                for metric in activity_metrics(phase) {
                     activity = activity.metric(metric);
+                }
+                if let Some(notice) = &phase.notice {
+                    activity = activity.metric(notice.clone());
                 }
                 document = document.push(activity);
             }
@@ -326,12 +350,51 @@ impl ProgressSnapshot {
 }
 
 #[derive(Debug)]
+struct PhaseProgress {
+    run_id: String,
+    phase: ProgressPhase,
+    status: ProgressStatus,
+    detail: String,
+    timestamp_ms: i64,
+    started_at: Instant,
+    finished_at: Option<Instant>,
+    metrics: ProgressMetrics,
+    notice: Option<String>,
+}
+
+impl PhaseProgress {
+    fn snapshot(&self, now: Instant) -> ProgressPhaseSnapshot {
+        ProgressPhaseSnapshot {
+            run_id: self.run_id.clone(),
+            phase: self.phase,
+            status: self.status,
+            detail: self.detail.clone(),
+            timestamp_ms: self.timestamp_ms,
+            elapsed: self
+                .finished_at
+                .unwrap_or(now)
+                .saturating_duration_since(self.started_at),
+            metrics: self.metrics.clone(),
+            notice: self.notice.clone(),
+        }
+    }
+
+    fn complete(&mut self, status: ProgressStatus, now: Instant) {
+        if self.finished_at.is_none() {
+            self.finished_at = Some(now);
+        }
+        self.status = status;
+    }
+}
+
+#[derive(Debug)]
 struct ProgressState {
     current_phase: ProgressPhase,
     active_run_id: Option<String>,
     max_sequence_by_run: BTreeMap<String, u64>,
     terminal: Option<TerminalState>,
     milestones: VecDeque<ProgressMilestone>,
+    phases: BTreeMap<(String, ProgressPhase), PhaseProgress>,
     dropped_count: u64,
     last_disposition: Option<ProgressEventDisposition>,
 }
@@ -344,6 +407,7 @@ impl Default for ProgressState {
             max_sequence_by_run: BTreeMap::new(),
             terminal: None,
             milestones: VecDeque::new(),
+            phases: BTreeMap::new(),
             dropped_count: 0,
             last_disposition: None,
         }
@@ -351,11 +415,59 @@ impl Default for ProgressState {
 }
 
 impl ProgressState {
+    fn apply_observation(&mut self, observation: &RunProgressObservation, now: Instant) {
+        let run_id = observation.run_id.as_str().to_owned();
+        self.active_run_id = Some(run_id.clone());
+        let phase = progress_phase_for_runtime_phase(observation.phase);
+        if phase != self.current_phase
+            && let Some(current) = self.phases.get_mut(&(run_id.clone(), self.current_phase))
+            && current.status == ProgressStatus::Running
+        {
+            current.complete(ProgressStatus::Succeeded, now);
+        }
+        self.current_phase = phase;
+        let progress = self
+            .phases
+            .entry((run_id, phase))
+            .or_insert_with(|| PhaseProgress {
+                run_id: redact_uri_userinfo(observation.run_id.as_str()),
+                phase,
+                status: ProgressStatus::Running,
+                detail: redact_uri_userinfo(observation.resource_id.as_str()),
+                timestamp_ms: 0,
+                started_at: now,
+                finished_at: None,
+                metrics: ProgressMetrics::default(),
+                notice: None,
+            });
+        progress.notice = Some(match &observation.kind {
+            RunProgressObservationKind::SourceRetry {
+                failed_attempt,
+                cause,
+                delay_ms,
+            } => format!(
+                "retry {failed_attempt} after {}; waiting {}",
+                error_kind_label(cause),
+                humanize_duration(Duration::from_millis(*delay_ms))
+            ),
+        });
+    }
+
     fn apply_event(
         &mut self,
         event: &RunEvent,
         config: &ProgressConfig,
         overflow: MilestoneOverflow,
+    ) -> ProgressEventDisposition {
+        self.apply_event_at(event, config, overflow, Instant::now())
+    }
+
+    fn apply_event_at(
+        &mut self,
+        event: &RunEvent,
+        config: &ProgressConfig,
+        overflow: MilestoneOverflow,
+        now: Instant,
     ) -> ProgressEventDisposition {
         let run_id = event.run_id.as_str().to_owned();
         if let Some(max_sequence) = self.max_sequence_by_run.get(&run_id) {
@@ -372,6 +484,7 @@ impl ProgressState {
             && let Some(evicted_run) = self.max_sequence_by_run.keys().next().cloned()
         {
             self.max_sequence_by_run.remove(&evicted_run);
+            self.phases.retain(|(run_id, _), _| run_id != &evicted_run);
         }
         self.max_sequence_by_run
             .insert(run_id.clone(), event.sequence);
@@ -391,9 +504,21 @@ impl ProgressState {
 
         let phase = match event.kind {
             RunEventKind::RunFailed => self.current_phase,
-            _ => phase_for_event(event.kind),
+            _ => phase_for_event(event),
         };
-        self.current_phase = phase;
+        let physical_measurement = event.kind == RunEventKind::PhaseMeasured;
+        if !physical_measurement {
+            if phase != self.current_phase
+                && let Some(active_run_id) = &self.active_run_id
+                && let Some(current) = self
+                    .phases
+                    .get_mut(&(active_run_id.clone(), self.current_phase))
+                && current.status == ProgressStatus::Running
+            {
+                current.complete(ProgressStatus::Succeeded, now);
+            }
+            self.current_phase = phase;
+        }
 
         let terminal = terminal_for_event(event.kind);
         if let Some(terminal) = terminal {
@@ -405,6 +530,37 @@ impl ProgressState {
             Some(TerminalState::Failed) => ProgressStatus::Failed,
             None => ProgressStatus::Running,
         };
+
+        if !physical_measurement {
+            let key = (event.run_id.as_str().to_owned(), phase);
+            let detail = event_detail(event);
+            let phase_state = self.phases.entry(key).or_insert_with(|| PhaseProgress {
+                run_id: redact_uri_userinfo(event.run_id.as_str()),
+                phase,
+                status: ProgressStatus::Running,
+                detail: detail.clone(),
+                timestamp_ms: event.timestamp_ms,
+                started_at: now,
+                finished_at: None,
+                metrics: ProgressMetrics::default(),
+                notice: None,
+            });
+            phase_state.detail = detail;
+            phase_state.metrics.apply_event(event);
+            phase_state.notice = progress_notice(event);
+            match status {
+                ProgressStatus::Running => {
+                    if phase_state.status.is_terminal() {
+                        phase_state.status = ProgressStatus::Running;
+                        phase_state.started_at = now;
+                        phase_state.finished_at = None;
+                    }
+                }
+                ProgressStatus::Succeeded | ProgressStatus::Failed => {
+                    phase_state.complete(status, now);
+                }
+            }
+        }
 
         if config.verbosity.records_milestone(status) {
             if self.milestones.len() >= config.capacity {
@@ -434,10 +590,24 @@ impl ProgressState {
     }
 
     fn snapshot(&self, verbosity: DisplayVerbosity, streamed_live: bool) -> ProgressSnapshot {
+        self.snapshot_at(verbosity, streamed_live, Instant::now())
+    }
+
+    fn snapshot_at(
+        &self,
+        verbosity: DisplayVerbosity,
+        streamed_live: bool,
+        now: Instant,
+    ) -> ProgressSnapshot {
         ProgressSnapshot {
             current_phase: self.current_phase,
             terminal: self.terminal,
             milestones: self.milestones.iter().cloned().collect(),
+            phases: self
+                .phases
+                .values()
+                .map(|phase| phase.snapshot(now))
+                .collect(),
             dropped_count: self.dropped_count,
             last_disposition: self.last_disposition,
             verbosity,
@@ -463,10 +633,33 @@ enum MilestoneOverflow {
 enum ProgressSinkMode {
     Buffered,
     Live {
-        sender: SyncSender<RunEvent>,
+        sender: SyncSender<LiveProgressInput>,
         terminal_sender: SyncSender<RunEvent>,
         worker: JoinHandle<()>,
     },
+}
+
+enum LiveProgressInput {
+    Event(RunEvent),
+    Observation(RunProgressObservation),
+}
+
+struct CliProgressObservationSink {
+    sender: SyncSender<LiveProgressInput>,
+}
+
+impl RunProgressSink for CliProgressObservationSink {
+    fn try_emit_progress(&self, observation: &RunProgressObservation) -> RunEventSinkResult {
+        match self
+            .sender
+            .try_send(LiveProgressInput::Observation(observation.clone()))
+        {
+            Ok(()) => RunEventSinkResult::Accepted,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                RunEventSinkResult::Dropped
+            }
+        }
+    }
 }
 
 pub struct CliProgressSink {
@@ -574,9 +767,11 @@ impl RunEventSink for CliProgressSink {
             ..
         } = &self.mode
         {
-            return match sender.try_send(event.clone()) {
+            return match sender.try_send(LiveProgressInput::Event(event.clone())) {
                 Ok(()) => RunEventSinkResult::Accepted,
-                Err(TrySendError::Full(event)) if terminal_for_event(event.kind).is_some() => {
+                Err(TrySendError::Full(LiveProgressInput::Event(event)))
+                    if terminal_for_event(event.kind).is_some() =>
+                {
                     match terminal_sender.try_send(event) {
                         Ok(()) => RunEventSinkResult::Accepted,
                         Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
@@ -601,12 +796,21 @@ impl RunEventSink for CliProgressSink {
             | ProgressEventDisposition::Terminal => RunEventSinkResult::Accepted,
         }
     }
+
+    fn progress_sink(&self) -> Option<Arc<dyn RunProgressSink>> {
+        match &self.mode {
+            ProgressSinkMode::Live { sender, .. } => Some(Arc::new(CliProgressObservationSink {
+                sender: sender.clone(),
+            })),
+            ProgressSinkMode::Buffered => None,
+        }
+    }
 }
 
 fn spawn_live_progress_worker(
     config: ProgressConfig,
     state: Arc<Mutex<ProgressState>>,
-    receiver: Receiver<RunEvent>,
+    receiver: Receiver<LiveProgressInput>,
     terminal_receiver: Receiver<RunEvent>,
     writer: Box<dyn Write + Send>,
 ) -> std::io::Result<JoinHandle<()>> {
@@ -616,7 +820,10 @@ fn spawn_live_progress_worker(
             let mut renderer = LiveProgressRenderer::new(config, state, writer);
             loop {
                 match receiver.recv_timeout(INTERACTIVE_REFRESH_INTERVAL) {
-                    Ok(event) => renderer.process(&event),
+                    Ok(LiveProgressInput::Event(event)) => renderer.process(&event),
+                    Ok(LiveProgressInput::Observation(observation)) => {
+                        renderer.process_observation(&observation);
+                    }
                     Err(RecvTimeoutError::Timeout) => renderer.refresh_if_due(),
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
@@ -637,7 +844,13 @@ struct LiveProgressRenderer {
     pending_redraw: bool,
     rendered_lines: usize,
     headless_run_id: Option<String>,
-    emitted_headless_phases: BTreeSet<ProgressPhase>,
+    headless_phases: BTreeMap<(String, ProgressPhase), HeadlessPhaseEmission>,
+}
+
+#[derive(Clone, Copy)]
+struct HeadlessPhaseEmission {
+    status: ProgressStatus,
+    last_emitted_at: Instant,
 }
 
 impl LiveProgressRenderer {
@@ -659,22 +872,28 @@ impl LiveProgressRenderer {
             pending_redraw: false,
             rendered_lines: 0,
             headless_run_id: None,
-            emitted_headless_phases: BTreeSet::new(),
+            headless_phases: BTreeMap::new(),
         }
     }
 
     fn process(&mut self, event: &RunEvent) {
+        self.process_at(event, Instant::now());
+    }
+
+    fn process_at(&mut self, event: &RunEvent, now: Instant) {
         let disposition = {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
-            state.apply_event(event, &self.config, MilestoneOverflow::Coalesce)
+            state.apply_event_at(event, &self.config, MilestoneOverflow::Coalesce, now)
         };
         if self.interactive {
             let terminal = disposition == ProgressEventDisposition::Terminal;
-            if terminal || self.last_refresh.elapsed() >= INTERACTIVE_REFRESH_INTERVAL {
-                self.redraw();
-                self.last_refresh = Instant::now();
+            if terminal
+                || now.saturating_duration_since(self.last_refresh) >= INTERACTIVE_REFRESH_INTERVAL
+            {
+                self.redraw_at(now);
+                self.last_refresh = now;
                 self.pending_redraw = false;
             } else if matches!(
                 disposition,
@@ -686,47 +905,119 @@ impl LiveProgressRenderer {
             disposition,
             ProgressEventDisposition::Accepted | ProgressEventDisposition::Terminal
         ) {
-            let phase = phase_for_event(event.kind);
             if self.headless_run_id.as_deref() != Some(event.run_id.as_str()) {
                 self.headless_run_id = Some(event.run_id.as_str().to_owned());
-                self.emitted_headless_phases.clear();
             }
-            if self.emitted_headless_phases.insert(phase)
-                || disposition == ProgressEventDisposition::Terminal
-            {
-                let snapshot = self
-                    .state
-                    .lock()
-                    .ok()
-                    .map(|state| state.snapshot(self.config.verbosity, false));
-                if let Some(snapshot) = snapshot
-                    && let Some(milestone) = snapshot.milestones.last()
-                {
-                    let _ = write_headless_milestone(&mut self.writer, milestone);
-                    let _ = self.writer.flush();
-                }
+            self.emit_headless_updates(now, false, false, Some(event.run_id.as_str()));
+        }
+    }
+
+    fn process_observation(&mut self, observation: &RunProgressObservation) {
+        let now = Instant::now();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.apply_observation(observation, now);
+        drop(state);
+        if self.interactive {
+            self.redraw_at(now);
+            self.last_refresh = now;
+            self.pending_redraw = false;
+        } else {
+            if self.headless_run_id.as_deref() != Some(observation.run_id.as_str()) {
+                self.headless_run_id = Some(observation.run_id.as_str().to_owned());
             }
+            self.emit_headless_updates(now, false, true, Some(observation.run_id.as_str()));
         }
     }
 
     fn refresh_if_due(&mut self) {
-        if self.interactive
-            && self.pending_redraw
-            && self.last_refresh.elapsed() >= INTERACTIVE_REFRESH_INTERVAL
-        {
-            self.redraw();
-            self.last_refresh = Instant::now();
-            self.pending_redraw = false;
+        self.refresh_at(Instant::now());
+    }
+
+    fn refresh_at(&mut self, now: Instant) {
+        if self.interactive {
+            let has_running_phase = self.state.lock().is_ok_and(|state| {
+                state
+                    .phases
+                    .values()
+                    .any(|phase| phase.finished_at.is_none())
+            });
+            if (self.pending_redraw || has_running_phase)
+                && now.saturating_duration_since(self.last_refresh) >= INTERACTIVE_REFRESH_INTERVAL
+            {
+                self.redraw_at(now);
+                self.last_refresh = now;
+                self.pending_redraw = false;
+            }
+        } else {
+            self.emit_headless_updates(now, true, false, None);
         }
     }
 
     fn redraw(&mut self) {
+        self.redraw_at(Instant::now());
+    }
+
+    fn redraw_at(&mut self, now: Instant) {
         self.rendered_lines = redraw_live_progress(
             &self.state,
             &self.config,
             &mut self.writer,
             self.rendered_lines,
+            now,
         );
+    }
+
+    fn emit_headless_updates(
+        &mut self,
+        now: Instant,
+        heartbeat_only: bool,
+        force_current: bool,
+        run_filter: Option<&str>,
+    ) {
+        let Some(snapshot) = self
+            .state
+            .lock()
+            .ok()
+            .map(|state| state.snapshot_at(self.config.verbosity, false, now))
+        else {
+            return;
+        };
+        self.headless_phases.retain(|(run_id, phase), _| {
+            snapshot
+                .phases
+                .iter()
+                .any(|candidate| &candidate.run_id == run_id && candidate.phase == *phase)
+        });
+        for phase in snapshot
+            .phases
+            .iter()
+            .filter(|phase| run_filter.is_none_or(|run_id| phase.run_id == run_id))
+        {
+            let key = (phase.run_id.clone(), phase.phase);
+            let previous = self.headless_phases.get(&key).copied();
+            let status_changed = previous.is_none_or(|previous| previous.status != phase.status);
+            let heartbeat_due = previous.is_some_and(|previous| {
+                phase.status == ProgressStatus::Running
+                    && now.saturating_duration_since(previous.last_emitted_at)
+                        >= HEADLESS_HEARTBEAT_INTERVAL
+            });
+            if (!heartbeat_only && status_changed)
+                || heartbeat_due
+                || (force_current && phase.phase == snapshot.current_phase)
+            {
+                let _ = write_headless_phase(&mut self.writer, phase);
+                self.headless_phases.insert(
+                    key,
+                    HeadlessPhaseEmission {
+                        status: phase.status,
+                        last_emitted_at: now,
+                    },
+                );
+            }
+        }
+        let _ = self.writer.flush();
     }
 
     fn finish(&mut self) {
@@ -742,9 +1033,10 @@ fn redraw_live_progress(
     config: &ProgressConfig,
     writer: &mut dyn Write,
     previous_lines: usize,
+    now: Instant,
 ) -> usize {
     let snapshot = match state.lock() {
-        Ok(state) => state.snapshot(config.verbosity, false),
+        Ok(state) => state.snapshot_at(config.verbosity, false, now),
         Err(_) => return previous_lines,
     };
     let rendered = snapshot.render_interactive(config.render_config(), config.verbosity);
@@ -761,20 +1053,43 @@ fn redraw_live_progress(
     rendered.lines().count()
 }
 
-fn write_headless_milestone(
+fn write_headless_phase(
     writer: &mut dyn Write,
-    milestone: &ProgressMilestone,
+    phase: &ProgressPhaseSnapshot,
 ) -> std::io::Result<()> {
+    let timestamp_ms = phase
+        .timestamp_ms
+        .saturating_add(i64::try_from(phase.elapsed.as_millis()).unwrap_or(i64::MAX));
     write!(
         writer,
-        "{} [{}] {} {}",
-        milestone.timestamp_ms,
-        milestone.phase.as_str(),
-        milestone.status.as_str(),
-        milestone.message
+        "{} [{}] {} {} run={} elapsed={}",
+        timestamp_ms,
+        phase.phase.as_str(),
+        phase.status.as_str(),
+        phase.detail,
+        phase.run_id,
+        humanize_progress_duration(phase.elapsed)
     )?;
-    for (key, value) in &milestone.fields {
-        write!(writer, " {key}={value}")?;
+    if let Some(rows) = phase.metrics.rows {
+        write!(writer, " rows={}", humanize_rows(rows))?;
+    }
+    if let Some(bytes) = phase.metrics.bytes {
+        write!(writer, " bytes={}", humanize_bytes(bytes))?;
+    }
+    if let Some(segments) = phase.metrics.segments {
+        write!(writer, " segments={segments}")?;
+    }
+    if let Some(batches) = phase.metrics.batches {
+        write!(writer, " batches={batches}")?;
+    }
+    if let Some(rows) = phase.metrics.quarantine_rows {
+        write!(writer, " quarantine_rows={}", humanize_rows(rows))?;
+    }
+    if let Some(rate) = progress_rate(phase) {
+        write!(writer, " rate={rate}")?;
+    }
+    if let Some(notice) = &phase.notice {
+        write!(writer, " status={}", notice.replace(' ', "_"))?;
     }
     writeln!(writer)
 }
@@ -798,8 +1113,13 @@ impl ProgressMilestone {
     }
 }
 
-fn phase_for_event(kind: RunEventKind) -> ProgressPhase {
-    match kind {
+fn phase_for_event(event: &RunEvent) -> ProgressPhase {
+    if event.kind == RunEventKind::PhaseMeasured
+        && let Some(RunEventValue::PhaseMetric(metric)) = event.details.attributes.get("metric")
+    {
+        return progress_phase_for_runtime_phase(metric.phase);
+    }
+    match event.kind {
         RunEventKind::RunStarted | RunEventKind::PlanRecorded => ProgressPhase::Plan,
         RunEventKind::PackageStarted
         | RunEventKind::PackageSegmentRecorded
@@ -816,6 +1136,19 @@ fn phase_for_event(kind: RunEventKind) -> ProgressPhase {
         | RunEventKind::RunSucceeded
         | RunEventKind::RunResumed
         | RunEventKind::RunFailed => ProgressPhase::Gate,
+    }
+}
+
+fn progress_phase_for_runtime_phase(phase: RunPhase) -> ProgressPhase {
+    match phase {
+        RunPhase::SourceRead => ProgressPhase::Extract,
+        RunPhase::Decode | RunPhase::ValidationNormalization => ProgressPhase::Validate,
+        RunPhase::PackageExecution
+        | RunPhase::SegmentEncode
+        | RunPhase::PersistHash
+        | RunPhase::PackageFinalize => ProgressPhase::Package,
+        RunPhase::DestinationIngress | RunPhase::DestinationWriteReceipt => ProgressPhase::Commit,
+        RunPhase::CheckpointGate => ProgressPhase::Gate,
     }
 }
 
@@ -884,34 +1217,133 @@ fn activity_verb(phase: ProgressPhase) -> &'static str {
     }
 }
 
-fn activity_detail(milestone: &ProgressMilestone) -> String {
-    milestone
-        .fields
-        .iter()
-        .find(|(key, _)| key == "resource")
-        .map(|(_, value)| value.clone())
-        .or_else(|| {
-            milestone
-                .fields
-                .iter()
-                .find(|(key, _)| key == "package")
-                .map(|(_, value)| value.clone())
-        })
-        .unwrap_or_else(|| milestone.message.clone())
+fn event_detail(event: &RunEvent) -> String {
+    event
+        .resource_id
+        .as_ref()
+        .map(|resource| redact_uri_userinfo(resource.as_str()))
+        .or_else(|| event.package_id.as_deref().map(redact_uri_userinfo))
+        .unwrap_or_else(|| event.kind.as_str().replace('_', " "))
 }
 
-fn activity_metrics(milestone: &ProgressMilestone) -> Vec<String> {
-    milestone
-        .fields
-        .iter()
-        .filter(|(key, _)| {
-            matches!(
-                key.as_str(),
-                "rows" | "bytes" | "segments" | "batches" | "quarantine_rows" | "duration" | "rate"
-            )
-        })
-        .map(|(key, value)| format!("{value} {}", key.replace('_', " ")))
-        .collect()
+fn activity_metrics(phase: &ProgressPhaseSnapshot) -> Vec<String> {
+    let mut metrics = vec![humanize_progress_duration(phase.elapsed)];
+    if let Some(rows) = phase.metrics.rows {
+        metrics.push(format!("{} rows", humanize_rows(rows)));
+    }
+    if let Some(bytes) = phase.metrics.bytes {
+        metrics.push(humanize_bytes(bytes));
+    }
+    if let Some(segments) = phase.metrics.segments {
+        metrics.push(format!("{segments} segments"));
+    }
+    if let Some(batches) = phase.metrics.batches {
+        metrics.push(format!("{batches} batches"));
+    }
+    if let Some(quarantine_rows) = phase.metrics.quarantine_rows {
+        metrics.push(format!("{} quarantined", humanize_rows(quarantine_rows)));
+    }
+    if let Some(rate) = progress_rate(phase) {
+        metrics.push(rate);
+    }
+    metrics
+}
+
+fn progress_rate(phase: &ProgressPhaseSnapshot) -> Option<String> {
+    if phase.elapsed.is_zero() {
+        return None;
+    }
+    if let Some(rows) = phase.metrics.rows {
+        let per_second = rows as f64 / phase.elapsed.as_secs_f64();
+        return Some(format!(
+            "{} rows/s",
+            humanize_rows(per_second.round() as u64)
+        ));
+    }
+    phase.metrics.bytes.map(|bytes| {
+        let per_second = bytes as f64 / phase.elapsed.as_secs_f64();
+        format!("{}/s", humanize_bytes(per_second.round() as u64))
+    })
+}
+
+fn humanize_progress_duration(duration: Duration) -> String {
+    if duration.as_secs() < 60 && duration >= Duration::from_secs(1) {
+        return format!("{:.1}s", duration.as_secs_f64());
+    }
+    humanize_duration(duration)
+}
+
+impl ProgressMetrics {
+    fn apply_event(&mut self, event: &RunEvent) {
+        match event.kind {
+            RunEventKind::PackageSegmentRecorded | RunEventKind::DestinationSegmentAcknowledged => {
+                self.rows = add_optional(self.rows, event_u64(event, "row_count"));
+                self.bytes = add_optional(self.bytes, event_u64(event, "byte_count"));
+                self.batches = add_optional(self.batches, event_u64(event, "batch_count"));
+                self.segments = Some(self.segments.unwrap_or(0).saturating_add(1));
+            }
+            RunEventKind::PackageFinalized => {
+                self.rows = event_u64(event, "row_count");
+                self.bytes = event_u64(event, "byte_count");
+                self.batches = event_u64(event, "batch_count");
+                self.segments = event_u64(event, "segment_count");
+                self.quarantine_rows = event_u64(event, "quarantine_record_count");
+            }
+            RunEventKind::DestinationReceiptRecorded => {
+                self.rows = event_u64(event, "rows_written");
+                self.segments = event_u64(event, "segment_ack_count");
+            }
+            RunEventKind::CheckpointProposed | RunEventKind::CheckpointCommitted => {
+                self.rows = event_u64(event, "row_count");
+                self.bytes = event_u64(event, "byte_count");
+                self.segments = event_u64(event, "segment_count");
+            }
+            _ => {}
+        }
+    }
+}
+
+fn event_u64(event: &RunEvent, key: &str) -> Option<u64> {
+    match event.details.attributes.get(key) {
+        Some(RunEventValue::U64(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn add_optional(current: Option<u64>, increment: Option<u64>) -> Option<u64> {
+    increment
+        .map(|increment| current.unwrap_or(0).saturating_add(increment))
+        .or(current)
+}
+
+fn progress_notice(event: &RunEvent) -> Option<String> {
+    let retry_after = event_u64(event, "retry_after_ms");
+    let waiting = event
+        .details
+        .attributes
+        .get("backoff_notice")
+        .is_some_and(|value| value == &RunEventValue::Bool(true));
+    match (waiting, retry_after) {
+        (true, Some(delay)) => Some(format!(
+            "waiting {} before retry",
+            humanize_duration(Duration::from_millis(delay))
+        )),
+        (true, None) => Some("waiting before retry".to_owned()),
+        _ => None,
+    }
+}
+
+fn error_kind_label(kind: &cdf_kernel::ErrorKind) -> &'static str {
+    match kind {
+        cdf_kernel::ErrorKind::Transient => "transient",
+        cdf_kernel::ErrorKind::RateLimited => "rate_limited",
+        cdf_kernel::ErrorKind::Auth => "auth",
+        cdf_kernel::ErrorKind::Contract => "contract",
+        cdf_kernel::ErrorKind::Data => "data",
+        cdf_kernel::ErrorKind::Destination => "destination",
+        cdf_kernel::ErrorKind::Environment => "environment",
+        cdf_kernel::ErrorKind::Internal => "internal",
+    }
 }
 
 fn push_optional<T: AsRef<str>>(fields: &mut Vec<(String, String)>, key: &str, value: Option<&T>) {
@@ -1197,7 +1629,7 @@ mod tests {
             renderer.headless_run_id.as_deref(),
             Some("run-progress-slice-0999")
         );
-        assert_eq!(renderer.emitted_headless_phases.len(), 1);
+        assert_eq!(renderer.headless_phases.len(), DEFAULT_PROGRESS_CAPACITY);
     }
 
     #[test]
@@ -1225,6 +1657,283 @@ mod tests {
         assert!(!renderer.pending_redraw);
         let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(rendered.contains("Loaded"), "{rendered:?}");
+    }
+
+    #[test]
+    fn active_phase_redraw_advances_elapsed_time_without_another_event() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let mut renderer = LiveProgressRenderer::new(
+            ProgressConfig::new(tty_config(), DisplayVerbosity::Normal),
+            state,
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+
+        renderer.process_at(&started, started_at);
+        renderer.refresh_at(started_at + Duration::from_millis(1_100));
+        renderer.refresh_at(started_at + Duration::from_millis(2_200));
+
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("1.1s"), "{rendered:?}");
+        assert!(rendered.contains("2.2s"), "{rendered:?}");
+    }
+
+    #[test]
+    fn typed_phase_metrics_accumulate_increments_and_replace_cumulative_totals() {
+        let config = ProgressConfig::new(tty_config(), DisplayVerbosity::Normal);
+        let mut state = ProgressState::default();
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+        state.apply_event_at(&started, &config, MilestoneOverflow::Coalesce, started_at);
+        for (sequence, rows, bytes, batches) in [(2, 1_000, 1_048_576, 2), (3, 500, 524_288, 1)] {
+            let mut segment = event(sequence, RunEventKind::PackageSegmentRecorded);
+            segment
+                .details
+                .attributes
+                .insert("row_count".to_owned(), RunEventValue::U64(rows));
+            segment
+                .details
+                .attributes
+                .insert("byte_count".to_owned(), RunEventValue::U64(bytes));
+            segment
+                .details
+                .attributes
+                .insert("batch_count".to_owned(), RunEventValue::U64(batches));
+            state.apply_event_at(
+                &segment,
+                &config,
+                MilestoneOverflow::Coalesce,
+                started_at + Duration::from_secs(1),
+            );
+        }
+        let mut proposed = event(4, RunEventKind::CheckpointProposed);
+        proposed
+            .details
+            .attributes
+            .insert("row_count".to_owned(), RunEventValue::U64(1_500));
+        proposed
+            .details
+            .attributes
+            .insert("byte_count".to_owned(), RunEventValue::U64(1_572_864));
+        proposed
+            .details
+            .attributes
+            .insert("segment_count".to_owned(), RunEventValue::U64(2));
+        state.apply_event_at(
+            &proposed,
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at + Duration::from_secs(2),
+        );
+        let mut committed = event(5, RunEventKind::CheckpointCommitted);
+        committed
+            .details
+            .attributes
+            .insert("row_count".to_owned(), RunEventValue::U64(1_600));
+        committed
+            .details
+            .attributes
+            .insert("byte_count".to_owned(), RunEventValue::U64(1_677_721));
+        committed
+            .details
+            .attributes
+            .insert("segment_count".to_owned(), RunEventValue::U64(3));
+        state.apply_event_at(
+            &committed,
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at + Duration::from_secs(3),
+        );
+
+        let snapshot = state.snapshot_at(
+            DisplayVerbosity::Normal,
+            false,
+            started_at + Duration::from_secs(4),
+        );
+        let extract = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Extract)
+            .unwrap();
+        assert_eq!(extract.metrics.rows, Some(1_500));
+        assert_eq!(extract.metrics.bytes, Some(1_572_864));
+        assert_eq!(extract.metrics.batches, Some(3));
+        assert_eq!(extract.metrics.segments, Some(2));
+        assert_eq!(progress_rate(extract).as_deref(), Some("750 rows/s"));
+        let gate = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Gate)
+            .unwrap();
+        assert_eq!(gate.metrics.rows, Some(1_600));
+        assert_eq!(gate.metrics.bytes, Some(1_677_721));
+        assert_eq!(gate.metrics.segments, Some(3));
+    }
+
+    #[test]
+    fn normal_progress_omits_unknown_metrics_but_always_shows_elapsed() {
+        let config = ProgressConfig::new(tty_config(), DisplayVerbosity::Normal);
+        let mut state = ProgressState::default();
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+        state.apply_event_at(&started, &config, MilestoneOverflow::Coalesce, started_at);
+        let rendered = state
+            .snapshot_at(
+                DisplayVerbosity::Normal,
+                false,
+                started_at + Duration::from_millis(500),
+            )
+            .render_interactive(config.render_config(), DisplayVerbosity::Normal);
+
+        assert!(rendered.contains("500ms"), "{rendered:?}");
+        assert!(!rendered.contains(" rows"), "{rendered:?}");
+        assert!(!rendered.contains(" bytes"), "{rendered:?}");
+        assert!(!rendered.contains("segments"), "{rendered:?}");
+        assert!(!rendered.contains("batches"), "{rendered:?}");
+    }
+
+    #[test]
+    fn failure_preserves_current_phase_elapsed_and_last_known_metrics() {
+        let config = ProgressConfig::new(tty_config(), DisplayVerbosity::Normal);
+        let mut state = ProgressState::default();
+        let started_at = Instant::now();
+        state.apply_event_at(
+            &event(1, RunEventKind::DestinationCommitStarted),
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at,
+        );
+        let mut acknowledged = event(2, RunEventKind::DestinationSegmentAcknowledged);
+        acknowledged
+            .details
+            .attributes
+            .insert("row_count".to_owned(), RunEventValue::U64(640_000));
+        acknowledged
+            .details
+            .attributes
+            .insert("byte_count".to_owned(), RunEventValue::U64(459_276_288));
+        state.apply_event_at(
+            &acknowledged,
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at + Duration::from_secs(2),
+        );
+        state.apply_event_at(
+            &event(3, RunEventKind::RunFailed),
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at + Duration::from_secs(3),
+        );
+
+        let snapshot = state.snapshot_at(
+            DisplayVerbosity::Normal,
+            false,
+            started_at + Duration::from_secs(20),
+        );
+        let commit = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Commit)
+            .unwrap();
+        assert_eq!(commit.status, ProgressStatus::Failed);
+        assert_eq!(commit.elapsed, Duration::from_secs(3));
+        assert_eq!(commit.metrics.rows, Some(640_000));
+        assert_eq!(commit.metrics.bytes, Some(459_276_288));
+        assert!(
+            !snapshot
+                .phases
+                .iter()
+                .any(|phase| phase.phase == ProgressPhase::Gate)
+        );
+    }
+
+    #[test]
+    fn headless_live_progress_emits_bounded_heartbeat_and_phase_completion() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let mut renderer = LiveProgressRenderer::new(
+            ProgressConfig::new(headless_config(), DisplayVerbosity::Normal),
+            state,
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+        renderer.process_at(&started, started_at);
+        let start_len = bytes.lock().unwrap().len();
+
+        renderer.refresh_at(started_at + Duration::from_secs(29));
+        assert_eq!(bytes.lock().unwrap().len(), start_len);
+        renderer.refresh_at(started_at + Duration::from_secs(30));
+        let heartbeat_len = bytes.lock().unwrap().len();
+        assert!(heartbeat_len > start_len);
+        renderer.refresh_at(started_at + Duration::from_secs(45));
+        assert_eq!(bytes.lock().unwrap().len(), heartbeat_len);
+
+        let mut finalized = event(2, RunEventKind::PackageFinalized);
+        finalized
+            .details
+            .attributes
+            .insert("row_count".to_owned(), RunEventValue::U64(10));
+        renderer.process_at(&finalized, started_at + Duration::from_secs(46));
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("[extract] running"), "{rendered:?}");
+        assert!(rendered.contains("elapsed=30.0s"), "{rendered:?}");
+        assert!(rendered.contains("[extract] succeeded"), "{rendered:?}");
+        assert!(rendered.contains("[package] running"), "{rendered:?}");
+        assert!(!rendered.contains("\u{1b}["));
+        assert!(!rendered.contains('\r'));
+    }
+
+    #[test]
+    fn source_retry_observation_is_rendered_immediately_without_ledger_event() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = CliProgressSink::live_with_writer(
+            ProgressConfig::new(tty_config(), DisplayVerbosity::Normal),
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+        assert_eq!(
+            sink.try_emit(&event(1, RunEventKind::PackageStarted)),
+            RunEventSinkResult::Accepted
+        );
+        let progress = sink.progress_sink().unwrap();
+        assert_eq!(
+            progress.try_emit_progress(&RunProgressObservation {
+                run_id: RunId::new("run-progress-test").unwrap(),
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-progress-test".to_owned(),
+                phase: RunPhase::SourceRead,
+                kind: RunProgressObservationKind::SourceRetry {
+                    failed_attempt: 1,
+                    cause: cdf_kernel::ErrorKind::RateLimited,
+                    delay_ms: 2_000,
+                },
+            }),
+            RunEventSinkResult::Accepted
+        );
+        drop(progress);
+        let snapshot = sink.finish();
+        assert!(snapshot.streamed_live);
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("retry 1 after rate_limited; waiting 2s"),
+            "{rendered:?}"
+        );
     }
 
     #[test]
@@ -1329,7 +2038,7 @@ mod tests {
             (RunEventKind::RunResumed, ProgressPhase::Gate),
             (RunEventKind::RunFailed, ProgressPhase::Gate),
         ] {
-            assert_eq!(phase_for_event(kind), phase);
+            assert_eq!(phase_for_event(&event(1, kind)), phase);
         }
 
         for (sequence, kind, phase) in [

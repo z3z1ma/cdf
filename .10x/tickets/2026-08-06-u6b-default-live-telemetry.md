@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
@@ -95,6 +95,16 @@ on stderr; verbose mode adds event/scope/retry/physical-I/O internals.
   redraw only when an event had set `pending_redraw`, no headless heartbeat, `PhaseMeasured` always
   mapped to Package regardless of its typed runtime phase, and source retry/package segment events
   appended only after engine execution completed.
+- 2026-08-06: Activated after the user approved execution. Protected unrelated untracked evidence,
+  personal Codex configuration, and release artifacts remain outside the ticket diff.
+- 2026-08-06: Implemented typed phase-local progress state, monotonic TTY redraws, bounded headless
+  heartbeats, stable phase completion/failure lines, runtime-phase-aware physical measurements,
+  and a bounded process-local retry-wait observation path. Package-segment events now publish from
+  the engine's durable-segment frontier instead of being reconstructed after execution.
+- 2026-08-06: Focused progress, engine retry/segment-frontier, project event-order/fanout, affected
+  check, formatter, and strict affected-package Clippy checks pass. A broader `cdf-cli` run-module
+  probe exposed out-of-scope current-model test drift and persistent fixture-state failures owned
+  by U7; the two progress-specific human run cells passed. Release sandbox evidence remains.
 
 ## Blockers
 

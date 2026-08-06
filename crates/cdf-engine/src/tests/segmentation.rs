@@ -7,7 +7,7 @@ use super::support::{
     PartitionAttestation, PartitionId, Planner, RecordBatch, ResourceId, RowRule, Schema,
     SegmentEntry, SourcePosition, StandaloneExecutionHost, TempDir, TrustLevel,
     batch_for_partition, block_on, compile_validation_program,
-    execute_to_package_with_segment_positions,
+    execute_to_package_with_progress_hook, execute_to_package_with_segment_positions,
     execute_to_package_with_segment_positions_and_pre_finalize,
     execute_to_package_with_streaming_hooks, mock_compiled_source_plan, plan_input,
     plan_input_for_schema, sample_batches, sample_schema, terminal_file_position,
@@ -207,6 +207,56 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     assert!(services.memory().snapshot().current_bytes > 0);
     retained_payloads.lock().unwrap().clear();
     assert_eq!(services.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
+fn package_progress_hook_observes_each_durable_segment_before_finalization() {
+    let resource = MockResource::tier_b(sample_batches()).without_control_keys();
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let package_dir = TempDir::new().unwrap();
+    let durable_root = package_dir.path().to_path_buf();
+    let observed_rows = Arc::new(Mutex::new(Vec::new()));
+    let progress_rows = Arc::clone(&observed_rows);
+    let mut package_progress = move |entry: &SegmentEntry| {
+        assert!(durable_root.join(&entry.path).is_file());
+        progress_rows.lock().unwrap().push(entry.row_count);
+        Ok(())
+    };
+    let finalized_rows = Arc::clone(&observed_rows);
+    let pre_finalize = move |_builder: &cdf_package::PackageBuilder,
+                             draft: EnginePackageDraft<'_>| {
+        assert_eq!(
+            finalized_rows.lock().unwrap().len(),
+            draft.segment_positions.len()
+        );
+        Ok(())
+    };
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+
+    let output = block_on(execute_to_package_with_progress_hook(
+        &plan,
+        &resource,
+        package_dir.path(),
+        &pre_finalize,
+        &mut package_progress,
+        EngineExecutionConfig::default().with_execution_services(services),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        observed_rows.lock().unwrap().as_slice(),
+        output
+            .output
+            .identity_segments()
+            .iter()
+            .map(|segment| segment.row_count)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

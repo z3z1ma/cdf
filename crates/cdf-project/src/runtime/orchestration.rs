@@ -23,8 +23,7 @@ use super::{
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 use cdf_engine::{
-    EngineExecutionConfig, EnginePackageDraft, EnginePlan,
-    execute_to_package_with_segment_positions_and_pre_finalize,
+    EngineExecutionConfig, EnginePackageDraft, EnginePlan, execute_to_package_with_progress_hook,
     execute_to_package_with_streaming_hooks,
 };
 use cdf_kernel::{
@@ -825,12 +824,26 @@ async fn run_project_inner(
         None => config,
     };
     let options = config.new_invocation();
+    let options = match execution.recorder.source_retry_progress_observer() {
+        Some(observer) => options.with_source_retry_progress(observer),
+        None => options,
+    };
     let retry_evidence = options.source_retry_evidence();
+    let mut segment_index = 0_u64;
+    let mut package_progress = |segment: &SegmentEntry| {
+        segment_index = segment_index
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("package progress segment index overflowed u64"))?;
+        execution
+            .recorder
+            .append_package_segment_recorded(segment, segment_index)
+    };
     let output_result = match (active_staged.as_mut(), drain_controller.as_deref_mut()) {
         (Some(staged), Some(controller)) => {
             let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
                 |entry: &SegmentEntry, payload: cdf_engine::DurableSegmentPayload| {
+                    package_progress(entry)?;
                     staged.borrow_mut().stage_segment(entry, payload)
                 };
             let mut stream_finalize = || staged.borrow_mut().finish_background();
@@ -854,11 +867,11 @@ async fn run_project_inner(
                 resource,
                 &execution.package_dir,
                 &write_package_pre_finalize_artifacts,
-                cdf_engine::DrainEpochExecution::new(controller).with_late_data_carryover(
-                    late_data_carryover.take().ok_or_else(|| {
+                cdf_engine::DrainEpochExecution::new(controller)
+                    .with_package_progress(&mut package_progress)
+                    .with_late_data_carryover(late_data_carryover.take().ok_or_else(|| {
                         CdfError::internal("late-data carryover input was consumed twice")
-                    })?,
-                ),
+                    })?),
                 options,
             )
             .await
@@ -867,6 +880,7 @@ async fn run_project_inner(
             let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
                 |entry: &SegmentEntry, payload: cdf_engine::DurableSegmentPayload| {
+                    package_progress(entry)?;
                     staged.borrow_mut().stage_segment(entry, payload)
                 };
             let mut stream_finalize = || staged.borrow_mut().finish_background();
@@ -882,11 +896,12 @@ async fn run_project_inner(
             .await
             .map(|output| cdf_engine::EngineDrainEpochOutcome::Package(Box::new(output)))
         }
-        (None, None) => execute_to_package_with_segment_positions_and_pre_finalize(
+        (None, None) => execute_to_package_with_progress_hook(
             &manifest_plan.plan,
             resource,
             &execution.package_dir,
             &write_package_pre_finalize_artifacts,
+            &mut package_progress,
             options,
         )
         .await
@@ -968,15 +983,11 @@ async fn run_project_inner(
     let profile = &output.output.profile;
     let row_count = profile.output_rows;
     let segment_count = output.output.identity_segment_count();
-    let mut segment_index = 0_u64;
-    output.output.for_each_identity_segment(&mut |segment| {
-        segment_index = segment_index
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("package progress segment index overflowed u64"))?;
-        execution
-            .recorder
-            .append_package_segment_recorded(&segment, segment_index, segment_count)
-    })?;
+    if segment_index != segment_count {
+        return Err(CdfError::internal(
+            "live package progress count diverged from finalized package segment authority",
+        ));
+    }
     let quarantine_record_count = package.reader().quarantine_record_count()?;
     execution.recorder.append_package_finalized(
         &package_hash,

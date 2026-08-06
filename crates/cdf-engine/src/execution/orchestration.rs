@@ -72,7 +72,9 @@ use super::schema_admission::{
     AdmittedBatchSchema, BatchSchemaAdmissionContext, BatchSchemaDisposition, ExtraFieldEvidence,
     PartitionSchemaDisposition, partition_schema_disposition, validate_effective_schema_plan,
 };
-use super::segment_sink::{DurableSegmentHook, DurableSegmentObserver, DurableSegmentPayload};
+use super::segment_sink::{
+    DurableSegmentHook, DurableSegmentObserver, DurableSegmentPayload, PackageSegmentProgressHook,
+};
 
 use crate::{
     AdmittedEnginePartitionEvidence, CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan,
@@ -96,6 +98,7 @@ use crate::{
 /// Mutable epoch-scoped authorities that may advance only through one canonical drain closure.
 pub struct DrainEpochExecution<'a> {
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
+    package_progress: Option<&'a mut PackageSegmentProgressHook<'a>>,
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
     late_data_carryover: Vec<LateDataCarryoverInput>,
     controller: &'a mut cdf_runtime::DrainEpochController,
@@ -130,6 +133,7 @@ impl<'a> DrainEpochExecution<'a> {
     pub fn new(controller: &'a mut cdf_runtime::DrainEpochController) -> Self {
         Self {
             durable_segment: None,
+            package_progress: None,
             stream_finalize: None,
             late_data_carryover: Vec::new(),
             controller,
@@ -143,6 +147,14 @@ impl<'a> DrainEpochExecution<'a> {
     ) -> Self {
         self.durable_segment = Some(durable_segment);
         self.stream_finalize = Some(stream_finalize);
+        self
+    }
+
+    pub fn with_package_progress(
+        mut self,
+        progress: &'a mut PackageSegmentProgressHook<'a>,
+    ) -> Self {
+        self.package_progress = Some(progress);
         self
     }
 
@@ -2735,6 +2747,7 @@ where
         None,
         None,
         None,
+        None,
         Vec::new(),
         None,
         standalone_execution_options()?,
@@ -2759,6 +2772,7 @@ where
         plan,
         resource,
         package_dir,
+        None,
         None,
         None,
         None,
@@ -2788,6 +2802,7 @@ where
         None,
         None,
         None,
+        None,
         Vec::new(),
         None,
         standalone_execution_options()?,
@@ -2812,6 +2827,7 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
+        None,
         None,
         None,
         Vec::new(),
@@ -2840,8 +2856,37 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
+        None,
         Some(durable_segment),
         Some(stream_finalize),
+        Vec::new(),
+        None,
+        options,
+    )
+    .await?
+    .into_package()
+}
+
+pub async fn execute_to_package_with_progress_hook<'a, R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    package_progress: &'a mut PackageSegmentProgressHook<'a>,
+    options: EngineExecutionInvocation,
+) -> Result<EngineRunOutputWithSegmentPositions>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        Some(pre_finalize),
+        Some(package_progress),
+        None,
+        None,
         Vec::new(),
         None,
         options,
@@ -2867,6 +2912,7 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
+        epoch.package_progress,
         epoch.durable_segment,
         epoch.stream_finalize,
         epoch.late_data_carryover,
@@ -3007,6 +3053,7 @@ where
             services,
             cancellation,
             retry_journal,
+            retry_progress,
         } = runtime;
         // Construct the source-owned stream only when this open future is polled. In particular,
         // remote sources may resolve short-lived access capabilities while opening; creating them
@@ -3059,6 +3106,7 @@ where
                             &plan_id,
                             schedule,
                             &retry_journal,
+                            retry_progress.as_deref(),
                         )
                         .await?;
                         continue;
@@ -3079,6 +3127,7 @@ where
                             &plan_id,
                             schedule,
                             &retry_journal,
+                            retry_progress.as_deref(),
                         )
                         .await?;
                         continue;
@@ -3108,6 +3157,7 @@ where
                                             )
                                         })?,
                                         &retry_journal,
+                                        retry_progress.as_deref(),
                                     )
                                     .map(Some)
                                     .map_err(
@@ -3205,6 +3255,7 @@ where
                                     )
                                 })?,
                                 &retry_journal,
+                                retry_progress.as_deref(),
                             )
                         })
                         .transpose()
@@ -3380,6 +3431,7 @@ async fn execute_to_package_inner<'a, R>(
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
+    package_progress: Option<&'a mut PackageSegmentProgressHook<'a>>,
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
     late_data_carryover_input: Vec<LateDataCarryoverInput>,
@@ -3582,6 +3634,7 @@ where
     let staged_handoff = durable_segment.is_some();
     let mut durable_segment_observer = DurableSegmentObserver {
         hook: durable_segment,
+        progress: package_progress,
     };
     let requested_partition_jobs = if remaining_limit == Some(0) {
         0
@@ -3609,6 +3662,7 @@ where
         services: options.services.clone(),
         cancellation: run_cancellation.clone(),
         retry_journal: options.retry_journal.clone(),
+        retry_progress: options.source_retry_progress.clone(),
     };
     let frontier_partition_count = if partition_jobs == 0 {
         0
