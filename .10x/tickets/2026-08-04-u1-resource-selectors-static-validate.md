@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-05
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/done/2026-08-04-u0-manifest-text-diagnostic-ownership.md`
 
