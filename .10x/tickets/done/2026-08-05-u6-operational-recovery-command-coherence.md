@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-08-05
 Updated: 2026-08-05
-Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+Parent: `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/done/2026-08-05-u5-source-resource-discovery-generation-add.md`
 
 # U6 operational and recovery command coherence

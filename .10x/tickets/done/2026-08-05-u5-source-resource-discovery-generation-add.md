@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-08-05
 Updated: 2026-08-05
-Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+Parent: `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/done/2026-08-05-u4-portable-plan-export-consumption.md`
 
 # U5 source/resource discovery, generation, and add

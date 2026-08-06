@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-08-05
 Updated: 2026-08-06
-Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+Parent: `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/done/2026-08-06-u6b-default-live-telemetry.md`
 
 # U7 resource-first cutover certificate
@@ -55,7 +55,7 @@ findings before judging closure. The review range includes U6b.
 
 ## References
 
-- `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+- `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 - `.10x/specs/resource-preparation-command-experience.md`
 - `.10x/specs/resource-selector-batch-commands.md`
 - `.10x/specs/portable-plan-artifact.md`
@@ -140,6 +140,13 @@ findings before judging closure. The review range includes U6b.
   rows from earlier committed checkpoints as drift because it compared only current heads; it now
   compares the complete committed checkpoint history. The existing corrupt/missing/extra tests and
   a new two-run historical-mirror regression pass.
+- 2026-08-06: The final fresh review re-read the five governing specs and static-validation
+  decision, then traced selector resolution, selected compile/plan/run preparation, whole-plan
+  preflight and guarded first-use publication, package/recovery settlement, scoped doctor and
+  drift comparison, typed report/redaction authority, and process-local progress rendering. Its
+  current-only scan found four remaining top-level replay/resume examples in `VISION.md`; commit
+  `f919f4cc` replaced them with `cdf run --package <path>` and `cdf run --resume`. A repeated
+  shipped-surface scan and diff check passed. No critical or significant finding remained.
 
 ## Blockers
 
@@ -170,13 +177,58 @@ None.
 - Release findings: the same-state exact-package regression passed 1/1; the replay settlement
   model tests passed 2/2; the doctor drift set passed its three existing negative/clean cases and
   the new multi-commit historical case.
-- Limits: these focused observations establish the repaired seams only. The required post-repair
-  workspace suite, quality gates, release journeys, and final review remain below.
+- AC1: the final shipped-surface scan over CLI code, generated artifacts, docs, examples, tools,
+  workflows, and `VISION.md` found no removed top-level replay/resume, compile-refresh,
+  schema-pin/discover, validate-deep, or no-pin surface after `f919f4cc`.
+- AC2: both generated CLI artifact checks passed and current help exposes resource selectors,
+  portable plan export/consumption, exact-package and interrupted-run inputs, discovery scopes,
+  and doctor scopes while retaining the existing human plan document.
+- AC3: the post-repair workspace suite passed 2,287/2,287 selected tests with 56 declared skips;
+  all-feature workspace doc tests also passed.
+- AC4: formatting, all-target/all-feature check, strict all-feature Clippy, generated-reference
+  checks, 2.48% scoped duplication, `cargo machete`, the product smoke matrix, and diff checks all
+  passed. The cognitive-complexity diagnostic found no new changed-function warning.
+- AC5: the bundled release binary completed every named disposable supplied-sandbox journey,
+  including live telemetry, package execution without project/source/compiler authority, exact
+  same-state retry, no-work interrupted-run recovery, and scoped doctor over two committed
+  checkpoints.
+- AC6: the fresh review covered every named falsification seam. The only finding was the resolved
+  stale VISION command wording; no critical or significant finding remains.
+- AC7: U0-U6b are `done` under `tickets/done/`; U7 and the parent close together with repaired
+  paths and complete evidence.
+- Limits: 56 scheduled or environment-backed test families were skipped by their declared
+  profiles. The release certificate proves the supplied Files/DuckDB sandbox and bounded command
+  authorities, not every external adapter service.
 
 ## Review
 
-Pending final fresh red-team pass.
+Findings:
+
+- `minor`, resolved: four stale top-level `cdf replay`/`cdf resume` examples remained in
+  `VISION.md`; `f919f4cc` converted them to the single-run-verb model and the shipped-surface scan
+  then passed.
+- No critical or significant finding across selector isolation, all-selected preflight,
+  lock/schema fencing, portable-plan no-repair validation, package/recovery isolation, static and
+  operational command boundaries, report redaction/effects parity, progress liveness, or
+  current-only deletion.
+
+Verdict: pass.
+
+Residual risk: the declared skipped external-service and scheduled suites were not promoted into
+this bounded certificate. The bundled release sandbox provides direct Files/DuckDB evidence; other
+adapters retain their own environment-backed certificates.
 
 ## Retrospective
 
-Pending execution.
+The single broad suite was useful precisely once: it exposed stale aggregate-envelope assertions
+and three real schema-authority defects without becoming an iteration loop. Targeted repairs and
+the existing product matrix then kept feedback fast. More importantly, the release sandbox caught
+two lifecycle defects that compilation and isolated tests could not: exact committed package
+redelivery and doctor comparison after multiple valid commits. Both now have focused regressions.
+
+The most effective closure pattern was broad behavior once, proportional static gates once, then
+release journeys that deliberately removed unrelated authorities. The main avoidable friction was
+trusting a text sweep too early; the fresh review's exact shipped-surface scan found four remaining
+VISION examples. Future command cutovers should make that exact scan part of the first deletion
+commit, while preserving domain uses such as schema pinning and package replay mechanics that do
+not advertise removed grammar.

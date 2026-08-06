@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-08-04
 Updated: 2026-08-04
-Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+Parent: `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 
 # U0 manifest text and diagnostic ownership
 

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-08-06
 Updated: 2026-08-06
-Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
+Parent: `.10x/tickets/done/2026-08-04-resource-first-cli-experience-program.md`
 Depends-On: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`
 
 # U6b useful default live telemetry

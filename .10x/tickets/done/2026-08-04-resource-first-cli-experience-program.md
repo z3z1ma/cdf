@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-04
 Updated: 2026-08-06
 
@@ -49,7 +49,7 @@ resources, and every adjacent command has one scope and effect ceiling.
    `.10x/tickets/done/2026-08-06-u6b-default-live-telemetry.md`.
 9. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
-   Owner: `.10x/tickets/2026-08-05-u7-resource-first-cutover-certificate.md`.
+   Owner: `.10x/tickets/done/2026-08-05-u7-resource-first-cutover-certificate.md`.
 
 Children U2-U7, including U6b, open only when their immediate dependency's implementation evidence
 is complete and pushed and any remaining focused ratification blocker is closed. A dependency may
@@ -137,19 +137,44 @@ entire tranche is frozen. Focused tests/check/Clippy run during each child.
   exact-package, and interrupted-run authority; doctor has explicit operational scopes; adjacent
   commands load named authority; and the optimized bundled release binary loaded the 1.1M-row,
   2.1-GiB FineWeb sandbox resource with live progress and no schema mismatch. U7 is unblocked.
+- 2026-08-06: U6b added default live typed telemetry and closed with a bundled-release FineWeb
+  certificate. U7 then passed the 2,287-test workspace suite, all quality gates, the complete
+  disposable supplied-sandbox journey, and the fresh final review. All children and this program
+  are closed under `tickets/done/`.
 
 ## Blockers
 
-None at the program-model level. Children remain dependency-gated by the sequence above.
+None.
 
 ## Evidence
 
-Pending child execution.
+- U0-U2 established safe manifest diagnostics, deterministic selection/static validation, and
+  independent per-resource compilation authority.
+- U3-U5 established shared selected preparation, multi-resource plan/run, portable plan export and
+  consumption, bounded discovery, explicit-column generation, and create-or-verify add behavior.
+- U6-U6b established one run verb for resource/plan/package/recovery inputs, scoped operational
+  doctor, adjacent-command authority isolation, and useful default live telemetry.
+- U7's closure record maps shipped-surface deletion, generated artifacts, the 2,287-test workspace
+  suite, quality gates, bundled-release supplied-sandbox journeys, and final review to its seven
+  acceptance criteria.
 
 ## Review
 
-Pending executable-child reviews.
+The single user-ratified final review attempted to falsify the complete U0-U6b integration across
+selection, preparation barriers, schema/lock authority, portable plans, package/recovery,
+static/operational boundaries, reports/redaction, and progress. One minor stale-documentation
+finding was corrected; verdict pass with no unresolved critical or significant finding.
 
 ## Retrospective
 
-Pending program closure.
+The resource-first model removed the user's original circular workflow: ordinary plan/run now own
+selected preparation; compile is independently scopeable; lock pins schema authority; validate is
+static; doctor is explicitly operational; discovery can inventory and generate explicit-column
+resources; plan artifacts cross machines; and exact package/recovery inputs do not require source
+or compiler authority.
+
+Sequencing the work along authority boundaries kept each commit reviewable, while deferring one
+broad suite and one fresh review avoided repeated workspace toil. Release-mode sandbox journeys
+were indispensable: they exposed same-state package idempotency and historical doctor drift that
+unit-level work had missed. Those failures are now regression tests rather than retained process
+knowledge.
