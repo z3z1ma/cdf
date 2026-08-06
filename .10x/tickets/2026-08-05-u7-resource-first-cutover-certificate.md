@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-08-05
-Updated: 2026-08-05
+Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-04-resource-first-cli-experience-program.md`
-Depends-On: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`
+Depends-On: `.10x/tickets/2026-08-06-u6b-default-live-telemetry.md`
 
 # U7 resource-first cutover certificate
 
@@ -13,11 +13,11 @@ product language, fixtures, helper names, generated references, and dead command
 reconcile completed child records; run one broad workspace behavioral suite and the repository
 quality gates; exercise the supplied sandbox across static, discovery, planning, portable-plan,
 resource-run, exact-package, interrupted-run, and scoped-doctor authority; then perform one fresh
-adversarial review of the complete U0-U6 change range.
+adversarial review of the complete U0-U6b change range.
 
 The user explicitly prohibited subagents for this execution. The primary agent therefore performs
 the final red-team pass with a fresh diff/spec reading after implementation and testing, and records
-findings before judging closure.
+findings before judging closure. The review range includes U6b.
 
 ## Non-goals
 
@@ -81,6 +81,8 @@ findings before judging closure.
 - 2026-08-05: Shaped after U6 passed its release FineWeb execution certificate and was pushed.
   Initial sweep found stale removed-command examples in `VISION.md` and the conformance acceptance
   transcript, plus terminal U1/U2 records still stored under the active ticket directory.
+- 2026-08-06: Re-gated behind U6b after the user required useful default phase telemetry before the
+  final cutover certificate.
 
 ## Blockers
 

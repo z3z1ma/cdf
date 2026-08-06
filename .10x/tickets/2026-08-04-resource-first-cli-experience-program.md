@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-04
-Updated: 2026-08-05
+Updated: 2026-08-06
 
 # Resource-first CLI experience program
 
@@ -43,16 +43,19 @@ resources, and every adjacent command has one scope and effect ceiling.
    preview/backfill/status/inspect loaders, reports, negative-I/O laws, and remediation against the
    command-effect contract.
    Owner: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`.
-8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
+8. **U6b — useful default live telemetry.** Add typed phase-local metrics, clock-driven TTY and
+   headless liveness, immediate retry/wait status, and stable completed/failure telemetry without
+   durable animation events. Owner: `.10x/tickets/2026-08-06-u6b-default-live-telemetry.md`.
+9. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
    Owner: `.10x/tickets/2026-08-05-u7-resource-first-cutover-certificate.md`.
 
-Children U2-U7 open only when their immediate dependency's implementation evidence is complete and
-pushed and any remaining focused ratification blocker is closed. A dependency may remain `active`
-solely when its review is intentionally deferred to the named combined barrier with the new child;
-both close only after that review passes. No child may introduce a compatibility parser, alias,
-fallback artifact reader, or dual authority; superseded existing surfaces are deleted in the child
-that replaces them and must all be absent at cutover.
+Children U2-U7, including U6b, open only when their immediate dependency's implementation evidence
+is complete and pushed and any remaining focused ratification blocker is closed. A dependency may
+remain `active` solely when its review is intentionally deferred to the named combined barrier with
+the new child; both close only after that review passes. No child may introduce a compatibility
+parser, alias, fallback artifact reader, or dual authority; superseded existing surfaces are
+deleted in the child that replaces them and must all be absent at cutover.
 
 ## Integration boundaries
 
