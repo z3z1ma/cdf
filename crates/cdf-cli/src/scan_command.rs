@@ -141,7 +141,7 @@ pub(crate) fn plan(
     )?;
     let selection =
         cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
-            .map_err(crate::compile_command::resource_selection_error)?;
+            .map_err(|error| crate::compile_command::resource_selection_error("cdf plan", error))?;
     let mut resources = Vec::with_capacity(selection.resources.len());
     let mut portable_resources = Vec::with_capacity(selection.resources.len());
     for selected in &selection.resources {
@@ -995,9 +995,9 @@ mod render_tests {
         assert_eq!(
             command_correct_scan_message(
                 "plan",
-                "cdf run requires a pinned schema hash".to_owned()
+                "cdf run requires locked schema authority".to_owned()
             ),
-            "cdf plan requires a pinned schema hash"
+            "cdf plan requires locked schema authority"
         );
     }
 }
@@ -1457,7 +1457,7 @@ mod source_authority_tests {
     use cdf_kernel::SourceDiscoveryBinding;
 
     #[test]
-    fn pinned_snapshot_rejects_a_different_compiled_source_plan() {
+    fn locked_schema_rejects_a_different_compiled_source_plan() {
         let metadata = BTreeMap::from([
             ("source_driver".to_owned(), "files".to_owned()),
             ("source_driver_version".to_owned(), "1.0.0".to_owned()),
@@ -1470,12 +1470,10 @@ mod source_authority_tests {
             .expect("valid discovery binding");
         let error = validate_recorded_source_authority(&metadata, "files", "1.0.0", &recompiled)
             .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("does not match compiled source authority")
-        );
-        assert!(error.message.contains("repin the schema"));
+        assert!(error.message.contains("locked schema authority"));
+        assert!(error.message.contains("does not match source authority"));
+        assert!(error.message.contains("cdf schema diff"));
+        assert!(error.message.contains("promote or recompile"));
     }
 
     #[test]

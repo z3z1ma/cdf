@@ -177,7 +177,9 @@ fn doctor_resources(
 ) -> Result<CommandOutput, CliError> {
     let (root, _) = crate::context::project_location(cli.project.as_ref())?;
     let selection = cdf_project::resolve_project_resource_selection(&root, selectors, exclude)
-        .map_err(crate::compile_command::resource_selection_error)?;
+        .map_err(|error| {
+            crate::compile_command::resource_selection_error("cdf doctor resource", error)
+        })?;
     let registry = crate::source_registry::builtin_source_registry()?;
     let mut checks = Vec::new();
     let mut contacted = Vec::new();

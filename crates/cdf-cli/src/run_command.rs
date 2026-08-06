@@ -131,7 +131,7 @@ pub(crate) fn run(
     let (root, _) = crate::context::project_location(cli.project.as_ref())?;
     let selection =
         cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
-            .map_err(crate::compile_command::resource_selection_error)?;
+            .map_err(|error| crate::compile_command::resource_selection_error("cdf run", error))?;
     let mut outcomes = Vec::with_capacity(selection.resources.len());
     let mut prepared_runs = Vec::with_capacity(selection.resources.len());
     for selected in &selection.resources {
@@ -1490,9 +1490,7 @@ fn hydrate_adhoc_locked_snapshot(
     let Some(reference) = locked.schema_snapshot.as_ref() else {
         return Ok(resource);
     };
-    if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
-        || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
-    {
+    if locked.descriptor.schema_source.pinned_snapshot() != Some(reference) {
         return Err(CliError::from(CdfError::data(format!(
             "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for ad-hoc resource `{}`",
             resource.descriptor().resource_id
@@ -1507,6 +1505,17 @@ fn hydrate_adhoc_locked_snapshot(
             resource.descriptor().resource_id
         ))));
     }
+    let locked_schema = locked.schema.to_arrow()?;
+    let embedded_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&locked_schema)?;
+    let artifact_schema = artifact.schema.to_arrow()?;
+    if locked.schema_hash.as_deref() != Some(embedded_schema_hash.as_str())
+        || cdf_kernel::canonical_arrow_schema_hash(&artifact_schema)? != embedded_schema_hash
+    {
+        return Err(CliError::from(CdfError::data(format!(
+            "{LOCK_FILE_NAME} has inconsistent embedded schema authority for ad-hoc resource `{}`",
+            resource.descriptor().resource_id
+        ))));
+    }
     let pinned_source = resource
         .descriptor()
         .schema_source
@@ -1516,10 +1525,7 @@ fn hydrate_adhoc_locked_snapshot(
                 "ad-hoc schema source does not support lock hydration",
             ))
         })?;
-    Ok(
-        resource
-            .with_schema_source_and_schema(pinned_source, Arc::new(artifact.schema.to_arrow()?)),
-    )
+    Ok(resource.with_schema_source_and_schema(pinned_source, Arc::new(locked_schema)))
 }
 
 fn persist_local_adhoc_source(

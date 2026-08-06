@@ -98,6 +98,19 @@ findings before judging closure. The review range includes U6b.
   `inspect run` described execution, while doctor scopes used unrelated or generic descriptions.
   Added scope-specific inspect/doctor help and regenerated help, manpage, completion, and command
   reference artifacts.
+- 2026-08-06: The first workspace suite exposed 40 failures against 2,247 passes. Most failures
+  were stale pre-resource-set JSON-envelope assertions, but the run also found three owned product
+  defects: ad-hoc lock hydration compared artifact identity to canonical schema identity, schema
+  promotion published the snapshot artifact hash into the canonical schema-hash field without
+  replacing the embedded schema, and optional preview attestation rejected generation-only
+  evidence with no physical schema hash. Repaired those authorities, made selector typo suggestions
+  name the invoked command, and converted the affected behavioral/conformance tests to current
+  compile/lock and aggregate-report semantics.
+- 2026-08-06: Focused repair validation passed: 276 `cdf-cli` library tests before the final stale
+  assertion repair, the repaired ad-hoc test independently, the child-process doctor environment
+  test, and three focused run-matrix conformance tests covering REST compile/run, keyless append,
+  and preview/run archetype parity. A locked affected-package check for `cdf-cli`, `cdf-engine`,
+  `cdf-project`, and `cdf-conformance` then passed.
 
 ## Blockers
 
@@ -105,7 +118,15 @@ None.
 
 ## Evidence
 
-Pending execution.
+- Repair loop: `DUCKDB_DOWNLOAD_LIB=1 cargo nextest run -p cdf-cli --lib --no-fail-fast`
+  reached 276 pass / 1 stale assertion; the exact repaired ad-hoc authority test then passed.
+- Integration seams: `DUCKDB_DOWNLOAD_LIB=1 cargo nextest run -p cdf-cli --test doctor_env
+  --no-fail-fast` passed 1/1; the focused `cdf-conformance` expression for REST compile/run,
+  keyless append, and preview/run parity passed 3/3.
+- Compile boundary: `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-cli -p cdf-engine -p cdf-project
+  -p cdf-conformance --locked` passed after formatting.
+- Limits: these focused observations establish the repaired seams only. The required post-repair
+  workspace suite, quality gates, release journeys, and final review remain below.
 
 ## Review
 

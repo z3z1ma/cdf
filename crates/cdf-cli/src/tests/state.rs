@@ -99,7 +99,8 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         "local.events",
     ]);
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
-    let first_checkpoint = stderr_or_stdout_json(&first.stdout)["result"]["checkpoint_id"]
+    let first_json = stderr_or_stdout_json(&first.stdout);
+    let first_checkpoint = single_resource_run_report(&first_json)["checkpoint_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -121,7 +122,8 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         "local.events",
     ]);
     assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
-    let second_checkpoint = stderr_or_stdout_json(&second.stdout)["result"]["checkpoint_id"]
+    let second_json = stderr_or_stdout_json(&second.stdout);
+    let second_checkpoint = single_resource_run_report(&second_json)["checkpoint_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -270,7 +272,8 @@ fn state_rewind_human_headless_render_reports_marker_and_packages_ahead() {
         "local.events",
     ]);
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
-    let first_checkpoint = stderr_or_stdout_json(&first.stdout)["result"]["checkpoint_id"]
+    let first_json = stderr_or_stdout_json(&first.stdout);
+    let first_checkpoint = single_resource_run_report(&first_json)["checkpoint_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -330,7 +333,8 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
     let project = TestProject::new();
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
-    let checkpoint_id = stderr_or_stdout_json(&run_result.stdout)["result"]["checkpoint_id"]
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    let checkpoint_id = single_resource_run_report(&run_json)["checkpoint_id"]
         .as_str()
         .unwrap()
         .to_owned();

@@ -45,6 +45,12 @@ pub(crate) fn inspect(
             CommandOutput::rendered("inspect project", render::project_document(&report), report)
         }
         InspectNoun::Resource(id) => {
+            let operational =
+                ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            resolve_project_resource_selection(&operational.root, std::slice::from_ref(&id), &[])
+                .map_err(|error| {
+                crate::compile_command::resource_selection_error("cdf inspect resource", error)
+            })?;
             let context = ProjectContext::load_selected_read_only(
                 cli.project.as_ref(),
                 cli.env.as_deref(),

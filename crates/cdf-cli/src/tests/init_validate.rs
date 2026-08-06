@@ -520,7 +520,7 @@ fn validate_reports_corrupt_local_authority_without_contact_or_repair() {
 }
 
 #[test]
-fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
+fn plan_selector_miss_names_nearest_authored_resource() {
     let project = TestProject::new();
     let result = run([
         "cdf",
@@ -531,20 +531,14 @@ fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
         "local.eventz",
     ]);
 
-    assert_eq!(result.exit_code, 3);
+    assert_eq!(result.exit_code, 2);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["code"], "CDF-RESOURCE-NOT-COMPILED");
+    assert_eq!(json["error"]["code"], "CDF-CLI-USAGE");
     assert_eq!(
         json["error"]["remediation"]["summary"],
-        "Use a compiled resource id or author the expected project SQL resource."
+        "Correct the command arguments and run the command again."
     );
     let message = json["error"]["message"].as_str().unwrap();
-    assert!(message.contains("resource `local.eventz` is not compiled"));
-    assert!(message.contains("compiled query-first resources"));
-    assert!(message.contains("`local.events`"));
-    assert!(message.contains("cdf/local/events.cdf.sql"));
-    assert!(message.contains("using configured source `local`"));
-    assert!(message.contains("cdf/<namespace>/<resource>.cdf.sql"));
-    assert!(!message.contains("cdf run requires"));
-    assert_eq!(json["error"]["suggestions"][0], "local.events");
+    assert!(message.contains("resource selector \"local.eventz\" matched no resource"));
+    assert_eq!(json["error"]["suggestions"][0], "cdf plan local.events");
 }

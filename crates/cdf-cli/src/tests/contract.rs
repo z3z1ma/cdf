@@ -15,17 +15,10 @@ fn contract_show_remains_project_free() {
 }
 
 #[test]
-fn contract_freeze_writes_lock_and_contract_test_passes() {
+fn contract_freeze_records_locked_contract_and_contract_test_passes() {
     let project = TestProject::new();
-    let plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
     let result = run([
         "cdf",
         "--json",
@@ -297,15 +290,8 @@ fn contract_test_fails_closed_when_lock_is_missing() {
 #[test]
 fn contract_test_reports_query_validation_program_drift() {
     let project = TestProject::new();
-    let plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
     let freeze = run([
         "cdf",
         "--json",

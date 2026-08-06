@@ -208,6 +208,17 @@ fn locked_schema_hash(project: &TestProject, resource_id: &str) -> String {
         .expect("compiled resource must bind a schema hash")
 }
 
+fn locked_schema_snapshot_hash(project: &TestProject, resource_id: &str) -> String {
+    let lock = cdf_project::parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap())
+        .unwrap();
+    lock.resources[resource_id]
+        .schema_snapshot
+        .as_ref()
+        .expect("compiled resource must bind a schema snapshot")
+        .schema_hash
+        .to_string()
+}
+
 fn assert_no_preview_writes(project: &TestProject) {
     assert!(
         !project.root.join(".cdf/packages").exists(),
@@ -319,15 +330,41 @@ fn assert_no_run_writes(project: &TestProject) {
     );
 }
 
-fn run_package_id(result: &cdf_cli_core::output::InvocationResult) -> String {
-    let json = stderr_or_stdout_json(&result.stdout);
-    let result = &json["result"];
-    let result = result
-        .get("resources")
-        .and_then(serde_json::Value::as_array)
+fn single_resource_run_report(json: &Value) -> &Value {
+    json["result"]["resources"]
+        .as_array()
         .and_then(|resources| resources.first())
         .and_then(|resource| resource.get("result"))
-        .unwrap_or(result);
+        .unwrap_or(&json["result"])
+}
+
+fn single_resource_plan_report(json: &Value) -> &Value {
+    json["result"]["resources"]
+        .as_array()
+        .and_then(|resources| resources.first())
+        .and_then(|resource| resource.get("report"))
+        .expect("successful resource-set plan must contain one resource report")
+}
+
+fn single_resource_plan_error(json: &Value) -> &Value {
+    json["result"]["resources"]
+        .as_array()
+        .and_then(|resources| resources.first())
+        .and_then(|resource| resource.get("error"))
+        .expect("failed resource-set plan must contain one resource error")
+}
+
+fn single_resource_run_error(json: &Value) -> &Value {
+    json["result"]["resources"]
+        .as_array()
+        .and_then(|resources| resources.first())
+        .and_then(|resource| resource.get("error"))
+        .expect("failed resource-set preparation must contain one resource error")
+}
+
+fn run_package_id(result: &cdf_cli_core::output::InvocationResult) -> String {
+    let json = stderr_or_stdout_json(&result.stdout);
+    let result = single_resource_run_report(&json);
     result["package_id"]
         .as_str()
         .expect("successful run report must name its minted package")

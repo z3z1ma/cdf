@@ -41,7 +41,7 @@ pub(crate) fn compile(
         .unwrap_or(&config.project.default_environment);
     let environment = config.effective_environment(environment_name)?;
     let selection = resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
-        .map_err(resource_selection_error)?;
+        .map_err(|error| resource_selection_error("cdf compile", error))?;
     let (_, execution) = crate::commands::default_services(cli)?;
     let mut results = Vec::with_capacity(selection.resources.len());
 
@@ -613,7 +613,10 @@ fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-pub(crate) fn resource_selection_error(error: ProjectResourceSelectionError) -> CliError {
+pub(crate) fn resource_selection_error(
+    command: &str,
+    error: ProjectResourceSelectionError,
+) -> CliError {
     match error {
         ProjectResourceSelectionError::Project(error) => error.into(),
         ProjectResourceSelectionError::ExactNoMatch {
@@ -625,7 +628,7 @@ pub(crate) fn resource_selection_error(error: ProjectResourceSelectionError) -> 
         .with_suggestions(
             suggestions::nearest(&selector, candidates)
                 .into_iter()
-                .map(|candidate| format!("cdf compile {candidate}"))
+                .map(|candidate| format!("{command} {candidate}"))
                 .collect(),
         ),
         error => CliError::usage(error.to_string()),

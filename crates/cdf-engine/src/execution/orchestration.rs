@@ -1105,8 +1105,9 @@ where
     if let Some(observation_id) = observation_id {
         cache.insert(observation_id.clone(), attestation.clone());
     }
-    if let Some(expected) = expected
-        && attestation.physical_schema_hash() != Some(&expected.physical_schema_hash)
+    if let (Some(expected), Some(attested_schema_hash)) =
+        (expected, attestation.physical_schema_hash())
+        && attested_schema_hash != &expected.physical_schema_hash
     {
         return Err(CdfError::data(format!(
             "schema observation {:?} changed physical schema between planning and preview; expected {}, attested {:?}; re-plan before retrying",

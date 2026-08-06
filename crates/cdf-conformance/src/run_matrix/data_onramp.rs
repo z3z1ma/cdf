@@ -63,7 +63,7 @@ fn planned_partitions(
 }
 
 #[test]
-fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
+fn rest_compile_preview_run_package_checkpoint_conformance() {
     const SECRET: &str = "recorded-rest-secret";
     const BODY: &str = r#"{ "items": [
         { "VendorID": 1, "updated_at": 10 },
@@ -74,25 +74,25 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let temp = tempfile::tempdir().unwrap();
     write_s5_project(temp.path(), server.base_url(), SECRET);
 
-    let first_pin = invoke_success_json(temp.path(), &["schema", "pin", "api.items"], Some(SECRET));
-    let first = &first_pin["result"];
-    assert_eq!(first["status"], "added");
-    assert_eq!(
-        first["snapshot_metadata"]["probe"],
-        "registered-source-discovery"
-    );
-    assert_eq!(first["snapshot_metadata"]["source_driver"], "rest");
-    assert_eq!(first["source_identity"]["driver.sample_pages"], "1");
-    assert_eq!(first["source_identity"]["driver.sample_records"], "2");
-    assert_eq!(first["writes"]["schema_snapshot"], true);
-    assert_eq!(first["writes"]["lockfile"], true);
+    let first_compile = invoke_success_json(temp.path(), &["compile", "api.items"], Some(SECRET));
+    let first = &first_compile["result"];
+    assert_eq!(first["counts"]["compiled"], 1);
+    assert_eq!(first["resources"][0]["resource_id"], "api.items");
+    assert_eq!(first["resources"][0]["discovered_schema"], true);
 
-    let pinned_hash = first["schema_hash"].as_str().unwrap().to_owned();
-    let snapshot_path = first["schema_snapshot_path"].as_str().unwrap().to_owned();
+    let lock = cdf_project::parse_lock(&fs::read_to_string(temp.path().join("cdf.lock")).unwrap())
+        .unwrap();
+    let reference = lock.resources["api.items"]
+        .schema_snapshot
+        .as_ref()
+        .unwrap();
+    let locked_snapshot_hash = reference.schema_hash.to_string();
+    let snapshot_path = reference.path.clone();
     let snapshot_bytes = fs::read(temp.path().join(&snapshot_path)).unwrap();
     let lock_bytes = fs::read(temp.path().join("cdf.lock")).unwrap();
     let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
     assert_eq!(snapshot["metadata"]["probe"], "registered-source-discovery");
+    assert_eq!(snapshot["metadata"]["source_driver"], "rest");
     let vendor = snapshot["schema"]["fields"]
         .as_array()
         .unwrap()
@@ -101,14 +101,10 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
         .expect("normalized VendorID snapshot field");
     assert_eq!(vendor["metadata"]["cdf:source_name"], "VendorID");
 
-    let second_pin =
-        invoke_success_json(temp.path(), &["schema", "pin", "api.items"], Some(SECRET));
-    let second = &second_pin["result"];
-    assert_eq!(second["status"], "unchanged");
-    assert_eq!(second["schema_hash"], pinned_hash);
-    assert_eq!(second["schema_snapshot_path"], snapshot_path);
-    assert_eq!(second["writes"]["schema_snapshot"], false);
-    assert_eq!(second["writes"]["lockfile"], false);
+    let second_compile = invoke_success_json(temp.path(), &["compile", "api.items"], Some(SECRET));
+    let second = &second_compile["result"];
+    assert_eq!(second["counts"]["compiled"], 1);
+    assert_eq!(second["resources"][0]["discovered_schema"], false);
     assert_eq!(
         fs::read(temp.path().join(&snapshot_path)).unwrap(),
         snapshot_bytes
@@ -123,9 +119,9 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
     assert_eq!(project_tree_snapshot(temp.path()), before_preview);
 
     let run = invoke_success_json(temp.path(), &["run", "api.items"], Some(SECRET));
-    let report = &run["result"];
+    let report = &run["result"]["resources"][0]["result"];
     assert_eq!(report["resource_id"], "api.items");
-    assert_eq!(report["schema_hash"], pinned_hash);
+    assert_eq!(report["schema_hash"], locked_snapshot_hash);
     assert_eq!(report["schema_snapshot"]["outcome"], "unchanged");
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["checkpoint"]["status"], "committed");
@@ -144,7 +140,7 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
         .unwrap();
     assert_eq!(receipts.len(), 1);
     let receipt = &receipts[0];
-    assert_eq!(receipt.schema_hash.as_str(), pinned_hash);
+    assert_eq!(receipt.schema_hash.as_str(), locked_snapshot_hash);
     assert_eq!(receipt.disposition, WriteDisposition::Append);
     assert_eq!(receipt.counts.rows_written, 2);
 
@@ -172,7 +168,7 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
         .unwrap()
         .expect("committed REST checkpoint head");
     assert_eq!(head.delta.checkpoint_id.as_str(), checkpoint_id);
-    assert_eq!(head.delta.schema_hash.as_str(), pinned_hash);
+    assert_eq!(head.delta.schema_hash.as_str(), locked_snapshot_hash);
     assert!(receipt.covers_state_delta(&head.delta));
     let SourcePosition::Cursor(cursor) = &head.delta.output_position else {
         panic!("REST checkpoint must carry the declared cursor");
@@ -182,7 +178,7 @@ fn rest_discover_pin_preview_run_package_checkpoint_conformance() {
 
     assert_generated_artifacts_do_not_contain(temp.path(), SECRET);
     let requests = server.requests().unwrap();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 3);
     assert!(requests.iter().all(|request| {
         request.contains("GET /items HTTP/1.1")
             && request.contains(&format!("authorization: Bearer {SECRET}"))
@@ -198,15 +194,19 @@ fn keyless_append_runs_without_key_remediation() {
     let plan = invoke_cli(append.path(), &["plan", "local.events"]);
     assert_success_without_key_nudge(&plan);
     let plan_json = success_json(&plan);
-    assert_eq!(plan_json["result"]["destination"]["disposition"], "append");
+    assert_eq!(
+        plan_json["result"]["resources"][0]["report"]["destination"]["disposition"],
+        "append"
+    );
     let preview = invoke_cli(append.path(), &["preview", "local.events"]);
     assert_success_without_key_nudge(&preview);
     assert_eq!(success_json(&preview)["result"]["row_count"], 2);
     let run = invoke_cli(append.path(), &["run", "local.events"]);
     assert_success_without_key_nudge(&run);
     let run_json = success_json(&run);
-    assert_eq!(run_json["result"]["receipt"]["disposition"], "append");
-    assert_eq!(run_json["result"]["row_count"], 2);
+    let run_report = &run_json["result"]["resources"][0]["result"];
+    assert_eq!(run_report["receipt"]["disposition"], "append");
+    assert_eq!(run_report["row_count"], 2);
 }
 
 #[test]
@@ -214,13 +214,20 @@ fn preview_run_parity_covers_supported_archetypes() {
     let environment = ConformanceEnvironment::start().expect(
         "preview/run parity conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
-    let cases = source_catalog::archetypes().into_iter().map(|source| {
-        RunMatrixCell::new(
-            source,
-            MatrixDestination::new("duckdb").unwrap(),
-            MatrixDisposition::Append,
-        )
-    });
+    let cases = source_catalog::archetypes()
+        .into_iter()
+        .filter(|source| match source.as_str() {
+            "clickhouse" => std::env::var_os("CDF_CLICKHOUSE_ENDPOINT").is_some(),
+            "mongodb" => std::env::var_os("CDF_MONGODB_ENDPOINT").is_some(),
+            _ => true,
+        })
+        .map(|source| {
+            RunMatrixCell::new(
+                source,
+                MatrixDestination::new("duckdb").unwrap(),
+                MatrixDisposition::Append,
+            )
+        });
 
     for cell in cases {
         let preview = preview_fingerprint(cell.clone(), &environment).unwrap_or_else(|error| {

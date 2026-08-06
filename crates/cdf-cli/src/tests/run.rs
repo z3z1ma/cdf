@@ -14,7 +14,7 @@ fn run_command_commits_package_rows_mirrors_and_checkpoint() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(json["command"], "run");
     assert_eq!(report["command"], "run");
     assert!(!report["run_id"].as_str().unwrap().is_empty());
@@ -147,7 +147,7 @@ fn run_short_form_uses_product_defaults_and_destination_alias() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(report["resource_id"], "local.events");
     assert_eq!(report["pipeline_id"], "cdf-run");
     assert_eq!(report["target"], "events");
@@ -203,7 +203,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
     assert_secret_absent(&first, PATH_SECRET);
     let first_json = stderr_or_stdout_json(&first.stdout);
-    let report = &first_json["result"];
+    let report = single_resource_run_report(&first_json);
     let resource_id = report["resource_id"].as_str().unwrap();
     assert!(resource_id.starts_with("adhoc.parquet_"));
     assert_eq!(report["adhoc"]["resource_id"], resource_id);
@@ -241,9 +241,32 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(!resource_sql.contains(PATH_SECRET));
     let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     let locked = &lock.resources[resource_id];
+    let embedded_schema = locked.schema.to_arrow().unwrap();
     assert_eq!(
         locked.schema_hash.as_deref(),
-        report["schema_snapshot"]["schema_hash"].as_str()
+        Some(
+            cdf_kernel::canonical_arrow_schema_hash(&embedded_schema)
+                .unwrap()
+                .as_str()
+        )
+    );
+    assert_eq!(
+        locked
+            .schema_snapshot
+            .as_ref()
+            .unwrap()
+            .schema_hash
+            .as_str(),
+        report["schema_snapshot"]["schema_hash"].as_str().unwrap()
+    );
+    assert_eq!(
+        locked
+            .schema_snapshot
+            .as_ref()
+            .unwrap()
+            .schema_hash
+            .as_str(),
+        report["schema_hash"].as_str().unwrap()
     );
     assert_eq!(
         locked.schema_snapshot.as_ref().unwrap().path,
@@ -281,9 +304,10 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
     assert_secret_absent(&second, PATH_SECRET);
     let second_json = stderr_or_stdout_json(&second.stdout);
-    assert_eq!(second_json["result"]["resource_id"], resource_id);
-    assert_eq!(second_json["result"]["adhoc"]["reused"], true);
-    assert_eq!(second_json["result"]["schema_hash"], report["schema_hash"]);
+    let second_report = single_resource_run_report(&second_json);
+    assert_eq!(second_report["resource_id"], resource_id);
+    assert_eq!(second_report["adhoc"]["reused"], true);
+    assert_eq!(second_report["schema_hash"], report["schema_hash"]);
     assert_eq!(
         fs::read_dir(project.root.join(".cdf/adhoc"))
             .unwrap()
@@ -422,13 +446,11 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
     ]);
     assert_eq!(retry.exit_code, 0, "stderr: {}", retry.stderr);
     let retry = stderr_or_stdout_json(&retry.stdout);
-    assert_eq!(retry["result"]["resource_id"], resource_id);
-    assert_eq!(retry["result"]["adhoc"]["reused"], true);
-    assert_eq!(retry["result"]["checkpoint"]["status"], "committed");
-    assert_eq!(
-        retry["result"]["ledger_events"]["terminal_kind"],
-        "run_succeeded"
-    );
+    let retry = single_resource_run_report(&retry);
+    assert_eq!(retry["resource_id"], resource_id);
+    assert_eq!(retry["adhoc"]["reused"], true);
+    assert_eq!(retry["checkpoint"]["status"], "committed");
+    assert_eq!(retry["ledger_events"]["terminal_kind"], "run_succeeded");
 }
 
 #[test]
@@ -457,7 +479,7 @@ fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
         result.stderr
     );
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert!(
         report["resource_id"]
             .as_str()

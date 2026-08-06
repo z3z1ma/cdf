@@ -18,8 +18,8 @@ use cdf_contract::{
 };
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CanonicalArrowField, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CompositePosition, ContractRef, CorrectionStrategy,
+    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CanonicalArrowSchema, Checkpoint, CheckpointId,
+    CheckpointStatus, CheckpointStore, CompositePosition, ContractRef, CorrectionStrategy,
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
     DestinationId, IdempotencyToken, LeaseOwnerId, PROMOTION_PUBLICATION_EVENT_VERSION,
     PackageHash, PipelineId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
@@ -1762,8 +1762,12 @@ where
         .resources
         .get_mut(staged.resource_id.as_str())
         .ok_or_else(|| cdf_kernel::CdfError::contract("promotion resource left cdf.lock"))?;
+    let promoted_schema = snapshot.artifact.schema.to_arrow()?;
     locked.schema_snapshot = Some(snapshot.artifact.reference());
-    locked.schema_hash = Some(snapshot.schema_hash.clone());
+    locked.schema_hash =
+        Some(cdf_kernel::canonical_arrow_schema_hash(&promoted_schema)?.to_string());
+    locked.schema = CanonicalArrowSchema::from_arrow(&promoted_schema)?;
+    locked.compiled_artifact_hash = None;
     let replacement = lock_to_toml(&replacement)?;
     Ok(compare_and_swap_lock_file(
         lock_path,

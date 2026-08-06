@@ -7,13 +7,13 @@ fn run_missing_resource_still_fails_before_writes() {
 
     assert_eq!(result.exit_code, 2, "stderr: {}", result.stderr);
     assert_no_run_writes(&project);
-    let json = assert_json_error_code(&result, "CDF-RUN-ARGUMENT");
+    let json = assert_json_error_code(&result, "CDF-CLI-USAGE");
     assert_eq!(json["error"]["kind"], "contract");
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("run requires RESOURCE")
+            .contains("run requires exactly one input authority")
     );
 }
 
@@ -30,15 +30,15 @@ fn run_rest_resource_fails_before_package_or_destination_writes() {
     let result = run_valid_run_resource(&project, "api.items");
 
     assert_eq!(
-        result.exit_code, 4,
+        result.exit_code, 1,
         "stdout: {}\nstderr: {}",
         result.stdout, result.stderr
     );
     assert_no_run_writes(&project);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], false);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let error = single_resource_run_error(&json);
     assert!(
-        json["error"]["message"]
+        error["message"]
             .as_str()
             .unwrap()
             .contains("secret://env/CDF_CLI_TOKEN")
@@ -67,7 +67,7 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, "rest-token-secret");
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(report["resource_id"], "api.items");
     assert_eq!(report["destination"]["kind"], "duckdb");
     assert_eq!(report["target"], "api.items");
@@ -147,8 +147,9 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
 
     assert_eq!(parse.exit_code, 0, "{}", parse.stderr);
     assert_secret_absent(&parse, "parse-token-secret");
-    let parse_report = stderr_or_stdout_json(&parse.stdout);
-    assert_eq!(parse_report["result"]["row_count"], 1);
+    let parse_json = stderr_or_stdout_json(&parse.stdout);
+    let parse_report = single_resource_run_report(&parse_json);
+    assert_eq!(parse_report["row_count"], 1);
     let parse_package = run_package_dir(&parse_project, &parse);
     let quarantine_summary: serde_json::Value = serde_json::from_slice(
         &fs::read(parse_package.join("stats/quarantine-summary.json")).unwrap(),
@@ -195,24 +196,22 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     ]);
     assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
     let plan_json = stderr_or_stdout_json(&plan.stdout);
+    let plan_report = single_resource_plan_report(&plan_json);
+    assert_eq!(plan_report["normalization"]["version"], "namecase-v1");
     assert_eq!(
-        plan_json["result"]["normalization"]["version"],
-        "namecase-v1"
-    );
-    assert_eq!(
-        plan_json["result"]["normalization"]["max_length"],
+        plan_report["normalization"]["max_length"],
         serde_json::Value::Null
     );
     assert_eq!(
-        plan_json["result"]["normalization"]["allowed_pattern"],
+        plan_report["normalization"]["allowed_pattern"],
         "^[a-z_][a-z0-9_]*$"
     );
     assert_eq!(
-        plan_json["result"]["resource_schema"]["fields"][0]["name"],
+        plan_report["resource_schema"]["fields"][0]["name"],
         "vendor_id"
     );
     assert_eq!(
-        plan_json["result"]["resource_schema"]["fields"][1]["name"],
+        plan_report["resource_schema"]["fields"][1]["name"],
         LONG_SOURCE
     );
 
@@ -232,7 +231,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     );
     assert_eq!(
         preview_json["result"]["normalization"],
-        plan_json["result"]["normalization"]
+        plan_report["normalization"]
     );
 
     let run_result = run_valid_run_args(&project);
@@ -243,7 +242,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
             .unwrap();
     assert_eq!(
         validation["identifier_policy"],
-        plan_json["result"]["normalization"]
+        plan_report["normalization"]
     );
     let output: serde_json::Value =
         serde_json::from_slice(&fs::read(package.join("schema/output.json")).unwrap()).unwrap();
@@ -318,15 +317,15 @@ fn run_postgres_resource_missing_secret_fails_before_package_or_destination_writ
     let result = run_valid_run_resource(&project, "warehouse.orders");
 
     assert_eq!(
-        result.exit_code, 4,
+        result.exit_code, 1,
         "stdout: {}\nstderr: {}",
         result.stdout, result.stderr
     );
     assert_no_run_writes(&project);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], false);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let error = single_resource_run_error(&json);
     assert!(
-        json["error"]["message"]
+        error["message"]
             .as_str()
             .unwrap()
             .contains("secret://env/CDF_CLI_POSTGRES")
@@ -353,8 +352,8 @@ fn run_postgres_resource_resolves_secret_without_leaking_on_connection_failure()
     assert_ne!(result.exit_code, 0);
     assert_no_run_writes(&project);
     assert_secret_absent(&result, "postgres-secret");
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert!(json["error"]["message"].is_string());
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert!(single_resource_run_error(&json)["message"].is_string());
 }
 
 #[test]
@@ -400,7 +399,7 @@ fn run_postgres_resource_with_ordered_cursor_commits_checkpoint() {
     assert_secret_absent(&result, &source_dsn);
     assert_secret_absent(&result, "source-postgres-secret");
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(report["resource_id"], "warehouse.orders");
     assert_eq!(report["target"], "warehouse.orders");
     assert_eq!(report["destination"]["kind"], "duckdb");
@@ -466,7 +465,7 @@ fn run_parquet_destination_writes_filesystem_root() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(report["destination"]["kind"], "parquet");
     assert_eq!(
         report["destination"]["destination_id"],
@@ -518,13 +517,13 @@ fn run_parquet_malformed_uri_fails_before_writes() {
 
         let result = run_valid_run_args(&project);
 
-        assert_eq!(result.exit_code, 3, "uri {uri}: {}", result.stderr);
+        assert_eq!(result.exit_code, 1, "uri {uri}: {}", result.stderr);
         assert_no_run_writes(&project);
-        let json = stderr_or_stdout_json(&result.stderr);
-        assert_eq!(json["error"]["kind"], "contract");
-        assert_eq!(json["error"]["not_supported"], false);
+        let json = stderr_or_stdout_json(&result.stdout);
+        let error = single_resource_run_error(&json);
+        assert_eq!(error["kind"], "contract");
         assert!(
-            json["error"]["message"]
+            error["message"]
                 .as_str()
                 .unwrap()
                 .contains("malformed or non-local")
@@ -554,7 +553,7 @@ fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &postgres.url);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     assert_eq!(report["destination"]["kind"], "postgres");
     assert_eq!(report["destination"]["destination_id"], "postgres");
     assert_eq!(report["destination"]["target"], target);
@@ -596,7 +595,7 @@ fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
 }
 
 #[test]
-fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
+fn run_local_parquet_discovery_establishes_and_commits_locked_schema() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     remove_resource_format(&project, "parquet");
@@ -606,7 +605,7 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let report = &json["result"];
+    let report = single_resource_run_report(&json);
     let snapshot_path = single_schema_snapshot_path(&project);
     let snapshot = read_snapshot_json(&project, &snapshot_path);
     let snapshot_hash = snapshot["schema_hash"].as_str().unwrap();
@@ -645,21 +644,14 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 }
 
 #[test]
-fn pinned_multi_file_parquet_preview_attests_unopened_observed_partitions() {
+fn locked_multi_file_parquet_preview_attests_unopened_observed_partitions() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
     write_vendor_parquet(&project.root.join("data/b.parquet"));
 
-    let plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
     let before_preview = project_tree_snapshot(&project.root);
 
     let preview = run([
@@ -684,32 +676,18 @@ fn pinned_multi_file_parquet_preview_attests_unopened_observed_partitions() {
 }
 
 #[test]
-fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream() {
+fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
 
-    let baseline_plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_eq!(baseline_plan.exit_code, 0, "{}", baseline_plan.stderr);
-    let baseline_report = stderr_or_stdout_json(&baseline_plan.stdout);
-    let baseline_hash = baseline_report["result"]["schema_snapshot"]["schema_hash"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let snapshot_path = baseline_report["result"]["schema_snapshot"]["path"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let baseline_compile = compile_resource(&project, "local.events");
+    assert_eq!(baseline_compile.exit_code, 0, "{}", baseline_compile.stderr);
+    let snapshot_path = single_schema_snapshot_path(&project);
+    let snapshot = read_snapshot_json(&project, &snapshot_path);
+    let baseline_hash = snapshot["schema_hash"].as_str().unwrap().to_owned();
     let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
     let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
-    let snapshot = read_snapshot_json(&project, &snapshot_path);
     let manifest_path = snapshot["metadata"]["cdf:discovery_manifest_path"]
         .as_str()
         .unwrap();
@@ -723,7 +701,7 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     write_vendor_score_parquet(&project.root.join("data/b.parquet"));
     write_empty_vendor_parquet(&project.root.join("data/c.parquet"));
 
-    let pinned_plan = run([
+    let locked_plan = run([
         "cdf",
         "--json",
         "--project",
@@ -731,9 +709,10 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
         "plan",
         "local.events",
     ]);
-    assert_eq!(pinned_plan.exit_code, 0, "{}", pinned_plan.stderr);
-    let pinned_report = stderr_or_stdout_json(&pinned_plan.stdout);
-    let schema = &pinned_report["result"]["resource_schema"];
+    assert_eq!(locked_plan.exit_code, 0, "{}", locked_plan.stderr);
+    let locked_json = stderr_or_stdout_json(&locked_plan.stdout);
+    let locked_report = single_resource_plan_report(&locked_json);
+    let schema = &locked_report["resource_schema"];
     assert_eq!(schema["schema_hash"], baseline_hash);
     assert!(schema.get("baseline_schema_hash").is_none());
     assert!(schema.get("effective_schema_hash").is_none());
@@ -930,21 +909,15 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
     write_parquet_discover_resource(&project, "*.parquet");
     let path = project.root.join("data/a.parquet");
     write_vendor_parquet(&path);
-    let baseline = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
+    let baseline = compile_resource(&project, "local.events");
     assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
 
     write_string_vendor_parquet(&path);
     let result = run_valid_run_args(&project);
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
-    let report = stderr_or_stdout_json(&result.stdout);
-    let rendered = &report["result"]["terminal_schema_quarantines"][0];
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = single_resource_run_report(&json);
+    let rendered = &report["terminal_schema_quarantines"][0];
     assert_eq!(rendered["observation_id"], "a.parquet");
     assert_eq!(rendered["rule_id"], "schema-observation:incompatible");
     assert_eq!(rendered["fields"][0]["scope"]["path"][0], "VendorID");
@@ -1000,7 +973,7 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
 }
 
 #[test]
-fn run_ndjson_discover_schema_resource_autopins_and_commits() {
+fn run_ndjson_discovery_establishes_schema_authority_and_commits() {
     let project = TestProject::new();
     write_discovered_schema_resource(&project);
 
@@ -1014,7 +987,10 @@ fn run_ndjson_discover_schema_resource_autopins_and_commits() {
             .exists()
     );
     let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["result"]["resource_id"], "local.events");
+    assert_eq!(
+        single_resource_run_report(&json)["resource_id"],
+        "local.events"
+    );
     assert!(project.root.join(".cdf/state.db").exists());
 }
 
@@ -1027,6 +1003,7 @@ fn run_loop_remains_unsupported_without_writes() {
         "--project",
         project.root_str(),
         "run",
+        "local.events",
         "--loop",
     ]);
 

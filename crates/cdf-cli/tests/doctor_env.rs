@@ -18,7 +18,7 @@ fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
     write_project(&project);
 
     let output = Command::new(env!("CARGO_BIN_EXE_cdf"))
-        .args(["--json", "--project", project.root_str(), "doctor"])
+        .args(["--json", "--project", project.root_str(), "doctor", "all"])
         .env(
             "CDF_CLI_ENV_DESTINATION_DSN",
             "resolved-env-destination-value",

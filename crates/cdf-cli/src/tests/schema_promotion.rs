@@ -8,10 +8,10 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let pinned_hash = locked_schema_hash(&project, "local.events");
+    let locked_hash = locked_schema_hash(&project, "local.events");
 
     write_vendor_score_parquet(&source_path);
-    write_schema_promote_package_fixture(&project, &pinned_hash);
+    write_schema_promote_package_fixture(&project, &locked_hash);
     let before = project_tree_snapshot(&project.root);
 
     let planned = run([
@@ -675,6 +675,7 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         let compile = compile_resource(&project, "local.events");
         assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
         let old_hash = locked_schema_hash(&project, "local.events");
+        let old_snapshot_hash = locked_schema_snapshot_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -780,7 +781,7 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
                 .unwrap()
                 .schema_hash
                 .as_str(),
-            old_hash
+            old_snapshot_hash
         );
         let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
         let score_columns = connection

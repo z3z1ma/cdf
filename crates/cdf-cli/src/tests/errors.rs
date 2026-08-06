@@ -22,10 +22,14 @@ fn migrated_command_family_errors_include_code_and_remediation() {
         "--order-by",
         "id:sideways",
     ]);
-    assert_json_error_code(&scan, "CDF-RUN-SCAN-ARGUMENT");
+    let scan_json = stderr_or_stdout_json(&scan.stdout);
+    assert_eq!(
+        single_resource_plan_error(&scan_json)["code"],
+        "CDF-RUN-SCAN-ARGUMENT"
+    );
 
     let run_result = run(["cdf", "--json", "run"]);
-    assert_json_error_code(&run_result, "CDF-RUN-ARGUMENT");
+    assert_json_error_code(&run_result, "CDF-CLI-USAGE");
 
     let run_loop = run(["cdf", "--json", "run", "local.events", "--loop"]);
     let run_loop_json = assert_json_error_code(&run_loop, "CDF-RUN-LOOP-NOT-SUPPORTED");
@@ -113,9 +117,12 @@ fn unknown_resource_json_suggests_nearest_configured_resource_id() {
         "local.eventz",
     ]);
 
-    assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
-    let json = assert_json_error_code(&result, "CDF-RESOURCE-NOT-COMPILED");
-    assert_eq!(json["error"]["suggestions"], json!(["local.events"]));
+    assert_eq!(result.exit_code, 2, "stderr: {}", result.stderr);
+    let json = assert_json_error_code(&result, "CDF-CLI-USAGE");
+    assert_eq!(
+        json["error"]["suggestions"],
+        json!(["cdf inspect resource local.events"])
+    );
 }
 
 #[test]
@@ -189,10 +196,12 @@ root = "data"
         "prd",
     ]);
 
-    assert_eq!(typo.exit_code, 78, "stderr: {}", typo.stderr);
-    let json = assert_json_error_code(&typo, "CDF-DEST-NOT-SUPPORTED");
+    assert_eq!(typo.exit_code, 1, "stderr: {}", typo.stderr);
+    let json = stderr_or_stdout_json(&typo.stdout);
+    let error = single_resource_plan_error(&json);
+    assert_eq!(error["code"], "CDF-DEST-NOT-SUPPORTED");
     assert_eq!(
-        json["error"]["suggestions"],
+        error["suggestions"],
         json!(["--env prod", "duckdb://path", "parquet://root"])
     );
 
