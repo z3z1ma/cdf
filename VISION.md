@@ -115,7 +115,7 @@ Sling proved that a data tool can feel like a good Unix tool: one command moves 
 
 ### 2.6 Bruin and Mage: the unified surface and the inner loop
 
-Bruin demonstrated appetite for one project surface spanning ingestion, quality, and comparison — and the danger of building the monolith before the kernel; CDF answers with a project layer that is a crate depending on the kernel, never the reverse (Chapter 5). Mage demonstrated the developer inner loop that ingestion tooling forgot: preview one batch, run one partition, inspect everything, locally, now. CDF ships that loop as `cdf preview`, `cdf inspect`, and `cdf replay` — with no UI in the kernel's dependency graph, because the loop is a property of the artifacts, not of a screen.
+Bruin demonstrated appetite for one project surface spanning ingestion, quality, and comparison — and the danger of building the monolith before the kernel; CDF answers with a project layer that is a crate depending on the kernel, never the reverse (Chapter 5). Mage demonstrated the developer inner loop that ingestion tooling forgot: preview one batch, run one partition, inspect everything, locally, now. CDF ships that loop as `cdf preview`, `cdf inspect`, and `cdf run --package <path>` — with no UI in the kernel's dependency graph, because the loop is a property of the artifacts, not of a screen.
 
 ### 2.7 The substrate: why the ecosystem argument now favors this design
 
@@ -264,7 +264,7 @@ rewind(σ, t')        append a rewound marker; head(σ) ⟶ t'          (never d
 
 **Crash consistency is a case analysis.** A crash interrupts a transition at some prefix of its lifecycle. I2 and I3 make each prefix decidable from durable evidence alone: no receipt and no finalized package → the transition never happened, re-plan; finalized package, no receipt → replay P (I3), no source contact needed; receipt durable, gate not yet passed → verify and commit, a pure ledger operation; gate passed → done. The five-row crash matrix of §12.3 is this analysis written as an operations table, and the chaos layer (§20.2) is this analysis executed as a test, at every boundary, forever.
 
-**Replays are confluent.** From I3 and I4: for token-idempotent destinations, any interleaving of replays of any set of committed packages reaches the same destination state. Operationally this is the license behind the calmest sentence in the book — `cdf replay` is always safe when in doubt — and behind cross-destination migration by package replay rather than re-extraction.
+**Replays are confluent.** From I3 and I4: for token-idempotent destinations, any interleaving of replays of any set of committed packages reaches the same destination state. Operationally this is the license behind the calmest sentence in the book — `cdf run --package <path>` is always safe when in doubt — and behind cross-destination migration by package replay rather than re-extraction.
 
 **Why not two-phase commit.** The textbook answer to "make two parties agree" is distributed 2PC, and CDF deliberately avoids it. 2PC buys atomicity across parties at the price of blocking on coordinator failure and requiring participant votes; CDF needs neither, because its structure is asymmetric: the destination is the *sole* voter (its receipt is the only decision), and the source side needs no vote because I3+I4 make its retries harmless. The result has 2PC's outcome — no state advances without the durable party's confirmation — with none of its blocking, which is precisely the trade the presumed-abort literature recommends when one side can be made idempotent. When CDF later coordinates *many* workers (§25.2), the same asymmetry holds per partition, and coordination reduces to lease fencing on the shared ledger rather than to consensus on data.
 
@@ -803,7 +803,7 @@ planned → extracting → validated → packaged → loading → loaded → com
 
 | Crash point | Detection | Recovery |
 |---|---|---|
-| during extract/validate (pre-`packaged`) | manifest status < `packaged` | partial package is garbage unless the resource claims `replay_from_position`; `cdf resume` restarts the partition or resumes from the last durable segment + recorded position |
+| during extract/validate (pre-`packaged`) | manifest status < `packaged` | partial package is garbage unless the resource claims `replay_from_position`; `cdf run --resume` restarts the partition or resumes from the last durable segment + recorded position |
 | after `packaged`, before any destination write | status `packaged`, no receipts | replay the package into the destination; no source contact needed |
 | mid-load | partial receipts / idempotency token present at destination | transactional destinations roll back and replay; idempotent destinations re-drive remaining segments keyed by token |
 | after destination commit, before checkpoint commit | receipt durable in `receipts.json` and/or `_cdf_loads`; ledger delta uncommitted | verify the receipt (§14.4), then commit the checkpoint — **this window is what the commit gate exists for; recovery is a pure ledger operation** |
@@ -1167,7 +1167,7 @@ Explicitly out, each with a seam designed now so its later arrival is an additio
 
 ### 23.3 The demonstration
 
-The system's proof is a single sitting, under five minutes on a laptop, no network beyond one public API. Forty lines of Tier-0 TOML define `github.issues`. `cdf plan` prints pushdown fidelity, the guarantee line, and pending DDL. `cdf run` loads DuckDB; `cdf sql` queries it with pushdown visible in EXPLAIN. `cdf contract freeze`; the fixture drifts a column type; the next run quarantines the offenders and the package shows the verdicts. `kill -9` lands between destination commit and checkpoint commit — the exact window the commit gate exists for; `cdf resume` verifies the receipt against DuckDB and commits the checkpoint without touching the source. `cdf replay` drives the same package into a second database; the second attempt against the first answers `duplicate: true`. `cdf state history` shows every transition. Each beat of the demonstration is one invariant of Chapter 4 performing in public.
+The system's proof is a single sitting, under five minutes on a laptop, no network beyond one public API. Forty lines of Tier-0 TOML define `github.issues`. `cdf plan` prints pushdown fidelity, the guarantee line, and pending DDL. `cdf run` loads DuckDB; `cdf sql` queries it with pushdown visible in EXPLAIN. `cdf contract freeze`; the fixture drifts a column type; the next run quarantines the offenders and the package shows the verdicts. `kill -9` lands between destination commit and checkpoint commit — the exact window the commit gate exists for; `cdf run --resume` verifies the receipt against DuckDB and commits the checkpoint without touching the source. `cdf run --package <path>` drives the same package into a second database; the second attempt against the first answers `duplicate: true`. `cdf state history` shows every transition. Each beat of the demonstration is one invariant of Chapter 4 performing in public.
 
 ## Chapter 24: Research spikes
 
