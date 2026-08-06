@@ -1215,7 +1215,7 @@ fn materialize_batch_schema_evidence(
                 )));
             }
             Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
-                record_batch: record_batch.clone(),
+                record_batch: canonicalize_admitted_batch_schema(record_batch, effective_schema)?,
                 coercion_plan: Some(batch_coercion.clone()),
                 observation_id: Some(expected.observation_id.clone()),
                 physical_observation: expected_physical_observation.cloned(),
@@ -1234,7 +1234,10 @@ fn materialize_batch_schema_evidence(
                     batch.header.residual_candidates(),
                 )?;
                 return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
-                    record_batch: record_batch.clone(),
+                    record_batch: canonicalize_admitted_batch_schema(
+                        record_batch,
+                        effective_schema,
+                    )?,
                     coercion_plan: Some(expected.coercion_plan.clone()),
                     observation_id: Some(expected.observation_id.clone()),
                     physical_observation: expected_physical_observation.cloned(),
@@ -1274,7 +1277,10 @@ fn materialize_batch_schema_evidence(
                     batch.header.residual_candidates(),
                 )?;
                 return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
-                    record_batch: record_batch.clone(),
+                    record_batch: canonicalize_admitted_batch_schema(
+                        record_batch,
+                        effective_schema,
+                    )?,
                     coercion_plan: Some(supplied.clone()),
                     observation_id: Some(stream_observation_id),
                     physical_observation: Some(materialized_output_evidence(
@@ -1299,7 +1305,10 @@ fn materialize_batch_schema_evidence(
                     cdf_kernel::canonical_arrow_schema_hash(&physical_schema)?;
                 let compiled = admission.instantiate(&physical_schema, &physical_schema_hash)?;
                 return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
-                    record_batch: record_batch.clone(),
+                    record_batch: canonicalize_admitted_batch_schema(
+                        record_batch,
+                        effective_schema,
+                    )?,
                     coercion_plan: Some(compiled),
                     observation_id: Some(stream_observation_id),
                     physical_observation: Some(materialized_output_evidence(
@@ -1321,7 +1330,10 @@ fn materialize_batch_schema_evidence(
                     &batch.header.observed_schema_hash,
                 )?;
                 return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
-                    record_batch: record_batch.clone(),
+                    record_batch: canonicalize_admitted_batch_schema(
+                        record_batch,
+                        effective_schema,
+                    )?,
                     coercion_plan: Some(compiled),
                     observation_id: Some(stream_observation_id),
                     physical_observation: Some(PhysicalObservationEvidence::arrow_schema(
@@ -1367,6 +1379,31 @@ fn materialize_batch_schema_evidence(
             }))
         }
     }
+}
+
+fn canonicalize_admitted_batch_schema(
+    batch: &RecordBatch,
+    effective: &Schema,
+) -> Result<RecordBatch> {
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(effective.fields())
+        .map(|(observed, effective)| {
+            Arc::new(
+                effective
+                    .as_ref()
+                    .clone()
+                    .with_nullable(observed.is_nullable()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        effective.metadata().clone(),
+    ));
+    RecordBatch::try_new(schema, batch.columns().to_vec()).map_err(CdfError::from)
 }
 
 fn stream_admission_residual_candidates(
@@ -8579,8 +8616,8 @@ mod transform_kernel_tests {
     };
     use cdf_kernel::{
         BatchId, CursorPosition, CursorValue, ErrorKind, PreContractPhysicalReconciliation,
-        PreContractResidualCandidate, SourcePosition, TrustLevel, with_physical_type,
-        with_semantic,
+        PreContractResidualCandidate, SOURCE_NAME_METADATA_KEY, SourcePosition, TrustLevel,
+        with_physical_type, with_semantic,
     };
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use cdf_package::PackageBuilder;
@@ -8588,11 +8625,34 @@ mod transform_kernel_tests {
 
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
-        apply_pre_contract_expressions, bind_filter_expressions, execute_batch,
-        preflight_residual_quarantines, remove_preflight_quarantined_rows,
-        reserve_quarantine_evidence, residual_redaction, source_row_tracking_schema,
-        validate_materialized_effective_batch_schema, validate_physical_reconciliations,
+        apply_pre_contract_expressions, bind_filter_expressions,
+        canonicalize_admitted_batch_schema, execute_batch, preflight_residual_quarantines,
+        remove_preflight_quarantined_rows, reserve_quarantine_evidence, residual_redaction,
+        source_row_tracking_schema, validate_materialized_effective_batch_schema,
+        validate_physical_reconciliations,
     };
+
+    #[test]
+    fn admitted_physical_batch_is_rebound_to_effective_logical_metadata() {
+        let observed = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec!["hello"]))],
+        )
+        .unwrap();
+        let effective = Schema::new(vec![
+            Field::new("text", DataType::Utf8, true).with_metadata(
+                std::collections::HashMap::from([(
+                    SOURCE_NAME_METADATA_KEY.to_owned(),
+                    "text".to_owned(),
+                )]),
+            ),
+        ]);
+
+        let rebound = canonicalize_admitted_batch_schema(&observed, &effective).unwrap();
+
+        assert_eq!(rebound.columns(), observed.columns());
+        assert_eq!(rebound.schema().as_ref(), &effective);
+    }
 
     #[test]
     fn materialized_nullable_domain_requires_exact_evidence_for_actual_nulls() {
