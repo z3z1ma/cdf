@@ -45,6 +45,7 @@ resources, and every adjacent command has one scope and effect ceiling.
    Owner: `.10x/tickets/done/2026-08-05-u6-operational-recovery-command-coherence.md`.
 8. **U7 — cutover and sandbox certificate.** Delete all superseded code/fixtures/docs/generated
    artifacts, run bounded integration/quality checks, and prove the supplied sandbox journeys.
+   Owner: `.10x/tickets/2026-08-05-u7-resource-first-cutover-certificate.md`.
 
 Children U2-U7 open only when their immediate dependency's implementation evidence is complete and
 pushed and any remaining focused ratification blocker is closed. A dependency may remain `active`
