@@ -33,6 +33,7 @@ resources, and every adjacent command has one scope and effect ceiling.
 5. **U4 — portable plan export/consumption.** Add `plan --out`, canonical plan artifact authority,
    `run --plan`, strict portability validation, and whole-plan no-repair preflight while preserving
    the existing terminal plan document.
+   Owner: `.10x/tickets/2026-08-05-u4-portable-plan-export-consumption.md`.
 6. **U5 — source discovery, generation, and add.** Add source/resource discovery and canonical
    artifacts, adapter-owned catalog enumeration, thin create-or-verify generation, then reconcile
    the single-location add path against the ratified authoring model.
