@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    CanonicalArrowSchema, CdfError, Checkpoint, CheckpointId, ContractRef, EnvironmentName,
-    FencingToken, ImmutableContentIdentity, LeaseAuthorityDomainId, LeaseOwnerId, ProjectId,
-    PromotionId, Receipt, ResourceId, Result, RunId, SchemaHash, ScopeKey, ScopeLease,
-    canonical_arrow_schema_hash,
+    CanonicalArrowSchema, CdfError, Checkpoint, CheckpointId, ContractRef, DestinationId,
+    EnvironmentName, FencingToken, ImmutableContentIdentity, LeaseAuthorityDomainId, LeaseOwnerId,
+    PackageHash, ProjectId, PromotionId, Receipt, ReceiptId, ResourceId, Result, RunId, SchemaHash,
+    ScopeKey, ScopeLease, TargetName, canonical_arrow_schema_hash,
 };
 
 pub const MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT: u32 = 10_000;
@@ -338,6 +339,264 @@ impl SchemaSettlementPermit {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionTarget {
+    pub destination_id: DestinationId,
+    pub target: TargetName,
+}
+
+impl SchemaPromotionTarget {
+    pub fn validate(&self) -> Result<()> {
+        DestinationId::new(self.destination_id.as_str()).map(drop)?;
+        TargetName::new(self.target.as_str()).map(drop)
+    }
+}
+
+/// Canonical, credential-free dry-plan authority persisted before promotion work begins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionPlanState {
+    pub promotion_id: PromotionId,
+    pub plan_sha256: String,
+    pub canonical_plan_json: String,
+    pub required_targets: Vec<SchemaPromotionTarget>,
+    pub residual_summary_sha256s: Vec<String>,
+    pub created_at_ms: i64,
+}
+
+impl SchemaPromotionPlanState {
+    pub fn new(
+        promotion_id: PromotionId,
+        canonical_plan_json: String,
+        required_targets: Vec<SchemaPromotionTarget>,
+        residual_summary_sha256s: Vec<String>,
+        created_at_ms: i64,
+    ) -> Result<Self> {
+        let plan_sha256 = sha256(canonical_plan_json.as_bytes());
+        let state = Self {
+            promotion_id,
+            plan_sha256,
+            canonical_plan_json,
+            required_targets,
+            residual_summary_sha256s,
+            created_at_ms,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        PromotionId::new(self.promotion_id.as_str()).map(drop)?;
+        if self.created_at_ms < 0 || self.required_targets.is_empty() {
+            return Err(CdfError::contract(
+                "schema promotion plan requires a creation time and at least one target",
+            ));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&self.canonical_plan_json)
+            .map_err(|error| CdfError::contract(format!("parse schema promotion plan: {error}")))?;
+        let canonical = serde_json::to_string(&parsed)
+            .map_err(|error| CdfError::internal(format!("canonicalize promotion plan: {error}")))?;
+        if canonical != self.canonical_plan_json || self.plan_sha256 != sha256(canonical.as_bytes())
+        {
+            return Err(CdfError::contract(
+                "schema promotion plan bytes are not canonical or do not match their SHA-256",
+            ));
+        }
+        for target in &self.required_targets {
+            target.validate()?;
+        }
+        if self
+            .required_targets
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "schema promotion targets must be unique and sorted",
+            ));
+        }
+        for summary in &self.residual_summary_sha256s {
+            validate_sha256("residual summary", summary)?;
+        }
+        if self
+            .residual_summary_sha256s
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "schema promotion residual summaries must be unique and sorted",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionCutoffCheckpoint {
+    pub checkpoint_id: CheckpointId,
+    pub package_hash: PackageHash,
+    pub run_id: RunId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionCutoff {
+    pub generation: u64,
+    pub schema_hash: SchemaHash,
+    pub established_at_ms: i64,
+    pub checkpoints: Vec<SchemaPromotionCutoffCheckpoint>,
+}
+
+impl SchemaPromotionCutoff {
+    pub fn validate(&self) -> Result<()> {
+        if self.generation == 0 || self.established_at_ms < 0 {
+            return Err(CdfError::contract(
+                "schema promotion cutoff generation and time must be valid",
+            ));
+        }
+        SchemaHash::new(self.schema_hash.as_str()).map(drop)?;
+        for checkpoint in &self.checkpoints {
+            CheckpointId::new(checkpoint.checkpoint_id.as_str()).map(drop)?;
+            PackageHash::new(checkpoint.package_hash.as_str()).map(drop)?;
+            RunId::new(checkpoint.run_id.as_str()).map(drop)?;
+        }
+        if self.checkpoints.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(CdfError::contract(
+                "schema promotion cutoff checkpoints must be unique and sorted",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionTargetSettlement {
+    pub target: SchemaPromotionTarget,
+    pub correction_package_hash: PackageHash,
+    pub receipt_id: ReceiptId,
+    pub checkpoint_id: CheckpointId,
+    pub settled_at_ms: i64,
+}
+
+impl SchemaPromotionTargetSettlement {
+    pub fn validate(&self) -> Result<()> {
+        self.target.validate()?;
+        PackageHash::new(self.correction_package_hash.as_str()).map(drop)?;
+        ReceiptId::new(self.receipt_id.as_str()).map(drop)?;
+        CheckpointId::new(self.checkpoint_id.as_str()).map(drop)?;
+        if self.settled_at_ms < 0 {
+            return Err(CdfError::contract(
+                "schema promotion target settlement time must be non-negative",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaPromotionLifecyclePhase {
+    Fenced,
+    CutoffEstablished,
+    Published,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionState {
+    pub key: SchemaAuthorityKey,
+    pub plan: SchemaPromotionPlanState,
+    pub from_generation: u64,
+    pub from_schema_hash: SchemaHash,
+    pub to_schema_hash: SchemaHash,
+    pub phase: SchemaPromotionLifecyclePhase,
+    pub cutoff: Option<SchemaPromotionCutoff>,
+    pub target_settlements: Vec<SchemaPromotionTargetSettlement>,
+    pub published_generation: Option<u64>,
+    pub updated_at_ms: i64,
+}
+
+impl SchemaPromotionState {
+    pub fn validate(&self) -> Result<()> {
+        self.key.validate()?;
+        self.plan.validate()?;
+        if self.from_generation == 0
+            || self.from_schema_hash == self.to_schema_hash
+            || self.updated_at_ms < self.plan.created_at_ms
+        {
+            return Err(CdfError::contract(
+                "schema promotion state carries an invalid generation, schema transition, or time",
+            ));
+        }
+        for settlement in &self.target_settlements {
+            settlement.validate()?;
+        }
+        if self
+            .target_settlements
+            .windows(2)
+            .any(|pair| pair[0].target >= pair[1].target)
+        {
+            return Err(CdfError::contract(
+                "schema promotion settlements must be unique and target-sorted",
+            ));
+        }
+        match self.phase {
+            SchemaPromotionLifecyclePhase::Fenced => {
+                if self.cutoff.is_none()
+                    && self.target_settlements.is_empty()
+                    && self.published_generation.is_none()
+                {
+                    Ok(())
+                } else {
+                    Err(invalid_promotion_lifecycle())
+                }
+            }
+            SchemaPromotionLifecyclePhase::CutoffEstablished => {
+                if self.published_generation.is_some() {
+                    return Err(invalid_promotion_lifecycle());
+                }
+                self.cutoff
+                    .as_ref()
+                    .ok_or_else(invalid_promotion_lifecycle)?
+                    .validate()
+            }
+            SchemaPromotionLifecyclePhase::Published => {
+                if self.published_generation != self.from_generation.checked_add(1) {
+                    return Err(invalid_promotion_lifecycle());
+                }
+                self.cutoff
+                    .as_ref()
+                    .ok_or_else(invalid_promotion_lifecycle)?
+                    .validate()
+            }
+        }
+    }
+}
+
+fn invalid_promotion_lifecycle() -> CdfError {
+    CdfError::contract(
+        "schema promotion lifecycle phase does not match its cutoff/publication state",
+    )
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_sha256(name: &str, value: &str) -> Result<()> {
+    let digest = value
+        .strip_prefix("sha256:")
+        .ok_or_else(|| CdfError::contract(format!("{name} must use a sha256: content identity")))?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CdfError::contract(format!(
+            "{name} must contain a 64-digit SHA-256"
+        )));
+    }
+    Ok(())
+}
+
 impl SchemaPromotionFence {
     pub fn new(
         authority_domain_id: LeaseAuthorityDomainId,
@@ -378,6 +637,17 @@ pub enum SchemaAuthorityEventKind {
         lease_owner: LeaseOwnerId,
         fencing_token: FencingToken,
     },
+    PromotionCutoffEstablished {
+        promotion_id: PromotionId,
+        checkpoint_count: u64,
+    },
+    PromotionTargetSettled {
+        promotion_id: PromotionId,
+        destination_id: DestinationId,
+        target: TargetName,
+        checkpoint_id: CheckpointId,
+        receipt_id: ReceiptId,
+    },
     PromotionPublished {
         promotion_id: PromotionId,
         from_schema_hash: SchemaHash,
@@ -408,6 +678,23 @@ impl SchemaAuthorityEvent {
         }
         match &self.kind {
             SchemaAuthorityEventKind::Established => Ok(()),
+            SchemaAuthorityEventKind::PromotionCutoffEstablished {
+                promotion_id,
+                checkpoint_count: _,
+            } => PromotionId::new(promotion_id.as_str()).map(drop),
+            SchemaAuthorityEventKind::PromotionTargetSettled {
+                promotion_id,
+                destination_id,
+                target,
+                checkpoint_id,
+                receipt_id,
+            } => {
+                PromotionId::new(promotion_id.as_str()).map(drop)?;
+                DestinationId::new(destination_id.as_str()).map(drop)?;
+                TargetName::new(target.as_str()).map(drop)?;
+                CheckpointId::new(checkpoint_id.as_str()).map(drop)?;
+                ReceiptId::new(receipt_id.as_str()).map(drop)
+            }
             SchemaAuthorityEventKind::PromotionBegun {
                 promotion_id,
                 from_schema_hash,
@@ -488,8 +775,30 @@ pub trait SchemaAuthorityStore: Send + Sync {
         &self,
         expected: &SchemaHead,
         proposed: SchemaVersion,
+        plan: SchemaPromotionPlanState,
         fence: &SchemaPromotionFence,
-    ) -> Result<SchemaHead>;
+    ) -> Result<SchemaPromotionState>;
+
+    fn promotion_state(
+        &self,
+        key: &SchemaAuthorityKey,
+        promotion_id: &PromotionId,
+    ) -> Result<Option<SchemaPromotionState>>;
+
+    fn establish_promotion_cutoff(
+        &self,
+        expected_promoting: &SchemaHead,
+        fence: &SchemaPromotionFence,
+    ) -> Result<SchemaPromotionState>;
+
+    fn commit_promotion_target(
+        &self,
+        expected_promoting: &SchemaHead,
+        fence: &SchemaPromotionFence,
+        target: &SchemaPromotionTarget,
+        checkpoint_id: &CheckpointId,
+        receipt: Receipt,
+    ) -> Result<SchemaPromotionState>;
 
     fn publish_promotion(
         &self,

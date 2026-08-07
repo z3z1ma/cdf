@@ -9,8 +9,10 @@ use cdf_kernel::{
     MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, Receipt, Result, RunId, SchemaAuthorityCheck,
     SchemaAuthorityEstablishment, SchemaAuthorityEvent, SchemaAuthorityEventKind,
     SchemaAuthorityKey, SchemaAuthorityStore, SchemaHash, SchemaHead, SchemaHeadStatus,
-    SchemaPromotionFence, SchemaSettlementPermit, SchemaSettlementStore, SchemaVersion,
-    SchemaVersionProvenance, ScopeLeaseClock,
+    SchemaPromotionCutoff, SchemaPromotionCutoffCheckpoint, SchemaPromotionFence,
+    SchemaPromotionLifecyclePhase, SchemaPromotionPlanState, SchemaPromotionState,
+    SchemaPromotionTarget, SchemaPromotionTargetSettlement, SchemaSettlementPermit,
+    SchemaSettlementStore, SchemaVersion, SchemaVersionProvenance, ScopeLeaseClock,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -41,6 +43,7 @@ const VERSION_SELECT: &str = "SELECT schema_hash, predecessor_schema_hash, creat
 const HEAD_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, generation, schema_hash, status, promotion_id, promotion_from_schema_hash, promotion_to_schema_hash, promotion_lease_owner, promotion_fencing_token, head_json FROM cdf_schema_heads";
 const EVENT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, ordinal, generation, schema_hash, recorded_at_ms, event_json FROM cdf_schema_authority_events";
 const PERMIT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, run_id, generation, schema_hash, acquired_at_ms, expires_at_ms, released, permit_json FROM cdf_schema_settlement_permits";
+const PROMOTION_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, promotion_id, phase, from_generation, from_schema_hash, to_schema_hash, updated_at_ms, state_json FROM cdf_schema_promotions";
 
 pub struct SqliteSchemaAuthorityStore {
     conn: Mutex<Connection>,
@@ -133,7 +136,8 @@ impl SqliteSchemaAuthorityStore {
                     || sqlite_table_exists(&conn, "cdf_schema_versions")?
                     || sqlite_table_exists(&conn, "cdf_schema_authority_events")?
                     || sqlite_table_exists(&conn, "cdf_schema_settlement_permits")?
-                    || sqlite_table_exists(&conn, "cdf_schema_checkpoint_settlements")? =>
+                    || sqlite_table_exists(&conn, "cdf_schema_checkpoint_settlements")?
+                    || sqlite_table_exists(&conn, "cdf_schema_promotions")? =>
                 {
                     Err(CdfError::internal(format!(
                         "schema authority SQLite schema is unversioned; expected current version {SCHEMA_AUTHORITY_SCHEMA_VERSION}"
@@ -413,7 +417,8 @@ fn initialize_schema_with_domain(
             || sqlite_table_exists(conn, "cdf_schema_versions")?
             || sqlite_table_exists(conn, "cdf_schema_authority_events")?
             || sqlite_table_exists(conn, "cdf_schema_settlement_permits")?
-            || sqlite_table_exists(conn, "cdf_schema_checkpoint_settlements")? =>
+            || sqlite_table_exists(conn, "cdf_schema_checkpoint_settlements")?
+            || sqlite_table_exists(conn, "cdf_schema_promotions")? =>
         {
             return Err(CdfError::internal(format!(
                 "schema authority SQLite schema is unversioned; expected current version {SCHEMA_AUTHORITY_SCHEMA_VERSION}"
@@ -572,6 +577,37 @@ fn initialize_schema_with_domain(
                 authority_domain_id, project_id, environment, resource_id, generation
             );
 
+        CREATE TABLE IF NOT EXISTS cdf_schema_promotions (
+            authority_domain_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            promotion_id TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK (phase IN ('fenced', 'cutoff_established', 'published')),
+            from_generation INTEGER NOT NULL CHECK (from_generation > 0),
+            from_schema_hash TEXT NOT NULL,
+            to_schema_hash TEXT NOT NULL CHECK (to_schema_hash != from_schema_hash),
+            updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+            state_json TEXT NOT NULL,
+            PRIMARY KEY (
+                authority_domain_id, project_id, environment, resource_id, promotion_id
+            ),
+            FOREIGN KEY (
+                authority_domain_id, project_id, environment, resource_id, from_schema_hash
+            ) REFERENCES cdf_schema_versions (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            ),
+            FOREIGN KEY (
+                authority_domain_id, project_id, environment, resource_id, to_schema_hash
+            ) REFERENCES cdf_schema_versions (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            )
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS cdf_schema_promotions_one_open
+            ON cdf_schema_promotions (authority_domain_id, project_id, environment, resource_id)
+            WHERE phase != 'published';
+
         CREATE TRIGGER IF NOT EXISTS cdf_schema_versions_no_update
         BEFORE UPDATE ON cdf_schema_versions
         BEGIN SELECT RAISE(ABORT, 'schema versions are immutable'); END;
@@ -614,6 +650,7 @@ fn validate_schema_structure(conn: &Connection) -> Result<()> {
             "cdf_schema_authority_events",
             "cdf_schema_settlement_permits",
             "cdf_schema_checkpoint_settlements",
+            "cdf_schema_promotions",
         ],
     )
 }
@@ -1284,6 +1321,232 @@ fn require_live_permit(
     Ok(())
 }
 
+fn promotion_phase(phase: SchemaPromotionLifecyclePhase) -> &'static str {
+    match phase {
+        SchemaPromotionLifecyclePhase::Fenced => "fenced",
+        SchemaPromotionLifecyclePhase::CutoffEstablished => "cutoff_established",
+        SchemaPromotionLifecyclePhase::Published => "published",
+    }
+}
+
+#[derive(Debug)]
+struct StoredPromotionRow {
+    authority_domain_id: String,
+    project_id: String,
+    environment: String,
+    resource_id: String,
+    promotion_id: String,
+    phase: String,
+    from_generation: i64,
+    from_schema_hash: String,
+    to_schema_hash: String,
+    updated_at_ms: i64,
+    state_json: String,
+}
+
+fn stored_promotion_row(row: &Row<'_>) -> rusqlite::Result<StoredPromotionRow> {
+    Ok(StoredPromotionRow {
+        authority_domain_id: row.get(0)?,
+        project_id: row.get(1)?,
+        environment: row.get(2)?,
+        resource_id: row.get(3)?,
+        promotion_id: row.get(4)?,
+        phase: row.get(5)?,
+        from_generation: row.get(6)?,
+        from_schema_hash: row.get(7)?,
+        to_schema_hash: row.get(8)?,
+        updated_at_ms: row.get(9)?,
+        state_json: row.get(10)?,
+    })
+}
+
+fn fetch_promotion(
+    conn: &Connection,
+    key: &SchemaAuthorityKey,
+    promotion_id: &cdf_kernel::PromotionId,
+) -> Result<Option<SchemaPromotionState>> {
+    let sql = format!(
+        "{PROMOTION_SELECT} WHERE authority_domain_id = ? AND project_id = ? AND environment = ? AND resource_id = ? AND promotion_id = ?"
+    );
+    conn.query_row(
+        &sql,
+        params![
+            key.authority_domain_id.as_str(),
+            key.project_id.as_str(),
+            key.environment.as_str(),
+            key.resource_id.as_str(),
+            promotion_id.as_str(),
+        ],
+        stored_promotion_row,
+    )
+    .optional()
+    .map_err(sqlite_error)?
+    .map(decode_promotion)
+    .transpose()
+}
+
+fn decode_promotion(row: StoredPromotionRow) -> Result<SchemaPromotionState> {
+    private_state_decode(
+        "decode CDF-managed schema promotion state",
+        (|| {
+            let state: SchemaPromotionState =
+                serde_json::from_str(&row.state_json).map_err(|error| {
+                    CdfError::internal(format!("decode schema promotion state: {error}"))
+                })?;
+            state.validate()?;
+            if state.key.authority_domain_id.as_str() != row.authority_domain_id
+                || state.key.project_id.as_str() != row.project_id
+                || state.key.environment.as_str() != row.environment
+                || state.key.resource_id.as_str() != row.resource_id
+                || state.plan.promotion_id.as_str() != row.promotion_id
+                || promotion_phase(state.phase) != row.phase
+                || u64_to_i64("schema promotion generation", state.from_generation)?
+                    != row.from_generation
+                || state.from_schema_hash.as_str() != row.from_schema_hash
+                || state.to_schema_hash.as_str() != row.to_schema_hash
+                || state.updated_at_ms != row.updated_at_ms
+            {
+                return Err(CdfError::internal(
+                    "schema promotion scalar columns do not match serialized authority",
+                ));
+            }
+            Ok(state)
+        })(),
+    )
+}
+
+fn insert_promotion(tx: &Transaction<'_>, state: &SchemaPromotionState) -> Result<()> {
+    state.validate()?;
+    tx.execute(
+        "INSERT INTO cdf_schema_promotions (
+            authority_domain_id, project_id, environment, resource_id, promotion_id, phase,
+            from_generation, from_schema_hash, to_schema_hash, updated_at_ms, state_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            state.key.authority_domain_id.as_str(),
+            state.key.project_id.as_str(),
+            state.key.environment.as_str(),
+            state.key.resource_id.as_str(),
+            state.plan.promotion_id.as_str(),
+            promotion_phase(state.phase),
+            u64_to_i64("schema promotion generation", state.from_generation)?,
+            state.from_schema_hash.as_str(),
+            state.to_schema_hash.as_str(),
+            state.updated_at_ms,
+            encode_json(state)?,
+        ],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn update_promotion(tx: &Transaction<'_>, state: &SchemaPromotionState) -> Result<()> {
+    state.validate()?;
+    let updated = tx
+        .execute(
+            "UPDATE cdf_schema_promotions SET phase = ?, updated_at_ms = ?, state_json = ?
+             WHERE authority_domain_id = ? AND project_id = ? AND environment = ?
+               AND resource_id = ? AND promotion_id = ? AND from_generation = ?
+               AND from_schema_hash = ? AND to_schema_hash = ?",
+            params![
+                promotion_phase(state.phase),
+                state.updated_at_ms,
+                encode_json(state)?,
+                state.key.authority_domain_id.as_str(),
+                state.key.project_id.as_str(),
+                state.key.environment.as_str(),
+                state.key.resource_id.as_str(),
+                state.plan.promotion_id.as_str(),
+                u64_to_i64("schema promotion generation", state.from_generation)?,
+                state.from_schema_hash.as_str(),
+                state.to_schema_hash.as_str(),
+            ],
+        )
+        .map_err(sqlite_error)?;
+    if updated != 1 {
+        return Err(CdfError::internal(
+            "schema promotion state update did not match one current record",
+        ));
+    }
+    Ok(())
+}
+
+fn live_permit_count(conn: &Connection, key: &SchemaAuthorityKey, now_ms: i64) -> Result<u64> {
+    let count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cdf_schema_settlement_permits
+             WHERE authority_domain_id = ? AND project_id = ? AND environment = ?
+               AND resource_id = ? AND released = 0 AND expires_at_ms > ?",
+            params![
+                key.authority_domain_id.as_str(),
+                key.project_id.as_str(),
+                key.environment.as_str(),
+                key.resource_id.as_str(),
+                now_ms,
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(sqlite_error)?;
+    u64::try_from(count).map_err(|_| CdfError::internal("live permit count is negative"))
+}
+
+fn promotion_cutoff(
+    conn: &Connection,
+    state: &SchemaPromotionState,
+    established_at_ms: i64,
+) -> Result<SchemaPromotionCutoff> {
+    let mut statement = conn
+        .prepare(
+            "SELECT settlement.checkpoint_id, checkpoint.package_hash, settlement.run_id
+             FROM cdf_schema_checkpoint_settlements AS settlement
+             JOIN cdf_checkpoints AS checkpoint ON checkpoint.checkpoint_id = settlement.checkpoint_id
+             WHERE settlement.authority_domain_id = ? AND settlement.project_id = ?
+               AND settlement.environment = ? AND settlement.resource_id = ?
+               AND settlement.generation = ? AND settlement.schema_hash = ?
+               AND checkpoint.status = 'committed'
+             ORDER BY settlement.checkpoint_id",
+        )
+        .map_err(sqlite_error)?;
+    let checkpoints = statement
+        .query_map(
+            params![
+                state.key.authority_domain_id.as_str(),
+                state.key.project_id.as_str(),
+                state.key.environment.as_str(),
+                state.key.resource_id.as_str(),
+                u64_to_i64("schema promotion generation", state.from_generation)?,
+                state.from_schema_hash.as_str(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?
+        .into_iter()
+        .map(|(checkpoint_id, package_hash, run_id)| {
+            Ok(SchemaPromotionCutoffCheckpoint {
+                checkpoint_id: CheckpointId::new(checkpoint_id)?,
+                package_hash: cdf_kernel::PackageHash::new(package_hash)?,
+                run_id: RunId::new(run_id)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let cutoff = SchemaPromotionCutoff {
+        generation: state.from_generation,
+        schema_hash: state.from_schema_hash.clone(),
+        established_at_ms,
+        checkpoints,
+    };
+    cutoff.validate()?;
+    Ok(cutoff)
+}
+
 impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
     fn authority_domain_id(&self) -> LeaseAuthorityDomainId {
         self.authority_domain_id.clone()
@@ -1333,10 +1596,12 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         &self,
         expected: &SchemaHead,
         proposed: SchemaVersion,
+        plan: SchemaPromotionPlanState,
         fence: &SchemaPromotionFence,
-    ) -> Result<SchemaHead> {
+    ) -> Result<SchemaPromotionState> {
         expected.validate()?;
         proposed.validate()?;
+        plan.validate()?;
         self.validate_key_domain(&expected.key)?;
         self.validate_fence(&expected.key, fence)?;
         if !matches!(expected.status, SchemaHeadStatus::Active) {
@@ -1356,6 +1621,11 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         ) {
             return Err(CdfError::contract(
                 "proposed schema version provenance does not match the promotion fence",
+            ));
+        }
+        if plan.promotion_id != fence.promotion_id {
+            return Err(CdfError::contract(
+                "persisted schema promotion plan does not match the promotion fence",
             ));
         }
 
@@ -1387,6 +1657,19 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         };
         promoting.validate()?;
         update_head(&tx, &promoting)?;
+        let state = SchemaPromotionState {
+            key: expected.key.clone(),
+            plan,
+            from_generation: expected.generation,
+            from_schema_hash: expected.schema_hash.clone(),
+            to_schema_hash: proposed.schema_hash.clone(),
+            phase: SchemaPromotionLifecyclePhase::Fenced,
+            cutoff: None,
+            target_settlements: Vec::new(),
+            published_generation: None,
+            updated_at_ms: now_ms,
+        };
+        insert_promotion(&tx, &state)?;
         let event = SchemaAuthorityEvent {
             key: expected.key.clone(),
             ordinal: next_event_ordinal(&tx, &expected.key)?,
@@ -1403,7 +1686,196 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         };
         insert_event(&tx, &event)?;
         tx.commit().map_err(sqlite_error)?;
-        Ok(promoting)
+        Ok(state)
+    }
+
+    fn promotion_state(
+        &self,
+        key: &SchemaAuthorityKey,
+        promotion_id: &cdf_kernel::PromotionId,
+    ) -> Result<Option<SchemaPromotionState>> {
+        self.validate_key_domain(key)?;
+        cdf_kernel::PromotionId::new(promotion_id.as_str()).map(drop)?;
+        let conn = self.lock()?;
+        fetch_promotion(&conn, key, promotion_id)
+    }
+
+    fn establish_promotion_cutoff(
+        &self,
+        expected_promoting: &SchemaHead,
+        fence: &SchemaPromotionFence,
+    ) -> Result<SchemaPromotionState> {
+        expected_promoting.validate()?;
+        self.validate_key_domain(&expected_promoting.key)?;
+        self.validate_fence(&expected_promoting.key, fence)?;
+        let SchemaHeadStatus::Promoting { promotion_id, .. } = &expected_promoting.status else {
+            return Err(CdfError::contract(
+                "schema promotion cutoff requires a promoting head",
+            ));
+        };
+        if promotion_id != &fence.promotion_id {
+            return Err(CdfError::contract(
+                "schema promotion cutoff does not match the supplied fence",
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let now_ms = self.clock.now_ms()?;
+        assert_current_lease_at(&tx, &fence.lease, now_ms)?;
+        let current = fetch_head(&tx, &expected_promoting.key)?
+            .ok_or_else(|| CdfError::contract("schema promotion authority head is missing"))?;
+        if current != *expected_promoting {
+            return Err(stale_head(expected_promoting, &current));
+        }
+        let mut state = fetch_promotion(&tx, &expected_promoting.key, promotion_id)?
+            .ok_or_else(|| CdfError::internal("promoting head has no persisted promotion state"))?;
+        if state.phase != SchemaPromotionLifecyclePhase::Fenced {
+            return Ok(state);
+        }
+        let live_permits = live_permit_count(&tx, &expected_promoting.key, now_ms)?;
+        if live_permits != 0 {
+            return Err(CdfError::transient(format!(
+                "schema promotion is waiting for {live_permits} earlier run settlement permit(s) to commit, release, or expire"
+            )));
+        }
+        let cutoff = promotion_cutoff(&tx, &state, now_ms)?;
+        let checkpoint_count = u64::try_from(cutoff.checkpoints.len())
+            .map_err(|_| CdfError::internal("promotion cutoff checkpoint count overflow"))?;
+        state.phase = SchemaPromotionLifecyclePhase::CutoffEstablished;
+        state.cutoff = Some(cutoff);
+        state.updated_at_ms = now_ms;
+        update_promotion(&tx, &state)?;
+        insert_event(
+            &tx,
+            &SchemaAuthorityEvent {
+                key: state.key.clone(),
+                ordinal: next_event_ordinal(&tx, &state.key)?,
+                generation: state.from_generation,
+                schema_hash: state.from_schema_hash.clone(),
+                recorded_at_ms: now_ms,
+                kind: SchemaAuthorityEventKind::PromotionCutoffEstablished {
+                    promotion_id: promotion_id.clone(),
+                    checkpoint_count,
+                },
+            },
+        )?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(state)
+    }
+
+    fn commit_promotion_target(
+        &self,
+        expected_promoting: &SchemaHead,
+        fence: &SchemaPromotionFence,
+        target: &SchemaPromotionTarget,
+        checkpoint_id: &CheckpointId,
+        receipt: Receipt,
+    ) -> Result<SchemaPromotionState> {
+        expected_promoting.validate()?;
+        target.validate()?;
+        self.validate_key_domain(&expected_promoting.key)?;
+        self.validate_fence(&expected_promoting.key, fence)?;
+        let SchemaHeadStatus::Promoting { promotion_id, .. } = &expected_promoting.status else {
+            return Err(CdfError::contract(
+                "schema promotion target settlement requires a promoting head",
+            ));
+        };
+        if promotion_id != &fence.promotion_id
+            || receipt.destination != target.destination_id
+            || receipt.target != target.target
+        {
+            return Err(CdfError::contract(
+                "schema promotion target receipt does not match the head, fence, and target",
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let now_ms = self.clock.now_ms()?;
+        assert_current_lease_at(&tx, &fence.lease, now_ms)?;
+        let current = fetch_head(&tx, &expected_promoting.key)?
+            .ok_or_else(|| CdfError::contract("schema promotion authority head is missing"))?;
+        if current != *expected_promoting {
+            return Err(stale_head(expected_promoting, &current));
+        }
+        let mut state = fetch_promotion(&tx, &expected_promoting.key, promotion_id)?
+            .ok_or_else(|| CdfError::internal("promoting head has no persisted promotion state"))?;
+        if state.phase != SchemaPromotionLifecyclePhase::CutoffEstablished {
+            return Err(CdfError::contract(
+                "schema promotion target cannot settle before the correction cutoff",
+            ));
+        }
+        if !state.plan.required_targets.contains(target) {
+            return Err(CdfError::contract(format!(
+                "destination {} target {} is not required by the persisted promotion plan",
+                target.destination_id, target.target
+            )));
+        }
+        if let Some(existing) = state
+            .target_settlements
+            .iter()
+            .find(|settlement| settlement.target == *target)
+        {
+            if existing.checkpoint_id == *checkpoint_id
+                && existing.receipt_id == receipt.receipt_id
+                && existing.correction_package_hash == receipt.package_hash
+            {
+                return Ok(state);
+            }
+            return Err(CdfError::contract(format!(
+                "destination {} target {} already has conflicting promotion settlement authority",
+                target.destination_id, target.target
+            )));
+        }
+        let checkpoint = CheckpointSql::fetch_by_id_tx(&tx, checkpoint_id)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "promotion checkpoint {checkpoint_id} does not exist"
+            ))
+        })?;
+        if checkpoint.delta.resource_id != expected_promoting.key.resource_id
+            || checkpoint.delta.scope != fence.lease.scope
+        {
+            return Err(CdfError::contract(
+                "promotion checkpoint resource/scope does not match schema promotion authority",
+            ));
+        }
+        commit_checkpoint_tx(&tx, checkpoint_id, &receipt)?;
+        state
+            .target_settlements
+            .push(SchemaPromotionTargetSettlement {
+                target: target.clone(),
+                correction_package_hash: receipt.package_hash.clone(),
+                receipt_id: receipt.receipt_id.clone(),
+                checkpoint_id: checkpoint_id.clone(),
+                settled_at_ms: receipt.committed_at_ms,
+            });
+        state
+            .target_settlements
+            .sort_by(|left, right| left.target.cmp(&right.target));
+        state.updated_at_ms = now_ms;
+        update_promotion(&tx, &state)?;
+        insert_event(
+            &tx,
+            &SchemaAuthorityEvent {
+                key: state.key.clone(),
+                ordinal: next_event_ordinal(&tx, &state.key)?,
+                generation: state.from_generation,
+                schema_hash: state.from_schema_hash.clone(),
+                recorded_at_ms: now_ms,
+                kind: SchemaAuthorityEventKind::PromotionTargetSettled {
+                    promotion_id: promotion_id.clone(),
+                    destination_id: target.destination_id.clone(),
+                    target: target.target.clone(),
+                    checkpoint_id: checkpoint_id.clone(),
+                    receipt_id: receipt.receipt_id,
+                },
+            },
+        )?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(state)
     }
 
     fn publish_promotion(
@@ -1447,6 +1919,49 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
             return Err(stale_head(expected_promoting, &current));
         }
         require_head_versions(&tx, &current)?;
+        let mut state = fetch_promotion(&tx, &current.key, promotion_id)?
+            .ok_or_else(|| CdfError::internal("promoting head has no persisted promotion state"))?;
+        if state.phase != SchemaPromotionLifecyclePhase::CutoffEstablished || state.cutoff.is_none()
+        {
+            return Err(CdfError::contract(
+                "schema promotion cannot publish before its committed-run cutoff is established",
+            ));
+        }
+        if live_permit_count(&tx, &current.key, now_ms)? != 0 {
+            return Err(CdfError::transient(
+                "schema promotion cannot publish while an earlier run settlement permit is live",
+            ));
+        }
+        let settled_targets = state
+            .target_settlements
+            .iter()
+            .map(|settlement| settlement.target.clone())
+            .collect::<Vec<_>>();
+        if settled_targets != state.plan.required_targets {
+            return Err(CdfError::contract(
+                "schema promotion cannot publish until every planned target is settled",
+            ));
+        }
+        for settlement in &state.target_settlements {
+            let checkpoint = CheckpointSql::fetch_by_id_tx(&tx, &settlement.checkpoint_id)?
+                .ok_or_else(|| {
+                    CdfError::internal(format!(
+                        "promotion target checkpoint {} is missing",
+                        settlement.checkpoint_id
+                    ))
+                })?;
+            if checkpoint.status != CheckpointStatus::Committed
+                || checkpoint.receipt.as_ref().is_none_or(|receipt| {
+                    receipt.receipt_id != settlement.receipt_id
+                        || receipt.package_hash != settlement.correction_package_hash
+                })
+            {
+                return Err(CdfError::contract(format!(
+                    "promotion target checkpoint {} is not committed with its persisted receipt and package authority",
+                    settlement.checkpoint_id
+                )));
+            }
+        }
         let next_generation = current
             .generation
             .checked_add(1)
@@ -1454,6 +1969,10 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         let active =
             SchemaHead::active(current.key.clone(), next_generation, to_schema_hash.clone())?;
         update_head(&tx, &active)?;
+        state.phase = SchemaPromotionLifecyclePhase::Published;
+        state.published_generation = Some(next_generation);
+        state.updated_at_ms = now_ms;
+        update_promotion(&tx, &state)?;
         insert_event(
             &tx,
             &SchemaAuthorityEvent {

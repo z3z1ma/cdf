@@ -25,10 +25,11 @@ use cdf_kernel::{
     PostgresLogScope, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
     PromotionSettlementStore, Receipt, ReceiptId, ResourceId, ResumeTokenPosition, RewindRequest,
     RunId, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaAuthorityStore, SchemaHash,
-    SchemaPromotionFence, SchemaSettlementStore, ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TableSnapshotPosition, TableSnapshotSelector,
-    TargetName, VerifyClause, WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim,
-    WatermarkObservationContext, WatermarkValue, WriteDisposition,
+    SchemaPromotionFence, SchemaPromotionPlanState, SchemaPromotionTarget, SchemaSettlementStore,
+    ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause,
+    WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim, WatermarkObservationContext,
+    WatermarkValue, WriteDisposition,
 };
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
@@ -2982,13 +2983,25 @@ fn promoting_head_blocks_new_permits_but_drains_an_existing_generation() {
         lease,
     )
     .unwrap();
-    let promoting = store
+    store
         .begin_promotion(
             &active,
             schema_authority_version("order_total", Some(&first_version)),
+            SchemaPromotionPlanState::new(
+                fence.promotion_id.clone(),
+                "{}".to_owned(),
+                vec![SchemaPromotionTarget {
+                    destination_id: DestinationId::new("local-test").unwrap(),
+                    target: TargetName::new("orders").unwrap(),
+                }],
+                Vec::new(),
+                1_500,
+            )
+            .unwrap(),
             &fence,
         )
         .unwrap();
+    let promoting = store.head(&active.key).unwrap().unwrap();
 
     assert!(
         store
@@ -3000,8 +3013,15 @@ fn promoting_head_blocks_new_permits_but_drains_an_existing_generation() {
             .is_err()
     );
     store.assert_run_permit(&permit).unwrap();
+    assert!(
+        store
+            .establish_promotion_cutoff(&promoting, &fence)
+            .is_err()
+    );
     store.release_run_permit(&permit).unwrap();
-    store.publish_promotion(&promoting, &fence).unwrap();
+    store
+        .establish_promotion_cutoff(&promoting, &fence)
+        .unwrap();
 }
 
 #[test]
@@ -3045,4 +3065,102 @@ fn expired_schema_settlement_permit_cannot_commit() {
             .status,
         CheckpointStatus::Proposed
     );
+}
+
+#[test]
+fn promotion_publishes_head_only_after_cutoff_and_exact_target_settlement() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("settled-schema-promotion.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(4_000));
+    let store = SqliteSchemaAuthorityStore::open_with_clock(&path, clock.clone()).unwrap();
+    let leases = SqliteScopeLeaseStore::open_with_clock(&path, clock).unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    let first_version = establishment.version.clone();
+    let active = store.establish_if_absent(establishment).unwrap();
+    let proposed = schema_authority_version("order_total", Some(&first_version));
+    let lease = leases
+        .acquire(
+            active.key.promotion_scope().unwrap(),
+            LeaseOwnerId::new("settled-promoter").unwrap(),
+            1_000,
+        )
+        .unwrap();
+    let fence = SchemaPromotionFence::new(
+        store.authority_domain_id(),
+        PromotionId::new("promotion-01").unwrap(),
+        lease,
+    )
+    .unwrap();
+    let target = SchemaPromotionTarget {
+        destination_id: DestinationId::new("local-test").unwrap(),
+        target: TargetName::new("orders").unwrap(),
+    };
+    let plan = SchemaPromotionPlanState::new(
+        fence.promotion_id.clone(),
+        "{\"resource\":\"orders\"}".to_owned(),
+        vec![target.clone()],
+        Vec::new(),
+        3_900,
+    )
+    .unwrap();
+    store
+        .begin_promotion(&active, proposed.clone(), plan.clone(), &fence)
+        .unwrap();
+    let promoting = store.head(&active.key).unwrap().unwrap();
+    let cutoff = store
+        .establish_promotion_cutoff(&promoting, &fence)
+        .unwrap();
+    assert_eq!(cutoff.cutoff.unwrap().checkpoints, Vec::new());
+    assert!(store.publish_promotion(&promoting, &fence).is_err());
+
+    let mut correction_delta = delta_for(
+        "checkpoint-schema-correction",
+        None,
+        PipelineId::new("schema-promotion").unwrap(),
+        active.key.resource_id.clone(),
+        fence.lease.scope.clone(),
+        cursor_position(1),
+        "package-schema-correction",
+    );
+    correction_delta.schema_hash = proposed.schema_hash.clone();
+    let checkpoints = SqliteCheckpointStore::open(&path).unwrap();
+    checkpoints.propose(correction_delta.clone()).unwrap();
+    let correction_receipt = receipt(&correction_delta);
+    let settled = store
+        .commit_promotion_target(
+            &promoting,
+            &fence,
+            &target,
+            &correction_delta.checkpoint_id,
+            correction_receipt.clone(),
+        )
+        .unwrap();
+    assert_eq!(settled.target_settlements.len(), 1);
+    assert_eq!(
+        store
+            .commit_promotion_target(
+                &promoting,
+                &fence,
+                &target,
+                &correction_delta.checkpoint_id,
+                correction_receipt,
+            )
+            .unwrap(),
+        settled
+    );
+
+    let published = store.publish_promotion(&promoting, &fence).unwrap();
+    assert_eq!(published.generation, 2);
+    assert_eq!(published.schema_hash, proposed.schema_hash);
+    let persisted = store
+        .promotion_state(&active.key, &fence.promotion_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.phase,
+        cdf_kernel::SchemaPromotionLifecyclePhase::Published
+    );
+    assert_eq!(persisted.published_generation, Some(2));
+    assert_eq!(store.history(&active.key, 10).unwrap().len(), 5);
 }

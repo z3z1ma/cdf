@@ -174,8 +174,10 @@ pub use schema_authority::{
     MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, SchemaAuthorityCheck, SchemaAuthorityEstablishment,
     SchemaAuthorityEvent, SchemaAuthorityEventKind, SchemaAuthorityKey,
     SchemaAuthorityPrecondition, SchemaAuthorityStore, SchemaHead, SchemaHeadStatus,
-    SchemaPromotionFence, SchemaSettlementPermit, SchemaSettlementStore, SchemaVersion,
-    SchemaVersionProvenance,
+    SchemaPromotionCutoff, SchemaPromotionCutoffCheckpoint, SchemaPromotionFence,
+    SchemaPromotionLifecyclePhase, SchemaPromotionPlanState, SchemaPromotionState,
+    SchemaPromotionTarget, SchemaPromotionTargetSettlement, SchemaSettlementPermit,
+    SchemaSettlementStore, SchemaVersion, SchemaVersionProvenance,
 };
 pub use schema_fingerprint::canonical_arrow_schema_hash;
 pub use scope::{ScopeKey, ScopeKind};

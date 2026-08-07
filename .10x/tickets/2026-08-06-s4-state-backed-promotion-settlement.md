@@ -92,6 +92,13 @@ promotion lifecycle:
   during the destination call, performs a final renewal, and uses the fenced atomic checkpoint
   commit. Ad-hoc and artifact-only paths remain outside project authority until their own typed
   authority is supplied; no schema permit is held during extraction or packaging.
+- 2026-08-06: Added the durable promotion lifecycle itself. Promotion begin now atomically stores
+  canonical credential-free plan bytes/hash, required targets, residual summary identities, the
+  proposed immutable version, the fenced head, and its event. Cutoff establishment refuses live
+  ordinary permits and snapshots every committed checkpoint/package bound to the source logical
+  generation. Target receipt/checkpoint settlement is atomic and idempotent. Publication rechecks
+  permit drain and every exact planned target before atomically advancing the head, lifecycle
+  state, and ordered event to the next generation.
 
 ## Blockers
 
@@ -110,6 +117,15 @@ dispositions.
   run_ndjson_discovery_establishes_schema_authority_and_commits -- --nocapture` passed and asserts
   the durable generation-one checkpoint settlement. This proves the ordinary CLI path; it does
   not yet prove promotion cutoff/publication or correction execution.
+- Focused state lifecycle tests passed:
+  `promotion_publishes_head_only_after_cutoff_and_exact_target_settlement`,
+  `promoting_head_blocks_new_permits_but_drains_an_existing_generation`, and
+  `sqlite_schema_authority_passes_shared_conformance`. They prove cutoff refusal while a permit is
+  live, publication refusal before target settlement, atomic target checkpoint settlement,
+  persisted recovery state, and the final generation-two head/event advance.
+- Strict affected-package Clippy passed for `cdf-kernel`, `cdf-runtime`, and `cdf-state-sqlite`
+  (including all targets). Boxing the settlement binding in `ExecutionServices` kept the shared
+  runtime service handle compact and avoided inflating downstream execution enums.
 
 ## Review
 

@@ -726,7 +726,7 @@ pub struct ExecutionServices {
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
     content_reachability: Option<Arc<dyn cdf_kernel::ContentReachabilityStore>>,
-    schema_settlement: Option<SchemaSettlementBinding>,
+    schema_settlement: Option<Arc<SchemaSettlementBinding>>,
     task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
     source_rate_gates: Arc<SourceRateGateRegistry>,
     source_io_controllers: Arc<SourceIoControllerRegistry>,
@@ -1236,16 +1236,16 @@ impl ExecutionServices {
             ));
         }
         let mut services = self.clone();
-        services.schema_settlement = Some(SchemaSettlementBinding {
+        services.schema_settlement = Some(Arc::new(SchemaSettlementBinding {
             store,
             active_head,
             permit_duration_ms,
-        });
+        }));
         Ok(services)
     }
 
     pub fn schema_settlement(&self) -> Option<&SchemaSettlementBinding> {
-        self.schema_settlement.as_ref()
+        self.schema_settlement.as_deref()
     }
 
     /// Returns invocation-local services carrying the cancellation authority for this run.

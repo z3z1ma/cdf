@@ -1,10 +1,10 @@
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CanonicalArrowSchema, EnvironmentName, LeaseAuthorityDomainId, LeaseOwnerId, ProjectId,
-    PromotionId, ResourceId, SchemaAuthorityCheck, SchemaAuthorityEstablishment,
+    CanonicalArrowSchema, DestinationId, EnvironmentName, LeaseAuthorityDomainId, LeaseOwnerId,
+    ProjectId, PromotionId, ResourceId, SchemaAuthorityCheck, SchemaAuthorityEstablishment,
     SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityPrecondition,
-    SchemaAuthorityStore, SchemaHeadStatus, SchemaPromotionFence, SchemaVersion,
-    SchemaVersionProvenance, ScopeLeaseStore,
+    SchemaAuthorityStore, SchemaHeadStatus, SchemaPromotionFence, SchemaPromotionPlanState,
+    SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeLeaseStore, TargetName,
 };
 
 pub fn assert_schema_authority_store_send_sync<S: SchemaAuthorityStore + Send + Sync>() {}
@@ -223,13 +223,25 @@ fn assert_fenced_promotion<S: SchemaAuthorityStore, L: ScopeLeaseStore>(store: &
     .unwrap();
     assert!(
         store
-            .begin_promotion(&active, proposed.clone(), &foreign_fence)
+            .begin_promotion(
+                &active,
+                proposed.clone(),
+                promotion_plan(&foreign_fence.promotion_id),
+                &foreign_fence
+            )
             .is_err()
     );
 
-    let promoting = store
-        .begin_promotion(&active, proposed.clone(), &fence)
+    let state = store
+        .begin_promotion(
+            &active,
+            proposed.clone(),
+            promotion_plan(&fence.promotion_id),
+            &fence,
+        )
         .unwrap();
+    assert_eq!(state.from_generation, active.generation);
+    let promoting = store.head(&active.key).unwrap().unwrap();
     assert!(matches!(
         promoting.status,
         SchemaHeadStatus::Promoting { .. }
@@ -237,10 +249,11 @@ fn assert_fenced_promotion<S: SchemaAuthorityStore, L: ScopeLeaseStore>(store: &
     assert_eq!(promoting.generation, active.generation);
     assert_eq!(store.head(&active.key).unwrap(), Some(promoting.clone()));
 
-    let published = store.publish_promotion(&promoting, &fence).unwrap();
-    assert!(matches!(published.status, SchemaHeadStatus::Active));
-    assert_eq!(published.generation, active.generation + 1);
-    assert_eq!(published.schema_hash, proposed.schema_hash);
+    let cutoff = store
+        .establish_promotion_cutoff(&promoting, &fence)
+        .unwrap();
+    assert!(cutoff.cutoff.is_some());
+    assert!(store.publish_promotion(&promoting, &fence).is_err());
     let history = store.history(&active.key, 10).unwrap();
     assert_eq!(history.len(), 3);
     assert!(matches!(
@@ -253,7 +266,7 @@ fn assert_fenced_promotion<S: SchemaAuthorityStore, L: ScopeLeaseStore>(store: &
     ));
     assert!(matches!(
         history[2].kind,
-        SchemaAuthorityEventKind::PromotionPublished { .. }
+        SchemaAuthorityEventKind::PromotionCutoffEstablished { .. }
     ));
     assert_eq!(
         history
@@ -271,4 +284,18 @@ fn assert_fenced_promotion<S: SchemaAuthorityStore, L: ScopeLeaseStore>(store: &
             .collect::<Vec<_>>(),
         vec![2, 3]
     );
+}
+
+fn promotion_plan(promotion_id: &PromotionId) -> SchemaPromotionPlanState {
+    SchemaPromotionPlanState::new(
+        promotion_id.clone(),
+        "{}".to_owned(),
+        vec![SchemaPromotionTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("promoted").unwrap(),
+        }],
+        Vec::new(),
+        1_500,
+    )
+    .unwrap()
 }
