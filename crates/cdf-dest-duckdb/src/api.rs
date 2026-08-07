@@ -22,7 +22,7 @@ use crate::{
     DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES, DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES,
     DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES, DUCKDB_MAX_IN_FLIGHT_BYTES_ENV,
     DUCKDB_MEMORY_LIMIT_ENV, DUCKDB_PROFILE_DIRECTORY_ENV, DUCKDB_SCAN_THREADS_ENV,
-    DUCKDB_TEMP_BUDGET_ENV, DUCKDB_THREADS_ENV, LOCK_SUFFIX, MAIN_SCHEMA,
+    DUCKDB_TEMP_BUDGET_ENV, DUCKDB_THREADS_ENV, MAIN_SCHEMA, MUTATION_LOCK_SUFFIX,
     commit::{apply_table_plan, finalize_merge, staging_table_name},
     corrections::{
         begin_correction_request, plan_correction_request, read_addressed_residual,
@@ -382,7 +382,7 @@ impl DuckDbDestination {
             .and_then(|name| name.to_str())
             .unwrap_or("duckdb");
         self.database_path
-            .with_file_name(format!("{file_name}.{LOCK_SUFFIX}"))
+            .with_file_name(format!("{file_name}.{MUTATION_LOCK_SUFFIX}"))
     }
 }
 

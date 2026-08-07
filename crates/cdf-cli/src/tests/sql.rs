@@ -138,7 +138,6 @@ fn compile_publishes_state_bound_artifact_index_and_locked_rebuild() {
 
     let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
     let index_before = fs::read(project.root.join(".cdf/manifest.json")).unwrap();
-    fs::write(project.root.join("cdf.lock"), "not legacy authority").unwrap();
     let locked = run([
         "cdf",
         "--json",
@@ -368,7 +367,6 @@ fn locked_compile_reports_missing_selected_authority_without_cache_publication()
     assert_eq!(json["result"]["resources"][0]["error"]["kind"], "contract");
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join("cdf.lock").exists());
 }
 
 #[test]
@@ -469,7 +467,6 @@ fn compile_discovers_only_selected_source_and_publishes_schema_authority() {
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(project.root.join(".cdf/state.db").is_file());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
-    assert!(!project.root.join("cdf.lock").exists());
     assert_eq!(
         json["result"]["resources"][0]["schema_authority"]["status"],
         "established"

@@ -12,8 +12,10 @@ use cdf_dest_duckdb::DuckDbDestination;
 use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
-    CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue, DestinationProtocol,
-    PipelineId, QueryableResource, Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey,
+    CanonicalArrowSchema, CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue,
+    DestinationProtocol, EnvironmentName, PipelineId, QueryableResource, Receipt, ResourceId,
+    Result, RunId, ScanRequest, SchemaAuthorityEstablishment, SchemaAuthorityKey,
+    SchemaAuthorityStore, SchemaSource, SchemaVersion, SchemaVersionProvenance, ScopeKey,
     SourcePosition, TargetName,
 };
 use cdf_package::PackageReader;
@@ -22,7 +24,7 @@ use cdf_project::{
     PackageArtifactReplayRequest, ProjectReceiptSource, ProjectRunRequest, ProjectRunSource,
     ResolvedProjectDestination, replay_package_from_artifacts, run_project,
 };
-use cdf_state_sqlite::SqliteCheckpointStore;
+use cdf_state_sqlite::{SqliteCheckpointStore, SqliteSchemaAuthorityStore};
 use duckdb::Connection as DuckConnection;
 use serde::Serialize;
 use serde_json::Value;
@@ -49,8 +51,8 @@ struct MvpAcceptanceDemoEvidence {
     plan_partition_count: usize,
     plan_endpoint_path: String,
     plan_query_shape: Vec<String>,
-    contract_freeze_count: u64,
-    contract_test_passed_count: u64,
+    compiled_resource_count: u64,
+    schema_authority_generation: u64,
     rest_request_count_before_resume: usize,
     rest_request_count_after_resume: usize,
     rest_request_method: String,
@@ -94,13 +96,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         "plan must run before package bytes are written"
     );
 
-    let freeze_json = invoke_json(project.root(), ["contract", "freeze", RESOURCE_ID]);
-    assert_eq!(freeze_json["result"]["counts"]["frozen"], 1);
-    let contract_test_json = invoke_json(project.root(), ["contract", "test", RESOURCE_ID]);
-    assert_eq!(contract_test_json["result"]["counts"]["passed"], 1);
-    let contract_human = invoke_human(project.root(), ["contract", "test", RESOURCE_ID]);
     let compile_json = invoke_json(project.root(), ["compile"]);
     assert_eq!(compile_json["command"], "compile");
+    assert_eq!(compile_json["result"]["counts"]["compiled"], 1);
+    let schema_json = invoke_json(project.root(), ["schema", "show", RESOURCE_ID]);
+    assert_eq!(schema_json["result"]["generation"], 1);
+    let schema_human = invoke_human(project.root(), ["schema", "show", RESOURCE_ID]);
 
     let (resource, transport) = github_issues_resource(project.root()).unwrap();
     let destination = crate::destination_catalog::resolve(
@@ -355,10 +356,10 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
             .len(),
         plan_endpoint_path: "/repos/acme/cdf/issues".to_owned(),
         plan_query_shape: vec!["per_page=100".to_owned(), "state=all".to_owned()],
-        contract_freeze_count: freeze_json["result"]["counts"]["frozen"].as_u64().unwrap(),
-        contract_test_passed_count: contract_test_json["result"]["counts"]["passed"]
+        compiled_resource_count: compile_json["result"]["counts"]["compiled"]
             .as_u64()
             .unwrap(),
+        schema_authority_generation: schema_json["result"]["generation"].as_u64().unwrap(),
         rest_request_count_before_resume: 1,
         rest_request_count_after_resume: transport.requests().len(),
         rest_request_method: format!("{:?}", request.method),
@@ -407,7 +408,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
 
     let transcript = format!(
         "$ cdf plan {RESOURCE_ID}\n{plan_human}\n\
-         $ cdf contract test {RESOURCE_ID}\n{contract_human}\n\
+         $ cdf schema show {RESOURCE_ID}\n{schema_human}\n\
          # simulated kill after destination receipt verification and before checkpoint commit\n\
          $ cdf run --resume {RUN_ID}\n{}\n\
          $ cdf sql 'select package_id, status from packages order by package_id'\n{sql_human}\n\
@@ -488,85 +489,23 @@ impl DemoProject {
         let config = cdf_project::parse_cdf_toml(&self.project_toml())?;
         let resource_id = ResourceId::new(RESOURCE_ID)?;
         let schema = github_issues_schema();
-        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
-        let registry = crate::test_rest_source_registry(RecordingTransport::default())?;
-        let destination = crate::destination_catalog::registry()?.inspect(
-            &crate::destination_catalog::local_uri("duckdb", &self.destination_path),
-            &cdf_runtime::DestinationResolutionContext::for_project_inspection(&self.root)
-                .with_environment_name("dev"),
+        let store = SqliteSchemaAuthorityStore::open(self.state_store_path())?;
+        let key = SchemaAuthorityKey::new(
+            store.authority_domain_id(),
+            config.project.id,
+            EnvironmentName::new("dev")?,
+            resource_id,
         )?;
-        let semantic_catalog = cdf_semantic::SemanticCatalog::builtins()?;
-        let entries = cdf_project::compile_query_project_resources(
-            &registry,
-            &config,
-            &self.root,
-            "dev",
-            &destination.sheet_artifact.sheet,
-            &semantic_catalog,
-            &BTreeMap::from([(
-                RESOURCE_ID.to_owned(),
-                cdf_project::ProjectInputSchemaAuthority::new(
-                    cdf_kernel::SchemaSource::Declared {
-                        schema_hash,
-                        source: "mvp-acceptance-fixture".to_owned(),
-                    },
-                    schema.clone(),
-                )?,
-            )]),
-        )?;
-        let source_plan = entries[0].resource.source_plan();
-        let artifact = cdf_project::SchemaSnapshotArtifact::new(
-            &resource_id,
-            &schema,
-            BTreeMap::from([
-                ("probe".to_owned(), "mvp-acceptance-fixture".to_owned()),
-                (
-                    "source_driver".to_owned(),
-                    source_plan.driver.driver_id.as_str().to_owned(),
-                ),
-                (
-                    "source_driver_version".to_owned(),
-                    source_plan.driver.driver_version.clone(),
-                ),
-                (
-                    "source_discovery_binding".to_owned(),
-                    source_plan.discovery_binding_hash()?.to_string(),
-                ),
-                ("cdf:normalizer".to_owned(), "namecase-v1".to_owned()),
-            ]),
-        )?;
-        let resources = entries
-            .into_iter()
-            .map(|entry| {
-                cdf_project::finalize_query_project_resource(
-                    cdf_project::CompiledProjectResource {
-                        resource: entry.resource.with_schema_source_and_schema(
-                            cdf_kernel::SchemaSource::Discovered {
-                                snapshot: artifact.reference(),
-                            },
-                            std::sync::Arc::new(schema.clone()),
-                        ),
-                        query: entry.query,
-                    },
-                    &semantic_catalog,
-                )
-                .map(|entry| entry.resource)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let lock = cdf_project::generate_lockfile_with_destination_artifacts(
-            &config,
-            &resources,
-            cdf_project::current_dependency_tuple(),
-            &[destination.sheet_artifact],
-            BTreeMap::new(),
-            &semantic_catalog,
-        )?;
-        cdf_project::SchemaSnapshotStore::new(&self.root).write(&artifact)?;
-        cdf_project::write_lock_file_guarded(
-            self.root.join(cdf_project::LOCK_FILE_NAME),
+        let version = SchemaVersion::new(
+            CanonicalArrowSchema::from_arrow(&schema)?,
             None,
-            cdf_project::lock_to_toml(&lock)?,
-        )
+            None,
+            1_000,
+            SchemaVersionProvenance::FirstUse,
+        )?;
+        store
+            .establish_if_absent(SchemaAuthorityEstablishment::new(key, version)?)
+            .map(drop)
     }
 
     fn project_toml(&self) -> String {
@@ -606,19 +545,26 @@ fn github_issues_resource(
         &fs::read_to_string(project_root.join("cdf.toml"))
             .map_err(|error| crate::conformance_private_io_error("read demo cdf.toml", error))?,
     )?;
-    let schema = github_issues_schema();
-    let lock = cdf_project::parse_lock(
-        &fs::read_to_string(project_root.join(cdf_project::LOCK_FILE_NAME))
-            .map_err(|error| crate::conformance_private_io_error("read demo lockfile", error))?,
+    let store = SqliteSchemaAuthorityStore::open(project_root.join(".cdf/state.sqlite"))?;
+    let key = SchemaAuthorityKey::new(
+        store.authority_domain_id(),
+        config.project.id.clone(),
+        EnvironmentName::new("dev")?,
+        ResourceId::new(RESOURCE_ID)?,
     )?;
-    let snapshot = lock.resources[RESOURCE_ID]
-        .schema_snapshot
-        .clone()
-        .ok_or_else(|| CdfError::internal("MVP acceptance fixture schema was not pinned"))?;
+    let head = store
+        .head(&key)?
+        .ok_or_else(|| CdfError::internal("MVP acceptance fixture schema was not established"))?;
+    let version = store
+        .version(&key, &head.schema_hash)?
+        .ok_or_else(|| CdfError::internal("MVP acceptance fixture schema version is missing"))?;
+    let schema = version.canonical_schema.to_arrow()?;
     let schemas = BTreeMap::from([(
         RESOURCE_ID.to_owned(),
         cdf_project::ProjectInputSchemaAuthority::new(
-            cdf_kernel::SchemaSource::Discovered { snapshot },
+            SchemaSource::Active {
+                schema_hash: head.schema_hash,
+            },
             schema,
         )?,
     )]);

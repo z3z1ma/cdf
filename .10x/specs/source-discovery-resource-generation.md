@@ -113,8 +113,9 @@ conflict; the aggregate exits nonzero and reports every created/unchanged/confli
 Generation uses the guarded multi-file project publication authority and exact candidate/source
 generation preconditions so catalog drift between introspection and write cannot change the set.
 
-Generation does not write `cdf.lock`, schemas, compiled artifacts, or the project index and does
-not contact a destination. `--namespace` without `--generate` is a usage error.
+Generation does not establish schema authority or write schema caches, compiled artifacts, or the
+project index, and it does not contact a destination. `--namespace` without `--generate` is a
+usage error.
 
 ## Relationship to `cdf add`
 

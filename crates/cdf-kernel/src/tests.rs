@@ -1424,17 +1424,17 @@ fn schema_source_modes_serde_round_trip() {
         SchemaSource::Discovered {
             snapshot: snapshot.clone(),
         }
-        .pinned_snapshot(),
+        .cached_snapshot(),
         Some(&snapshot)
     );
-    assert_eq!(SchemaSource::Discover.pinned_snapshot(), None);
+    assert_eq!(SchemaSource::Discover.cached_snapshot(), None);
     let hints = SchemaSource::Hints {
         source: "declarative:orders".to_owned(),
         hints_hash: Some(SchemaHash::new("sha256:hints").unwrap()),
         snapshot: None,
     };
     let pinned_hints = hints
-        .with_pinned_snapshot(snapshot.clone())
+        .with_cached_snapshot(snapshot.clone())
         .expect("hints support pinning");
     assert!(matches!(
         &pinned_hints,
@@ -1446,7 +1446,7 @@ fn schema_source_modes_serde_round_trip() {
             && hash.as_str() == "sha256:hints"
             && reference == &snapshot
     ));
-    assert_eq!(pinned_hints.without_pinned_snapshot(), Some(hints));
+    assert_eq!(pinned_hints.without_cached_snapshot(), Some(hints));
 }
 
 #[test]

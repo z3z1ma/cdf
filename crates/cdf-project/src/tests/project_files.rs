@@ -1,12 +1,8 @@
 use super::{
-    BTreeMap, DefaultSecretProvider, DependencyTuple, DestinationProtocol,
-    DestinationProtocolCapabilities, DestinationSheetArtifact, DurationSpec, EnvSecretProvider,
-    ExecutionExtent, FileSecretProvider, NORMALIZER_NAMECASE_V1, ProjectScaffoldOptions,
-    ResolvedProjectDestination, RetentionRule, SecretProvider, SecretRef, SecretUri,
-    SemanticCatalog, SourceDeclaration, TargetName, TypeMappingFidelity,
-    compile_query_project_resources, diff_lockfiles, env, fs,
-    generate_lockfile_with_destination_artifacts, lock_to_toml, parse_cdf_toml, parse_lock,
-    semantic_hash,
+    BTreeMap, DefaultSecretProvider, DurationSpec, EnvSecretProvider, FileSecretProvider,
+    ProjectScaffoldOptions, ResolvedProjectDestination, RetentionRule, SecretProvider, SecretRef,
+    SecretUri, SemanticCatalog, SourceDeclaration, TargetName, TypeMappingFidelity,
+    compile_query_project_resources, env, fs, parse_cdf_toml,
     support::{
         BOOK_PROJECT, GITHUB_RESOURCE, compile_declarative_fixture,
         compile_declarative_fixture_with_root, destination_sheet, test_execution_services,
@@ -216,158 +212,6 @@ fn file_secret_provider_resolves_without_exposing_contents() {
 }
 
 #[test]
-fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
-    let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
-    let resources = compile_declarative_fixture(&test_source_registry(), GITHUB_RESOURCE).unwrap();
-    let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
-    let sheet_artifact =
-        DestinationSheetArtifact::new(sheet.clone(), DestinationProtocolCapabilities::default())
-            .unwrap();
-    let dependency_tuple = DependencyTuple {
-        cdf: "0.1.0".to_owned(),
-        arrow_rs: "58.3.0".to_owned(),
-        datafusion: Some("54.0.0".to_owned()),
-        object_store: None,
-        duckdb_rs: None,
-        rust: None,
-    };
-
-    let lock = generate_lockfile_with_destination_artifacts(
-        &config,
-        &resources,
-        dependency_tuple.clone(),
-        std::slice::from_ref(&sheet_artifact),
-        BTreeMap::new(),
-        &SemanticCatalog::builtins().unwrap(),
-    )
-    .unwrap();
-    let encoded = lock_to_toml(&lock).unwrap();
-    assert!(encoded.contains("protocol_capabilities"));
-    assert!(encoded.contains("corrections"));
-    let decoded = parse_lock(&encoded).unwrap();
-    assert_eq!(decoded, lock);
-    assert_eq!(lock_to_toml(&decoded).unwrap(), encoded);
-    let old_version = encoded.replacen("version = 3", "version = 2", 1);
-    let error = parse_lock(&old_version).unwrap_err();
-    assert!(error.message.contains("unsupported cdf.lock version"));
-    let resource = lock.resources.get("github.issues").unwrap();
-    assert_eq!(resource.compiler.normalizer, NORMALIZER_NAMECASE_V1);
-    assert!(resource.capability_sheet_hash.starts_with("sha256:"));
-    assert_eq!(resource.execution_extent, ExecutionExtent::bounded());
-    assert!(resource.execution_extent_hash.is_none());
-    assert!(resource.compiled_stream_policy.is_none());
-    assert!(!encoded.contains("execution_extent"));
-    assert!(!encoded.contains("compiled_stream_policy"));
-    let mut tampered_lock = lock.clone();
-    tampered_lock
-        .resources
-        .get_mut("github.issues")
-        .unwrap()
-        .execution_extent_hash = Some(format!("sha256:{}", "00".repeat(32)));
-    assert!(
-        lock_to_toml(&tampered_lock)
-            .unwrap_err()
-            .message
-            .contains("execution-extent hash")
-    );
-    assert!(
-        resource
-            .schema_hash
-            .as_ref()
-            .unwrap()
-            .starts_with("sha256:")
-    );
-    let contract = resource.contract.as_ref().unwrap();
-    assert!(
-        contract
-            .policy_hash
-            .as_ref()
-            .unwrap()
-            .starts_with("sha256:")
-    );
-    assert!(
-        contract
-            .validation_program_hash
-            .as_ref()
-            .unwrap()
-            .starts_with("sha256:")
-    );
-    assert_eq!(
-        resource.destinations["duckdb"].sheet.type_mappings[0].fidelity,
-        TypeMappingFidelity::Lossless
-    );
-    assert_eq!(
-        resource.destinations["duckdb"].sheet_hash,
-        semantic_hash(&sheet_artifact).unwrap()
-    );
-
-    let changed_sheet = destination_sheet(
-        "duckdb",
-        TypeMappingFidelity::LossyRequiresContractAllowance,
-    );
-    let changed_artifact =
-        DestinationSheetArtifact::new(changed_sheet, DestinationProtocolCapabilities::default())
-            .unwrap();
-    let changed = generate_lockfile_with_destination_artifacts(
-        &config,
-        &resources,
-        dependency_tuple.clone(),
-        &[changed_artifact],
-        BTreeMap::new(),
-        &SemanticCatalog::builtins().unwrap(),
-    )
-    .unwrap();
-    let diffs = diff_lockfiles(&lock, &changed).unwrap();
-
-    assert!(diffs.iter().any(|diff| diff.path.contains("sheet_hash")));
-    assert!(diffs.iter().any(|diff| {
-        diff.path
-            .contains("destinations.duckdb.sheet.type_mappings")
-    }));
-
-    let postgres_artifact = cdf_dest_postgres::PostgresDestination::new()
-        .sheet_artifact()
-        .unwrap();
-    let parquet_temp = tempfile::tempdir().unwrap();
-    let parquet_artifact = cdf_dest_parquet::ParquetDestination::new_filesystem(
-        parquet_temp.path(),
-        test_execution_services(),
-    )
-    .unwrap()
-    .sheet_artifact()
-    .unwrap();
-    let typed_lock = generate_lockfile_with_destination_artifacts(
-        &config,
-        &resources,
-        dependency_tuple,
-        &[postgres_artifact.clone(), parquet_artifact.clone()],
-        BTreeMap::new(),
-        &SemanticCatalog::builtins().unwrap(),
-    )
-    .unwrap();
-    let typed_encoded = lock_to_toml(&typed_lock).unwrap();
-    assert!(typed_encoded.contains("protocol_capabilities"));
-    assert!(typed_encoded.contains("corrections"));
-    assert!(typed_encoded.contains("object_key_rules"));
-    assert!(typed_encoded.contains("object-key-component-v1"));
-    let typed_decoded = parse_lock(&typed_encoded).unwrap();
-    assert_eq!(typed_decoded, typed_lock);
-    assert_eq!(lock_to_toml(&typed_decoded).unwrap(), typed_encoded);
-    assert_eq!(
-        typed_lock.resources["github.issues"].destinations["postgres"]
-            .sheet_artifact()
-            .unwrap(),
-        postgres_artifact
-    );
-    assert_eq!(
-        typed_lock.resources["github.issues"].destinations["parquet_object_store"]
-            .sheet_artifact()
-            .unwrap(),
-        parquet_artifact
-    );
-}
-
-#[test]
 fn inline_uri_credentials_are_rejected() {
     let input = BOOK_PROJECT.replace(
         "destination = \"duckdb://.cdf/dev.duckdb\"",
@@ -463,16 +307,10 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
         fs::read_to_string(root.join(".gitignore")).unwrap(),
         ".cdf/\n"
     );
-    assert!(
-        !fs::read_to_string(root.join(".gitignore"))
-            .unwrap()
-            .contains("cdf.lock")
-    );
     assert!(root.join("cdf/local/events.cdf.sql").is_file());
     assert!(root.join("data").is_dir());
     assert!(fs::read_dir(root.join("data")).unwrap().next().is_none());
     assert!(!root.join(".cdf").exists());
-    assert!(!root.join("cdf.lock").exists());
 
     let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
     let readme = fs::read_to_string(root.join("README.md")).unwrap();

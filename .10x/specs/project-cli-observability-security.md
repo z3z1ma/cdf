@@ -6,7 +6,7 @@ Updated: 2026-08-04
 
 ## Purpose and scope
 
-This specification governs the user-facing project format, lockfile, CLI command set, error taxonomy, observability surfaces, secrets, and security boundaries. It derives from book Chapters 14, 15, 16, 17, 18, and 20 and decisions D-17, D-18, D-19, D-20, D-22, and D-23.
+This specification governs the user-facing project format, state-backed schema authority, CLI command set, error taxonomy, observability surfaces, secrets, and security boundaries. It derives from book Chapters 14, 15, 16, 17, 18, and 20 and decisions D-17, D-18, D-19, D-20, D-22, and D-23.
 
 ## Project format
 
@@ -39,15 +39,23 @@ effect winner selection is not destination policy: it is resource/package author
 input order. Destinations reject duplicate finalized effect keys as corruption rather than choosing
 winners.
 
-`cdf.lock` MUST lock semantics, not just versions: dependency tuple, resource capability-sheet hashes, destination sheets including type mappings, contract snapshots, schema hashes, and normalizer version.
+CDF state MUST own immutable active logical schema versions per project/environment/resource.
+Compiled artifacts and portable plans MUST bind the exact relevant schema generation/hash,
+dependency tuple, resource and destination capability sheets, contract program, authored inputs,
+and normalizer version without becoming schema authority themselves.
 
-`cdf validate --env <env>` MUST check schema validity and secret resolvability without printing secret values.
+`cdf validate --env <env>` MUST perform aggregate static project validation without resolving
+secrets, checking environment variables, contacting sources/destinations, or initializing state.
 
 ## CLI
 
 The CLI MUST be headless, scheduler-friendly, and support `--json` for commands where structured output is meaningful. Every architectural noun SHOULD have an inspect command.
 
-The required command surface includes `init`, `validate`, `plan`, `explain`, `run`, `preview`, `sql`, `inspect`, `diff schema`, `contract freeze/show/test`, `state show/history/rewind/recover`, `resume`, `replay package`, `backfill`, `package ls/gc/verify`, `doctor`, and `status`. State stores initialize only the current schema automatically; no pre-production migration command ships. `package archive` is fast-follow.
+The required command surface includes `init`, `add`, `discover`, `compile`, `validate`, `plan`,
+`explain`, `run`, `preview`, `sql`, `inspect`, `schema show/diff/promote`, `contract show`, `state
+show/history/rewind/recover`, `backfill`, `package ls/gc/verify/archive`, `doctor`, and `status`.
+Selectors accept exact ids and globs where resources are selected. `plan --out` writes a portable
+plan; `run --plan`, `run --resume`, and `run --package` keep execution/recovery under one verb.
 
 `cdf plan` MUST show what will be fetched, pushdown fidelity, DDL preview, delivery guarantee, and state advancement before bytes move.
 
@@ -57,11 +65,11 @@ The required command surface includes `init`, `validate`, `plan`, `explain`, `ru
 
 `cdf run` MUST route supported resource/destination/disposition combinations through the general run spine defined by `.10x/specs/run-orchestration-ledger.md`. It MUST mint a run id when one is not supplied and MUST fail closed on caller-supplied run-id collision.
 
-`cdf resume` MUST drain interrupted work according to the run spine crash matrix. After package finalization, resume MUST NOT contact the source.
+`cdf run --resume` MUST drain interrupted work according to the run spine crash matrix. After package finalization, resume MUST NOT contact the source.
 
-`cdf replay package <pkg> --to <dest>` MUST create a new run, use package replay inputs, and record duplicate receipts as observable facts.
+`cdf run --package <pkg> --to <dest>` MUST create a new run, use package replay inputs, and record duplicate receipts as observable facts.
 
-`cdf replay package <pkg> --to postgres://...` MUST require explicit `--target` where the command
+`cdf run --package <pkg> --to postgres://...` MUST require explicit `--target` where the command
 surface cannot otherwise bind it. The supplied target MUST match the package destination-commit
 target. Replay MUST consume the package's recorded disposition, keys, finalized effect reduction,
 and delete-application policy; it MUST NOT accept caller overrides or infer them from destination
@@ -81,7 +89,7 @@ cdf's primary observability surface MUST be its own queryable artifacts: ledger,
 
 `tracing` MUST include run, resource, partition, and package IDs. OTLP export MAY be feature-gated.
 
-`cdf doctor` MUST check environment health, secret resolvability, Python interpreter/free-threaded status, DuckDB ICU, and ledger/destination drift where applicable.
+Scoped `cdf doctor` commands MUST own operational environment health, secret resolvability, Python interpreter/free-threaded status, DuckDB ICU, and ledger/destination drift where applicable.
 
 `cdf status` MUST evaluate freshness SLOs and exit nonzero on serving-resource breach.
 
@@ -93,13 +101,14 @@ Trust boundaries MUST match authoring tiers: Tier 0/1 trusted operator code; Tie
 
 The project file MAY declare egress allowlists per source. `cdf-http` and the WASM host MUST enforce them when present.
 
-Supply-chain gates SHOULD include `cargo deny`, `cargo vet`, committed lockfiles, reproducible checked binaries, and dependency tuple pinning per cdf minor.
+Supply-chain gates SHOULD include `cargo deny`, `cargo vet`, committed dependency resolutions, reproducible checked binaries, and dependency tuple pinning per CDF minor.
 
 ## Acceptance criteria
 
-- `cdf.toml` and `cdf.lock` parse into typed models, explicit configured-source references are
-  total, resource/source/target identities remain independent, typed defaults are fully resolved,
-  and secret-bearing fields reject values where only references are allowed.
+- `cdf.toml` parses into a typed model, explicit configured-source references are total,
+  resource/source/target identities remain independent, state-backed schema heads are exact, typed
+  defaults are fully resolved, and secret-bearing fields reject values where only references are
+  allowed.
 - CLI commands provide stable JSON output where required and meaningful exit codes.
 - Redaction tests prove a resolved secret cannot appear in traces, error messages, plan output, or package traces.
 - `doctor` detects at least missing secrets, Python interpreter issues, DuckDB ICU status, and ledger/mirror drift when fixtures support them.

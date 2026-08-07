@@ -294,6 +294,10 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         ParquetDestination::destination_sheet()
     }
 
+    fn destination_sheet_artifact(&self) -> Result<cdf_kernel::DestinationSheetArtifact> {
+        ParquetDestination::destination_sheet_artifact()
+    }
+
     fn supported_dispositions(&self) -> &[WriteDisposition] {
         static SUPPORTED: [WriteDisposition; 2] =
             [WriteDisposition::Append, WriteDisposition::Replace];

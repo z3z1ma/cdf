@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use arrow_schema::{DataType, Field};
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{CanonicalArrowField, Result};
@@ -12,22 +10,6 @@ pub(crate) struct CompiledField {
     pub field_path: String,
     pub field: CanonicalArrowField,
     pub semantic: Option<ResolvedSemantic>,
-}
-
-pub(crate) fn semantic_pins_for_resources(
-    resources: &[CompiledResource],
-    catalog: &SemanticCatalog,
-) -> Result<BTreeMap<String, String>> {
-    let mut pins = BTreeMap::new();
-    for field in compiled_fields(resources, catalog)? {
-        if let Some(semantic) = field.semantic {
-            pins.insert(
-                semantic.reference().to_string(),
-                semantic.definition_hash().to_owned(),
-            );
-        }
-    }
-    Ok(pins)
 }
 
 pub(crate) fn compiled_fields(

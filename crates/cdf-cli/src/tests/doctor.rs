@@ -97,7 +97,6 @@ fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
     assert_eq!(project_file["details"]["project_root"], project.root_str());
     assert_eq!(project_file["details"]["selected_environment"], "dev");
     assert_eq!(project_file["details"]["compiled_resources"], 1);
-    assert_eq!(project_file["details"]["lockfile_present"], false);
     let icu = named_check(&json, "duckdb_icu");
     assert_eq!(icu["status"], "skipped");
     assert_eq!(icu["details"]["database_exists"], false);
@@ -110,26 +109,6 @@ fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
             .unwrap()
             .contains("SQLite state database is absent")
     );
-}
-
-#[test]
-fn doctor_reports_lockfile_presence_when_lock_exists() {
-    let project = TestProject::new();
-    write_minimal_lockfile(&project);
-
-    let result = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "doctor",
-        "all",
-    ]);
-
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    let project_file = named_check(&json, "project_file");
-    assert_eq!(project_file["details"]["lockfile_present"], true);
 }
 
 #[test]

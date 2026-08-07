@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CdfLock, CompiledArtifactInput, CompiledProjectResource, EffectiveEnvironment, LOCK_FILE_NAME,
-    ManifestDiagnostic, ManifestLineageEdge, ManifestSemanticDefinition, ManifestSemanticSource,
-    PROJECT_FILE_NAME, ProjectConfig, lock_to_toml,
+    CompiledArtifactInput, CompiledProjectResource, EffectiveEnvironment, ManifestDiagnostic,
+    ManifestLineageEdge, ManifestSemanticDefinition, ManifestSemanticSource, PROJECT_FILE_NAME,
+    ProjectConfig,
     manifest::{
         ProjectCompilationMode, ProjectManifestCompileRequest, compile_project_manifest,
         validate_compiled_artifact_sections, validate_compiled_artifact_security,
     },
-    parse_cdf_toml, parse_lock, project_file_transaction_generation,
+    parse_cdf_toml, project_file_transaction_generation,
     project_inputs::current_project_source_configuration,
     query_compiler::current_effective_resource_envelope,
 };
@@ -68,13 +68,12 @@ struct ArtifactIdentity<'a> {
 pub struct CompiledResourceArtifactRequest<'a> {
     pub config: &'a ProjectConfig,
     pub environment: &'a EffectiveEnvironment,
-    pub lock: &'a CdfLock,
     pub schema_authority: CompiledSchemaAuthority,
     pub resource: &'a CompiledProjectResource,
     pub authored_inputs: Vec<CompiledArtifactInput>,
     pub semantic_catalog: &'a SemanticCatalog,
     pub semantic_sources: BTreeMap<String, ManifestSemanticSource>,
-    pub selected_destination_id: &'a str,
+    pub destination: &'a cdf_kernel::DestinationSheetArtifact,
     pub diagnostics: Vec<ManifestDiagnostic>,
 }
 
@@ -118,32 +117,14 @@ impl CompiledSchemaAuthority {
 pub fn compile_resource_artifact(
     request: CompiledResourceArtifactRequest<'_>,
 ) -> Result<CompiledResourceArtifact> {
-    let resource_id = request.resource.resource.descriptor().resource_id.as_str();
-    let mut scoped_lock = request.lock.clone();
-    let locked = scoped_lock
-        .resources
-        .get(resource_id)
-        .cloned()
-        .ok_or_else(|| {
-            CdfError::contract(format!("cdf.lock is missing resource `{resource_id}`"))
-        })?;
-    if locked.compiled_artifact_hash.is_some() {
-        return Err(CdfError::internal(format!(
-            "compiled artifact for `{resource_id}` must be built before its hash is bound"
-        )));
-    }
-    scoped_lock.resources.retain(|id, _| id == resource_id);
-    let lock_bytes = lock_to_toml(&scoped_lock)?.into_bytes();
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: request.config,
         environment: request.environment,
-        lock: &scoped_lock,
-        lock_bytes: &lock_bytes,
         resources: std::slice::from_ref(request.resource),
         authored_inputs: request.authored_inputs,
         semantic_catalog: request.semantic_catalog,
         semantic_sources: request.semantic_sources,
-        selected_destination_id: request.selected_destination_id,
+        destination: request.destination,
         compilation_mode: ProjectCompilationMode::ResourceArtifact,
         generated_at_unix_ms: None,
         diagnostics: request.diagnostics,
@@ -541,7 +522,6 @@ pub fn validate_compilation_index_authority(
 pub struct CompilationSnapshot {
     pub config: ProjectConfig,
     pub environment: EffectiveEnvironment,
-    pub lock: Option<CdfLock>,
     pub index: CompilationIndex,
     pub artifacts: BTreeMap<String, CompiledResourceArtifact>,
     pub generation: u64,
@@ -562,7 +542,6 @@ pub fn load_compilation_snapshot(
         })?)?;
         let selected = environment_name.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(selected)?;
-        let lock_bytes = read_optional_file(&root.join(LOCK_FILE_NAME), "project lockfile")?;
         let index_observation = read_optional_file_bounded(
             &root.join(COMPILATION_INDEX_RELATIVE_PATH),
             "compilation index",
@@ -573,23 +552,7 @@ pub fn load_compilation_snapshot(
             Err(error) if error.kind == cdf_kernel::ErrorKind::Data => (None, true),
             Err(error) => return Err(error.clone()),
         };
-        let (lock, mut authority_diagnostic) = match lock_bytes.as_deref() {
-            Some(bytes) => match std::str::from_utf8(bytes)
-                .map_err(|error| CdfError::data(format!("cdf.lock is not UTF-8: {error}")))
-                .and_then(parse_lock)
-            {
-                Ok(lock) => (Some(lock), None),
-                Err(_) => (
-                    None,
-                    Some(CompilationDiagnostic {
-                        code: "CDF-COMPILE-LOCK".to_owned(),
-                        kind: "data".to_owned(),
-                        message: "cdf.lock is not valid local compilation authority".to_owned(),
-                    }),
-                ),
-            },
-            None => (None, None),
-        };
+        let mut authority_diagnostic = None;
         let mut index = if index_read_invalid {
             authority_diagnostic = Some(CompilationDiagnostic {
                 code: "CDF-COMPILE-INDEX".to_owned(),
@@ -642,7 +605,6 @@ pub fn load_compilation_snapshot(
         let stable = generation_before == generation_after
             && read_required_file(&root.join(PROJECT_FILE_NAME), "project configuration")?
                 == project_bytes
-            && read_optional_file(&root.join(LOCK_FILE_NAME), "project lockfile")? == lock_bytes
             && read_optional_file_bounded(
                 &root.join(COMPILATION_INDEX_RELATIVE_PATH),
                 "compilation index",
@@ -652,7 +614,6 @@ pub fn load_compilation_snapshot(
             return Ok(CompilationSnapshot {
                 config,
                 environment,
-                lock,
                 index,
                 artifacts,
                 generation: generation_after,

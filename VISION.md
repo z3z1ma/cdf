@@ -64,7 +64,7 @@ One sentence per load-bearing noun, each expanded in its own chapter:
 - A **checkpoint** is a typed state transition that commits only after the destination has durably acknowledged the data the checkpoint represents — the moment the commit gate opens. (Chapter 13)
 - A **destination** is a transactional or idempotent commit target that answers in receipts, never a sink that swallows rows. (Chapter 14)
 - A **contract** is executable policy: a compiled validation program with a total verdict for every cell of every batch. (Chapter 11)
-- A **capability sheet** is a machine-readable declaration of what a resource or destination can actually do, tested by a conformance suite and snapshotted into a lockfile. (Chapters 8, 14, 19)
+- A **capability sheet** is a machine-readable declaration of what a resource or destination can actually do, tested by a conformance suite and bound into compiled and portable plans. (Chapters 8, 14, 19)
 - A **plan** is the pre-execution artifact that states what will be read, what will be pushed down and at what fidelity, what DDL may run, which delivery guarantee applies, and which state will advance. (Chapters 8, 18)
 
 ### 1.2 What CDF is not
@@ -107,7 +107,7 @@ What CDF declines to inherit is the packaging: connector containers and inter-pr
 
 ### 2.4 Meltano: projects as code
 
-Meltano's contribution was never a data plane; it was the discovery that data projects deserve the same Git-native treatment as software projects: declarative project files, environment overlays, lockfiles, and — subtly important — *variant awareness*, the recognition that two connectors with the same name routinely differ in behavior and quality. CDF's project format (Chapter 19) is Meltano's lesson with the lockfile extended from versions to semantics: CDF locks capability sheets, type-mapping tables, contract snapshots, and the identifier normalizer version, so an upgrade that changes *meaning* — not merely bytes — surfaces as a reviewable diff (§19.3).
+Meltano's contribution was never a data plane; it was the discovery that data projects deserve the same Git-native treatment as software projects: declarative project files, environment overlays, reproducible dependencies, and — subtly important — *variant awareness*, the recognition that two connectors with the same name routinely differ in behavior and quality. CDF keeps that project discipline while separating authored intent from operational authority: immutable schema versions live in environment state, while compiled and portable plans bind capability sheets, type mappings, contract policy, and the identifier normalizer version. An upgrade that changes *meaning* cannot pass exact plan preflight unnoticed (§19.3).
 
 ### 2.5 Sling: operational crispness
 
@@ -142,7 +142,7 @@ Arrow IPC (file format, LZ4-framed) inside a package, because packages must roun
 Behind a `CheckpointStore` trait from the first commit; SQLite in WAL mode is the local default, and an in-memory store serves tests. Destinations that can hold tables additionally mirror durable load facts into `_cdf_loads` and `_cdf_state` (§13.6), enabling ledger reconstruction and warehouse-native audit. Postgres- and object-store-backed stores arrive post-MVP; the trait is sized for them, including the lease semantics distribution will require. *Revisit if* multi-writer local state becomes common before distributed mode ships.
 
 **D-6. How strict are contracts by default?**
-Default `evolve` — new tables and columns admitted, type widening admitted, narrowing quarantined — because first contact with a source is always discovery, a conclusion the field's collective experience with dlt-style contracts supports. `cdf contract freeze` flips a resource; project-level trust presets set stricter defaults in one line (§11.4). *Revisit if* real-project telemetry shows `evolve` defaults causing silent-drift incidents; the fallback posture is freeze-after-first-clean-run.
+First use establishes an immutable schema version before effects. Later observations never widen it automatically: safe unknown or incompatible ordinary fields follow the trust preset's explicit `capture_variant | quarantine_row | fail_run` disposition, while unsafe cursor, CDC, transaction, and framing violations fail. `cdf schema promote` is the only operation that advances established schema authority (§11.4). *Revisit if* evidence shows a disposition is unsafe for a source class; tighten that source's allowed-action proof rather than reintroducing automatic evolution.
 
 **D-7. How does pushdown declare correctness?**
 Per predicate, in the vocabulary DataFusion's own `TableProviderFilterPushDown` established: `Exact` (source semantics provably match engine semantics; the engine drops its filter), `Inexact` (source returns a superset — prunes pages, windows, partitions — and the engine re-applies the exact predicate), or `Unsupported`. API resources default to `Inexact`, because remote timezone, collation, and consistency semantics rarely match Arrow's bit-for-bit, and an over-claimed `Exact` is silent data loss. `cdf explain` prints the classification per predicate. *Revisit:* never; production experience across the DataFusion ecosystem settles this vocabulary.
@@ -169,7 +169,7 @@ One accounting ledger: DataFusion's `MemoryPool` for engine operators, extended 
 Source-original names preserved verbatim in schema metadata, forever. A versioned normalizer (`namecase-v1`) derives destination identifiers deterministically; post-normalization collisions are plan-time hard errors with rename hints; the normalizer version is recorded in every schema snapshot and package, because changing it re-keys everything downstream (§7.4).
 
 **D-15. Canonical type system?**
-Arrow's, closed, plus three metadata annotations: semantic tags, source-name provenance, and nullability provenance. Destination type mappings are declared tables in capability sheets, joined at plan time and snapshotted in the lockfile; lossy mappings require the explicit contract allowance `allow_lossy_mapping`, and unsupported mappings fail the plan (§7.3).
+Arrow's, closed, plus three metadata annotations: semantic tags, source-name provenance, and nullability provenance. Destination type mappings are declared tables in capability sheets, joined at plan time and bound into the compiled artifact and portable plan; lossy mappings require the explicit contract allowance `allow_lossy_mapping`, and unsupported mappings fail the plan (§7.3).
 
 **D-16. Deletes and CDC semantics?**
 Write dispositions include `cdc_apply`; CDC-shaped batches carry a `_cdf_op` column (`insert | update | delete`) plus source positions. The first release covers deletion-aware merge for cursor sources that expose deletions; log-based CDC is a later source archetype whose restart authority uses protocol-specific PostgreSQL/MySQL committed positions and opaque MongoDB resume tokens (§13.3).
@@ -208,7 +208,7 @@ WASI 0.3 — which brought native `async func`, `stream<T>`, and `future<T>` int
 Iceberg and Delta are destinations, not package formats. The package remains CDF's own evidence layout (D-4); post-MVP, `cdf-dest-iceberg` and `cdf-dest-delta` commit packages into lakehouse tables through iceberg-rust and delta-rs — both DataFusion-native projects — with the table format's own snapshot metadata carried inside the CDF receipt, so the commit gate and the table's transaction log corroborate each other. Two ledgers agreeing beats one ledger trusted. *Revisit if* a design partner needs Iceberg at MVP; the Parquet/object-store destination is the designed seam.
 
 **D-28. Upstream cadence policy?**
-The load-bearing dependencies move on published schedules: arrow-rs releases majors at most quarterly and minors monthly, holding deprecated APIs roughly two majors; DataFusion majors land several times a year; duckdb-rs encodes the bundled DuckDB version in its own semver and maintains an LTS branch; object_store lives in its own Apache repository on its own cadence. CDF's policy: each CDF minor release pins exactly one (arrow-rs major, DataFusion major, object_store minor, duckdb-rs DuckDB-encoded version) tuple, recorded in the lockfile spec. Upgrades are deliberate, gated on the golden-package suite — Arrow IPC byte-stability is a release gate — and never occur in CDF patch releases. *Revisit if* an upstream breaks serialized-artifact compatibility, which promotes that dependency into the artifact-spec review process.
+The load-bearing dependencies move on published schedules: arrow-rs releases majors at most quarterly and minors monthly, holding deprecated APIs roughly two majors; DataFusion majors land several times a year; duckdb-rs encodes the bundled DuckDB version in its own semver and maintains an LTS branch; object_store lives in its own Apache repository on its own cadence. CDF's policy: each CDF minor release pins exactly one (arrow-rs major, DataFusion major, object_store minor, duckdb-rs DuckDB-encoded version) tuple in release metadata and compiled dependency evidence. Upgrades are deliberate, gated on the golden-package suite — Arrow IPC byte-stability is a release gate — and never occur in CDF patch releases. *Revisit if* an upstream breaks serialized-artifact compatibility, which promotes that dependency into the artifact-spec review process.
 
 ---
 
@@ -282,7 +282,7 @@ It does not claim the source is consistent: a source that lies about its cursor 
 ```text
 ┌────────────────────────────────────────────────────────────────┐
 │  Layer 4: Project & Product                                     │
-│  cdf.toml, environments, lockfile, CLI, doctor, status          │
+│  cdf.toml, environments, state authority, CLI, doctor, status   │
 ├────────────────────────────────────────────────────────────────┤
 │  Layer 3: Extensions                                            │
 │  authoring tiers (declarative, Python, WASM, subprocess),       │
@@ -334,7 +334,7 @@ crates/
   cdf-dest-duckdb/     # Destination: DuckDB.
   cdf-dest-parquet/    # Destination: Parquet over fs / object_store.
   cdf-dest-postgres/   # Destination: Postgres.
-  cdf-project/         # Layer 4: cdf.toml, environments, secrets wiring, lockfile.
+  cdf-project/         # Layer 4: cdf.toml, environments, secrets, compilation.
   cdf-cli/             # Layer 4: the `cdf` binary.
   cdf-conformance/     # Test-only: resource & destination suites, chaos layer, golden packages.
 ```
@@ -398,7 +398,7 @@ Two source-to-Arrow rules are non-negotiable, because violating them is the sign
 
 ### 7.3 Destination type mapping is data, not code
 
-Every destination ships a capability sheet (§14.2) whose core is a declared mapping table: Arrow type → destination type → fidelity (`exact | widening | lossy | unsupported`). The planner joins the resource's output schema against the sheet before execution; `lossy` requires the explicit contract allowance `allow_lossy_mapping`, and `unsupported` fails the plan. The sheet is snapshotted into the lockfile, so a driver upgrade that changes a mapping is a reviewable Git diff, not a production surprise. The intuition is a customs declaration: what may cross the border, in what form, with what transformation, is written down, stamped, and checked at the border — never discovered by opening crates on the far side.
+Every destination ships a capability sheet (§14.2) whose core is a declared mapping table: Arrow type → destination type → fidelity (`exact | widening | lossy | unsupported`). The planner joins the resource's output schema against the sheet before execution; `lossy` requires the explicit contract allowance `allow_lossy_mapping`, and `unsupported` fails the plan. The exact sheet is bound into compiled and portable plan evidence, so a driver upgrade that changes a mapping fails preflight or produces a visibly different plan rather than becoming a production surprise. The intuition is a customs declaration: what may cross the border, in what form, with what transformation, is written down, stamped, and checked at the border — never discovered by opening crates on the far side.
 
 ### 7.4 Identifiers
 
@@ -480,7 +480,7 @@ struct ResourceCapabilities {
 }
 ```
 
-The intuition is again the customs declaration: a sheet is a declared, machine-readable statement of what may cross and how, checked at the border. Two rules give it teeth. **Claims are tested:** the conformance suite generates scans exercising every claim and fails resources whose behavior contradicts their sheet — an `Exact` filter claim is fed adversarial values around timezone, collation, and null edges and compared against engine-side ground truth, because the only thing worse than no pushdown is wrong pushdown. **Claims are snapshotted:** the lockfile records each resource's capability sheet, so a connector update that silently loses a capability — a failure mode the Singer/Meltano variant ecosystem knows intimately — surfaces as a reviewable diff rather than as a performance regression six weeks later.
+The intuition is again the customs declaration: a sheet is a declared, machine-readable statement of what may cross and how, checked at the border. Two rules give it teeth. **Claims are tested:** the conformance suite generates scans exercising every claim and fails resources whose behavior contradicts their sheet — an `Exact` filter claim is fed adversarial values around timezone, collation, and null edges and compared against engine-side ground truth, because the only thing worse than no pushdown is wrong pushdown. **Claims are bound:** compiled artifacts and portable plans carry the exact resource capability evidence, so a connector update that silently loses a capability — a failure mode the Singer/Meltano variant ecosystem knows intimately — invalidates exact authority rather than becoming a performance regression six weeks later.
 
 ### 8.5 Pushdown theory and practice
 
@@ -916,7 +916,7 @@ trait CommitSession {
 
 ### 14.2 Capability sheets
 
-A `DestinationSheet` is declared data shipped with the driver and snapshotted into the lockfile: supported dispositions; transaction support (`full | per_table | none`); idempotency mechanism (`package_token | merge_keys | none`); bulk paths (`arrow_ipc | parquet | csv | insert`); the type-mapping table of §7.3; identifier rules — max length, charset, case behavior; migration support per operation (`yes | staged | no`); quarantine-table support; concurrency constraints. The planner consumes the sheet, the conformance suite falsifies it, `cdf explain` cites it. Nothing about a destination is folklore, and nothing about a destination changes without a lockfile diff.
+A `DestinationSheet` is declared data shipped with the driver and bound into compiled and portable plans: supported dispositions; transaction support (`full | per_table | none`); idempotency mechanism (`package_token | merge_keys | none`); bulk paths (`arrow_ipc | parquet | csv | insert`); the type-mapping table of §7.3; identifier rules — max length, charset, case behavior; migration support per operation (`yes | staged | no`); quarantine-table support; concurrency constraints. The planner consumes the sheet, the conformance suite falsifies it, and `cdf explain` cites it. Nothing about a destination is folklore, and a sheet change requires a newly compiled plan.
 
 ### 14.3 Dispositions
 
@@ -1022,15 +1022,15 @@ Above that, `tracing` instruments every phase with span fields for run, resource
 
 ### 17.1 Secrets
 
-`secret://provider/key` URIs are the only form a credential takes in any artifact CDF writes — project files, lockfiles, plans, packages, traces, EXPLAIN output, error messages. Resolution happens inside `SecretProvider` implementations (first release: env, file, OS keychain; later: Vault and cloud secret managers) at the moment of use, and resolved values live in zeroizing wrappers registered with the redaction layer, so a value leaking into a panic message is scrubbed *by construction* — the formatter consults the registry — rather than by pattern-matching after the fact. The design principle is that redaction-by-regex is a race the regex eventually loses; redaction-by-registration cannot lose, because the formatter never sees the plaintext outside the registry's control.
+`secret://provider/key` URIs are the only form a credential takes in any artifact CDF writes — project files, state records, plans, packages, traces, EXPLAIN output, error messages. Resolution happens inside `SecretProvider` implementations (first release: env, file, OS keychain; later: Vault and cloud secret managers) at the moment of use, and resolved values live in zeroizing wrappers registered with the redaction layer, so a value leaking into a panic message is scrubbed *by construction* — the formatter consults the registry — rather than by pattern-matching after the fact. The design principle is that redaction-by-regex is a race the regex eventually loses; redaction-by-registration cannot lose, because the formatter never sees the plaintext outside the registry's control.
 
 ### 17.2 Trust boundaries by tier
 
-The authoring ladder is also a trust ladder, and each rung's threat model is stated rather than implied. Tier 0/1 code is the operator's own; it runs with process privileges, and the threat model is *mistakes* — which plans, contracts, and the lockfile address. Tier 2 Python is trusted-but-instrumented: watchdogs, resource limits where the OS provides them, and the framework-brokered `ctx` as the encouraged path to the network. Tier 3 is the untrusted-code answer: capability-scoped WASI 0.3, host-mediated HTTP so limits, redaction, and egress allowlists bind strangers' code, secrets usable by reference but never readable, no ambient authority of any kind. Tier 4 inherits OS process isolation plus supervised stdio. The project file can declare an egress allowlist per source — enforced in `cdf-http` and the WASM host — turning "this connector only talks to api.github.com" from documentation into policy.
+The authoring ladder is also a trust ladder, and each rung's threat model is stated rather than implied. Tier 0/1 code is the operator's own; it runs with process privileges, and the threat model is *mistakes* — which exact plans, compiled contracts, and immutable state authority address. Tier 2 Python is trusted-but-instrumented: watchdogs, resource limits where the OS provides them, and the framework-brokered `ctx` as the encouraged path to the network. Tier 3 is the untrusted-code answer: capability-scoped WASI 0.3, host-mediated HTTP so limits, redaction, and egress allowlists bind strangers' code, secrets usable by reference but never readable, no ambient authority of any kind. Tier 4 inherits OS process isolation plus supervised stdio. The project file can declare an egress allowlist per source — enforced in `cdf-http` and the WASM host — turning "this connector only talks to api.github.com" from documentation into policy.
 
 ### 17.3 Supply chain
 
-`cargo deny` and `cargo vet` gates in CI; lockfiles committed everywhere, including the Python SDK examples; release binaries built reproducibly and checksummed — a system whose product is reproducible evidence should be embarrassed to ship an unreproducible binary; and the package signature slot doubling as the connector-signing story when Tier 3 distribution arrives. The dependency-pin policy of D-28 is itself a supply-chain control: no load-bearing dependency moves in a patch release, ever.
+`cargo deny` and `cargo vet` gates in CI; dependency resolutions committed everywhere, including the Python SDK examples; release binaries built reproducibly and checksummed — a system whose product is reproducible evidence should be embarrassed to ship an unreproducible binary; and the package signature slot doubling as the connector-signing story when Tier 3 distribution arrives. The dependency-pin policy of D-28 is itself a supply-chain control: no load-bearing dependency moves in a patch release, ever.
 
 ---
 
@@ -1053,7 +1053,8 @@ cdf sql "select state, count(*) from github.issues group by 1"
 cdf inspect resource <id>
 cdf inspect package <path> | cdf inspect run <run-id>
 cdf diff schema                                    # compare durable schema authorities
-cdf contract freeze|show|test github.issues
+cdf schema show|diff|promote github.issues
+cdf contract show github.issues
 cdf state show|history|rewind|recover github.issues
 cdf run --resume                                  # drain the only interrupted run, if one exists
 cdf run --resume <run-id>                         # recover one explicit interrupted run
@@ -1110,9 +1111,9 @@ egress_allowlist = ["api.github.com"]
 
 Environments overlay the project map; the unspecified inherits. The overlay model is the CI/CD promotion model applied to configuration: the same resources, the same contracts, the same code move from dev to prod; only bindings — state store, package store, destination, retention — change per environment, so what was tested is what ships. Secrets appear only as URIs, so the file is committable by construction, and `cdf validate --env prod` confirms resolvability without printing values.
 
-### 19.3 The lockfile locks semantics, not just versions
+### 19.3 State and portable plans bind semantics at their proper lifetimes
 
-`cdf.lock` snapshots what Git review should catch: resolved crate and SDK versions and the D-28 dependency tuple; each resource's capability-sheet hash; each destination's full sheet including its type-mapping table; contract snapshots and schema hashes per resource; the normalizer version. A dependency bump that changes a type mapping, drops a capability, or alters normalization becomes a reviewable diff before it becomes a production surprise. Ordinary lockfiles answer "what code will run?"; this one also answers "what will the code *mean*?" — and in a system whose failures are semantic (a silently narrowed type, a silently lost pushdown), the second question is the one that pages people.
+Authored files describe intent; the environment state store owns immutable active schema versions and promotion history; compiled artifacts bind the dependency tuple, capability sheets, type mappings, contract program, normalizer, and captured authored inputs; portable plans add exact relevant state, source, destination, and checkpoint preconditions. Git review can include authored intent and an explicitly exported plan without forcing operational authority into a project file. A dependency or driver change that alters meaning produces different compiled evidence or fails portable-plan preflight before effects — the semantic question remains reviewable without conflating facts that have different lifetimes.
 
 ## Chapter 20: Conformance and testing
 
@@ -1167,7 +1168,7 @@ Explicitly out, each with a seam designed now so its later arrival is an additio
 
 ### 23.3 The demonstration
 
-The system's proof is a single sitting, under five minutes on a laptop, no network beyond one public API. Forty lines of Tier-0 TOML define `github.issues`. `cdf plan` prints pushdown fidelity, the guarantee line, and pending DDL. `cdf run` loads DuckDB; `cdf sql` queries it with pushdown visible in EXPLAIN. `cdf contract freeze`; the fixture drifts a column type; the next run quarantines the offenders and the package shows the verdicts. `kill -9` lands between destination commit and checkpoint commit — the exact window the commit gate exists for; `cdf run --resume` verifies the receipt against DuckDB and commits the checkpoint without touching the source. `cdf run --package <path>` drives the same package into a second database; the second attempt against the first answers `duplicate: true`. `cdf state history` shows every transition. Each beat of the demonstration is one invariant of Chapter 4 performing in public.
+The system's proof is a single sitting, under five minutes on a laptop, no network beyond one public API. Forty lines of Tier-0 SQL and shared source configuration define `github.issues`. `cdf compile` establishes first-use schema authority; `cdf plan --out plan.json` prints pushdown fidelity and the guarantee line while writing the exact portable plan. `cdf run --plan plan.json` loads DuckDB; `cdf sql` queries local evidence. The fixture drifts a column type; the next run applies the compiled disposition without changing the active schema, and `cdf schema diff` makes promotion review explicit. `kill -9` lands between destination commit and checkpoint commit — the exact window the commit gate exists for; `cdf run --resume` verifies the receipt against DuckDB and commits the checkpoint without touching the source. `cdf run --package <path>` drives the same package into a second database; the second attempt against the first answers `duplicate: true`. `cdf state history` shows every transition. Each beat of the demonstration is one invariant of Chapter 4 performing in public.
 
 ## Chapter 24: Research spikes
 
@@ -1231,7 +1232,7 @@ A design that admits no open questions is hiding them. These are held deliberate
 
 # Appendix A — Glossary
 
-**Resource** — smallest stateful unit of extraction; declares a descriptor and capabilities; produces batches. **Source** — configuration and discovery bundle over resources. **Batch** — Arrow payload plus identity and provenance. **Scan plan** — the negotiated read: pushdown fidelity, partitions, ordering, estimates. **Contract** — policy compiled into a validation program with a total verdict lattice. **Package** — hash-addressed evidence of one attempted transition; the build artifact of data. **Receipt** — a destination's durable, independently verifiable acknowledgment; the settlement record. **Checkpoint** — a committed state transition; one head per scope. **Commit gate** — the boundary enforced by `CheckpointStore::commit`; nothing passes it without a verified receipt. **Scope** — sub-resource state key (window, file, stream, partition); the single-writer unit. **Sheet** — declared, lockfile-snapshotted capability table for a resource or destination; a tested claim, not folklore. **Trust level** — declared intent expanding into contract, validation, and retention presets. **Disposition** — destination write semantics: append, replace, merge, cdc_apply. **Drain mode** — the executor mode that runs an unbounded plan until quiescent, then settles and gates.
+**Resource** — smallest stateful unit of extraction; declares a descriptor and capabilities; produces batches. **Source** — configuration and discovery bundle over resources. **Batch** — Arrow payload plus identity and provenance. **Scan plan** — the negotiated read: pushdown fidelity, partitions, ordering, estimates. **Contract** — policy compiled into a validation program with a total verdict lattice. **Package** — hash-addressed evidence of one attempted transition; the build artifact of data. **Receipt** — a destination's durable, independently verifiable acknowledgment; the settlement record. **Checkpoint** — a committed state transition; one head per scope. **Commit gate** — the boundary enforced by `CheckpointStore::commit`; nothing passes it without a verified receipt. **Scope** — sub-resource state key (window, file, stream, partition); the single-writer unit. **Sheet** — declared capability table for a resource or destination, conformance-tested and bound into exact plan evidence. **Trust level** — declared intent expanding into contract, validation, and retention presets. **Disposition** — destination write semantics: append, replace, merge, cdc_apply. **Drain mode** — the executor mode that runs an unbounded plan until quiescent, then settles and gates.
 
 # Appendix B — The stress harness (internal)
 

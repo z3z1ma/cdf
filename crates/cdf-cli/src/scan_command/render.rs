@@ -272,8 +272,7 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
                 .row("outcome", snapshot.outcome)
                 .row("hash", snapshot.schema_hash.clone())
                 .row("path", snapshot.path.clone())
-                .row("snapshot written", yes_no(snapshot.snapshot_written))
-                .row("lockfile written", yes_no(snapshot.lockfile_written)),
+                .row("snapshot written", yes_no(snapshot.snapshot_written)),
         );
         if let Some(discovery) = &snapshot.discovery {
             document
@@ -484,8 +483,7 @@ pub(super) fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("outcome", snapshot.outcome)
                 .row("hash", snapshot.schema_hash.clone())
                 .row("path", snapshot.path.clone())
-                .row("snapshot written", yes_no(snapshot.snapshot_written))
-                .row("lockfile written", yes_no(snapshot.lockfile_written)),
+                .row("snapshot written", yes_no(snapshot.snapshot_written)),
         );
         if let Some(discovery) = &snapshot.discovery {
             document

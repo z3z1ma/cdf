@@ -9,7 +9,7 @@ Supersedes: `.10x/specs/superseded/project-source-resource-layout.md`
 
 This specification defines the current CDF project tree, independent resource/configured-source
 identities, shared source configuration, environment refinement, filesystem discovery, and the
-compiler resolution boundary. It governs compilation, SQL authoring, manifest and lock bindings,
+compiler resolution boundary. It governs compilation, SQL authoring, manifest/state bindings,
 scaffolding, generation, validation, and inspection.
 
 It is governed by
@@ -22,7 +22,6 @@ compatibility policy.
 ```text
 <project>/
 ├── cdf.toml
-├── cdf.lock
 ├── cdf/
 │   ├── analytics/
 │   │   ├── userdata.cdf.sql
@@ -35,9 +34,11 @@ compatibility policy.
     └── manifest.json
 ```
 
-`cdf.toml`, `cdf.lock`, `cdf/`, and compiler-required authored artifacts are the current
+`cdf.toml`, `cdf/`, and compiler-required authored artifacts are the current
 project surface. `semantics/` exists when project-defined semantic types are authored.
-`.cdf/manifest.json` is generated local compiler state, not authored source authority.
+`.cdf/manifest.json`, `.cdf/compiled/`, and `.cdf/schemas/` are derived local compiler/cache
+artifacts, not authored or schema authority. The selected environment's state backend owns active
+schema versions.
 
 The `cdf/` root marks CDF ownership and contributes no component to resource identity. It is the
 only directory enumerated for project resources. Other project directories are unrelated inputs
@@ -231,10 +232,10 @@ Inspection never calls a resource namespace a source, a driver a configured sour
 - `cdf init` creates `cdf/` and one explicit query-first resource file.
 - `cdf add`/generation plans one explicit source-config change when needed and one or more
   `cdf/<namespace>/<resource>.cdf.sql` files whose queries contain the source binding.
-- Config, SQL, lock, and manifest mutations use the existing crash-safe multi-file publication
-  contract, with `cdf.lock` last when it changes.
+- Config, SQL, and generated-manifest mutations use the existing crash-safe multi-file publication
+  contract with the command's declared final target installed last.
 - Dry-run renders proposed paths, canonical ids, source binding/config changes, defaults,
-  manifest/lock effects, and diagnostics without writing.
+  manifest/state effects, and diagnostics without writing.
 - Read-only commands treat changed authored inputs as stale manifest data and do not compile,
   publish, or recover.
 - All authoring, scaffold, example, and inspection surfaces use this one model. There is no second

@@ -12,7 +12,7 @@ The durable boundary is one-way:
 
 1. prepare and sync every new file and newly created parent;
 2. publish and sync a `pending` marker;
-3. install targets in order, with `cdf.lock` last;
+3. install immutable children first and the command's declared index/commit target last;
 4. sync installed parents;
 5. replace the marker with `committed` at the same monotonically increasing generation.
 

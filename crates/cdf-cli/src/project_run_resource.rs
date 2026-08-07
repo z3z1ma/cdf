@@ -97,7 +97,6 @@ pub(crate) fn build_project_run_resource_from_compilation(
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
-    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource_id: &str,
     commit_schema: bool,
@@ -105,7 +104,6 @@ pub(crate) fn prepare_runtime_resource_for_cli(
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
     let artifact_root = context.root.clone();
     prepare_runtime_resource_for_cli_with_artifact_root(
-        destinations,
         context,
         resource_id,
         commit_schema,
@@ -115,7 +113,6 @@ pub(crate) fn prepare_runtime_resource_for_cli(
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
-    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource_id: &str,
     commit_schema: bool,
@@ -124,7 +121,6 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
     let compiled = context.resource(resource_id)?;
     let prepared = crate::scan_command::prepare_resource_schema_for_cli(
-        destinations,
         context,
         compiled,
         commit_schema,

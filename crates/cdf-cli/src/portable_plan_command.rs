@@ -77,7 +77,6 @@ pub(crate) fn build_resource_material(
         context,
         &prepared.compiled_resource,
         prepared_authority,
-        &destination_id,
         sheet.clone(),
     )?;
     let schema_authority = match prepared_authority {

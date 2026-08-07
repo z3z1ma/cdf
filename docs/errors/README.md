@@ -10,7 +10,6 @@ Generated from the CLI error catalog. Do not edit this page by hand.
 | `CDF-CLI-NOT-SUPPORTED` | CLI | contract | 78 | not supported | Use a currently supported path or wait for the named lower layer to land. Inspect the error message for the required lower layer. | `cdf help` |
 | `CDF-CLI-USAGE` | CLI | contract | 2 | usage | Correct the command arguments and run the command again. Run `cdf help <command>` for the accepted syntax. | `cdf help` |
 | `CDF-CONTRACT-ARGUMENT` | CONTRACT | contract | 2 | argument | Use a supported contract subcommand or trust policy. Run `cdf help contract` for accepted contract commands. | `cdf contract show` |
-| `CDF-CONTRACT-LOCKFILE` | CONTRACT | contract | 3 | lockfile | Create or update the contract lockfile before testing contract drift. Run `cdf contract freeze` for the selected project. | `cdf contract show` |
 | `CDF-DEST-ERROR` | DEST | destination | 6 | error | Inspect the destination URI, target, policy, and destination health. Run `cdf doctor` for the selected project and environment when available. | `cdf plan` |
 | `CDF-DEST-NOT-SUPPORTED` | DEST | contract | 78 | not supported | Use a registered destination driver and URI shape for this command. Supported local paths include `duckdb://path` and `parquet://root` where applicable. | `cdf plan` |
 | `CDF-DOCTOR-DRIFT` | DOCTOR | data | 5 | drift | Inspect the checkpoint ledger and destination drift inputs. Run `cdf doctor` again after repairing unreadable ledger or JSON values. | `cdf doctor` |

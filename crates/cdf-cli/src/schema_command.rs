@@ -12,11 +12,11 @@ use cdf_kernel::{
     SchemaVersion, TargetName,
 };
 use cdf_project::{
-    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore, PromotionEvidenceInventory,
+    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PromotionEvidenceInventory,
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions,
     SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, SchemaPromotionPlanningAuthority,
-    SchemaSnapshotArtifact, SchemaSnapshotDataType, SchemaSnapshotField, SchemaSnapshotStore,
-    execute_schema_promotion,
+    SchemaSnapshotArtifact, SchemaSnapshotDataType, SchemaSnapshotField, SchemaSnapshotSchema,
+    SchemaSnapshotStore, execute_schema_promotion,
 };
 use cdf_state_sqlite::{
     SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore, SqliteSchemaPromotionStore,
@@ -403,16 +403,11 @@ fn show(
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema show", destinations)?;
-    let resource = context.resource(&args.resource_id)?;
-    let reference = pinned_snapshot_reference(&context, resource)
-        .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
-    let artifact = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let manifest = artifact
-        .discovery_manifest_reference()?
-        .map(|reference| DiscoveryManifestStore::new(&context.root).read(&reference))
-        .transpose()?;
-    let report =
-        SchemaShowReport::from_artifact(&context, &args.resource_id, &artifact, manifest.as_ref());
+    context.resource(&args.resource_id)?;
+    let resource_id = ResourceId::new(args.resource_id.clone())?;
+    let active = crate::schema_authority::load_active(&context, &resource_id)?
+        .ok_or_else(|| no_active_schema_authority_error(&args.resource_id))?;
+    let report = SchemaShowReport::from_authority(&context, &active)?;
     CommandOutput::rendered("schema show", render::schema_show_document(&report), report)
 }
 
@@ -424,68 +419,43 @@ fn diff(
 ) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema diff", destinations)?;
     let resource = context.resource(&args.resource_id)?;
-    let reference = pinned_snapshot_reference(&context, resource)
-        .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
-    let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
+    let resource_id = ResourceId::new(args.resource_id.clone())?;
+    let active = crate::schema_authority::load_active(&context, &resource_id)?
+        .ok_or_else(|| no_active_schema_authority_error(&args.resource_id))?;
+    let active_schema = active.version.canonical_schema.to_arrow()?;
+    let baseline = SchemaSnapshotSchema::from_arrow(&active_schema);
+    let probe_resource =
+        resource.with_schema_source_and_schema(SchemaSource::Discover, Arc::new(active_schema));
     let inspection_root = inspection_artifact_root("schema-diff")?;
-    let artifacts =
-        discover_artifacts_for_cli_at(&context, resource, execution, inspection_root.path())?;
-    let unchanged = artifacts
-        .discovery_manifest
-        .as_ref()
-        .map(|fresh_manifest| has_same_discovery_observation(&context, &pinned, fresh_manifest))
-        .transpose()?
-        .unwrap_or(false);
-    let fresh = if unchanged {
-        &pinned
-    } else {
-        &artifacts.discovery.snapshot.artifact
-    };
+    let artifacts = discover_artifacts_for_cli_resource(
+        &context,
+        &probe_resource,
+        Default::default(),
+        execution,
+        inspection_root.path(),
+    )?;
+    let fresh = &artifacts.discovery.snapshot.artifact;
     let report = SchemaDiffReport::from_snapshots(
         &context,
         &args.resource_id,
-        &pinned,
+        &active.head,
+        &baseline,
         fresh,
         artifacts.discovery_manifest.as_ref(),
     );
     CommandOutput::rendered("schema diff", render::schema_diff_document(&report), report)
 }
 
-fn has_same_discovery_observation(
-    context: &ProjectContext,
-    previous_snapshot: &SchemaSnapshotArtifact,
-    fresh_manifest: &cdf_project::DiscoveryManifestArtifact,
-) -> Result<bool, CliError> {
-    let previous_manifest = previous_snapshot
-        .discovery_manifest_reference()?
-        .map(|reference| DiscoveryManifestStore::new(&context.root).read(&reference))
-        .transpose()?;
-    Ok(previous_manifest
-        .as_ref()
-        .is_some_and(|manifest| manifest.has_same_observation(fresh_manifest)))
-}
-
 fn load_context(
     cli: &Cli,
-    command: &str,
+    _command: &str,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<ProjectContext, CliError> {
     ProjectContext::load_for_command_with_destination_registry(
-        command,
         cli.project.as_ref(),
         cli.env.as_deref(),
-        true,
         destinations,
     )
-}
-
-pub(crate) fn discover_artifacts_for_cli(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    execution: &cdf_runtime::ExecutionServices,
-) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
-    let artifact_root = context.root.as_path();
-    discover_artifacts_for_cli_at(context, resource, execution, artifact_root)
 }
 
 fn discover_artifacts_for_cli_at(
@@ -494,8 +464,8 @@ fn discover_artifacts_for_cli_at(
     execution: &cdf_runtime::ExecutionServices,
     artifact_root: &std::path::Path,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
-    let pinned = pinned_snapshot_reference(context, resource).cloned();
-    if let Some(snapshot) = pinned {
+    let cached = cached_snapshot_reference(resource).cloned();
+    if let Some(snapshot) = cached {
         let (baseline, verified_baseline) =
             SchemaSnapshotStore::new(&context.root).read_with_verified_baseline(&snapshot)?;
         let probe_resource = resource.with_schema_source_and_schema(
@@ -563,29 +533,13 @@ fn inspection_artifact_root(command: &str) -> Result<tempfile::TempDir, CliError
         })
 }
 
-fn pinned_snapshot_reference<'a>(
-    context: &'a ProjectContext,
-    resource: &'a CompiledResource,
-) -> Option<&'a SchemaSnapshotReference> {
-    resource
-        .descriptor()
-        .schema_source
-        .pinned_snapshot()
-        .or_else(|| {
-            context
-                .lock
-                .as_ref()
-                .and_then(|lock| {
-                    lock.resources
-                        .get(resource.descriptor().resource_id.as_str())
-                })
-                .and_then(|locked| locked.schema_snapshot.as_ref())
-        })
+fn cached_snapshot_reference(resource: &CompiledResource) -> Option<&SchemaSnapshotReference> {
+    resource.descriptor().schema_source.cached_snapshot()
 }
 
-fn no_pinned_snapshot_error(resource_id: &str) -> CliError {
+fn no_active_schema_authority_error(resource_id: &str) -> CliError {
     CliError::from(CdfError::contract(format!(
-        "no locked schema snapshot exists for resource `{resource_id}`; run `cdf compile {resource_id}` to prepare it"
+        "resource `{resource_id}` has no active state-backed schema authority; run `cdf compile {resource_id}` to establish it"
     )))
 }
 
@@ -604,9 +558,11 @@ struct SchemaSnapshotReportBase {
     project: String,
     environment: String,
     resource_id: String,
+    authority_domain: String,
+    generation: u64,
     schema_hash: String,
-    schema_snapshot_path: String,
-    snapshot_metadata: BTreeMap<String, String>,
+    provenance: String,
+    created_at_ms: i64,
     fields: Vec<SchemaFieldReport>,
 }
 
@@ -615,10 +571,10 @@ struct SchemaDiffReport {
     project: String,
     environment: String,
     resource_id: String,
-    pinned_schema_hash: String,
+    authority_domain: String,
+    authority_generation: u64,
+    active_schema_hash: String,
     fresh_schema_hash: String,
-    pinned_schema_snapshot_path: String,
-    fresh_schema_snapshot_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     discovery: Option<DiscoveryCoverageReport>,
     summary: SchemaDiffSummary,
@@ -627,7 +583,6 @@ struct SchemaDiffReport {
     type_changed_fields: Vec<SchemaFieldValueChange<SchemaSnapshotDataType>>,
     nullable_changed_fields: Vec<SchemaFieldValueChange<bool>>,
     metadata_changed_fields: Vec<SchemaFieldMetadataChange>,
-    snapshot_metadata_changed: Vec<SchemaMetadataChange>,
     writes: SchemaWrites,
 }
 
@@ -639,7 +594,6 @@ struct SchemaDiffSummary {
     type_changed_fields: usize,
     nullable_changed_fields: usize,
     metadata_changed_fields: usize,
-    snapshot_metadata_changed: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -666,52 +620,49 @@ struct SchemaFieldMetadataChange {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct SchemaMetadataChange {
-    key: String,
-    before: Option<String>,
-    after: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct SchemaWrites {
     schema_snapshot: bool,
-    lockfile: bool,
     package: bool,
     destination: bool,
     checkpoint: bool,
 }
 
 impl SchemaShowReport {
-    fn from_artifact(
+    fn from_authority(
         context: &ProjectContext,
-        resource_id: &str,
-        artifact: &SchemaSnapshotArtifact,
-        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
-    ) -> Self {
-        Self {
-            snapshot: SchemaSnapshotReportBase::from_artifact(context, resource_id, artifact),
-            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
+        active: &crate::schema_authority::ActiveSchemaAuthority,
+    ) -> Result<Self, CliError> {
+        Ok(Self {
+            snapshot: SchemaSnapshotReportBase::from_authority(context, active)?,
+            discovery: None,
             writes: SchemaWrites::none(),
-            next_command: format!("cdf schema diff {resource_id}"),
-        }
+            next_command: format!("cdf schema diff {}", active.head.key.resource_id),
+        })
     }
 }
 
 impl SchemaSnapshotReportBase {
-    fn from_artifact(
+    fn from_authority(
         context: &ProjectContext,
-        resource_id: &str,
-        artifact: &SchemaSnapshotArtifact,
-    ) -> Self {
-        Self {
+        active: &crate::schema_authority::ActiveSchemaAuthority,
+    ) -> Result<Self, CliError> {
+        let schema = SchemaSnapshotSchema::from_arrow(&active.version.canonical_schema.to_arrow()?);
+        Ok(Self {
             project: context.config.project.name.clone(),
             environment: context.environment.name.clone(),
-            resource_id: resource_id.to_owned(),
-            schema_hash: artifact.schema_hash.to_string(),
-            schema_snapshot_path: artifact.path.clone(),
-            snapshot_metadata: artifact.metadata.clone(),
-            fields: field_reports(&artifact.schema.fields),
-        }
+            resource_id: active.head.key.resource_id.to_string(),
+            authority_domain: active.head.key.authority_domain_id.to_string(),
+            generation: active.head.generation,
+            schema_hash: active.head.schema_hash.to_string(),
+            provenance: match &active.version.provenance {
+                cdf_kernel::SchemaVersionProvenance::FirstUse => "first_use".to_owned(),
+                cdf_kernel::SchemaVersionProvenance::Promotion { promotion_id } => {
+                    format!("promotion:{promotion_id}")
+                }
+            },
+            created_at_ms: active.version.created_at_ms,
+            fields: field_reports(&schema.fields),
+        })
     }
 }
 
@@ -719,19 +670,20 @@ impl SchemaDiffReport {
     fn from_snapshots(
         context: &ProjectContext,
         resource_id: &str,
-        pinned: &SchemaSnapshotArtifact,
+        active: &SchemaHead,
+        baseline: &SchemaSnapshotSchema,
         fresh: &SchemaSnapshotArtifact,
         manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
     ) -> Self {
-        let pinned_fields = fields_by_name(&pinned.schema.fields);
+        let active_fields = fields_by_name(&baseline.fields);
         let fresh_fields = fields_by_name(&fresh.schema.fields);
 
         let added_fields = fresh_fields
             .iter()
-            .filter(|(name, _)| !pinned_fields.contains_key(*name))
+            .filter(|(name, _)| !active_fields.contains_key(*name))
             .map(|(_, field)| SchemaFieldReport::from_field(field))
             .collect::<Vec<_>>();
-        let removed_fields = pinned_fields
+        let removed_fields = active_fields
             .iter()
             .filter(|(name, _)| !fresh_fields.contains_key(*name))
             .map(|(_, field)| SchemaFieldReport::from_field(field))
@@ -739,55 +691,52 @@ impl SchemaDiffReport {
         let mut type_changed_fields = Vec::new();
         let mut nullable_changed_fields = Vec::new();
         let mut metadata_changed_fields = Vec::new();
-        for (name, pinned_field) in &pinned_fields {
+        for (name, active_field) in &active_fields {
             let Some(fresh_field) = fresh_fields.get(name) else {
                 continue;
             };
-            if pinned_field.data_type != fresh_field.data_type {
+            if active_field.data_type != fresh_field.data_type {
                 type_changed_fields.push(SchemaFieldValueChange {
                     name: (*name).clone(),
-                    before: pinned_field.data_type.clone(),
+                    before: active_field.data_type.clone(),
                     after: fresh_field.data_type.clone(),
                 });
             }
-            if pinned_field.nullable != fresh_field.nullable {
+            if active_field.nullable != fresh_field.nullable {
                 nullable_changed_fields.push(SchemaFieldValueChange {
                     name: (*name).clone(),
-                    before: pinned_field.nullable,
+                    before: active_field.nullable,
                     after: fresh_field.nullable,
                 });
             }
-            if pinned_field.metadata != fresh_field.metadata {
+            if active_field.metadata != fresh_field.metadata {
                 metadata_changed_fields.push(SchemaFieldMetadataChange {
                     name: (*name).clone(),
-                    before: pinned_field.metadata.clone(),
+                    before: active_field.metadata.clone(),
                     after: fresh_field.metadata.clone(),
                 });
             }
         }
-        let snapshot_metadata_changed = metadata_changes(&pinned.metadata, &fresh.metadata);
         let summary = SchemaDiffSummary {
             changed: !added_fields.is_empty()
                 || !removed_fields.is_empty()
                 || !type_changed_fields.is_empty()
                 || !nullable_changed_fields.is_empty()
-                || !metadata_changed_fields.is_empty()
-                || !snapshot_metadata_changed.is_empty(),
+                || !metadata_changed_fields.is_empty(),
             added_fields: added_fields.len(),
             removed_fields: removed_fields.len(),
             type_changed_fields: type_changed_fields.len(),
             nullable_changed_fields: nullable_changed_fields.len(),
             metadata_changed_fields: metadata_changed_fields.len(),
-            snapshot_metadata_changed: snapshot_metadata_changed.len(),
         };
         Self {
             project: context.config.project.name.clone(),
             environment: context.environment.name.clone(),
             resource_id: resource_id.to_owned(),
-            pinned_schema_hash: pinned.schema_hash.to_string(),
+            authority_domain: active.key.authority_domain_id.to_string(),
+            authority_generation: active.generation,
+            active_schema_hash: active.schema_hash.to_string(),
             fresh_schema_hash: fresh.schema_hash.to_string(),
-            pinned_schema_snapshot_path: pinned.path.clone(),
-            fresh_schema_snapshot_path: fresh.path.clone(),
             discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
             summary,
             added_fields,
@@ -795,7 +744,6 @@ impl SchemaDiffReport {
             type_changed_fields,
             nullable_changed_fields,
             metadata_changed_fields,
-            snapshot_metadata_changed,
             writes: SchemaWrites::none(),
         }
     }
@@ -817,7 +765,6 @@ impl SchemaWrites {
     fn none() -> Self {
         Self {
             schema_snapshot: false,
-            lockfile: false,
             package: false,
             destination: false,
             checkpoint: false,
@@ -833,25 +780,5 @@ fn fields_by_name(fields: &[SchemaSnapshotField]) -> BTreeMap<String, &SchemaSna
     fields
         .iter()
         .map(|field| (field.name.clone(), field))
-        .collect()
-}
-
-fn metadata_changes(
-    before: &BTreeMap<String, String>,
-    after: &BTreeMap<String, String>,
-) -> Vec<SchemaMetadataChange> {
-    let mut keys = before.keys().chain(after.keys()).collect::<Vec<_>>();
-    keys.sort();
-    keys.dedup();
-    keys.into_iter()
-        .filter_map(|key| {
-            let before_value = before.get(key).cloned();
-            let after_value = after.get(key).cloned();
-            (before_value != after_value).then(|| SchemaMetadataChange {
-                key: key.clone(),
-                before: before_value,
-                after: after_value,
-            })
-        })
         .collect()
 }

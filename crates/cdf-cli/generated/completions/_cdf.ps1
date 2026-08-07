@@ -47,9 +47,8 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('preview', 'preview', [CompletionResultType]::ParameterValue, 'Read a bounded preview without committing data')
             [CompletionResult]::new('sql', 'sql', [CompletionResultType]::ParameterValue, 'Query verified project and operational artifacts')
             [CompletionResult]::new('inspect', 'inspect', [CompletionResultType]::ParameterValue, 'Inspect durable project and run evidence')
-            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Compare durable schemas')
             [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Inspect, compare, and promote schemas')
-            [CompletionResult]::new('contract', 'contract', [CompletionResultType]::ParameterValue, 'Freeze, show, and test contracts')
+            [CompletionResult]::new('contract', 'contract', [CompletionResultType]::ParameterValue, 'Show compiled contract policy')
             [CompletionResult]::new('state', 'state', [CompletionResultType]::ParameterValue, 'Inspect and recover checkpoint state')
             [CompletionResult]::new('backfill', 'backfill', [CompletionResultType]::ParameterValue, 'Plan or execute a bounded cursor backfill')
             [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'List, verify, archive, and collect packages')
@@ -342,7 +341,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('project', 'project', [CompletionResultType]::ParameterValue, 'Show resolved project information')
             [CompletionResult]::new('resources', 'resources', [CompletionResultType]::ParameterValue, 'List project resources')
             [CompletionResult]::new('resource', 'resource', [CompletionResultType]::ParameterValue, 'Show one resolved resource')
-            [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Show the project lock')
             [CompletionResult]::new('destinations', 'destinations', [CompletionResultType]::ParameterValue, 'List resolved destinations')
             [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'Show durable package evidence')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Show durable run evidence')
@@ -390,20 +388,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
-        'cdf;inspect;lock' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
         'cdf;inspect;destinations' {
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -433,35 +417,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;inspect;run' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'cdf;diff' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Inspect, compare, and promote schemas')
-            break
-        }
-        'cdf;diff;schema' {
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -548,40 +503,10 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('freeze', 'freeze', [CompletionResultType]::ParameterValue, 'Freeze a contract snapshot')
             [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show the selected durable record')
-            [CompletionResult]::new('test', 'test', [CompletionResultType]::ParameterValue, 'Test data against a contract')
-            break
-        }
-        'cdf;contract;freeze' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;contract;show' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
-            [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'cdf;contract;test' {
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')

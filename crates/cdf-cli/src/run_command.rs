@@ -2,10 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,8 +14,8 @@ use cdf_kernel::{
     WriteDisposition,
 };
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, ProjectRunOutcome, ProjectRunRequest,
-    RunTelemetryConfig, SchemaSnapshotStore, publish_project_files_transactionally,
+    ProjectFileExpectation, ProjectFileWrite, ProjectRunOutcome, ProjectRunRequest,
+    RunTelemetryConfig, publish_project_files_transactionally,
     run_project_with_scheduler_and_telemetry,
 };
 use serde::Serialize;
@@ -426,7 +423,6 @@ fn prepare_portable_resource(
                 schema_hash: version.schema_hash.to_string(),
                 path: "state schema authority".to_owned(),
                 snapshot_written: false,
-                lockfile_written: false,
                 discovery: None,
             }
         })
@@ -668,10 +664,8 @@ fn prepare_single(
     let explain_memory = args.explain_memory;
     let mut context = if adhoc_mode {
         ProjectContext::load_for_command_with_destination_registry(
-            "run",
             cli.project.as_ref(),
             cli.env.as_deref(),
-            true,
             destinations,
         )?
     } else {
@@ -707,7 +701,6 @@ fn prepare_single(
         .with_run_job_ceiling(provisional_jobs)?
         .with_scheduler_measurement(true)?;
     let prepared = prepare_runtime_resource_for_cli(
-        destinations,
         &context,
         &explicit.resource_id,
         false,
@@ -1381,7 +1374,6 @@ fn synthesize_adhoc_source(
         &add_plan,
         parsed.upstream.resource_options,
     )?;
-    let resource = hydrate_adhoc_locked_snapshot(context, resource)?;
     if resource.descriptor().resource_id.as_str() != resource_id {
         return Err(CliError::mapped(
             CdfError::internal("generated ad-hoc resource id did not match its stable identity"),
@@ -1474,60 +1466,6 @@ fn compile_adhoc_resource(
         Some(project_root.to_path_buf()),
         source_plan,
     )?)
-}
-
-fn hydrate_adhoc_locked_snapshot(
-    context: &ProjectContext,
-    resource: CompiledResource,
-) -> Result<CompiledResource, CliError> {
-    let Some(lock) = context.lock.as_ref() else {
-        return Ok(resource);
-    };
-    let Some(locked) = lock
-        .resources
-        .get(resource.descriptor().resource_id.as_str())
-    else {
-        return Ok(resource);
-    };
-    let Some(reference) = locked.schema_snapshot.as_ref() else {
-        return Ok(resource);
-    };
-    if locked.descriptor.schema_source.pinned_snapshot() != Some(reference) {
-        return Err(CliError::from(CdfError::data(format!(
-            "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for ad-hoc resource `{}`",
-            resource.descriptor().resource_id
-        ))));
-    }
-    let artifact = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    if artifact.resource_id != resource.descriptor().resource_id.as_str() {
-        return Err(CliError::from(CdfError::data(format!(
-            "schema snapshot {} belongs to resource `{}` instead of ad-hoc resource `{}`",
-            reference.path,
-            artifact.resource_id,
-            resource.descriptor().resource_id
-        ))));
-    }
-    let locked_schema = locked.schema.to_arrow()?;
-    let embedded_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&locked_schema)?;
-    let artifact_schema = artifact.schema.to_arrow()?;
-    if locked.schema_hash.as_deref() != Some(embedded_schema_hash.as_str())
-        || cdf_kernel::canonical_arrow_schema_hash(&artifact_schema)? != embedded_schema_hash
-    {
-        return Err(CliError::from(CdfError::data(format!(
-            "{LOCK_FILE_NAME} has inconsistent embedded schema authority for ad-hoc resource `{}`",
-            resource.descriptor().resource_id
-        ))));
-    }
-    let pinned_source = resource
-        .descriptor()
-        .schema_source
-        .with_pinned_snapshot(reference.clone())
-        .ok_or_else(|| {
-            CliError::from(CdfError::internal(
-                "ad-hoc schema source does not support lock hydration",
-            ))
-        })?;
-    Ok(resource.with_schema_source_and_schema(pinned_source, Arc::new(locked_schema)))
 }
 
 fn persist_local_adhoc_source(

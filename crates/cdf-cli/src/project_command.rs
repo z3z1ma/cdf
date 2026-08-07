@@ -1,23 +1,20 @@
 mod render;
 
-use std::{collections::BTreeMap, env, fs};
-
-use cdf_kernel::CdfError;
-use cdf_project::{
-    LockDiff, ProjectResourceSelectionError, ProjectScaffoldOptions, ProjectScaffoldReport,
-    generate_lockfile_with_destination_artifacts, parse_cdf_toml,
-    resolve_project_resource_selection, validate_project_static, write_local_project_scaffold,
-};
-use cdf_semantic::SemanticCatalog;
-use serde::Serialize;
+use std::{env, fs};
 
 use crate::{
     args::{Cli, InitArgs, ValidateArgs},
-    context::{ProjectContext, project_authority_read_error, project_location, require_lock},
+    context::{project_authority_read_error, project_location},
     error_catalog,
     output::{CliError, CommandOutput},
     suggestions,
 };
+use cdf_kernel::CdfError;
+use cdf_project::{
+    ProjectResourceSelectionError, ProjectScaffoldOptions, ProjectScaffoldReport, parse_cdf_toml,
+    resolve_project_resource_selection, validate_project_static, write_local_project_scaffold,
+};
+use cdf_semantic::SemanticCatalog;
 
 pub(crate) fn init(args: InitArgs) -> Result<CommandOutput, CliError> {
     let root = args
@@ -98,39 +95,4 @@ fn resource_selection_error(error: ProjectResourceSelectionError) -> CliError {
         }
         error => CliError::usage(error.to_string()),
     }
-}
-
-pub(crate) fn diff_schema(
-    cli: &Cli,
-    destinations: &cdf_runtime::DestinationRegistry,
-) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load_for_command_with_destination_registry(
-        "diff schema",
-        cli.project.as_ref(),
-        cli.env.as_deref(),
-        true,
-        destinations,
-    )?;
-    let lock = require_lock(&context)?;
-    let destination_artifacts = lock
-        .destination_bindings()?
-        .into_values()
-        .map(|destination| destination.sheet_artifact())
-        .collect::<cdf_kernel::Result<Vec<_>>>()?;
-    let regenerated = generate_lockfile_with_destination_artifacts(
-        &context.config,
-        &context.resources,
-        cdf_project::current_dependency_tuple(),
-        &destination_artifacts,
-        BTreeMap::new(),
-        &context.semantic_catalog,
-    )?;
-    let diffs = cdf_project::diff_lockfiles(lock, &regenerated)?;
-    let report = DiffSchemaCliReport { diffs };
-    CommandOutput::rendered("diff schema", render::diff_schema_document(&report), report)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct DiffSchemaCliReport {
-    diffs: Vec<LockDiff>,
 }

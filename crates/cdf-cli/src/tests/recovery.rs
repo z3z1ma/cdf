@@ -236,7 +236,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
 }
 
 #[test]
-fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and_inspect() {
+fn injected_quasar_destination_reaches_plan_run_duplicate_replay_doctor_and_inspect() {
     let project = TestProject::new();
     let destination_uri = crate::destination_registry_test_support::destination_uri();
     let secret = crate::destination_registry_test_support::secret_sentinel();
@@ -247,8 +247,6 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
     let mut read_only_commands = vec![
         vec!["compile".to_owned(), "local.events".to_owned()],
         vec!["validate".to_owned()],
-        vec!["contract".to_owned(), "freeze".to_owned()],
-        vec!["diff".to_owned(), "schema".to_owned()],
         vec!["inspect".to_owned(), "destinations".to_owned()],
         vec!["doctor".to_owned(), "all".to_owned()],
         vec!["plan".to_owned(), "local.events".to_owned()],
@@ -281,10 +279,9 @@ fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
         assert_eq!(
             state.durable_commits(),
             0,
-            "inspection, health, lock, and planning must not mutate the destination"
+            "inspection, health, and planning must not mutate the destination"
         );
     }
-    assert!(project.root.join("cdf.lock").is_file());
     assert!(state.inspections() >= 3);
     assert!(state.health_checks() >= 2);
     assert!(state.resolutions() >= 1);

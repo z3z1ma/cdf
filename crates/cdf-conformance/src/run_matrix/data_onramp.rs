@@ -80,16 +80,19 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
     assert_eq!(first["resources"][0]["resource_id"], "api.items");
     assert_eq!(first["resources"][0]["discovered_schema"], true);
 
-    let lock = cdf_project::parse_lock(&fs::read_to_string(temp.path().join("cdf.lock")).unwrap())
-        .unwrap();
-    let reference = lock.resources["api.items"]
-        .schema_snapshot
-        .as_ref()
-        .unwrap();
-    let locked_snapshot_hash = reference.schema_hash.to_string();
-    let snapshot_path = reference.path.clone();
-    let snapshot_bytes = fs::read(temp.path().join(&snapshot_path)).unwrap();
-    let lock_bytes = fs::read(temp.path().join("cdf.lock")).unwrap();
+    let active_schema_hash = first["resources"][0]["schema_authority"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (snapshot_path, snapshot_bytes) = project_tree_snapshot(temp.path())
+        .into_iter()
+        .find(|(path, bytes)| {
+            path.starts_with(".cdf/schemas/")
+                && path.ends_with(".json")
+                && serde_json::from_slice::<Value>(bytes)
+                    .is_ok_and(|artifact| artifact["schema"]["fields"].is_array())
+        })
+        .expect("compile must retain a derived discovery snapshot");
     let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
     assert_eq!(snapshot["metadata"]["probe"], "registered-source-discovery");
     assert_eq!(snapshot["metadata"]["source_driver"], "rest");
@@ -106,10 +109,13 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
     assert_eq!(second["counts"]["compiled"], 1);
     assert_eq!(second["resources"][0]["discovered_schema"], false);
     assert_eq!(
+        second["resources"][0]["schema_authority"]["schema_hash"],
+        active_schema_hash
+    );
+    assert_eq!(
         fs::read(temp.path().join(&snapshot_path)).unwrap(),
         snapshot_bytes
     );
-    assert_eq!(fs::read(temp.path().join("cdf.lock")).unwrap(), lock_bytes);
 
     let before_preview = project_tree_snapshot(temp.path());
     let preview = invoke_success_json(temp.path(), &["preview", "api.items"], Some(SECRET));
@@ -121,8 +127,7 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
     let run = invoke_success_json(temp.path(), &["run", "api.items"], Some(SECRET));
     let report = &run["result"]["resources"][0]["result"];
     assert_eq!(report["resource_id"], "api.items");
-    assert_eq!(report["schema_hash"], locked_snapshot_hash);
-    assert_eq!(report["schema_snapshot"]["outcome"], "unchanged");
+    assert_eq!(report["schema_hash"], active_schema_hash);
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["checkpoint"]["status"], "committed");
     let package_id = report["package_id"].as_str().unwrap();
@@ -140,7 +145,7 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
         .unwrap();
     assert_eq!(receipts.len(), 1);
     let receipt = &receipts[0];
-    assert_eq!(receipt.schema_hash.as_str(), locked_snapshot_hash);
+    assert_eq!(receipt.schema_hash.as_str(), active_schema_hash);
     assert_eq!(receipt.disposition, WriteDisposition::Append);
     assert_eq!(receipt.counts.rows_written, 2);
 
@@ -168,7 +173,7 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
         .unwrap()
         .expect("committed REST checkpoint head");
     assert_eq!(head.delta.checkpoint_id.as_str(), checkpoint_id);
-    assert_eq!(head.delta.schema_hash.as_str(), locked_snapshot_hash);
+    assert_eq!(head.delta.schema_hash.as_str(), active_schema_hash);
     assert!(receipt.covers_state_delta(&head.delta));
     let SourcePosition::Cursor(cursor) = &head.delta.output_position else {
         panic!("REST checkpoint must carry the declared cursor");
@@ -504,7 +509,7 @@ fn assert_success_without_key_nudge(result: &cdf_cli_core::output::InvocationRes
 
 fn assert_generated_artifacts_do_not_contain(root: &Path, secret: &str) {
     for (path, bytes) in project_tree_snapshot(root) {
-        if path == "cdf.lock" || path.starts_with(".cdf/") {
+        if path.starts_with(".cdf/") {
             assert!(
                 !bytes
                     .windows(secret.len())

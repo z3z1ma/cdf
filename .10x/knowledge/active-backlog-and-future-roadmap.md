@@ -143,8 +143,8 @@ protocol/snapshot/type research.
 
 First-class semantic types and SQL-like project authoring are active shaping directions. Semantic
 types remain versioned annotations over Arrow, not a second type lattice. The project compiler must
-publish a canonical secret-redacted manifest before `cdf sql` exposes it; `cdf.lock` remains pin
-authority. DataFusion parses/resolves/types/coerces SQL at compile time, while native typed CDF IR
+publish a canonical secret-redacted manifest before `cdf sql` exposes it; environment state owns
+active schema authority. DataFusion parses/resolves/types/coerces SQL at compile time, while native typed CDF IR
 remains serialized/runtime identity and the CDF operator envelope owns packages/replay. The initial
 relational language is one explicit source resource with projection and Boolean filtering; inside
 that narrow graph, scalar support is the rule-based closure over every fully typed `Immutable`

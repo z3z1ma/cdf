@@ -416,7 +416,7 @@ pub(super) fn receipt_semantics(package: &std::path::Path) -> serde_json::Value 
                 assert_eq!(std::path::Path::new(&database_path), expected_database);
                 assert_eq!(
                     std::path::Path::new(&writer_lock),
-                    expected_database.with_file_name("dev.duckdb.cdf.lock")
+                    expected_database.with_file_name("dev.duckdb.cdf.mutation.lock")
                 );
                 transaction
                     .values

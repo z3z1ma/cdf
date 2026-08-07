@@ -9,12 +9,11 @@ use std::{
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, Result as CdfResult, TargetName};
 use cdf_project::{
-    CdfLock, CompilationSnapshot, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
-    FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority, PROJECT_FILE_NAME, ProjectConfig,
-    ProjectQueryCompilation, compile_query_project_resources,
-    compile_selected_query_project_resources, finalize_query_project_resource, parse_cdf_toml,
-    parse_lock, project_file_transaction_generation, read_lock_file_authority,
-    recover_project_file_transaction, resolve_project_resource_selection,
+    CompilationSnapshot, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
+    FileSecretProvider, PROJECT_FILE_NAME, ProjectConfig, ProjectQueryCompilation,
+    compile_query_project_resources, compile_selected_query_project_resources, parse_cdf_toml,
+    project_file_transaction_generation, recover_project_file_transaction,
+    resolve_project_resource_selection,
 };
 use cdf_semantic::SemanticCatalog;
 use cdf_state_sqlite::SqliteCheckpointStore;
@@ -31,8 +30,6 @@ pub struct ProjectContext {
     pub resources: Vec<CompiledResource>,
     pub resource_queries: Vec<ProjectQueryCompilation>,
     adhoc_resource_ids: BTreeSet<String>,
-    pub lock: Option<CdfLock>,
-    pub lock_authority: Option<LockFileAuthority>,
     pub semantic_catalog: SemanticCatalog,
 }
 
@@ -146,69 +143,17 @@ impl ProjectContext {
     }
 
     pub fn load_for_command_with_destination_registry(
-        command: &str,
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
-        hydrate_locked_snapshots: bool,
         destinations: &cdf_runtime::DestinationRegistry,
     ) -> StdResult<Self, CliError> {
-        Self::load_for_command_with_policy(
-            command,
+        Self::load_with_policy(
             project_arg,
             env_arg,
-            hydrate_locked_snapshots,
             ProjectPublicationRecovery::FailClosed,
             destinations,
         )
-    }
-
-    fn load_for_command_with_policy(
-        command: &str,
-        project_arg: Option<&PathBuf>,
-        env_arg: Option<&str>,
-        hydrate_locked_snapshots: bool,
-        recovery: ProjectPublicationRecovery,
-        destinations: &cdf_runtime::DestinationRegistry,
-    ) -> StdResult<Self, CliError> {
-        Self::load_with_policy(project_arg, env_arg, recovery, destinations)
-            .and_then(|mut context| {
-                if hydrate_locked_snapshots
-                    && matches!(
-                        command,
-                        "compile"
-                            | "plan"
-                            | "explain"
-                            | "preview"
-                            | "run"
-                            | "backfill"
-                            | "contract freeze"
-                            | "contract test"
-                            | "diff schema"
-                    )
-                {
-                    let entries = context
-                        .resources
-                        .into_iter()
-                        .zip(context.resource_queries)
-                        .map(|(resource, query)| cdf_project::CompiledProjectResource {
-                            resource,
-                            query,
-                        })
-                        .collect();
-                    let entries = hydrate_and_finalize_query_resources(
-                        &context.root,
-                        entries,
-                        context.lock.as_ref(),
-                        &context.semantic_catalog,
-                    )?;
-                    (context.resources, context.resource_queries) = entries
-                        .into_iter()
-                        .map(|entry| (entry.resource, entry.query))
-                        .unzip();
-                }
-                Ok(context)
-            })
-            .map_err(CliError::from)
+        .map_err(CliError::from)
     }
 
     pub fn load_with_destination_registry(
@@ -297,7 +242,6 @@ impl ProjectContext {
             .into_iter()
             .map(|entry| (entry.resource, entry.query))
             .unzip();
-        let (lock, lock_authority) = load_lock(root)?;
         Ok(Self {
             root: root.to_path_buf(),
             project_bytes,
@@ -306,8 +250,6 @@ impl ProjectContext {
             resources,
             resource_queries,
             adhoc_resource_ids: BTreeSet::new(),
-            lock,
-            lock_authority,
             semantic_catalog,
         })
     }
@@ -363,10 +305,6 @@ impl ProjectContext {
             resources,
             resource_queries,
             adhoc_resource_ids: BTreeSet::new(),
-            // Selected current-model commands resolve schema authority from state during
-            // preparation. A dormant legacy lock must neither hydrate nor invalidate them.
-            lock: None,
-            lock_authority: None,
             semantic_catalog,
         })
     }
@@ -628,70 +566,6 @@ impl ProjectOperationalContext {
     }
 }
 
-fn hydrate_and_finalize_query_resources(
-    root: &Path,
-    entries: Vec<cdf_project::CompiledProjectResource>,
-    lock: Option<&CdfLock>,
-    semantic_catalog: &SemanticCatalog,
-) -> CdfResult<Vec<cdf_project::CompiledProjectResource>> {
-    entries
-        .into_iter()
-        .map(|mut entry| {
-            entry.resource = hydrate_locked_schema_snapshot(root, entry.resource, lock)?;
-            if entry.resource.schema().fields().is_empty() {
-                Ok(entry)
-            } else {
-                finalize_query_project_resource(entry, semantic_catalog)
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn hydrate_locked_schema_snapshot(
-    _root: &Path,
-    resource: CompiledResource,
-    lock: Option<&CdfLock>,
-) -> CdfResult<CompiledResource> {
-    let Some(lock) = lock else {
-        return Ok(resource);
-    };
-    if resource
-        .descriptor()
-        .schema_source
-        .without_pinned_snapshot()
-        .is_none()
-    {
-        return Ok(resource);
-    }
-    let resource_id = resource.descriptor().resource_id.as_str();
-    let Some(locked) = lock.resources.get(resource_id) else {
-        return Ok(resource);
-    };
-    let Some(reference) = locked.schema_snapshot.as_ref() else {
-        return Ok(resource);
-    };
-    if locked.descriptor.schema_source.pinned_snapshot() != Some(reference) {
-        return Err(CdfError::data(format!(
-            "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for resource `{resource_id}`"
-        )));
-    }
-    let schema = locked.schema.to_arrow()?;
-    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
-    if locked.schema_hash.as_deref() != Some(schema_hash.as_str()) {
-        return Err(CdfError::data(format!(
-            "{LOCK_FILE_NAME} embedded schema does not match its snapshot pointer for resource `{resource_id}`"
-        )));
-    }
-    let pinned_source = resource
-        .descriptor()
-        .schema_source
-        .with_pinned_snapshot(reference.clone())
-        .ok_or_else(|| {
-            CdfError::internal("schema source lost pinning support during lock hydration")
-        })?;
-    Ok(resource.with_schema_source_and_schema(pinned_source, Arc::new(schema)))
-}
-
 fn resource_not_compiled_message(
     id: &str,
     resources: &[CompiledResource],
@@ -717,16 +591,6 @@ fn resource_not_compiled_message(
     format!(
         "resource `{id}` is not compiled; compiled query-first resources: {compiled}; resource ids derive exactly from cdf/<namespace>/<resource>.cdf.sql"
     )
-}
-
-pub fn require_lock(context: &ProjectContext) -> CdfResult<&CdfLock> {
-    context.lock.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "{} is not present under {}",
-            LOCK_FILE_NAME,
-            context.root.display()
-        ))
-    })
 }
 
 pub fn project_location(project_arg: Option<&PathBuf>) -> CdfResult<(PathBuf, PathBuf)> {
@@ -755,88 +619,6 @@ pub(crate) fn project_location_with_current_dir(
         .ok_or_else(|| CdfError::internal(format!("{} has no parent", path.display())))?
         .to_path_buf();
     Ok((root, path))
-}
-
-fn load_lock(root: &Path) -> CdfResult<(Option<CdfLock>, Option<LockFileAuthority>)> {
-    let path = root.join(LOCK_FILE_NAME);
-    match std::fs::metadata(&path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match std::fs::symlink_metadata(&path) {
-                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
-                    validate_missing_lock_ancestors(&path)?;
-                    return Ok((None, None));
-                }
-                _ => {}
-            }
-        }
-        Err(_) => {}
-    }
-    let authority = read_lock_file_authority(&path)?;
-    let text = std::str::from_utf8(&authority.bytes).map_err(|error| {
-        CdfError::contract(format!("read {} as UTF-8: {error}", path.display()))
-    })?;
-    Ok((Some(parse_lock(text)?), Some(authority)))
-}
-
-fn validate_missing_lock_ancestors(path: &Path) -> CdfResult<()> {
-    let mut cursor = path.parent();
-    while let Some(parent) = cursor {
-        if parent.as_os_str().is_empty() {
-            return Ok(());
-        }
-        match fs::metadata(parent) {
-            Ok(metadata) if !metadata.is_dir() => {
-                return Err(CdfError::data(format!(
-                    "cdf.lock ancestor {} is not a real directory",
-                    parent.display()
-                )));
-            }
-            Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::symlink_metadata(parent) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        return Err(CdfError::data(format!(
-                            "cdf.lock ancestor {} is a dangling symlink",
-                            parent.display()
-                        )));
-                    }
-                    Ok(_) => {
-                        return Err(CdfError::data(format!(
-                            "cdf.lock ancestor {} changed filesystem shape during inspection",
-                            parent.display()
-                        )));
-                    }
-                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
-                        cursor = parent.parent();
-                    }
-                    Err(link_error) => {
-                        return Err(project_authority_read_error(
-                            "inspect cdf.lock ancestor",
-                            parent,
-                            link_error,
-                        ));
-                    }
-                }
-            }
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotADirectory
-                    || cdf_kernel::is_filesystem_loop(&error) =>
-            {
-                return Err(CdfError::data(format!(
-                    "cdf.lock ancestor {} has an invalid filesystem shape: {error}",
-                    parent.display()
-                )));
-            }
-            Err(error) => {
-                return Err(CdfError::environment(format!(
-                    "inspect cdf.lock ancestor {}: {error}; check project-path permissions, device availability, and process file limits before retrying",
-                    parent.display()
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn project_authority_read_error(
@@ -891,8 +673,6 @@ fn absolute_under_root(root: &Path, value: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use cdf_kernel::ErrorKind;
-
     use super::*;
 
     #[test]
@@ -905,33 +685,5 @@ mod tests {
             state_store_path_ownership("sqlite://custom/.cdf/state.db"),
             cdf_state_sqlite::StateStorePathOwnership::Configured
         );
-    }
-
-    #[test]
-    fn lock_authority_parent_shape_is_not_silently_treated_as_absent() {
-        let root = tempfile::tempdir().unwrap();
-        let project_root = root.path().join("project");
-        std::fs::write(&project_root, b"not a directory").unwrap();
-
-        let error = load_lock(&project_root).unwrap_err();
-
-        assert_eq!(error.kind, ErrorKind::Data);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dangling_lock_symlink_is_not_silently_treated_as_absent() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().unwrap();
-        symlink(
-            root.path().join("missing.lock"),
-            root.path().join(LOCK_FILE_NAME),
-        )
-        .unwrap();
-
-        let error = load_lock(root.path()).unwrap_err();
-
-        assert_eq!(error.kind, ErrorKind::Data);
     }
 }

@@ -6,14 +6,6 @@ use crate::context::ProjectContext;
 
 pub(crate) use cdf_builtin_drivers::builtin_destination_registry;
 
-pub(crate) fn inspect_destination_artifacts(
-    registry: &DestinationRegistry,
-    context: &ProjectContext,
-    uri: &str,
-) -> Result<Vec<cdf_kernel::DestinationSheetArtifact>> {
-    inspect_destination_artifacts_and_id(registry, context, uri).map(|(_, artifacts)| artifacts)
-}
-
 pub(crate) fn inspect_destination_artifacts_and_id(
     registry: &DestinationRegistry,
     context: &ProjectContext,

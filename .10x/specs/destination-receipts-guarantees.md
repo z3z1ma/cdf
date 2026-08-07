@@ -38,7 +38,8 @@ Async and restartable sessions remain later implementation choices unless a focu
 
 A destination sheet MUST declare supported dispositions, transaction support, idempotency mechanism, bulk paths, Arrow-to-destination type mappings with fidelity, identifier rules, migration support, quarantine table support, and concurrency constraints.
 
-Destination sheets MUST be consumed by the planner, falsified by conformance suites, and snapshotted into `cdf.lock`.
+Destination sheets MUST be consumed by the planner, falsified by conformance suites, and bound
+exactly into compiled artifacts and portable plans.
 
 ## Dispositions
 

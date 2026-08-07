@@ -22,8 +22,8 @@ use super::{
     SequentialReadRequest, Sha256, SourcePosition, StringArray, TargetName, TimeUnit, UnionFields,
     UnionMode, apply_discovered_schema, compile_discovered_schema_artifacts,
     compile_validation_program, discover_resource_schema_with_source_registry, fs, mpsc,
-    plan_discovery_selection, prepare_pinned_resource_schema,
-    prepare_pinned_resource_schema_artifacts, reserve, run_project, source_name, stream,
+    plan_discovery_selection, prepare_cached_resource_schema,
+    prepare_cached_resource_schema_artifacts, reserve, run_project, source_name, stream,
     support::{
         RecordingResponse, RecordingTransport, compile_declarative_fixture,
         compile_declarative_fixture_with_root, test_execution_services, test_format_registry,
@@ -2371,7 +2371,7 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
 
     write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
     let pinned = apply_discovered_schema(&resource, artifacts.discovery.clone());
-    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned).unwrap();
+    let prepared = prepare_cached_resource_schema_artifacts(temp.path(), &pinned).unwrap();
     assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
     assert!(prepared.resource().effective_schema_runtime().is_none());
     assert_eq!(prepared.resource().schema(), pinned.schema());
@@ -2951,7 +2951,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         prepared.resource.schema(),
     );
     assert!(pinned_compiled.effective_schema_runtime().is_none());
-    let pinned = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned_compiled).unwrap();
+    let pinned = prepare_cached_resource_schema_artifacts(temp.path(), &pinned_compiled).unwrap();
     assert_eq!(
         transport.requests().len(),
         request_count_before_pinned_prepare,
@@ -3618,7 +3618,7 @@ fn pinned_schema_preparation_reuses_snapshot_without_observing_runtime_files() {
     );
 
     fs::remove_dir_all(temp.path().join("data")).unwrap();
-    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned).unwrap();
+    let prepared = prepare_cached_resource_schema_artifacts(temp.path(), &pinned).unwrap();
     assert_eq!(
         prepared.discovery_manifest().unwrap().reference(),
         initial_manifest.reference()
@@ -4257,7 +4257,7 @@ fn pinned_schema_preparation_requires_verified_snapshot_before_source_contact() 
         resource.schema(),
     );
 
-    let error = prepare_pinned_resource_schema(temp.path(), &pinned).unwrap_err();
+    let error = prepare_cached_resource_schema(temp.path(), &pinned).unwrap_err();
 
     assert!(
         error.message.contains(".cdf/schemas/missing.json"),

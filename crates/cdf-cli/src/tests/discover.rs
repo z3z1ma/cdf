@@ -69,7 +69,6 @@ fn source_generation_uses_explicit_projection_and_retains_independent_success() 
     assert!(generated.starts_with("SELECT\n  \"id\",\n  \"updated_at\"\nFROM upstream("));
     assert!(generated.contains("source => 'local'"));
     assert!(!generated.contains("RESOURCE"));
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
 }
 
@@ -138,7 +137,6 @@ fn resource_discovery_uses_temporary_authority_and_writes_only_explicit_out() {
     ]);
     assert_ne!(conflict.exit_code, 0);
     assert_eq!(fs::read_to_string(&out).unwrap(), "different\n");
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(!project.root.join(".cdf/schemas").exists());
 }

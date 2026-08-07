@@ -21,7 +21,6 @@ pub(crate) struct SchemaSnapshotActionReport {
     pub(crate) schema_hash: String,
     pub(crate) path: String,
     pub(crate) snapshot_written: bool,
-    pub(crate) lockfile_written: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) discovery: Option<DiscoveryCoverageReport>,
 }
@@ -297,8 +296,7 @@ impl RunCliReport {
                     .row("outcome", snapshot.outcome)
                     .row("hash", snapshot.schema_hash.clone())
                     .row("path", snapshot.path.clone())
-                    .row("snapshot written", yes_no(snapshot.snapshot_written))
-                    .row("lockfile written", yes_no(snapshot.lockfile_written)),
+                    .row("snapshot written", yes_no(snapshot.snapshot_written)),
             );
             if let Some(discovery) = &snapshot.discovery {
                 document

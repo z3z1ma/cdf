@@ -910,7 +910,7 @@ pub(super) fn bound_effective_schema_evidence(
     };
     let snapshot = descriptor()
         .schema_source
-        .pinned_snapshot()
+        .cached_snapshot()
         .unwrap()
         .clone()
         .with_discovery_manifest(&discovery_manifest)

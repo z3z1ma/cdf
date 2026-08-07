@@ -30,7 +30,6 @@ fn first_use_plan_discovers_candidate_schema_without_project_writes() {
     let report = single_plan(&json);
     assert_eq!(report["schema_snapshot"]["outcome"], "inspection_only");
     assert_eq!(report["schema_snapshot"]["snapshot_written"], false);
-    assert_eq!(report["schema_snapshot"]["lockfile_written"], false);
     assert_eq!(report["resource_schema"]["schema_source"], "discovered");
     assert_eq!(report["resource_schema"]["fields"][0]["name"], "vendor_id");
     assert_eq!(report["schema_authority"]["status"], "proposed_first_use");
@@ -53,8 +52,6 @@ fn first_use_run_commits_schema_and_executes_without_compile_folklore() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
-    fs::write(project.root.join("cdf.lock"), "not schema authority").unwrap();
-
     let result = run_valid_run_resource(&project, "local.events");
 
     assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
@@ -69,10 +66,6 @@ fn first_use_run_commits_schema_and_executes_without_compile_folklore() {
         "absent"
     );
     assert!(project.root.join(".cdf/state.db").exists());
-    assert_eq!(
-        fs::read_to_string(project.root.join("cdf.lock")).unwrap(),
-        "not schema authority"
-    );
     assert!(!project.root.join(".cdf/manifest.json").exists());
 }
 
@@ -84,7 +77,6 @@ fn active_plan_enforces_exact_state_authority_without_project_writes() {
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}{}", compile.stdout, compile.stderr);
     write_string_vendor_parquet(&project.root.join("data/vendors.parquet"));
-    fs::write(project.root.join("cdf.lock"), "not schema authority").unwrap();
     let before = project_tree_snapshot(&project.root);
 
     let result = run([

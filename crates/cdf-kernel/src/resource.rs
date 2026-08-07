@@ -284,7 +284,7 @@ pub fn insert_discovery_manifest_metadata(
 }
 
 impl SchemaSource {
-    pub fn with_pinned_snapshot(&self, snapshot: SchemaSnapshotReference) -> Option<SchemaSource> {
+    pub fn with_cached_snapshot(&self, snapshot: SchemaSnapshotReference) -> Option<SchemaSource> {
         match self {
             SchemaSource::Discover | SchemaSource::Discovered { .. } => {
                 Some(SchemaSource::Discovered { snapshot })
@@ -302,7 +302,7 @@ impl SchemaSource {
         }
     }
 
-    pub fn without_pinned_snapshot(&self) -> Option<SchemaSource> {
+    pub fn without_cached_snapshot(&self) -> Option<SchemaSource> {
         match self {
             SchemaSource::Discover | SchemaSource::Discovered { .. } => {
                 Some(SchemaSource::Discover)
@@ -320,7 +320,7 @@ impl SchemaSource {
         }
     }
 
-    pub fn pinned_snapshot(&self) -> Option<&SchemaSnapshotReference> {
+    pub fn cached_snapshot(&self) -> Option<&SchemaSnapshotReference> {
         match self {
             SchemaSource::Discovered { snapshot } => Some(snapshot),
             SchemaSource::Hints {
@@ -1132,7 +1132,7 @@ pub fn partition_schema_observation_id(partition: &PartitionPlan) -> &str {
         .map_or_else(|| partition.partition_id.as_str(), String::as_str)
 }
 
-/// Binds one source-authored partition to the exact pinned schema observation it represents.
+/// Binds one source-authored partition to the exact recorded schema observation it represents.
 ///
 /// The source chooses the observation identity; generic registry/runtime layers only validate
 /// this evidence and must never infer or repair a missing binding.
@@ -2359,11 +2359,11 @@ impl EffectiveSchemaRuntime {
     pub fn validate_for_resource(&self, descriptor: &ResourceDescriptor) -> Result<()> {
         self.validate_intrinsic()?;
         self.evidence.validate_for_resource(descriptor)?;
-        if let Some(snapshot) = descriptor.schema_source.pinned_snapshot()
+        if let Some(snapshot) = descriptor.schema_source.cached_snapshot()
             && snapshot.discovery_manifest()?.as_ref() != Some(&self.evidence.discovery_manifest)
         {
             return Err(CdfError::data(
-                "effective schema discovery manifest does not match its pinned schema snapshot",
+                "effective schema discovery manifest does not match its cached discovery snapshot",
             ));
         }
         Ok(())

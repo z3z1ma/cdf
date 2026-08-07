@@ -990,32 +990,7 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
     let old_hash = active_schema_hash(&project, "local.events");
     let target = TargetName::new("events").unwrap();
-    let policy = cdf_project::DestinationPolicy::default();
     let services = test_execution_services();
-    let resolution = cdf_project::ProjectResolutionContext::for_project_run(&project.root, &target)
-        .with_environment_name("dev")
-        .with_destination_policy(&policy)
-        .with_execution_services(&services);
-    let registry = crate::destination_registry::builtin_destination_registry().unwrap();
-    let mut runtime = registry
-        .resolve("parquet://.cdf/parquet", &resolution)
-        .unwrap();
-    runtime.ensure_protocol_ready().unwrap();
-    let mut lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    let artifact = runtime.protocol().sheet_artifact().unwrap();
-    lock.resources
-        .get_mut("local.events")
-        .unwrap()
-        .destinations
-        .insert(
-            artifact.sheet.destination.to_string(),
-            cdf_project::LockedDestination::new(artifact).unwrap(),
-        );
-    fs::write(
-        project.root.join("cdf.lock"),
-        cdf_project::lock_to_toml(&lock).unwrap(),
-    )
-    .unwrap();
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture_for_target_with_commit(
         &project,
@@ -1075,14 +1050,13 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     ]);
     assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
     let json = stderr_or_stdout_json(&executed.stdout);
-    assert_eq!(json["result"]["phase"], "complete");
+    assert_eq!(json["result"]["phase"], "published");
     assert_eq!(
         json["result"]["targets"][0]["destination"],
         "parquet_object_store"
     );
     assert_eq!(json["result"]["targets"][0]["committed"], true);
-    assert_eq!(json["result"]["lock_published"], true);
-    assert_eq!(json["result"]["publication_event_recorded"], true);
+    assert_eq!(json["result"]["state_published"], true);
     assert!(
         project_tree_snapshot(&project.root)
             .keys()
@@ -1260,9 +1234,8 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
 }
 
 #[test]
-fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_secret_leak() {
+fn schema_show_and_diff_use_state_authority_without_writes_or_secret_leak() {
     let project = TestProject::new();
-    write_minimal_lockfile(&project);
     fs::write(project.root.join("rest-token"), "rest-diff-secret\n").unwrap();
     let (base_url, requests) = serve_json_sequence([
         r#"{ "items": [{ "VendorID": 1, "updated_at": 10 }] }"#,
@@ -1283,10 +1256,27 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
     let compile = compile_resource(&project, "api.items");
     assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
     assert_secret_absent(&compile, "rest-diff-secret");
-    let pinned_snapshot_count = fs::read_dir(project.root.join(".cdf/schemas"))
+    let active_before = active_schema_hash(&project, "api.items");
+    let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
+    let cached_snapshot_count = fs::read_dir(project.root.join(".cdf/schemas"))
         .unwrap()
         .count();
-    assert!(pinned_snapshot_count >= 2);
+    assert!(cached_snapshot_count >= 2);
+
+    let show = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "show",
+        "api.items",
+    ]);
+    assert_eq!(show.exit_code, 0, "stderr: {}", show.stderr);
+    let show_report = stderr_or_stdout_json(&show.stdout);
+    assert_eq!(show_report["result"]["schema_hash"], active_before);
+    assert_eq!(show_report["result"]["generation"], 1);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 
     let diff = run([
         "cdf",
@@ -1301,13 +1291,17 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
     assert_eq!(diff.exit_code, 0, "stderr: {}", diff.stderr);
     assert_secret_absent(&diff, "rest-diff-secret");
     assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert_eq!(active_schema_hash(&project, "api.items"), active_before);
+    assert_eq!(
+        fs::read(project.root.join(".cdf/state.db")).unwrap(),
+        state_before
+    );
     assert_eq!(
         fs::read_dir(project.root.join(".cdf/schemas"))
             .unwrap()
             .count(),
-        pinned_snapshot_count
+        cached_snapshot_count
     );
     let diff_json = stderr_or_stdout_json(&diff.stdout);
     let report = &diff_json["result"];
@@ -1315,7 +1309,6 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
     assert_eq!(report["summary"]["added_fields"], 1);
     assert_eq!(report["added_fields"][0]["name"], "score");
     assert_eq!(report["writes"]["schema_snapshot"], false);
-    assert_eq!(report["writes"]["lockfile"], false);
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
@@ -1370,7 +1363,6 @@ fn compile_postgres_catalog_establishes_state_without_secret_leak() {
     assert_generated_artifacts_exclude(&project.root, "compile-secret");
     assert!(project.root.join(".cdf/state.db").is_file());
     assert!(project.root.join(".cdf/manifest.json").is_file());
-    assert!(!project.root.join("cdf.lock").exists());
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(
         json["result"]["resources"][0]["schema_authority"]["status"],

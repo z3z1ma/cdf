@@ -36,7 +36,10 @@ CDF MUST NOT publish a crate whose distributable dependency graph contains a dis
 
 MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt bridge preview.
 
-MVP acceptance demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `cdf sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
+MVP acceptance demo acceptance MUST exercise Tier-0 GitHub issues, plan output, state-backed schema
+authority, DuckDB load, `cdf sql`, compiled drift dispositions, crash between destination commit and
+checkpoint commit, resume without source contact, replay into a second database, duplicate replay
+handling, and state history.
 
 ## Fast-follow and beyond MVP
 

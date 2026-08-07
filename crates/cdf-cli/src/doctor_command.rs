@@ -291,7 +291,6 @@ fn project_health_details(context: &ProjectContext) -> serde_json::Value {
         "project_root": context.root,
         "selected_environment": context.environment.name,
         "compiled_resources": context.resources.len(),
-        "lockfile_present": context.lock.is_some(),
     })
 }
 

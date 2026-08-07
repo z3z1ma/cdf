@@ -108,7 +108,6 @@ fn dispatch(
             crate::scan_command::preview(&cli, args, host.as_ref(), &services, destinations)
         }
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args, destinations),
-        Command::DiffSchema => crate::project_command::diff_schema(&cli, destinations),
         Command::Schema(command) => {
             let (_, services) = default_services(&cli)?;
             crate::schema_command::schema(&cli, command, &services, destinations)

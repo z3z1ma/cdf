@@ -181,13 +181,11 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
             dependency_tuple_json TEXT NOT NULL,
             dependency_tuple_hash TEXT NOT NULL,
             normalizer TEXT NOT NULL,
-            lock_content_hash TEXT NOT NULL,
-            lock_semantic_hash TEXT NOT NULL,
             compilation_mode TEXT NOT NULL,
             compiler_policies_json TEXT NOT NULL,
             features_json TEXT NOT NULL,
             authored_inputs_hash TEXT NOT NULL,
-            lock_binding_hash TEXT NOT NULL,
+            compilation_binding_hash TEXT NOT NULL,
             semantics_hash TEXT NOT NULL,
             lineage_hash TEXT NOT NULL,
             generated_at_unix_ms INTEGER
@@ -333,11 +331,7 @@ fn mount_compilation(
             ])
             .map_err(workspace_sqlite_error)?;
     }
-    let normalizer = compilation
-        .lock
-        .as_ref()
-        .and_then(|lock| lock.resources.values().next())
-        .map_or("", |resource| resource.compiler.normalizer.as_str());
+    let normalizer = compilation.config.project.normalizer.as_str();
     conn.execute(
         "
         INSERT INTO manifest_project (
@@ -350,17 +344,15 @@ fn mount_compilation(
             dependency_tuple_json,
             dependency_tuple_hash,
             normalizer,
-            lock_content_hash,
-            lock_semantic_hash,
             compilation_mode,
             compiler_policies_json,
             features_json,
             authored_inputs_hash,
-            lock_binding_hash,
+            compilation_binding_hash,
             semantics_hash,
             lineage_hash,
             generated_at_unix_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ",
         params![
             i64::from(index.version),
@@ -372,8 +364,6 @@ fn mount_compilation(
             "{}",
             &index.index_hash,
             normalizer,
-            "",
-            "",
             "resource_index",
             "{}",
             "[]",

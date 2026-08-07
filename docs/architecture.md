@@ -1,7 +1,8 @@
 # Architecture
 
 CDF is a local-first data movement framework built around explicit artifacts:
-plans, packages, receipts, checkpoints, lockfiles, and conformance evidence.
+plans, immutable state-backed schema versions, packages, receipts, checkpoints,
+and conformance evidence.
 The short version is in this page; the durable design is the book in
 [VISION.md](../VISION.md).
 
@@ -26,20 +27,19 @@ The CLI/project/security surface is
 
 1. `cdf compile [selectors...]` prepares resources independently, stores
    immutable `.cdf/compiled/<resource>@<hash>.json` artifacts, updates their
-   `.cdf/manifest.json` status index, and commits `cdf.lock` last. `--locked`
-   asserts existing authority without discovery.
-2. `cdf plan` compiles the project resource into a plan and destination preview
-   before data movement.
+   `.cdf/manifest.json` status index, and establishes missing first-use schema
+   authority in state. `--locked` requires existing authority without discovery.
+2. `cdf plan` compiles selected resources into a terminal preview before data
+   movement; `--out` also writes the exact portable execution plan.
 3. `cdf run` executes a resource through the run spine, writes a package,
    commits to a destination, verifies a receipt, then commits checkpoint state.
 4. `cdf run --resume [<run-id>]` uses run-ledger events, package artifacts,
    destination receipts, and checkpoint rows to drain interrupted work.
 5. `cdf run --package <package> --to <destination>` drives an existing package
    into a destination without contacting the source.
-6. `cdf sql` verifies that manifest against the selected environment and
-   `cdf.lock`, then queries its project/resource/field/semantic/lineage facts
-   alongside package and checkpoint evidence without recompiling or loading a
-   connector registry.
+6. `cdf sql` verifies the compiled manifest against captured project inputs,
+   then queries project/resource/field/semantic/lineage facts alongside package,
+   schema-authority, and checkpoint evidence without loading a connector registry.
 
 The run/recovery behavior is governed by
 [`run-orchestration-ledger.md`](../.10x/specs/run-orchestration-ledger.md), and

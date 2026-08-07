@@ -132,12 +132,10 @@ pub(crate) enum ReceiptFreshnessSource {
 pub(crate) fn evaluate(context: &ProjectCompilationContext) -> Result<StatusReport, CliError> {
     let resources = context
         .compilation
-        .lock
-        .as_ref()
-        .into_iter()
-        .flat_map(|lock| lock.resources.values())
-        .filter_map(|resource| {
-            let descriptor = &resource.descriptor;
+        .artifacts
+        .values()
+        .filter_map(|artifact| {
+            let descriptor = &artifact.resource.descriptor;
             let freshness = descriptor.freshness.as_ref()?;
             if descriptor.trust_level != TrustLevel::Serving {
                 return None;

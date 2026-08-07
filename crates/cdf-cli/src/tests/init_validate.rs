@@ -38,7 +38,6 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     assert!(target.join("data").is_dir());
     assert!(fs::read_dir(target.join("data")).unwrap().next().is_none());
     assert!(!target.join(".cdf").exists());
-    assert!(!target.join("cdf.lock").exists());
     assert!(!target.join(".cdf/packages").exists());
     assert!(!target.join(".cdf/state.db").exists());
     assert!(!target.join(".cdf/dev.duckdb").exists());
@@ -201,7 +200,7 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
     fs::write(root.join("data/existing.ndjson"), "keep input").unwrap();
     fs::write(root.join("README.md"), "keep unrelated").unwrap();
     fs::write(root.join(".cdf/state.db"), "keep state").unwrap();
-    fs::write(root.join("cdf.lock"), "keep lock").unwrap();
+    fs::write(root.join("operator-notes.txt"), "keep notes").unwrap();
 
     let result = run_dynamic(vec![
         "cdf".to_owned(),
@@ -252,8 +251,8 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
         "keep state"
     );
     assert_eq!(
-        fs::read_to_string(root.join("cdf.lock")).unwrap(),
-        "keep lock"
+        fs::read_to_string(root.join("operator-notes.txt")).unwrap(),
+        "keep notes"
     );
     assert!(!root.join(".cdf/dev.duckdb").exists());
 }
@@ -386,7 +385,6 @@ fn validate_is_static_when_data_and_secret_values_are_unavailable() {
     assert!(human.stdout.contains("none"));
     assert!(human.stdout.contains("secret resolution"));
     assert!(!human.stdout.contains("CDF_VALIDATE_MUST_NOT_READ"));
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/schemas").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
@@ -421,7 +419,6 @@ fn validate_aggregates_malformed_environment_uris_without_writes() {
         );
         assert_eq!(json["result"]["counts"]["valid_resources"], 1);
         assert_eq!(json["result"]["effects"]["writes"], "none");
-        assert!(!project.root.join("cdf.lock").exists());
         assert!(!project.root.join(".cdf/schemas").exists());
         assert!(!project.root.join(".cdf/packages").exists());
         assert!(!project.root.join(".cdf/state.db").exists());
@@ -526,27 +523,6 @@ fn validate_selector_misses_and_empty_exclusions_are_usage_errors() {
             .as_str()
             .unwrap()
             .contains("empty set")
-    );
-}
-
-#[test]
-fn validate_reports_corrupt_local_authority_without_contact_or_repair() {
-    let project = TestProject::new();
-    fs::write(project.root.join("cdf.lock"), "not = [valid").unwrap();
-
-    let result = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
-
-    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["result"]["counts"]["errors"], 1);
-    assert_eq!(
-        json["result"]["diagnostics"][0]["code"],
-        "CDF-VALIDATE-LOCK"
-    );
-    assert_eq!(json["result"]["effects"]["writes"], "none");
-    assert_eq!(
-        fs::read_to_string(project.root.join("cdf.lock")).unwrap(),
-        "not = [valid"
     );
 }
 

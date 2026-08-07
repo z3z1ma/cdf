@@ -415,22 +415,6 @@ _arguments "${_arguments_options[@]}" : \
 '*::values -- Identifiers or paths shown in usage:_default' \
 && ret=0
 ;;
-(lock)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::values -- Identifiers or paths shown in usage:_default' \
-&& ret=0
-;;
 (destinations)
 _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -477,49 +461,6 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
-&& ret=0
-;;
-        esac
-    ;;
-esac
-;;
-(diff)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-":: :_cdf__subcmd__diff_commands" \
-"*::: :->diff" \
-&& ret=0
-
-    case $state in
-    (diff)
-        words=($line[1] "${words[@]}")
-        (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:cdf-diff-command-$line[1]:"
-        case $line[1] in
-            (schema)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
         esac
@@ -626,39 +567,7 @@ _arguments "${_arguments_options[@]}" : \
         (( CURRENT += 1 ))
         curcontext="${curcontext%:*:*}:cdf-contract-command-$line[1]:"
         case $line[1] in
-            (freeze)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::value -- Contract or trust selector shown in usage:_default' \
-&& ret=0
-;;
-(show)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
-'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::value -- Contract or trust selector shown in usage:_default' \
-&& ret=0
-;;
-(test)
+            (show)
 _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -1047,9 +956,8 @@ _cdf_commands() {
 'preview:Read a bounded preview without committing data' \
 'sql:Query verified project and operational artifacts' \
 'inspect:Inspect durable project and run evidence' \
-'diff:Compare durable schemas' \
 'schema:Inspect, compare, and promote schemas' \
-'contract:Freeze, show, and test contracts' \
+'contract:Show compiled contract policy' \
 'state:Inspect and recover checkpoint state' \
 'backfill:Plan or execute a bounded cursor backfill' \
 'package:List, verify, archive, and collect packages' \
@@ -1076,38 +984,14 @@ _cdf__subcmd__compile_commands() {
 (( $+functions[_cdf__subcmd__contract_commands] )) ||
 _cdf__subcmd__contract_commands() {
     local commands; commands=(
-'freeze:Freeze a contract snapshot' \
 'show:Show the selected durable record' \
-'test:Test data against a contract' \
     )
     _describe -t commands 'cdf contract commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__contract__subcmd__freeze_commands] )) ||
-_cdf__subcmd__contract__subcmd__freeze_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf contract freeze commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__contract__subcmd__show_commands] )) ||
 _cdf__subcmd__contract__subcmd__show_commands() {
     local commands; commands=()
     _describe -t commands 'cdf contract show commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__contract__subcmd__test_commands] )) ||
-_cdf__subcmd__contract__subcmd__test_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf contract test commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__diff_commands] )) ||
-_cdf__subcmd__diff_commands() {
-    local commands; commands=(
-'schema:Inspect, compare, and promote schemas' \
-    )
-    _describe -t commands 'cdf diff commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__diff__subcmd__schema_commands] )) ||
-_cdf__subcmd__diff__subcmd__schema_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf diff schema commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__discover_commands] )) ||
 _cdf__subcmd__discover_commands() {
@@ -1184,7 +1068,6 @@ _cdf__subcmd__inspect_commands() {
 'project:Show resolved project information' \
 'resources:List project resources' \
 'resource:Show one resolved resource' \
-'lock:Show the project lock' \
 'destinations:List resolved destinations' \
 'package:Show durable package evidence' \
 'run:Show durable run evidence' \
@@ -1195,11 +1078,6 @@ _cdf__subcmd__inspect_commands() {
 _cdf__subcmd__inspect__subcmd__destinations_commands() {
     local commands; commands=()
     _describe -t commands 'cdf inspect destinations commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__inspect__subcmd__lock_commands] )) ||
-_cdf__subcmd__inspect__subcmd__lock_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf inspect lock commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__inspect__subcmd__package_commands] )) ||
 _cdf__subcmd__inspect__subcmd__package_commands() {

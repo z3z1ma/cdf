@@ -1,18 +1,11 @@
 use super::*;
+use crate::discovery_manifest::{DiscoverySelectorCandidate, plan_discovery_selection};
 use crate::internal::*;
-use crate::{
-    discovery_manifest::{DiscoverySelectorCandidate, plan_discovery_selection},
-    lock_cas::compare_and_swap_lock_file_with_publication_hook,
-};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
     path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
 };
@@ -31,13 +24,11 @@ use cdf_http::{
 };
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
-    BoxFuture, CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef,
-    DestinationId, DestinationProtocol, DestinationProtocolCapabilities, DestinationSheet,
-    DestinationSheetArtifact, DiscoveryManifestHash, DiscoveryManifestReference,
-    IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId, QueryableResource, ResourceId,
-    RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease, ScopeLeaseClock,
-    ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, WriteDisposition, source_name,
+    BoxFuture, CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, DestinationId,
+    DestinationSheet, DiscoveryManifestHash, DiscoveryManifestReference, IdempotencySupport,
+    IdentifierRules, PipelineId, QueryableResource, ResourceId, RunId, ScanRequest, SchemaHash,
+    SchemaSource, SourcePosition, TargetName, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    WriteDisposition, source_name,
 };
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
@@ -51,7 +42,6 @@ use cdf_runtime::{
     GenerationStrength, RunCancellation, SequentialReadRequest,
 };
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver};
-use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
@@ -59,8 +49,6 @@ use sha2::{Digest, Sha256};
 mod discovery_schema;
 mod project_files;
 mod project_inputs;
-mod promotion;
-mod publication_recovery;
 mod query_compiler;
 mod resource_sql;
 pub(crate) mod support;

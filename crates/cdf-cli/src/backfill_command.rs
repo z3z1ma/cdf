@@ -49,7 +49,6 @@ pub(crate) fn backfill(
             ))
         })?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
-        destinations,
         &context,
         &args.resource_id,
         false,

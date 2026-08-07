@@ -289,6 +289,10 @@ pub trait DestinationRuntime {
         Ok(self.protocol().sheet().clone())
     }
 
+    fn destination_sheet_artifact(&self) -> Result<cdf_kernel::DestinationSheetArtifact> {
+        self.protocol().sheet_artifact()
+    }
+
     fn describe(&self) -> DestinationDescription;
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {

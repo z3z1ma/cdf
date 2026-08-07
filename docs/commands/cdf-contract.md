@@ -3,14 +3,12 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Freeze, show, and test contracts
+Show compiled contract policy
 
 Usage: cdf contract [OPTIONS] [COMMAND]
 
 Commands:
-  freeze  Freeze a contract snapshot
-  show    Show the selected durable record
-  test    Test data against a contract
+  show  Show the selected durable record
 
 Options:
   -q, --quiet                  Suppress progress and non-primary success narration

@@ -79,7 +79,7 @@ pub(crate) fn validate_resource_source_authority(
     resource: &CompiledResource,
     source_plan: &cdf_runtime::CompiledSourcePlan,
 ) -> cdf_kernel::Result<()> {
-    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
+    if let Some(snapshot) = resource.descriptor().schema_source.cached_snapshot() {
         validate_recorded_source_authority(
             &snapshot.metadata,
             source_plan.driver.driver_id.as_str(),
@@ -113,7 +113,7 @@ fn validate_recorded_source_authority(
         || &recorded_discovery_binding != discovery_binding
     {
         return Err(CdfError::data(format!(
-            "locked schema authority `{recorded_driver}`/{recorded_version}/{recorded_discovery_binding} does not match source authority `{driver_id}`/{driver_version}/{discovery_binding}; run `cdf schema diff` for the selected resource, then promote or recompile as appropriate",
+            "active schema observation provenance `{recorded_driver}`/{recorded_version}/{recorded_discovery_binding} does not match source authority `{driver_id}`/{driver_version}/{discovery_binding}; run `cdf schema diff` for the selected resource, then promote or recompile as appropriate",
         )));
     }
     Ok(())
@@ -291,7 +291,6 @@ fn scan_one_with_portable(
         })?;
     let target = scan_target(&context, args)?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
-        destinations,
         &context,
         &args.resource_id,
         false,
@@ -379,7 +378,6 @@ pub(crate) fn preview(
             ))
         })?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
-        destinations,
         &context,
         &args.resource_id,
         false,
@@ -417,7 +415,6 @@ pub(crate) fn preview(
 }
 
 pub(crate) fn prepare_resource_schema_for_cli(
-    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
     commit_schema: bool,
@@ -451,9 +448,9 @@ pub(crate) fn prepare_resource_schema_for_cli(
         return PreparedSchemaForCli::new(prepared, None, prepared_payloads, Vec::new());
     }
     let source_plan = compile_source_plan_for_cli(resource)?;
-    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
+    if let Some(snapshot) = resource.descriptor().schema_source.cached_snapshot() {
         let prepared =
-            cdf_project::prepare_pinned_resource_schema_artifacts(&context.root, resource)?;
+            cdf_project::prepare_cached_resource_schema_artifacts(&context.root, resource)?;
         let discovery = prepared
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
@@ -466,7 +463,6 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 schema_hash: snapshot.schema_hash.to_string(),
                 path: snapshot.path.clone(),
                 snapshot_written: false,
-                lockfile_written: false,
                 discovery,
             }),
             prepared_payloads,
@@ -485,7 +481,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             Vec::new(),
         );
     }
-    let options = match resource.descriptor().schema_source.pinned_snapshot() {
+    let options = match resource.descriptor().schema_source.cached_snapshot() {
         Some(snapshot) => {
             let (_, verified_baseline) = cdf_project::SchemaSnapshotStore::new(&context.root)
                 .read_with_verified_baseline(snapshot)?;
@@ -528,40 +524,10 @@ pub(crate) fn prepare_resource_schema_for_cli(
     } else {
         "inspection_only"
     };
-    let (snapshot_written, lockfile_written) = if !commit_schema {
-        (false, false)
+    let snapshot_written = if !commit_schema {
+        false
     } else {
-        let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
-            destinations,
-            context,
-            &context.environment.destination,
-        )?;
-        let updated_lock = cdf_project::pin_schema_snapshot_in_project_lockfile(
-            &context.config,
-            &context.resources,
-            context.lock.as_ref(),
-            &destination_artifacts,
-            &prepared_resource,
-            &context.semantic_catalog,
-        )?;
-        let encoded = cdf_project::lock_to_toml(&updated_lock)?;
-        let snapshot_written =
-            cdf_project::write_schema_discovery_artifacts(&context.root, &artifacts)?
-                .snapshot_written;
-        let lock_path = context.root.join(cdf_project::LOCK_FILE_NAME);
-        let lockfile_written = context
-            .lock_authority
-            .as_ref()
-            .map(|authority| authority.bytes.as_slice())
-            != Some(encoded.as_bytes());
-        if lockfile_written {
-            cdf_project::write_lock_file_guarded(
-                &lock_path,
-                context.lock_authority.as_ref(),
-                encoded,
-            )?;
-        }
-        (snapshot_written, lockfile_written)
+        cdf_project::write_schema_discovery_artifacts(&context.root, &artifacts)?.snapshot_written
     };
     PreparedSchemaForCli::new(
         prepared_resource,
@@ -570,7 +536,6 @@ pub(crate) fn prepare_resource_schema_for_cli(
             schema_hash: artifact.schema_hash.to_string(),
             path: artifact.path.clone(),
             snapshot_written,
-            lockfile_written,
             discovery: discovery_coverage,
         }),
         prepared_payloads,
@@ -1045,9 +1010,9 @@ mod render_tests {
         assert_eq!(
             command_correct_scan_message(
                 "plan",
-                "cdf run requires locked schema authority".to_owned()
+                "cdf run requires active state-backed schema authority".to_owned()
             ),
-            "cdf plan requires locked schema authority"
+            "cdf plan requires active state-backed schema authority"
         );
     }
 }
@@ -1376,7 +1341,7 @@ fn resource_schema_report(
     output_schema: &arrow_schema::Schema,
     effective: Option<&cdf_engine::EffectiveSchemaPlanEvidence>,
 ) -> ResourceSchemaReport {
-    let snapshot = resource.descriptor().schema_source.pinned_snapshot();
+    let snapshot = resource.descriptor().schema_source.cached_snapshot();
     ResourceSchemaReport {
         schema_hash: schema_hash.to_string(),
         baseline_schema_hash: effective
@@ -1563,7 +1528,11 @@ mod source_authority_tests {
             .expect("valid discovery binding");
         let error = validate_recorded_source_authority(&metadata, "files", "1.0.0", &recompiled)
             .unwrap_err();
-        assert!(error.message.contains("locked schema authority"));
+        assert!(
+            error
+                .message
+                .contains("active schema observation provenance")
+        );
         assert!(error.message.contains("does not match source authority"));
         assert!(error.message.contains("cdf schema diff"));
         assert!(error.message.contains("promote or recompile"));

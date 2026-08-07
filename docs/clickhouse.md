@@ -92,7 +92,8 @@ schema_mode = "discover"
 ```
 
 Compilation and portable-plan validation make no network contact. Discovery contacts only the
-configured table catalog and a `LIMIT 0` Arrow schema probe, then pins the exact Arrow schema.
+configured table catalog and a `LIMIT 0` Arrow schema probe, then establishes the exact Arrow
+schema in environment state on first use.
 Execution fails closed unless that catalog-backed physical observation is attached to the compiled
 resource; a declared logical schema is never relabeled as physical evidence.
 Credentials are never embedded in the endpoint or rendered as values. `cdf add` accepts an

@@ -562,7 +562,6 @@ fn discover_one_resource(
     })?;
     let compiled = context.resource(resource_id)?;
     let prepared = crate::scan_command::prepare_resource_schema_for_cli(
-        destinations,
         &context,
         compiled,
         false,

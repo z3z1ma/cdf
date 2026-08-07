@@ -235,7 +235,6 @@ pub struct SchemaPromotionConflict {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaPromotionWrites {
     pub schema_snapshot: bool,
-    pub lockfile: bool,
     pub package: bool,
     pub destination: bool,
     pub checkpoint: bool,
@@ -247,7 +246,6 @@ impl SchemaPromotionWrites {
     fn none() -> Self {
         Self {
             schema_snapshot: false,
-            lockfile: false,
             package: false,
             destination: false,
             checkpoint: false,
@@ -3286,18 +3284,12 @@ mod tests {
                 max_writers: Some(1),
             },
         };
-        let locked_destination = crate::LockedDestination::new(
-            DestinationSheetArtifact::new(
-                sheet,
-                DestinationProtocolCapabilities::default().with_corrections(corrections),
-            )
-            .unwrap(),
+        let destination = DestinationSheetArtifact::new(
+            sheet,
+            DestinationProtocolCapabilities::default().with_corrections(corrections),
         )
         .unwrap();
-        let destinations = BTreeMap::from([(
-            "warehouse".to_owned(),
-            locked_destination.sheet_artifact().unwrap(),
-        )]);
+        let destinations = BTreeMap::from([("warehouse".to_owned(), destination)]);
         let mut conflicts = Vec::new();
         let targets = plan_targets(
             &destinations,

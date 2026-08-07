@@ -37,11 +37,12 @@ The project defaults to local SQLite state, local packages, and DuckDB. `cdf ini
 `cdf add` writes `cdf/tlc/yellow.cdf.sql` and the shared `[sources.tlc]`
 connection in `cdf.toml`. `cdf compile tlc.yellow` then performs bounded
 Parquet-footer discovery, normalizes source field names, stores a hash-addressed
-snapshot under `.cdf/schemas/`, and references it from `cdf.lock`. Neither
+snapshot as a derived cache under `.cdf/schemas/`, and establishes the immutable
+active schema version in the selected environment's state store. Neither
 command downloads Parquet data pages or writes a package, destination, or
 checkpoint.
 
-Inspect what was pinned:
+Inspect the active schema authority:
 
 ```bash
 "$CDF" schema show tlc.yellow
@@ -52,10 +53,10 @@ Inspect what was pinned:
 
 `cdf compile [selectors...]` prepares only the selected resources, publishing
 immutable artifacts under `.cdf/compiled/`, their status index in
-`.cdf/manifest.json`, and per-resource authority in `cdf.lock`. Add `--locked`
-to forbid discovery and assert that selected resources still match their pins.
-Generated `.cdf/` state is ignored by the project scaffold; `cdf.lock` remains
-the committed expectation.
+`.cdf/manifest.json`, and per-resource schema authority in the environment's
+state store. Add `--locked` to forbid first-use establishment and require an
+existing unchanged authority. Generated `.cdf/` artifacts and local state are
+ignored by the project scaffold.
 
 The plan should report one file partition. Fields such as `VendorID` are planned as normalized destination identifiers while retaining `cdf:source_name = "VendorID"` evidence.
 
@@ -93,10 +94,12 @@ FROM upstream(
 
 The generated `[sources.tlc]` block already points at the public `trip-data` prefix and contains the host egress allowlist.
 
-Refresh the intentional schema authority and review its diff:
+Review drift, then promote intentional schema changes explicitly:
 
 ```bash
 "$CDF" schema diff tlc.yellow
+"$CDF" schema promote tlc.yellow
+"$CDF" schema promote tlc.yellow --execute
 "$CDF" compile tlc.yellow
 "$CDF" plan tlc.yellow
 "$CDF" run tlc.yellow
@@ -118,7 +121,7 @@ cargo test -p cdf-project file_manifest_append_run_skips_unchanged_files_and_loa
 
 ## 4. What happens when a later file drifts
 
-The pinned snapshot does not mutate silently. Every current file is reconciled against the baseline and the resource contract:
+The active schema version does not mutate silently. Every current file is reconciled against that authority and the resource contract:
 
 - lossless width changes compile into recorded coercion verdicts;
 - compatible evolution produces a separately identified effective schema;
@@ -138,10 +141,11 @@ To exercise the incompatible-month rendering without depending on mutable public
 cargo test -p cdf-cli governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence --locked
 ```
 
-Refresh the baseline only after reviewing the diff:
+Promote the active schema only after reviewing the diff:
 
 ```bash
-"$CDF" compile tlc.yellow
+"$CDF" schema promote tlc.yellow
+"$CDF" schema promote tlc.yellow --execute
 ```
 
 ## 5. Run from a package without source contact

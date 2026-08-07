@@ -69,7 +69,6 @@ use cdf_package_contract::{
     ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
-use cdf_semantic::SemanticCatalog;
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver};
 use cdf_source_rest::RestSourceDriver;
 use cdf_state_sqlite::{
@@ -85,15 +84,14 @@ use tracing::{
 };
 
 use crate::{
-    BackfillPlanRequest, DependencyTuple, DestinationCommitPlanningInputs,
-    DestinationCommitPlanningOutcome, DestinationReceiptReportingPolicy, FileManifestRunSummary,
-    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PreparedDestinationCommit,
-    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext,
-    ProjectRunNoOpReason, ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage, TracingRunEventSink,
-    backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
-    plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
+    BackfillPlanRequest, DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome,
+    DestinationReceiptReportingPolicy, FileManifestRunSummary, PackageArtifactRecoveryRequest,
+    PackageArtifactReplayRequest, PreparedDestinationCommit, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectReceiptSource, ProjectResolutionContext, ProjectRunNoOpReason, ProjectRunOutcome,
+    ProjectRunReport, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
+    RunTelemetryConfig, RuntimeStage, TracingRunEventSink, backfill_pipeline_id, plan_backfill,
+    recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, resolve_project_run_destination,
     run_project_with_scheduler_and_telemetry,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,

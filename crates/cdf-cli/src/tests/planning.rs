@@ -26,7 +26,6 @@ fn plan_out_writes_canonical_artifact_and_preserves_terminal_report() {
     assert!(result.stdout.contains("Plan"));
     assert!(result.stdout.contains("Portable plan"));
     assert!(result.stdout.contains("created"));
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
     let bytes = fs::read(&plan_path).unwrap();
     let artifact = cdf_project::parse_portable_plan(&bytes).unwrap();
@@ -95,7 +94,6 @@ fn portable_plan_runs_after_whole_plan_preflight_and_establishes_first_use_autho
         json["result"]["portable_plan"]["first_use_authority"],
         "established"
     );
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(project.root.join(".cdf/state.db").is_file());
     assert!(project.root.join(".cdf/packages").is_dir());
@@ -144,7 +142,6 @@ fn portable_plan_rejects_tampering_before_any_project_or_run_write() {
     ]);
 
     assert_ne!(result.exit_code, 0);
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
@@ -187,7 +184,6 @@ fn portable_plan_rejects_changed_source_generation_before_any_run_write() {
         result.stdout,
         result.stderr
     );
-    assert!(!project.root.join("cdf.lock").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());

@@ -11,7 +11,6 @@ Commands:
   project       Show resolved project information
   resources     List project resources
   resource      Show one resolved resource
-  lock          Show the project lock
   destinations  List resolved destinations
   package       Show durable package evidence
   run           Show durable run evidence

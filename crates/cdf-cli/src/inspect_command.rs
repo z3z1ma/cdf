@@ -1,15 +1,13 @@
 mod render;
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
-use cdf_project::{
-    EffectiveEnvironment, LockedDestination, ProjectConfig, resolve_project_resource_selection,
-};
+use cdf_project::{EffectiveEnvironment, ProjectConfig, resolve_project_resource_selection};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     args::{Cli, InspectArgs, InspectNoun},
-    context::{ProjectCompilationContext, ProjectContext, ProjectOperationalContext},
+    context::{ProjectContext, ProjectOperationalContext},
     output::{CliError, CommandOutput},
     render::redaction::redact_uri_userinfo,
 };
@@ -64,34 +62,13 @@ pub(crate) fn inspect(
                 report,
             )
         }
-        InspectNoun::Lock => {
-            let context =
-                ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-            let lock = context.compilation.lock.ok_or_else(|| {
-                cdf_kernel::CdfError::contract(format!(
-                    "cdf.lock is not present under {}",
-                    context.root.display()
-                ))
-            })?;
-            let report = InspectLockReport(redact_typed(lock)?);
-            CommandOutput::rendered("inspect lock", render::lock_document(&report), report)
-        }
         InspectNoun::Destinations => {
             let operational =
                 ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
             let runtime = redact_destination_runtime(operational.destination_runtime(destinations));
-            let compilation =
-                ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
             let report = InspectDestinationsReport {
                 environment_destination: redact_uri_userinfo(&operational.environment.destination),
                 runtime,
-                locked: redact_typed(
-                    compilation
-                        .compilation
-                        .lock
-                        .map(|lock| lock.destination_bindings())
-                        .transpose()?,
-                )?,
             };
             CommandOutput::rendered(
                 "inspect destinations",
@@ -101,10 +78,8 @@ pub(crate) fn inspect(
         }
         InspectNoun::Resources => {
             let context = ProjectContext::load_for_command_with_destination_registry(
-                "inspect resources",
                 cli.project.as_ref(),
                 cli.env.as_deref(),
-                true,
                 destinations,
             )?;
             let report = InspectResourcesReport(resource_summaries(&context)?);
@@ -137,14 +112,9 @@ struct InspectProjectReport {
 struct InspectResourcesReport(Vec<ResourceSummary>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-struct InspectLockReport(cdf_project::CdfLock);
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct InspectDestinationsReport {
     environment_destination: String,
     runtime: crate::context::DestinationRuntime,
-    locked: Option<BTreeMap<String, LockedDestination>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

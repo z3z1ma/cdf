@@ -209,8 +209,8 @@ The consequences are concrete:
   ledger surfaces all expose the governed level and resulting policy hashes.
 
 D3 does not invent an independent deployment engine or trust lifecycle. Promotion/demotion,
-contract freeze/review, publication safety, status, and runtime enforcement remain governed by the
-existing contract/trust records; D3's obligation is exact preset binding, prerequisite validation,
+schema promotion/review, publication safety, status, and runtime enforcement remain governed by
+the existing schema/contract/trust records; D3's obligation is exact preset binding, prerequisite validation,
 and complete manifest/observability evidence.
 
 ### Semantic annotations

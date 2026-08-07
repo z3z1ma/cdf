@@ -119,15 +119,6 @@ pub const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub const CONTRACT_LOCKFILE: ErrorMapping = ErrorMapping {
-    code: "CDF-CONTRACT-LOCKFILE",
-    exit_code: 3,
-    remediation: Some(RemediationTemplate {
-        summary: "Create or update the contract lockfile before testing contract drift.",
-        steps: &["Run `cdf contract freeze` for the selected project."],
-    }),
-};
-
 pub const SCAN_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-SCAN-ARGUMENT",
     exit_code: 2,
@@ -315,7 +306,6 @@ pub fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
         ("SOURCE_REFERENCE", SOURCE_REFERENCE),
         ("RESOURCE_NOT_COMPILED", RESOURCE_NOT_COMPILED),
         ("CONTRACT_ARGUMENT", CONTRACT_ARGUMENT),
-        ("CONTRACT_LOCKFILE", CONTRACT_LOCKFILE),
         ("SCAN_ARGUMENT", SCAN_ARGUMENT),
         (
             "PREVIEW_RUNTIME_NOT_SUPPORTED",

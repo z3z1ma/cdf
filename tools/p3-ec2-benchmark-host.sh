@@ -784,9 +784,8 @@ EOF"
       minimal)
         run_cmd rsync -az --delete --delete-excluded \
           --include='/cdf.toml' \
-          --include='/cdf.lock' \
           --include='/README.md' \
-          --include='/resources/***' \
+          --include='/cdf/***' \
           --include='/data/***' \
           --include='/.cdf/' \
           --include='/.cdf/state.db' \

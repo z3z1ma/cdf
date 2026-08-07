@@ -50,9 +50,9 @@ CDF is a system of explicit artifacts. No one artifact carries the whole design.
   the relevant receipt exists and verifies.
 - A capability sheet is a machine-readable claim about a resource or
   destination. The conformance suite tries to falsify it.
-- A project file and lockfile make the meaning of a data project reviewable:
-  resource bindings, destination sheets, type mappings, contract snapshots,
-  normalizer versions, and dependency pins.
+- Authored project files, immutable state-backed schema versions, compiled
+  artifacts, and portable plans make resource bindings, destination mappings,
+  contract policy, and exact execution authority inspectable.
 - The CLI gives every noun an inspection path, because a hidden artifact is not
   much better than no artifact.
 
@@ -111,14 +111,16 @@ The finished CLI is intended to stay headless, scriptable, and inspectable.
 ```bash
 cdf init
 cdf validate
-cdf plan github.issues
+cdf compile github.issues
+cdf plan github.issues --out github-issues.plan.json
 cdf explain github.issues --where "updated_at >= '2026-07-01'"
 cdf preview github.issues --limit 500
-cdf run github.issues --to duckdb://local.duckdb
+cdf run --plan github-issues.plan.json
 cdf sql "select state, count(*) from github.issues group by 1"
-cdf inspect resource|sheet|package|run|receipt <id>
-cdf contract freeze|show|test github.issues
-cdf state show|history|rewind|migrate|recover github.issues
+cdf inspect resource|package|run <id>
+cdf schema show|diff|promote github.issues
+cdf contract show github.issues
+cdf state show|history|rewind|recover github.issues
 cdf run --resume [<run-id>]
 cdf run --package <pkg> --to postgres://... --target schema.table
 cdf doctor [runtime|resource|source|destination|all]
@@ -180,7 +182,7 @@ crates/
   cdf-dest-parquet/    Parquet and object-store destination
   cdf-dest-postgres/   Postgres destination
   cdf-dest-sqlite/     SQLite destination
-  cdf-project/         project files, lockfile, secrets, local runtime
+  cdf-project/         project files, compilation, secrets, local runtime
   cdf-cli/             the `cdf` command
   cdf-conformance/     resource, destination, chaos, and golden-package suites
 ```

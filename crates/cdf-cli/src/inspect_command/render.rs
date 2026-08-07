@@ -113,35 +113,6 @@ pub(super) fn resource_document(resource: &ResourceSummary) -> RenderDocument {
         )))
 }
 
-pub(super) fn lock_document(report: &InspectLockReport) -> RenderDocument {
-    let lock = &report.0;
-    let destinations = lock
-        .resources
-        .values()
-        .flat_map(|resource| resource.destinations.keys())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    RenderDocument::new()
-        .push(StatusLine::new(
-            StatusKind::Success,
-            format!(
-                "lockfile v{} for project {}",
-                lock.version, lock.project.name
-            ),
-        ))
-        .blank_line()
-        .push(
-            KeyValuePanel::new("Lock")
-                .row("version", lock.version.to_string())
-                .row("project", lock.project.name.clone())
-                .row("default env", lock.project.default_environment.clone())
-                .row("resources", lock.resources.len().to_string())
-                .row("destinations", destinations.to_string()),
-        )
-        .blank_line()
-        .push(NextCommand::new("cdf validate"))
-}
-
 pub(super) fn destinations_document(report: &InspectDestinationsReport) -> RenderDocument {
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
@@ -152,15 +123,7 @@ pub(super) fn destinations_document(report: &InspectDestinationsReport) -> Rende
         .push(
             KeyValuePanel::new("Destination")
                 .row("environment", report.environment_destination.clone())
-                .row("runtime", report.runtime.kind.clone())
-                .row(
-                    "locked",
-                    report
-                        .locked
-                        .as_ref()
-                        .map(|locked| locked.len().to_string())
-                        .unwrap_or_else(|| "none".to_owned()),
-                ),
+                .row("runtime", report.runtime.kind.clone()),
         );
     if let Some(capabilities) = &report.runtime.capabilities {
         let selected = capabilities.bulk_path.as_deref();

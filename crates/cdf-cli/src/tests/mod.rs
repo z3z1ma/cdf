@@ -46,7 +46,7 @@ use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
     ResolvedProjectDestination, SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionRequest,
     SchemaPromotionPlanReport, SchemaPromotionPlanningAuthority, SchemaSnapshotArtifact,
-    execute_schema_promotion, parse_lock, replay_package_from_artifacts,
+    execute_schema_promotion, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -285,7 +285,7 @@ fn assert_project_tree_unchanged(root: &Path, before: &BTreeMap<String, Vec<u8>>
 
 fn assert_generated_artifacts_exclude(root: &Path, secret: &str) {
     for (path, bytes) in project_tree_snapshot(root) {
-        if path == "cdf.lock" || path.starts_with(".cdf/") {
+        if path.starts_with(".cdf/") {
             assert!(
                 !bytes
                     .windows(secret.len())
@@ -1490,17 +1490,6 @@ fn write_resource_disposition(project: &TestProject, disposition: &str) {
     fs::write(project.root.join("cdf/local/events.cdf.sql"), resource).unwrap();
 }
 
-fn write_resource_with_extra_contract_field(project: &TestProject) {
-    fs::write(
-        project.root.join("cdf/local/events.cdf.sql"),
-        RESOURCE.replace(
-            "SELECT *\nFROM upstream",
-            "SELECT *, CAST(NULL AS BIGINT) AS ingested_at\nFROM upstream",
-        ),
-    )
-    .unwrap();
-}
-
 fn write_format_fixture(project: &TestProject, format: &str) {
     for entry in fs::read_dir(project.root.join("data")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
@@ -2032,27 +2021,6 @@ fn write_pinned_postgres_project_with_secret(
 fn assert_secret_absent(result: &cdf_cli_core::output::InvocationResult, secret: &str) {
     assert!(!result.stdout.contains(secret), "stdout leaked {secret}");
     assert!(!result.stderr.contains(secret), "stderr leaked {secret}");
-}
-
-fn write_minimal_lockfile(project: &TestProject) {
-    fs::write(
-        project.root.join("cdf.lock"),
-        r#"
-version = 3
-
-[project]
-id = "test-project"
-name = "cli_test"
-default_environment = "dev"
-
-[semantics]
-
-[resources]
-
-[destinations]
-"#,
-    )
-    .unwrap();
 }
 
 fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {

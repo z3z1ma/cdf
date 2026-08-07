@@ -57,15 +57,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
 pub const PROJECT_FILE_NAME: &str = "cdf.toml";
-pub const LOCK_FILE_NAME: &str = "cdf.lock";
-pub const LOCKFILE_VERSION: u16 = 3;
-
 mod backfill;
 mod compilation;
+mod configuration;
 mod discovery_manifest;
 mod internal;
-mod lock_cas;
-mod lockfile;
 mod manifest;
 mod models;
 mod observation_cache;
@@ -104,6 +100,9 @@ pub use compilation::{
     parse_compiled_resource_artifact, validate_compilation_index_authority,
     validate_compiled_resource_artifact_current,
 };
+pub use configuration::{
+    ProjectValidationReport, SecretCheck, SecretCheckStatus, parse_cdf_toml, validate_project,
+};
 pub use discovery_manifest::{
     DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE, DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES,
     DEFAULT_DISCOVERY_MAX_RECORDS_PER_FILE, DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES,
@@ -116,32 +115,13 @@ pub use discovery_manifest::{
     DiscoverySelectorStratum, DiscoveryWithinFileCoverage, STRATIFIED_HASH_SELECTOR_V1,
     discovery_manifest_relative_path,
 };
-pub use lock_cas::{
-    LockFileAtomicityCapabilities, LockFileAuthority, LockFileCasFailpoint, LockFileCasReport,
-    LockFileMutationGuard, acquire_lock_file_mutation_guard, compare_and_swap_lock_file,
-    compare_and_swap_lock_file_with_failpoint, lock_file_atomicity_capabilities,
-    read_lock_file_authority, write_lock_file_guarded,
-};
-pub use lockfile::{
-    CdfLock, ContractFreezeReport, ContractSnapshot, ContractSnapshotComparison,
-    ContractSnapshotCounts, ContractSnapshotDrift, ContractSnapshotVerdict, ContractTestReport,
-    DependencyTuple, LockDiff, LockDiffKind, LockedDestination, LockedResource,
-    LockedResourceCompilerBinding, ProjectLock, ProjectValidationReport, SecretCheck,
-    SecretCheckStatus, bind_compiled_resource_artifact, contract_snapshot_for_resource,
-    contract_snapshot_for_resource_with_semantic_catalog, contract_snapshots_for_resources,
-    contract_snapshots_for_resources_with_semantic_catalog, current_dependency_tuple,
-    diff_lockfiles, freeze_contract_snapshots, generate_lockfile_with_destination_artifacts,
-    lock_to_toml, parse_cdf_toml, parse_lock, pin_schema_snapshot_in_project_lockfile,
-    test_contract_snapshots, test_contract_snapshots_with_semantic_catalog,
-    upsert_compiled_resource_in_lockfile, validate_project,
-};
 pub use manifest::{
-    CompiledArtifactInput, ManifestDestinationBinding, ManifestDiagnostic,
-    ManifestDiagnosticSeverity, ManifestField, ManifestInputContentHash, ManifestInputGeneration,
-    ManifestInputKind, ManifestInputLocation, ManifestLineageEdge, ManifestLineageKind,
-    ManifestLineageNode, ManifestResource, ManifestResourceOrigin, ManifestSemanticDefinition,
-    ManifestSemanticFieldUsage, ManifestSemanticReferenceUsage, ManifestSemanticSource,
-    ResourceCompilationHash, SemanticProfileHash,
+    CompiledArtifactInput, ContractSnapshot, DependencyTuple, ManifestDestinationBinding,
+    ManifestDiagnostic, ManifestDiagnosticSeverity, ManifestField, ManifestInputContentHash,
+    ManifestInputGeneration, ManifestInputKind, ManifestInputLocation, ManifestLineageEdge,
+    ManifestLineageKind, ManifestLineageNode, ManifestResource, ManifestResourceOrigin,
+    ManifestSemanticDefinition, ManifestSemanticFieldUsage, ManifestSemanticReferenceUsage,
+    ManifestSemanticSource, ResourceCompilationHash, SemanticProfileHash, current_dependency_tuple,
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
@@ -233,7 +213,7 @@ pub use schema_discovery::{
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions, SchemaDiscoveryWriteOutcome,
     VerifiedSchemaBaseline, apply_discovered_schema, apply_discovered_schema_constraints,
     compile_discovered_schema_artifacts, discover_resource_schema_with_source_registry,
-    prepare_pinned_resource_schema, prepare_pinned_resource_schema_artifacts,
+    prepare_cached_resource_schema, prepare_cached_resource_schema_artifacts,
     write_schema_discovery_artifacts,
 };
 pub use schema_snapshot::{

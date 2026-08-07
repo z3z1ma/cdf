@@ -28,7 +28,7 @@ use duckdb::{
 use std::sync::atomic::AtomicU64;
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
-const LOCK_SUFFIX: &str = "cdf.lock";
+const MUTATION_LOCK_SUFFIX: &str = "cdf.mutation.lock";
 const DUCKDB_CONSERVATIVE_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 const DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES: u64 = 1024 * 1024 * 1024;
 const DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES: u64 = 1024 * 1024 * 1024;

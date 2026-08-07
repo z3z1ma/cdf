@@ -239,40 +239,10 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(resource_sql.contains("FROM upstream("));
     assert!(resource_sql.contains("source => 'adhoc'"));
     assert!(!resource_sql.contains(PATH_SECRET));
-    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    let locked = &lock.resources[resource_id];
-    let embedded_schema = locked.schema.to_arrow().unwrap();
     assert_eq!(
-        locked.schema_hash.as_deref(),
-        Some(
-            cdf_kernel::canonical_arrow_schema_hash(&embedded_schema)
-                .unwrap()
-                .as_str()
-        )
-    );
-    assert_eq!(
-        locked
-            .schema_snapshot
-            .as_ref()
-            .unwrap()
-            .schema_hash
-            .as_str(),
+        active_schema_hash(&project, resource_id),
         report["schema_snapshot"]["schema_hash"].as_str().unwrap()
     );
-    assert_eq!(
-        locked
-            .schema_snapshot
-            .as_ref()
-            .unwrap()
-            .schema_hash
-            .as_str(),
-        report["schema_hash"].as_str().unwrap()
-    );
-    assert_eq!(
-        locked.schema_snapshot.as_ref().unwrap().path,
-        report["schema_snapshot"]["path"].as_str().unwrap()
-    );
-
     let package = PackageReader::open(run_package_dir(&project, &first)).unwrap();
     package.verify().unwrap();
     let receipt = collect_package_receipts(&package).remove(0);
@@ -371,15 +341,15 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
     ]);
     assert_ne!(failed.exit_code, 0);
 
-    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    let resource_id = lock
-        .resources
-        .keys()
-        .find(|id| id.starts_with("adhoc.parquet_"))
-        .unwrap()
-        .clone();
     let package_dir = single_package_dir(&project);
     let package = PackageReader::open(&package_dir).unwrap();
+    let resource_id = package
+        .replay_inputs()
+        .unwrap()
+        .state_delta
+        .resource_id
+        .to_string();
+    assert!(resource_id.starts_with("adhoc.parquet_"));
     package.verify().unwrap();
     assert!(collect_package_receipts(&package).is_empty());
     assert_eq!(

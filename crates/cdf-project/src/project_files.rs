@@ -11,10 +11,9 @@ use cdf_kernel::{CdfError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::acquire_lock_file_mutation_guard;
-
 static TRANSACTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PROJECT_FILE_TRANSACTION_MARKER: &str = ".cdf/project-files.transaction.json";
+const PROJECT_FILE_MUTATION_GUARD: &str = ".cdf/project-files.mutation.lock";
 const PROJECT_FILE_TRANSACTION_MARKER_VERSION: u16 = 2;
 const MAX_PROJECT_FILE_TRANSACTION_MARKER_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -126,6 +125,59 @@ struct ProjectFileTransactionHooks<'a> {
     fail_after_install_count: Option<usize>,
 }
 
+struct ProjectFileMutationGuard {
+    _file: File,
+}
+
+fn acquire_project_file_mutation_guard(project_root: &Path) -> Result<ProjectFileMutationGuard> {
+    let guard_path = project_root.join(PROJECT_FILE_MUTATION_GUARD);
+    let guard_parent = guard_path.parent().ok_or_else(|| {
+        CdfError::internal(format!(
+            "project mutation guard {} has no parent",
+            guard_path.display()
+        ))
+    })?;
+    let mut created_directories = Vec::new();
+    ensure_safe_parent(project_root, guard_parent, &mut created_directories)?;
+    match fs::symlink_metadata(&guard_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CdfError::internal(format!(
+                "CDF-managed project mutation guard {} is not a real regular file",
+                guard_path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(project_file_private_path_error(
+                "inspect project mutation guard",
+                &guard_path,
+                error,
+            ));
+        }
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    configure_project_guard_no_follow(&mut options);
+    let file = options.open(&guard_path).map_err(|error| {
+        project_file_private_path_error("open project mutation guard", &guard_path, error)
+    })?;
+    file.lock().map_err(|error| {
+        project_file_host_error("lock project mutation guard", &guard_path, error)
+    })?;
+    Ok(ProjectFileMutationGuard { _file: file })
+}
+
+#[cfg(unix)]
+fn configure_project_guard_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn configure_project_guard_no_follow(_options: &mut OpenOptions) {}
+
 pub fn recover_project_file_transaction(project_root: impl AsRef<Path>) -> Result<u64> {
     let project_root = project_root.as_ref();
     let observed = read_project_file_transaction_marker(project_root)?;
@@ -133,7 +185,7 @@ pub fn recover_project_file_transaction(project_root: impl AsRef<Path>) -> Resul
         return Ok(observed.generation());
     }
 
-    let _guard = acquire_lock_file_mutation_guard(project_root.join("cdf.lock"))?;
+    let _guard = acquire_project_file_mutation_guard(project_root)?;
     Ok(recover_project_file_transaction_under_guard(
         project_root,
         read_project_file_transaction_marker(project_root)?,
@@ -365,7 +417,7 @@ fn publish_project_files_inner_with_hook_and_policy(
         }
     }
 
-    let _guard = acquire_lock_file_mutation_guard(project_root.join("cdf.lock"))?;
+    let _guard = acquire_project_file_mutation_guard(project_root)?;
     let observed_marker = read_project_file_transaction_marker(project_root)?;
     let marker_authority = match pending_policy {
         PendingTransactionPolicy::Recover => {
@@ -1785,15 +1837,19 @@ mod tests {
                 ProjectFileExpectation::Exact(b"before-project".to_vec()),
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"commit".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
         ];
 
-        let error =
-            publish_project_files_inner(root.path(), Path::new("cdf.lock"), writes, Some(2))
-                .unwrap_err();
+        let error = publish_project_files_inner(
+            root.path(),
+            Path::new("project.generated.json"),
+            writes,
+            Some(2),
+        )
+        .unwrap_err();
 
         assert!(error.message.contains("injected"));
         assert_eq!(
@@ -1804,7 +1860,7 @@ mod tests {
             fs::read(root.path().join("cdf/local/events.cdf.sql")).unwrap(),
             b"resource"
         );
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
         assert!(
             read_project_file_transaction_marker(root.path())
                 .unwrap()
@@ -1817,9 +1873,12 @@ mod tests {
             fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER),).unwrap(),
             marker_before
         );
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
         assert_eq!(recover_project_file_transaction(root.path()).unwrap(), 1);
-        assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit");
+        assert_eq!(
+            fs::read(root.path().join("project.generated.json")).unwrap(),
+            b"commit"
+        );
     }
 
     #[test]
@@ -1833,15 +1892,20 @@ mod tests {
                 ProjectFileExpectation::Exact(b"before-project".to_vec()),
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"pending-lock".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
         ];
-        publish_project_files_inner(root.path(), Path::new("cdf.lock"), pending_writes, Some(1))
-            .unwrap_err();
+        publish_project_files_inner(
+            root.path(),
+            Path::new("project.generated.json"),
+            pending_writes,
+            Some(1),
+        )
+        .unwrap_err();
         let marker_before = fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap();
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
 
         let error = publish_project_files_transactionally_without_recovery(
             root.path(),
@@ -1860,7 +1924,7 @@ mod tests {
             fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap(),
             marker_before
         );
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
         assert!(!root.path().join("manifest.json").exists());
     }
 
@@ -1880,24 +1944,28 @@ mod tests {
                 ProjectFileExpectation::Exact(b"before-project".to_vec()),
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"commit".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
         ];
 
         let report =
-            publish_project_files_transactionally(root.path(), "cdf.lock", writes).unwrap();
+            publish_project_files_transactionally(root.path(), "project.generated.json", writes)
+                .unwrap();
 
         assert_eq!(
             report.installed_paths.last().unwrap(),
-            Path::new("cdf.lock")
+            Path::new("project.generated.json")
         );
         assert_eq!(
             fs::read(root.path().join("cdf.toml")).unwrap(),
             b"after-project"
         );
-        assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit");
+        assert_eq!(
+            fs::read(root.path().join("project.generated.json")).unwrap(),
+            b"commit"
+        );
         assert_eq!(
             fs::read(root.path().join(".cdf/schemas/events.json")).unwrap(),
             b"schema"
@@ -1918,13 +1986,14 @@ mod tests {
             )
             .owner_only(),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"commit".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
         ];
 
-        publish_project_files_transactionally(root.path(), "cdf.lock", writes).unwrap();
+        publish_project_files_transactionally(root.path(), "project.generated.json", writes)
+            .unwrap();
 
         let mode = fs::metadata(root.path().join(".cdf/secrets/sources/events.token"))
             .unwrap()
@@ -1986,16 +2055,16 @@ mod tests {
     fn project_transaction_creation_race_is_contract_and_preserves_the_racer() {
         let root = tempfile::tempdir().unwrap();
         let writes = vec![ProjectFileWrite::new(
-            "cdf.lock",
+            "project.generated.json",
             b"ours".to_vec(),
             ProjectFileExpectation::Absent,
         )];
-        let target = root.path().join("cdf.lock");
+        let target = root.path().join("project.generated.json");
         let mut raced = false;
 
         let error = publish_project_files_inner_with_hook(
             root.path(),
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             writes,
             None,
             &mut |path| {
@@ -2017,17 +2086,17 @@ mod tests {
     #[test]
     fn project_transaction_replacement_race_is_contract_and_preserves_the_racer() {
         let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("cdf.lock");
+        let target = root.path().join("project.generated.json");
         fs::write(&target, b"observed").unwrap();
         let writes = vec![ProjectFileWrite::new(
-            "cdf.lock",
+            "project.generated.json",
             b"ours".to_vec(),
             ProjectFileExpectation::Exact(b"observed".to_vec()),
         )];
 
         let error = publish_project_files_inner_with_hook(
             root.path(),
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             writes,
             None,
             &mut |path| {
@@ -2055,7 +2124,7 @@ mod tests {
                 ProjectFileExpectation::Exact(b"observed".to_vec()),
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"commit".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
@@ -2064,11 +2133,11 @@ mod tests {
 
         let error = publish_project_files_inner_with_hook(
             root.path(),
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             writes,
             None,
             &mut |path| {
-                if installed_first.get() && path.ends_with("cdf.lock") {
+                if installed_first.get() && path.ends_with("project.generated.json") {
                     return Err(CdfError::environment("injected later install failure"));
                 }
                 Ok(())
@@ -2096,7 +2165,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let authored = root.path().join("cdf.toml");
         let manifest = root.path().join("manifest.json");
-        let lock = root.path().join("cdf.lock");
+        let lock = root.path().join("project.generated.json");
         fs::write(&authored, b"authored\n").unwrap();
         let guards = vec![ProjectFileGuard::exact("cdf.toml", b"authored\n".to_vec())];
         let writes = vec![
@@ -2106,7 +2175,7 @@ mod tests {
                 ProjectFileExpectation::Absent,
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"lock\n".to_vec(),
                 ProjectFileExpectation::Absent,
             ),
@@ -2115,7 +2184,7 @@ mod tests {
 
         let error = publish_project_files_inner_with_guards_and_hook(
             root.path(),
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             guards,
             writes,
             &mut |path| {
@@ -2153,16 +2222,16 @@ mod tests {
     #[test]
     fn absent_install_cleanup_failure_remains_forward_recoverable() {
         let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("cdf.lock");
+        let target = root.path().join("project.generated.json");
         let writes = vec![ProjectFileWrite::new(
-            "cdf.lock",
+            "project.generated.json",
             b"commit".to_vec(),
             ProjectFileExpectation::Absent,
         )];
 
         let error = publish_project_files_inner_with_hook(
             root.path(),
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             writes,
             None,
             &mut |_| Ok(()),
@@ -2260,7 +2329,7 @@ mod tests {
 
         publish_project_files_inner_with_hook(
             &root,
-            Path::new("cdf.lock"),
+            Path::new("project.generated.json"),
             crash_transaction_writes(),
             None,
             &mut |_| Ok(()),
@@ -2282,7 +2351,7 @@ mod tests {
             fs::read(root.path().join("cdf.toml")).unwrap(),
             b"project-after\n"
         );
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
         let pending = read_project_file_transaction_marker(root.path()).unwrap();
         assert!(pending.is_pending());
 
@@ -2293,7 +2362,10 @@ mod tests {
             fs::read(root.path().join("cdf/local/events.cdf.sql")).unwrap(),
             b"resource\n"
         );
-        assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit\n");
+        assert_eq!(
+            fs::read(root.path().join("project.generated.json")).unwrap(),
+            b"commit\n"
+        );
         assert!(
             !read_project_file_transaction_marker(root.path())
                 .unwrap()
@@ -2302,7 +2374,7 @@ mod tests {
 
         let retry = publish_project_files_transactionally(
             root.path(),
-            "cdf.lock",
+            "project.generated.json",
             vec![
                 ProjectFileWrite::new(
                     "cdf/local/events.cdf.sql",
@@ -2315,7 +2387,7 @@ mod tests {
                     ProjectFileExpectation::Exact(b"project-after\n".to_vec()),
                 ),
                 ProjectFileWrite::new(
-                    "cdf.lock",
+                    "project.generated.json",
                     b"commit\n".to_vec(),
                     ProjectFileExpectation::Exact(b"commit\n".to_vec()),
                 ),
@@ -2343,7 +2415,7 @@ mod tests {
             fs::read(root.path().join("cdf.toml")).unwrap(),
             b"unrelated-racer\n"
         );
-        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("project.generated.json").exists());
         assert!(
             read_project_file_transaction_marker(root.path())
                 .unwrap()
@@ -2380,7 +2452,7 @@ mod tests {
         };
         let lock_entry = entries
             .into_iter()
-            .find(|entry| entry.relative_path == Path::new("cdf.lock"))
+            .find(|entry| entry.relative_path == Path::new("project.generated.json"))
             .unwrap();
         fs::remove_file(root.path().join(lock_entry.temporary_relative_path)).unwrap();
 
@@ -2403,7 +2475,7 @@ mod tests {
                 ProjectFileExpectation::Exact(b"project-before\n".to_vec()),
             ),
             ProjectFileWrite::new(
-                "cdf.lock",
+                "project.generated.json",
                 b"commit\n".to_vec(),
                 ProjectFileExpectation::Absent,
             ),

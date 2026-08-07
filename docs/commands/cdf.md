@@ -21,9 +21,8 @@ Commands:
   preview   Read a bounded preview without committing data
   sql       Query verified project and operational artifacts
   inspect   Inspect durable project and run evidence
-  diff      Compare durable schemas
   schema    Inspect, compare, and promote schemas
-  contract  Freeze, show, and test contracts
+  contract  Show compiled contract policy
   state     Inspect and recover checkpoint state
   backfill  Plan or execute a bounded cursor backfill
   package   List, verify, archive, and collect packages

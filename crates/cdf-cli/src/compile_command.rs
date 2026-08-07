@@ -10,8 +10,7 @@ use cdf_project::{
     ProjectFileGuard, ProjectFileWrite, ProjectResourcePath, ProjectResourceSelectionError,
     compile_resource_artifact, compiled_resource_artifact_path, finalize_query_project_resource,
     parse_cdf_toml, parse_compilation_index, publish_project_files_transactionally_guarded,
-    resolve_project_resource_selection, upsert_compiled_resource_in_lockfile,
-    validate_compilation_index_authority,
+    resolve_project_resource_selection, validate_compilation_index_authority,
 };
 use serde::Serialize;
 
@@ -135,50 +134,33 @@ fn compile_one(
         destinations,
     )?;
     let mut entry = compiled_entry(&context, selected.resource_id.as_str())?;
-    let mut schema_files = BTreeMap::new();
-    let mut discovered_schema = false;
-    if entry.resource.schema().fields().is_empty() {
-        let artifacts = crate::schema_command::discover_artifacts_for_cli(
-            &context,
-            &entry.resource,
-            execution,
-        )?;
-        discovered_schema = true;
-        for (path, bytes) in artifacts.canonical_artifact_files()? {
-            if schema_files.insert(path.clone(), bytes.clone()).is_some() {
-                return Err(CdfError::internal(format!(
-                    "schema discovery produced duplicate artifact path `{path}`"
-                ))
-                .into());
-            }
-        }
-        let schema_source = entry
-            .resource
-            .descriptor()
-            .schema_source
-            .with_pinned_snapshot(artifacts.discovery.snapshot.reference.clone())
-            .ok_or_else(|| {
-                CdfError::internal("discoverable schema source rejected its canonical snapshot")
-            })?;
-        entry.resource = entry
-            .resource
-            .with_schema_source_and_schema(schema_source, artifacts.discovery.normalized_schema);
-        entry = finalize_query_project_resource(entry, &context.semantic_catalog)?;
-    }
+    let prepared = crate::scan_command::prepare_resource_schema_for_cli(
+        &context,
+        &entry.resource,
+        false,
+        Some(execution),
+        &context.root,
+    )?;
+    let discovered_schema = prepared.schema_snapshot.is_some();
+    let schema_files = prepared
+        .schema_artifact_files
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    entry.resource = prepared.resource;
+    entry = finalize_query_project_resource(entry, &context.semantic_catalog)?;
 
-    let (destination_id, destination_artifacts) =
+    let (_, destination_artifacts) =
         crate::destination_registry::inspect_destination_artifacts_and_id(
             destinations,
             &context,
             &context.environment.destination,
         )?;
-    let compiler_lock = upsert_compiled_resource_in_lockfile(
-        &context.config,
-        None,
-        &destination_artifacts,
-        &entry.resource,
-        &context.semantic_catalog,
-    )?;
+    let [destination] = destination_artifacts.as_slice() else {
+        return Err(CdfError::internal(
+            "destination inspection did not produce exactly one capability sheet",
+        )
+        .into());
+    };
     let schema_authority = crate::schema_authority::prepare(&context, &entry.resource)?;
     if locked_only && schema_authority.proposal().is_some() {
         return Err(CdfError::contract(format!(
@@ -192,7 +174,6 @@ fn compile_one(
     let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
-        lock: &compiler_lock,
         schema_authority: schema_authority.compiled_authority()?,
         resource: &entry,
         authored_inputs: authored
@@ -201,7 +182,7 @@ fn compile_one(
             .collect(),
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
-        selected_destination_id: &destination_id,
+        destination,
         diagnostics: Vec::new(),
     })?;
     let compiled_authority = schema_authority.compiled_authority()?;
@@ -237,25 +218,16 @@ pub(crate) fn prepare_portable_compilation(
     context: &ProjectContext,
     resource: &cdf_declarative::CompiledResource,
     schema_authority: &crate::schema_authority::PreparedSchemaAuthority,
-    destination_id: &str,
     destination_sheet: cdf_kernel::DestinationSheetArtifact,
 ) -> Result<PortableCompilationMaterial, CliError> {
     let resource_id = resource.descriptor().resource_id.as_str();
     let mut entry = compiled_entry(context, resource_id)?;
     entry.resource = resource.clone();
     entry.query.relational_plan = resource.relational_expression_plan().cloned();
-    let compiler_lock = upsert_compiled_resource_in_lockfile(
-        &context.config,
-        None,
-        std::slice::from_ref(&destination_sheet),
-        resource,
-        &context.semantic_catalog,
-    )?;
     let authored = captured_authored_inputs(&entry)?;
     let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
-        lock: &compiler_lock,
         schema_authority: schema_authority.compiled_authority()?,
         resource: &entry,
         authored_inputs: authored
@@ -264,7 +236,7 @@ pub(crate) fn prepare_portable_compilation(
             .collect(),
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
-        selected_destination_id: destination_id,
+        destination: &destination_sheet,
         diagnostics: Vec::new(),
     })?;
     Ok(PortableCompilationMaterial { artifact })

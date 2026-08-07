@@ -23,14 +23,12 @@ const INSPECT_NOUNS: &[&str] = &[
     "project",
     "resources",
     "resource",
-    "lock",
     "destinations",
     "package",
     "run",
 ];
-const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
 const SCHEMA_SUBCOMMANDS: &[&str] = &["show", "diff", "promote"];
-const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
+const CONTRACT_SUBCOMMANDS: &[&str] = &["show"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "recover"];
 const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 const DISCOVER_SUBCOMMANDS: &[&str] = &["source", "resource"];
@@ -61,7 +59,6 @@ pub enum Command {
     Preview(ScanArgs),
     Sql(SqlArgs),
     Inspect(InspectArgs),
-    DiffSchema,
     Schema(SchemaCommand),
     Contract(ContractCommand),
     State(StateCommand),
@@ -191,7 +188,6 @@ pub enum InspectNoun {
     Project,
     Resources,
     Resource(String),
-    Lock,
     Destinations,
     Package(PathBuf),
     Run(String),
@@ -218,9 +214,7 @@ pub struct SchemaResourceArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractCommand {
-    Freeze { contract: Option<String> },
     Show { trust: Option<String> },
-    Test { contract: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -494,7 +488,6 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         }
         Some(("sql", subcommand)) => parse_sql(subcommand).map(Command::Sql),
         Some(("inspect", subcommand)) => parse_inspect(subcommand).map(Command::Inspect),
-        Some(("diff", subcommand)) => parse_diff(subcommand),
         Some(("schema", subcommand)) => parse_schema(subcommand).map(Command::Schema),
         Some(("contract", subcommand)) => parse_contract(subcommand).map(Command::Contract),
         Some(("state", subcommand)) => parse_state(subcommand).map(Command::State),
@@ -825,10 +818,6 @@ fn parse_inspect(matches: &ArgMatches) -> Result<InspectArgs, CliError> {
             no_extra_values("inspect resource", &values[1..])?;
             InspectNoun::Resource(id)
         }
-        "lock" => {
-            no_extra_values("inspect lock", &values)?;
-            InspectNoun::Lock
-        }
         "destinations" => {
             no_extra_values("inspect destinations", &values)?;
             InspectNoun::Destinations
@@ -854,22 +843,6 @@ fn parse_inspect(matches: &ArgMatches) -> Result<InspectArgs, CliError> {
         }
     };
     Ok(InspectArgs { noun })
-}
-
-fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
-    match matches.subcommand() {
-        Some(("schema", subcommand)) => {
-            no_extra_values("diff schema", &values(subcommand, "extra"))?;
-            Ok(Command::DiffSchema)
-        }
-        Some((other, _)) => Err(unknown_subcommand_error(
-            &["diff"],
-            other,
-            DIFF_SUBCOMMANDS,
-            "unknown diff subcommand",
-        )),
-        None => Err(CliError::usage("diff requires subcommand `schema`")),
-    }
 }
 
 fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
@@ -910,19 +883,11 @@ fn parse_schema_resource(command: &str, matches: &ArgMatches) -> Result<String, 
 
 fn parse_contract(matches: &ArgMatches) -> Result<ContractCommand, CliError> {
     let Some((subcommand, matches)) = matches.subcommand() else {
-        return Err(CliError::usage(
-            "contract requires one of freeze, show, or test",
-        ));
+        return Err(CliError::usage("contract requires subcommand `show`"));
     };
     match subcommand {
-        "freeze" => Ok(ContractCommand::Freeze {
-            contract: optional_single_value("contract freeze", &values(matches, "value"))?,
-        }),
         "show" => Ok(ContractCommand::Show {
             trust: optional_single_value("contract show", &values(matches, "value"))?,
-        }),
-        "test" => Ok(ContractCommand::Test {
-            contract: optional_single_value("contract test", &values(matches, "value"))?,
         }),
         other => Err(unknown_subcommand_error(
             &["contract"],
@@ -1150,7 +1115,6 @@ pub fn cli_command() -> ClapCommand {
             ),
         )
         .subcommand(inspect_command())
-        .subcommand(cmd("diff").subcommand(cmd("schema").arg(values_arg("extra").hide(true))))
         .subcommand(schema_command())
         .subcommand(contract_command())
         .subcommand(state_command())
@@ -1282,7 +1246,6 @@ fn inspect_command() -> ClapCommand {
         .subcommand(cmd("project").arg(values_arg("values").hide(true)))
         .subcommand(cmd("resources").arg(values_arg("values").hide(true)))
         .subcommand(cmd("resource").arg(values_arg("values").value_name("ID")))
-        .subcommand(cmd("lock").arg(values_arg("values").hide(true)))
         .subcommand(cmd("destinations").arg(values_arg("values").hide(true)))
         .subcommand(
             cmd("package")
@@ -1297,10 +1260,7 @@ fn inspect_command() -> ClapCommand {
 }
 
 fn contract_command() -> ClapCommand {
-    cmd("contract")
-        .subcommand(cmd("freeze").arg(values_arg("value").value_name("CONTRACT")))
-        .subcommand(cmd("show").arg(values_arg("value").value_name("TRUST")))
-        .subcommand(cmd("test").arg(values_arg("value").value_name("CONTRACT")))
+    cmd("contract").subcommand(cmd("show").arg(values_arg("value").value_name("TRUST")))
 }
 
 fn state_command() -> ClapCommand {
@@ -1392,7 +1352,7 @@ fn cmd(name: &'static str) -> ClapCommand {
         "inspect" => "Inspect durable project and run evidence",
         "diff" => "Compare durable schemas",
         "schema" => "Inspect, compare, and promote schemas",
-        "contract" => "Freeze, show, and test contracts",
+        "contract" => "Show compiled contract policy",
         "state" => "Inspect and recover checkpoint state",
         "backfill" => "Plan or execute a bounded cursor backfill",
         "package" => "List, verify, archive, and collect packages",
@@ -1400,8 +1360,6 @@ fn cmd(name: &'static str) -> ClapCommand {
         "status" => "Summarize project freshness and run state",
         "show" => "Show the selected durable record",
         "promote" => "Plan or execute residual schema promotion",
-        "freeze" => "Freeze a contract snapshot",
-        "test" => "Test data against a contract",
         "history" => "Show checkpoint history",
         "rewind" => "Create a marker that rewinds checkpoint state",
         "recover" => "Recover state from a committed package receipt",
@@ -1412,7 +1370,6 @@ fn cmd(name: &'static str) -> ClapCommand {
         "project" => "Show resolved project information",
         "resources" => "List project resources",
         "resource" => "Show one resolved resource",
-        "lock" => "Show the project lock",
         "destinations" => "List resolved destinations",
         _ => "Operate on cdf project evidence",
     };
@@ -1684,7 +1641,6 @@ fn command_suggestions(args: &[String]) -> Vec<String> {
     }
     match first.as_str() {
         "inspect" => command_path_suggestions(&["inspect"], second, INSPECT_NOUNS),
-        "diff" => command_path_suggestions(&["diff"], second, DIFF_SUBCOMMANDS),
         "contract" => command_path_suggestions(&["contract"], second, CONTRACT_SUBCOMMANDS),
         "state" => command_path_suggestions(&["state"], second, STATE_SUBCOMMANDS),
         "package" => command_path_suggestions(&["package"], second, PACKAGE_SUBCOMMANDS),

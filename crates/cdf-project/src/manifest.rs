@@ -3,7 +3,10 @@ use std::{
     path::{Component, Path},
 };
 
-use cdf_contract::RelationalExpressionPlan;
+use cdf_contract::{
+    ContractPolicy, ObservedSchema, RelationalExpressionPlan,
+    compile_resource_validation_program_with_semantic_catalog,
+};
 use cdf_kernel::{
     CanonicalArrowField, CanonicalArrowSchema, CdfError, DestinationSheetArtifact, ExecutionExtent,
     ResourceCapabilities, ResourceDescriptor, Result, SchemaHash, SemanticParameterValue,
@@ -14,10 +17,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AuthoredResourceForm, CdfLock, CompiledProjectResource, ContractSnapshot, DependencyTuple,
-    EffectiveEnvironment, EffectiveResourceEnvelope, LockedDestination, ProjectConfig,
-    ProjectConfiguredSourceIdentity, parse_lock,
-    semantic_uses::{compiled_fields, semantic_pins_for_resources},
+    AuthoredResourceForm, CompiledProjectResource, EffectiveEnvironment, EffectiveResourceEnvelope,
+    ProjectConfig, ProjectConfiguredSourceIdentity, internal::schema_hash_from_source,
+    semantic_uses::compiled_fields,
 };
 
 pub const PROJECT_MANIFEST_VERSION: u16 = 1;
@@ -77,9 +79,7 @@ macro_rules! manifest_hash_type {
 manifest_hash_type!(ProjectManifestHash);
 manifest_hash_type!(ManifestInputContentHash);
 manifest_hash_type!(AuthoredInputSetHash);
-manifest_hash_type!(ProjectLockContentHash);
-manifest_hash_type!(ProjectLockSemanticHash);
-manifest_hash_type!(ProjectLockBindingHash);
+manifest_hash_type!(ProjectCompilationBindingHash);
 manifest_hash_type!(EnvironmentBindingHash);
 manifest_hash_type!(DependencyTupleHash);
 manifest_hash_type!(ResourceCompilationHash);
@@ -95,6 +95,26 @@ pub enum ProjectCompilationMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DependencyTuple {
+    pub cdf: String,
+    pub arrow_rs: String,
+    pub datafusion: Option<String>,
+    pub object_store: Option<String>,
+    pub duckdb_rs: Option<String>,
+    pub rust: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractSnapshot {
+    pub contract_ref: Option<String>,
+    pub schema_hash: Option<String>,
+    pub policy_hash: Option<String>,
+    pub validation_program_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectManifestHeader {
     pub project_name: String,
     pub environment: String,
@@ -103,8 +123,6 @@ pub struct ProjectManifestHeader {
     pub dependency_tuple: DependencyTuple,
     pub dependency_tuple_hash: DependencyTupleHash,
     pub normalizer: String,
-    pub lock_content_hash: ProjectLockContentHash,
-    pub lock_semantic_hash: ProjectLockSemanticHash,
     pub compilation_mode: ProjectCompilationMode,
     pub compiler_policies: BTreeMap<String, String>,
     pub features: BTreeSet<String>,
@@ -114,7 +132,7 @@ pub struct ProjectManifestHeader {
 #[serde(deny_unknown_fields)]
 pub struct ProjectManifestHashes {
     pub authored_inputs: AuthoredInputSetHash,
-    pub lock_binding: ProjectLockBindingHash,
+    pub compilation_binding: ProjectCompilationBindingHash,
     pub semantics: SemanticSnapshotHash,
     pub lineage: LineageHash,
 }
@@ -351,13 +369,11 @@ pub struct ProjectManifest {
 pub struct ProjectManifestCompileRequest<'a> {
     pub config: &'a ProjectConfig,
     pub environment: &'a EffectiveEnvironment,
-    pub lock: &'a CdfLock,
-    pub lock_bytes: &'a [u8],
     pub resources: &'a [CompiledProjectResource],
     pub authored_inputs: Vec<CompiledArtifactInput>,
     pub semantic_catalog: &'a SemanticCatalog,
     pub semantic_sources: BTreeMap<String, ManifestSemanticSource>,
-    pub selected_destination_id: &'a str,
+    pub destination: &'a DestinationSheetArtifact,
     pub compilation_mode: ProjectCompilationMode,
     pub generated_at_unix_ms: Option<i64>,
     pub diagnostics: Vec<ManifestDiagnostic>,
@@ -422,13 +438,6 @@ pub fn compile_project_manifest(
 
     let mut resources = Vec::with_capacity(request.resources.len());
     for entry in request.resources {
-        let resource_id = entry.resource.descriptor().resource_id.as_str();
-        let selected_destination = selected_destination(
-            request.environment,
-            request.lock,
-            resource_id,
-            request.selected_destination_id,
-        )?;
         let resource_fields = fields
             .iter()
             .filter(|field| field.resource_id == entry.resource.descriptor().resource_id.as_str())
@@ -450,8 +459,8 @@ pub fn compile_project_manifest(
             entry,
             resource_fields,
             &inputs,
-            selected_destination,
-            request.lock,
+            request.destination,
+            request.semantic_catalog,
         )?);
     }
     resources.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
@@ -459,11 +468,8 @@ pub fn compile_project_manifest(
     let mut diagnostics = request.diagnostics;
     sort_diagnostics(&mut diagnostics);
 
-    let compiler = common_locked_compiler(request.lock)?;
-    let dependency_tuple_hash =
-        DependencyTupleHash::new(canonical_hash(&compiler.dependency_tuple)?)?;
-    let lock_content_hash = ProjectLockContentHash::new(bytes_hash(request.lock_bytes))?;
-    let lock_semantic_hash = ProjectLockSemanticHash::new(canonical_hash(request.lock)?)?;
+    let dependency_tuple = current_dependency_tuple();
+    let dependency_tuple_hash = DependencyTupleHash::new(canonical_hash(&dependency_tuple)?)?;
     let environment_binding_hash =
         EnvironmentBindingHash::new(canonical_hash(request.environment)?)?;
     let header = ProjectManifestHeader {
@@ -471,11 +477,9 @@ pub fn compile_project_manifest(
         environment: request.environment.name.clone(),
         environment_binding_hash,
         compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
-        dependency_tuple: compiler.dependency_tuple.clone(),
+        dependency_tuple,
         dependency_tuple_hash,
         normalizer: request.config.project.normalizer.clone(),
-        lock_content_hash,
-        lock_semantic_hash,
         compilation_mode: request.compilation_mode,
         compiler_policies: BTreeMap::from([
             (
@@ -491,12 +495,10 @@ pub fn compile_project_manifest(
     };
     let hashes = ProjectManifestHashes {
         authored_inputs: AuthoredInputSetHash::new(canonical_hash(&inputs)?)?,
-        lock_binding: ProjectLockBindingHash::new(canonical_hash(&(
+        compilation_binding: ProjectCompilationBindingHash::new(canonical_hash(&(
             &header.environment,
             &header.environment_binding_hash,
             &header.dependency_tuple_hash,
-            &header.lock_content_hash,
-            &header.lock_semantic_hash,
             &header.normalizer,
         ))?)?,
         semantics: SemanticSnapshotHash::new(canonical_hash(&semantics)?)?,
@@ -606,12 +608,10 @@ impl ProjectManifest {
         validate_security(self, authority)?;
         let expected_hashes = ProjectManifestHashes {
             authored_inputs: AuthoredInputSetHash::new(canonical_hash(&self.inputs)?)?,
-            lock_binding: ProjectLockBindingHash::new(canonical_hash(&(
+            compilation_binding: ProjectCompilationBindingHash::new(canonical_hash(&(
                 &self.header.environment,
                 &self.header.environment_binding_hash,
                 &self.header.dependency_tuple_hash,
-                &self.header.lock_content_hash,
-                &self.header.lock_semantic_hash,
                 &self.header.normalizer,
             ))?)?,
             semantics: SemanticSnapshotHash::new(canonical_hash(&self.semantics)?)?,
@@ -642,18 +642,6 @@ impl ProjectManifest {
 }
 
 fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Result<()> {
-    if request.config.project.name != request.lock.project.name
-        || request.config.project.default_environment != request.lock.project.default_environment
-        || request
-            .lock
-            .resources
-            .values()
-            .any(|resource| resource.compiler.normalizer != request.config.project.normalizer)
-    {
-        return Err(CdfError::contract(
-            "cdf.lock project authority is stale for the project configuration",
-        ));
-    }
     if request.environment
         != &request
             .config
@@ -663,124 +651,29 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
             "manifest compile environment is stale for the project configuration",
         ));
     }
-    let parsed_lock = std::str::from_utf8(request.lock_bytes)
-        .map_err(|error| CdfError::contract(format!("cdf.lock is not UTF-8: {error}")))
-        .and_then(parse_lock)?;
-    if &parsed_lock != request.lock {
-        return Err(CdfError::contract(
-            "manifest compile lock bytes do not encode the supplied typed cdf.lock",
-        ));
-    }
-    let bare_resources = request
-        .resources
-        .iter()
-        .map(|entry| entry.resource.clone())
-        .collect::<Vec<_>>();
-    let compiled_ids = bare_resources
-        .iter()
-        .map(|resource| resource.descriptor().resource_id.to_string())
-        .collect::<BTreeSet<_>>();
-    let locked_ids = request
-        .lock
-        .resources
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if compiled_ids != locked_ids {
-        return Err(CdfError::contract(
-            "cdf.lock resource set is stale for the compiled project",
-        ));
-    }
-    for resource in &bare_resources {
-        let resource_id = resource.descriptor().resource_id.as_str();
-        let locked = &request.lock.resources[resource_id];
-        let pins =
-            semantic_pins_for_resources(std::slice::from_ref(resource), request.semantic_catalog)?;
-        let stream = (!resource.execution_extent().is_bounded())
-            .then(|| {
-                cdf_runtime::CompiledStreamPolicy::compile(
-                    resource.execution_extent(),
-                    resource.source_plan(),
-                )
-            })
-            .transpose()?;
-        if locked.descriptor != *resource.descriptor()
-            || locked.capabilities != *resource.capabilities()
-            || locked.execution_extent != *resource.execution_extent()
-            || locked.compiled_stream_policy != stream
-            || locked.semantic_pins != pins
-        {
-            return Err(CdfError::contract(format!(
-                "cdf.lock resource `{resource_id}` is stale for the compiled plan"
-            )));
-        }
-    }
-    for resource in &bare_resources {
-        selected_destination(
-            request.environment,
-            request.lock,
-            resource.descriptor().resource_id.as_str(),
-            request.selected_destination_id,
-        )?;
-    }
+    DestinationSheetArtifact::new(
+        request.destination.sheet.clone(),
+        request.destination.protocol_capabilities.clone(),
+    )?;
     Ok(())
-}
-
-fn common_locked_compiler(lock: &CdfLock) -> Result<&crate::LockedResourceCompilerBinding> {
-    let mut resources = lock.resources.values();
-    let compiler = resources
-        .next()
-        .map(|resource| &resource.compiler)
-        .ok_or_else(|| CdfError::contract("compiled authority contains no resource bindings"))?;
-    if resources.any(|resource| {
-        resource.compiler.dependency_tuple != compiler.dependency_tuple
-            || resource.compiler.normalizer != compiler.normalizer
-    }) {
-        return Err(CdfError::contract(
-            "compiled resources do not share one compiler dependency authority",
-        ));
-    }
-    Ok(compiler)
-}
-
-fn selected_destination<'a>(
-    environment: &EffectiveEnvironment,
-    lock: &'a CdfLock,
-    resource_id: &str,
-    destination_id: &str,
-) -> Result<(&'a str, &'a LockedDestination)> {
-    lock.resources
-        .get(resource_id)
-        .and_then(|resource| resource.destinations.get_key_value(destination_id))
-        .filter(|(id, destination)| destination.sheet.destination.as_str() == id.as_str())
-        .map(|(id, destination)| (id.as_str(), destination))
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-                "cdf.lock has no canonical destination sheet `{destination_id}` for selected URI `{}`",
-                environment.destination
-            ))
-        })
 }
 
 fn compile_manifest_resource(
     entry: &CompiledProjectResource,
     fields: Vec<ManifestField>,
     inputs: &[CompiledArtifactInput],
-    selected_destination: (&str, &LockedDestination),
-    lock: &CdfLock,
+    destination_artifact: &DestinationSheetArtifact,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<ManifestResource> {
     let resource = &entry.resource;
     let resource_id = resource.descriptor().resource_id.to_string();
-    let locked = lock.resources.get(&resource_id).ok_or_else(|| {
-        CdfError::contract(format!("cdf.lock is missing resource `{resource_id}`"))
-    })?;
     let source_binding = CompiledSourceCompilerBinding::compile(resource.source_plan())?;
     let output_schema = CanonicalArrowSchema::from_arrow(resource.schema().as_ref())?;
     let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
     let destination = ManifestDestinationBinding {
-        destination_id: selected_destination.0.to_owned(),
-        sheet_hash: selected_destination.1.sheet_hash.clone(),
-        sheet: selected_destination.1.sheet_artifact()?,
+        destination_id: destination_artifact.sheet.destination.to_string(),
+        sheet_hash: canonical_hash(destination_artifact)?,
+        sheet: destination_artifact.clone(),
         target: Some(entry.query.effective.target.value.to_string()),
         compiled_plan_hash: None,
     };
@@ -820,12 +713,44 @@ fn compile_manifest_resource(
         source_binding,
         output_schema,
         output_schema_hash,
-        contract: locked.contract.clone(),
+        contract: Some(contract_snapshot_for_resource(resource, semantic_catalog)?),
         destination,
         fields,
     };
     manifest.compilation_hash = ResourceCompilationHash::new(resource_hash(&manifest)?)?;
     Ok(manifest)
+}
+
+pub fn current_dependency_tuple() -> DependencyTuple {
+    DependencyTuple {
+        cdf: env!("CARGO_PKG_VERSION").to_owned(),
+        arrow_rs: "58.3.0".to_owned(),
+        datafusion: Some("54.0.0".to_owned()),
+        object_store: None,
+        duckdb_rs: None,
+        rust: None,
+    }
+}
+
+fn contract_snapshot_for_resource(
+    resource: &cdf_declarative::CompiledResource,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<ContractSnapshot> {
+    let descriptor = resource.descriptor();
+    let policy = ContractPolicy::for_trust(descriptor.trust_level.clone());
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_resource_validation_program_with_semantic_catalog(
+        &policy,
+        &observed_schema,
+        descriptor,
+        semantic_catalog,
+    )?;
+    Ok(ContractSnapshot {
+        contract_ref: descriptor.contract.as_ref().map(ToString::to_string),
+        schema_hash: schema_hash_from_source(&descriptor.schema_source),
+        policy_hash: Some(canonical_hash(&policy)?),
+        validation_program_hash: Some(canonical_hash(&validation_program)?),
+    })
 }
 
 fn compile_origin(

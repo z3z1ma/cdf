@@ -129,55 +129,6 @@ pub(super) fn validate_document(
     document
 }
 
-pub(super) fn diff_schema_document(report: &DiffSchemaCliReport) -> RenderDocument {
-    let table = report.diffs.iter().fold(
-        Table::new(["kind", "path", "before", "after"]),
-        |table, diff| {
-            table.row([
-                format!("{:?}", diff.kind).to_lowercase(),
-                diff.path.clone(),
-                diff.before.clone().unwrap_or_else(|| "none".to_owned()),
-                diff.after.clone().unwrap_or_else(|| "none".to_owned()),
-            ])
-        },
-    );
-
-    let mut document = RenderDocument::new()
-        .push(StatusLine::new(
-            if report.diffs.is_empty() {
-                StatusKind::Success
-            } else {
-                StatusKind::Warning
-            },
-            format!("{} lock diff(s)", report.diffs.len()),
-        ))
-        .blank_line()
-        .push(
-            KeyValuePanel::new("Schema diff")
-                .row("diffs", report.diffs.len().to_string())
-                .row(
-                    "status",
-                    if report.diffs.is_empty() {
-                        "lockfile matches project"
-                    } else {
-                        "lockfile drift detected"
-                    },
-                ),
-        );
-
-    if !report.diffs.is_empty() {
-        document = document.blank_line().push(table);
-    }
-
-    document
-        .blank_line()
-        .push(NextCommand::new(if report.diffs.is_empty() {
-            "cdf validate"
-        } else {
-            "cdf contract freeze"
-        }))
-}
-
 fn path_list(paths: &[String]) -> String {
     if paths.is_empty() {
         "none".to_owned()

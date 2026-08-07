@@ -33,15 +33,15 @@ FROM upstream(source => 'warehouse', collection => 'events');
 ```
 
 Compilation and portable-plan validation do not contact MongoDB. Schema discovery samples at most
-1,000 documents and 16 MiB by default, records those limits, and pins the resulting physical
+1,000 documents and 16 MiB by default, records those limits, and caches the resulting physical
 observation. A sample is evidence about the sampled documents, not a claim that an unvalidated
-schemaless collection is globally uniform. Execution applies the pinned schema and drift policy to
-every later document.
+schemaless collection is globally uniform. Execution applies the active state-backed schema and
+compiled drift policy to every later document.
 
 ## Cursor reads
 
-Finite numeric, UTC DateTime, and schema-pinned date cursors are supported. The collection must
-include a non-null `_id` field in the pinned schema; CDF uses it as the stable tie-breaker and sorts
+Finite numeric, UTC DateTime, and schema-established date cursors are supported. The collection must
+include a non-null `_id` field in the active schema; CDF uses it as the stable tie-breaker and sorts
 every cursor query by `cursor ASC, _id ASC`:
 
 ```sql

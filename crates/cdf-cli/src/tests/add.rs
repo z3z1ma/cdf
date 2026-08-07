@@ -30,7 +30,6 @@ fn add_local_parquet_writes_query_resource_and_shared_source_configuration() {
     assert_eq!(report["policy"], "project defaults");
     assert_eq!(report["writes"]["resource_sql"], true);
     assert_eq!(report["writes"]["configured_source"], true);
-    assert_eq!(report["writes"]["lockfile"], false);
     assert_eq!(report["next_command"], "cdf plan tlc.yellow");
 
     let sql = fs::read_to_string(project.root.join("cdf/tlc/yellow.cdf.sql")).unwrap();
@@ -44,7 +43,6 @@ fn add_local_parquet_writes_query_resource_and_shared_source_configuration() {
     assert!(project_toml.contains("[sources.tlc]"));
     assert!(project_toml.contains("type = \"files\""));
     assert!(project_toml.contains("root = \"data\""));
-    assert!(!project.root.join("cdf.lock").exists());
 
     let compile = run([
         "cdf",
@@ -172,7 +170,6 @@ fn add_local_parquet_dry_run_writes_nothing() {
     assert_eq!(report["result"]["writes"]["resource_sql"], false);
     assert_eq!(report["result"]["writes"]["configured_source"], false);
     assert_eq!(report["result"]["writes"]["private_source_state"], false);
-    assert_eq!(report["result"]["writes"]["lockfile"], false);
     assert!(!project.root.join("cdf/tlc/yellow.cdf.sql").exists());
     assert_project_tree_unchanged(&project.root, &before);
 }

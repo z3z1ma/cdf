@@ -9,8 +9,11 @@ use crate::{
 
 pub(super) fn schema_show_document(report: &SchemaShowReport) -> RenderDocument {
     schema_snapshot_document(
-        "pinned",
-        &format!("showing pinned schema for {}", report.snapshot.resource_id),
+        "active",
+        &format!(
+            "showing active schema authority for {}",
+            report.snapshot.resource_id
+        ),
         SnapshotDocumentData {
             base: &report.snapshot,
             writes: &report.writes,
@@ -45,24 +48,11 @@ fn schema_snapshot_document(
                 .row("environment", data.base.environment.clone())
                 .row("resource", data.base.resource_id.clone())
                 .row("state", label.to_owned())
+                .row("authority domain", data.base.authority_domain.clone())
+                .row("generation", data.base.generation.to_string())
                 .row("hash", data.base.schema_hash.clone())
-                .row("path", data.base.schema_snapshot_path.clone())
-                .row(
-                    "probe",
-                    data.base
-                        .snapshot_metadata
-                        .get("probe")
-                        .cloned()
-                        .unwrap_or_else(|| "unknown".to_owned()),
-                )
-                .row(
-                    "normalizer",
-                    data.base
-                        .snapshot_metadata
-                        .get("cdf:normalizer")
-                        .cloned()
-                        .unwrap_or_else(|| "unknown".to_owned()),
-                ),
+                .row("provenance", data.base.provenance.clone())
+                .row("created at ms", data.base.created_at_ms.to_string()),
         )
         .blank_line()
         .push(field_table(&data.base.fields));
@@ -83,7 +73,7 @@ fn schema_snapshot_document(
             data.unsupported
                 .iter()
                 .fold(KeyValuePanel::new("Unsupported"), |panel, reason| {
-                    panel.row("lockfile reference", reason.clone())
+                    panel.row("reason", reason.clone())
                 }),
         );
     }
@@ -116,13 +106,13 @@ pub(super) fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument 
                 .row("project", report.project.clone())
                 .row("environment", report.environment.clone())
                 .row("resource", report.resource_id.clone())
-                .row("pinned hash", report.pinned_schema_hash.clone())
-                .row("fresh hash", report.fresh_schema_hash.clone())
-                .row("pinned path", report.pinned_schema_snapshot_path.clone())
+                .row("authority domain", report.authority_domain.clone())
                 .row(
-                    "fresh candidate path",
-                    report.fresh_schema_snapshot_path.clone(),
-                ),
+                    "authority generation",
+                    report.authority_generation.to_string(),
+                )
+                .row("active hash", report.active_schema_hash.clone())
+                .row("fresh hash", report.fresh_schema_hash.clone()),
         )
         .blank_line()
         .push(
@@ -140,10 +130,6 @@ pub(super) fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument 
                 .row(
                     "metadata changes",
                     report.summary.metadata_changed_fields.to_string(),
-                )
-                .row(
-                    "snapshot metadata changes",
-                    report.summary.snapshot_metadata_changed.to_string(),
                 ),
         )
         .blank_line()
@@ -476,7 +462,6 @@ pub(super) fn schema_promote_document(
     document = document.blank_line().push(
         KeyValuePanel::effects()
             .row("snapshot", yes_no(report.writes.schema_snapshot))
-            .row("lockfile", yes_no(report.writes.lockfile))
             .row("package", yes_no(report.writes.package))
             .row("destination", yes_no(report.writes.destination))
             .row("checkpoint", yes_no(report.writes.checkpoint))
@@ -619,14 +604,6 @@ fn diff_table(report: &SchemaDiffReport) -> Table {
             metadata_keys(&change.after),
         ]);
     }
-    for change in &report.snapshot_metadata_changed {
-        table = table.row([
-            "snapshot metadata".to_owned(),
-            change.key.clone(),
-            change.before.clone().unwrap_or_default(),
-            change.after.clone().unwrap_or_default(),
-        ]);
-    }
     table
 }
 
@@ -658,7 +635,6 @@ fn key_value_table(title: &str, values: &BTreeMap<String, String>) -> KeyValuePa
 fn writes_panel(writes: &SchemaWrites) -> KeyValuePanel {
     KeyValuePanel::effects()
         .row("schema snapshot", yes_no(writes.schema_snapshot))
-        .row("lockfile", yes_no(writes.lockfile))
         .row("package", yes_no(writes.package))
         .row("destination", yes_no(writes.destination))
         .row("checkpoint", yes_no(writes.checkpoint))

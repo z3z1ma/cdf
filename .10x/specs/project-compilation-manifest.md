@@ -6,9 +6,9 @@ Updated: 2026-08-04
 
 ## Status and purpose
 
-This specification defines the canonical output of compiling a CDF project. It is the prerequisite for a
-SQL authoring front-end and plan-declared hooks. It complements `cdf.lock`; it does not replace or
-silently broaden lockfile semantics.
+This specification defines the canonical derived output of compiling a CDF project. It is the
+prerequisite for a SQL authoring front-end and plan-declared hooks. It binds exact state-backed
+schema authority and compiler inputs without replacing either authority.
 
 The core rule is:
 
@@ -21,7 +21,8 @@ Current compilation facts are distributed across:
 
 - `cdf.toml`, path-derived SQL resources with explicit configured-source bindings, and project
   semantic definitions;
-- `cdf.lock` dependency/resource/schema/contract/destination pins;
+- active per-resource schema generations from environment state plus compiler/driver capability
+  facts;
 - in-memory `CompiledSourcePlan` and compiler bindings;
 - compiled operator/contract/destination plans;
 - package plan evidence produced only at run time;
@@ -38,21 +39,12 @@ No single artifact answers, without recompiling or contacting sources:
 
 That omission is tolerable for the current declarative spike but not for a SQL project compiler.
 
-## Lockfile versus manifest
+## Authority boundaries
 
-### `cdf.lock`
-
-The lockfile remains committed expectation/pin authority:
-
-- CDF and dependency tuple;
-- expected resource/capability/schema/contract facts;
-- execution extent/stream policy;
-- destination sheet/protocol capability pins;
-- future semantic definition pins.
-
-It changes when a user intentionally accepts dependency or semantic drift.
-
-### Compilation manifest
+The state backend owns immutable active logical schema versions and promotion history. Authored
+project files own intent. Driver catalogs own current declared capability sheets. The compilation
+manifest is derived evidence binding the exact relevant state head, authored bytes, dependency
+tuple, semantic definitions, source plan, contract program, and destination sheet.
 
 The manifest is generated compiler output:
 
@@ -62,14 +54,14 @@ The manifest is generated compiler output:
 - deterministic diagnostics and exclusions;
 - one top-level content hash.
 
-It may change whenever authored project semantics change even when dependency pins remain constant.
-The compiler validates it against `cdf.lock`; it does not mutate lock expectations implicitly.
+It may change whenever authored project semantics, active schema authority, dependencies, or driver
+facts change. It never advances an established schema head.
 
 ## Artifact requirements
 
 The manifest MUST be:
 
-- versioned independently from `cdf.lock`, authored resource grammar, source plans, and packages;
+- versioned independently from state schema records, authored resource grammar, source plans, and packages;
 - canonically serialized with deterministic map/list ordering;
 - content-hashed over semantic content, excluding its own hash field and non-semantic timestamps;
 - secret-redacted using source/destination option-schema authority;
@@ -80,27 +72,26 @@ The manifest MUST be:
 - stable enough for diffing and tooling, while version changes explicitly mark schema evolution.
 
 The artifact path is `.cdf/manifest.json`. It is generated local state and MUST NOT be committed by
-the standard scaffold; the scaffold MUST ignore `.cdf/` while retaining committed `cdf.lock`.
+the standard scaffold; the scaffold MUST ignore `.cdf/`.
 
 ## Compilation modes
 
 Compilation must distinguish external observation from pure lowering.
 
-### Locked/offline compile
+### Ordinary compile
 
-`cdf compile` is the default locked/offline command:
+`cdf compile [selectors...]` prepares selected resources independently:
 
-- read project files, `cdf.lock`, built-in driver/semantic catalogs, and referenced local artifacts;
-- perform no external network I/O and no destination mutation;
-- lower only when all required source schema/capability/semantic authority is already locked;
-- fail with exact missing/stale authority and a separately explicit refresh command when not.
+- read project files, active state authority, built-in driver/semantic catalogs, and referenced
+  local artifacts;
+- perform bounded source schema discovery only when selected first-use authority is absent;
+- establish that exact missing baseline in state and publish derived artifacts;
+- perform no destination, package, receipt, checkpoint, or run-ledger mutation.
 
-### Refresh compile
+### Authority-required compile
 
-`cdf compile --refresh` is the only initial refresh form. It MAY run source discovery/health to
-refresh schema/catalog observations. It is read-only with respect to external sources and
-destinations but may publish updated project/lock/manifest files only under the existing atomic
-project publication contract. Refresh is never an implicit side effect of ordinary compile.
+`cdf compile --locked` requires an existing unchanged state-backed schema head for every selected
+resource. It performs no source schema discovery and cannot establish or advance authority.
 
 ## Manifest sections
 
@@ -111,7 +102,7 @@ project publication contract. Refresh is never an implicit side effect of ordina
 - project id/name and environment;
 - compiler/CDF version and dependency tuple hash;
 - normalizer and compiler policy versions;
-- `cdf.lock` content/semantic hash;
+- exact per-resource state authority key, domain, generation, and schema hash;
 - compilation mode and deterministic feature/capability set;
 - optional generated-at timestamp excluded from semantic identity.
 
@@ -248,15 +239,14 @@ Publication MUST reuse `.10x/knowledge/project-file-publication-recovery.md` exa
   in-memory rollback is forbidden.
 - Every public target is accepted only at its journaled prior or new hash. A third value is
   unrelated authority: preserve it and fail `Contract`.
-- When one command changes both a generated manifest and `cdf.lock`, install and sync the manifest
-  target first and install **`cdf.lock` last as the public commit point**, then mark the same
-  generation committed. The manifest cannot authorize execution until stable project load observes
-  the matching committed generation and lock binding.
+- When one command publishes multiple generated files, install immutable children first and the
+  declared index/manifest commit target last, then mark the same generation committed. Stable load
+  must observe one committed generation before using the index.
 - Read-only/offline compile, plan, preview, inspect, and `cdf sql` MUST NOT recover a pending
   publication. They fail closed without mutation. Only an explicit mutating retry/refresh path may
   recover under the same project mutation guard.
 - Project load samples the committed generation before and after parsing/compilation and retries on
-  change so no caller receives a mixed lock/manifest view.
+  change so no caller receives a mixed project/manifest view.
 - A failed compile before `pending` leaves the last valid manifest intact and removes only its own
   managed temporary. After `pending`, explicit recovery converges idempotently.
 
@@ -368,10 +358,10 @@ compiler or reinterpret identity.
 - The first artifact is one canonical bounded JSON document. Content-addressed children are added
   only after a measured project exceeds the declared manifest bound or another feature requires
   independently addressable payloads.
-- Offline manifest-only publication uses the manifest as the final transaction target. Refresh
-  publication installs the manifest before `cdf.lock`, which remains the final public commit point.
-- `CdfLock.semantics` pins reachable canonical reference → definition hash expectations. The
-  manifest carries full reachable definition and usage snapshots.
+- Manifest-only publication uses the manifest/index as the final transaction target. Compilation
+  installs immutable resource artifacts before that index.
+- The manifest carries full reachable semantic definitions, normalized parameters, and usage
+  snapshots; the compiled artifact hash binds those exact facts.
 - The seven tables above are the complete D1 SQLite surface.
 - The final Foundation D project compiler uses
   `.10x/specs/project-source-resource-layout.md`: the sole resource root is

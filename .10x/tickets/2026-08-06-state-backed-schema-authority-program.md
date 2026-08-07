@@ -33,7 +33,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
 5. **S5 — lockfile surface deletion.** Delete lock models/parsers/CAS/hydration, lock-bound contract
    and inspect commands, artifact/report/system-SQL fields, fixtures/docs/generated artifacts, and
    lock-only publication machinery. Owner:
-   `.10x/tickets/2026-08-06-s5-delete-lockfile-product-surface.md`.
+   `.10x/tickets/done/2026-08-06-s5-delete-lockfile-product-surface.md`.
 6. **S6 — integration and release certificate.** Run the one broad closure barrier, release-binary
    sandbox journeys, current-only sweep, and final review. Owner:
    `.10x/tickets/2026-08-06-s6-state-schema-integration-certificate.md`.
@@ -104,6 +104,10 @@ promotion, or schema export/import.
   resumable target correction, atomic head publication, and exact ordinary/package/recovery run
   settlement permits. S5 is dependency-unblocked; independent integrated review remains owned by
   S6 under the user's consolidated-review direction.
+- 2026-08-06: S5 closed with the lockfile product/code/artifact surface deleted, selected compile
+  aligned with active state authority, state-backed schema show/diff, neutral crash-safe project
+  publication retained, generated/public docs refreshed, and focused strict quality checks green.
+  S6 is now dependency-unblocked for the single broad certificate and independent review.
 
 ## Blockers
 

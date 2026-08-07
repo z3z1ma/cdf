@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH cdf-contract 1  "cdf-contract "
 .SH NAME
-cdf\-contract \- Freeze, show, and test contracts
+cdf\-contract \- Show compiled contract policy
 .SH SYNOPSIS
 \fBcdf contract\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Freeze, show, and test contracts
+Show compiled contract policy
 .SH OPTIONS
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
@@ -70,11 +70,5 @@ Spill/disk budget, e.g. 64GiB or 512MiB
 Print help
 .SH SUBCOMMANDS
 .TP
-cdf\-contract\-freeze(1)
-Freeze a contract snapshot
-.TP
 cdf\-contract\-show(1)
 Show the selected durable record
-.TP
-cdf\-contract\-test(1)
-Test data against a contract

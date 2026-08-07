@@ -1,26 +1,26 @@
 use super::{
     Arc, AtomicBool, BTreeMap, CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId,
     CheckpointStatus, CheckpointStore, CommitCounts, ContractPolicy, DESTINATION_COMMIT_PLAN_FILE,
-    DataType, DependencyTuple, DestinationCommitPlanPreimage, DestinationProtocol,
-    DuckDbDestination, EnginePlan, Field, FileManifest, FilePosition, IdempotencyToken,
-    IdentifierRules, InMemoryScopeLeaseStore, LineageInputObservation, LineageSummary,
-    MANIFEST_FILE, Mutex, Ordering, PROCESSED_OBSERVATIONS_FILE, PackageArtifactRecoveryRequest,
-    PackageArtifactReplayRequest, PackageBuilder, PackageManifest, PackageReader,
-    PackageReplayHooks, PackageReplayStage, PackageStatus, ParquetDestination, PartitionId, Path,
-    PipelineId, PostgresDestination, PostgresTarget, ProcessedObservationEvidenceArtifact,
-    ProcessedObservationOutcome, ProcessedObservationPosition, ProjectDestinationDescription,
-    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
-    ProjectReceiptSource, ProjectResolutionContext, ProjectRunRequest, ProjectRunSource,
-    QueryableResource, RECEIPTS_FILE, Receipt, ReceiptId, ResolvedProjectDestination, ResourceId,
-    ResourceStream, Result, RewindReport, RewindRequest, RunEventKind, RunEventValue, RunId,
-    RunPhase, RunPhaseStatus, RunTelemetryConfig, RuntimeStage, STATE_INPUT_CHECKPOINT_FILE,
-    STATE_PROPOSED_DELTA_FILE, Schema, SchemaHash, ScopeKey, SegmentAck, SemanticCatalog,
-    SourcePosition, SqliteCheckpointStore, SqliteRunLedger, StateDelta, StateDeltaPreimage,
-    TargetName, VerifyClause, WriteDisposition, canonical_json_bytes, fs,
-    generate_lockfile_with_destination_artifacts, identifier_policy_from_destination_rules,
-    parse_cdf_toml, record_package_receipt_once, recover_package_from_artifacts,
-    replay_package_from_artifacts, replay_package_from_artifacts_with_stage_hook,
-    replay_package_with_runtime, resolve_project_run_destination,
+    DataType, DestinationCommitPlanPreimage, DestinationProtocol, DuckDbDestination, EnginePlan,
+    Field, FileManifest, FilePosition, IdempotencyToken, IdentifierRules, InMemoryScopeLeaseStore,
+    LineageInputObservation, LineageSummary, MANIFEST_FILE, Mutex, Ordering,
+    PROCESSED_OBSERVATIONS_FILE, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageBuilder, PackageManifest, PackageReader, PackageReplayHooks, PackageReplayStage,
+    PackageStatus, ParquetDestination, PartitionId, Path, PipelineId, PostgresDestination,
+    PostgresTarget, ProcessedObservationEvidenceArtifact, ProcessedObservationOutcome,
+    ProcessedObservationPosition, ProjectDestinationDescription, ProjectDestinationDriver,
+    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
+    ProjectResolutionContext, ProjectRunRequest, ProjectRunSource, QueryableResource,
+    RECEIPTS_FILE, Receipt, ReceiptId, ResolvedProjectDestination, ResourceId, ResourceStream,
+    Result, RewindReport, RewindRequest, RunEventKind, RunEventValue, RunId, RunPhase,
+    RunPhaseStatus, RunTelemetryConfig, RuntimeStage, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, Schema, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
+    SqliteCheckpointStore, SqliteRunLedger, StateDelta, StateDeltaPreimage, TargetName,
+    VerifyClause, WriteDisposition, canonical_json_bytes, fs,
+    identifier_policy_from_destination_rules, record_package_receipt_once,
+    recover_package_from_artifacts, replay_package_from_artifacts,
+    replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
+    resolve_project_run_destination,
     support::{
         BoundTestResource, LivePostgres, MockDestination, MockDestinationCounters,
         MockProjectDestinationRuntime, SCHEMA_HASH, SIMPLE_FILE_RESOURCE_APPEND,
@@ -1557,7 +1557,7 @@ fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
 }
 
 #[test]
-fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_branch() {
+fn generic_plan_replay_and_recovery_drive_mock_runtime_without_destination_branch() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-generic-mock");
     build_package(&package_dir, "pkg-generic-mock", PackageStatus::Packaged);
@@ -1593,48 +1593,6 @@ fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_
             .all(|probe| !probe.mutates_destination)
     );
     assert_eq!(destination.write_count(), 0, "inspection must not mutate");
-    let lock_config = parse_cdf_toml(
-        r#"
-[project]
-id = "test-project"
-name = "quasar-driver-lock"
-default_environment = "dev"
-normalizer = "namecase-v1"
-
-[environments.dev]
-state = ".cdf/state.db"
-packages = ".cdf/packages"
-destination = "mock://user:quasar-secret@example.invalid/database"
-
-[sources.local]
-type = "files"
-root = "data"
-
-"#,
-    )
-    .unwrap();
-    let lock = generate_lockfile_with_destination_artifacts(
-        &lock_config,
-        &[],
-        DependencyTuple {
-            cdf: "test".to_owned(),
-            arrow_rs: "test".to_owned(),
-            datafusion: None,
-            object_store: None,
-            duckdb_rs: None,
-            rust: None,
-        },
-        std::slice::from_ref(&inspection.sheet_artifact),
-        BTreeMap::new(),
-        &SemanticCatalog::builtins().unwrap(),
-    )
-    .unwrap();
-    assert!(lock.destination_bindings().unwrap().is_empty());
-    assert_eq!(
-        destination.write_count(),
-        0,
-        "lock generation must not mutate"
-    );
     let health = registry
         .health(
             "mock://user:quasar-secret@example.invalid/database",

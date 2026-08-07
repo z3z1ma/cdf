@@ -144,7 +144,7 @@ impl ResolvedProjectDestination {
     }
 
     pub fn destination_sheet_artifact(&self) -> Result<cdf_kernel::DestinationSheetArtifact> {
-        self.runtime.protocol().sheet_artifact()
+        self.runtime.destination_sheet_artifact()
     }
 
     pub(super) fn commit_policy(

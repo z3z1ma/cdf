@@ -33,7 +33,7 @@ The quickstart MUST cover:
 - `cdf plan`;
 - `cdf run`;
 - `cdf sql`;
-- contract freeze and drift quarantine;
+- state-backed schema inspection and drift disposition;
 - crash/resume using the existing conformance-safe fixture path rather than depending on external network behavior;
 - package replay;
 - state or run inspection after replay.

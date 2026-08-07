@@ -327,37 +327,37 @@ pub fn discover_resource_schema_with_source_registry(
     discover_registered_resource_schema(resource, options, plan, session.as_ref(), candidates)
 }
 
-/// Hydrates and verifies the fixed schema artifacts for a pinned resource.
+/// Hydrates and verifies a cached discovery artifact for a resource.
 ///
-/// Physical source observations belong to the extraction stream. Pinned
-/// preparation therefore has no secret, transport, or format-runtime dependency.
-pub fn prepare_pinned_resource_schema(
+/// This is a derived-cache fast path and never establishes schema authority.
+/// It therefore has no secret, transport, or format-runtime dependency.
+pub fn prepare_cached_resource_schema(
     project_root: &Path,
     resource: &CompiledResource,
 ) -> Result<CompiledResource> {
     Ok(
-        prepare_pinned_resource_schema_artifacts(project_root, resource)?
+        prepare_cached_resource_schema_artifacts(project_root, resource)?
             .into_parts()
             .0,
     )
 }
 
-pub fn prepare_pinned_resource_schema_artifacts(
+pub fn prepare_cached_resource_schema_artifacts(
     project_root: &Path,
     resource: &CompiledResource,
 ) -> Result<PreparedSchemaResource> {
     let snapshot = resource
         .descriptor()
         .schema_source
-        .pinned_snapshot()
+        .cached_snapshot()
         .ok_or_else(|| {
-            CdfError::contract("pinned schema preparation requires a schema snapshot")
+            CdfError::contract("cached schema preparation requires a discovery snapshot")
         })?;
     let store = SchemaSnapshotStore::new(project_root);
     let (_, baseline) = store.read_with_verified_baseline(snapshot)?;
     if baseline.resource_id() != &resource.descriptor().resource_id {
         return Err(CdfError::data(format!(
-            "pinned schema snapshot belongs to resource `{}` but preparation requested `{}`",
+            "cached discovery snapshot belongs to resource `{}` but preparation requested `{}`",
             baseline.resource_id(),
             resource.descriptor().resource_id
         )));
@@ -1639,7 +1639,7 @@ fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {
         return Ok(());
     }
     Err(CdfError::contract(format!(
-        "schema observation requires discover mode; resource `{}` already has declared or locked schema authority",
+        "schema observation requires discover mode; resource `{}` already has established schema authority",
         resource.descriptor().resource_id
     )))
 }

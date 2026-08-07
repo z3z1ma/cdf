@@ -448,7 +448,6 @@ impl AddReport {
                 configured_source: !request.dry_run && proposal.writes_source_config,
                 private_source_state: !request.dry_run
                     && !request.plan.proposal.private_files.is_empty(),
-                lockfile: false,
             },
             next_command: format!("cdf plan {}", request.resource_id),
         }
@@ -460,7 +459,6 @@ struct AddWrites {
     resource_sql: bool,
     configured_source: bool,
     private_source_state: bool,
-    lockfile: bool,
 }
 
 fn add_target_exists(path: &std::path::Path) -> Result<bool, CliError> {
