@@ -2625,6 +2625,9 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
     );
     assert!(!reader.manifest().lifecycle.status.is_replayable());
     assert!(verify_package(temp.path()).is_err());
+    let repeated = tombstone_package(temp.path()).unwrap();
+    assert_eq!(repeated.package_hash, manifest.package_hash);
+    assert_eq!(repeated.removed_file_count, 0);
 }
 
 #[test]

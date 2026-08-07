@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::Path,
@@ -14,8 +15,9 @@ use cdf_kernel::{
     WriteDisposition,
 };
 use cdf_project::{
-    ProjectFileExpectation, ProjectFileWrite, ProjectRunOutcome, ProjectRunRequest,
-    RunTelemetryConfig, publish_project_files_transactionally,
+    PackageCollectionRequest, ProjectFileExpectation, ProjectFileWrite, ProjectRunOutcome,
+    ProjectRunRequest, RetentionRule, RunTelemetryConfig, execute_package_collection,
+    plan_package_collection, publish_project_files_transactionally, retention_rule_for_trust,
     run_project_with_scheduler_and_telemetry,
 };
 use serde::Serialize;
@@ -42,7 +44,7 @@ use crate::{
     },
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
-        RunSchemaAuthorityReport,
+        RunPackageCollectionReport, RunSchemaAuthorityReport,
     },
     scan_command::{build_engine_plan_for_resource, planning_frontier, planning_frontier_at},
 };
@@ -432,6 +434,10 @@ fn prepare_portable_resource(
     run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let destination_report =
         RunDestinationReport::from_project(&destination_description, resolved.destination.target());
+    let retention_rule = retention_rule_for_trust(
+        context.environment.retention.as_ref(),
+        &resource.as_queryable().descriptor().trust_level,
+    );
     let schema_snapshot = if planned.schema_authority.is_proposed_first_use() {
         planned.schema_authority.proposed_version().map(|version| {
             crate::reports::SchemaSnapshotActionReport {
@@ -484,6 +490,7 @@ fn prepare_portable_resource(
         destination_report,
         adhoc: None,
         explain_memory: args.explain_memory,
+        retention_rule,
         portable_artifact_root: Some(portable_artifact_root),
     })
 }
@@ -666,6 +673,7 @@ struct PreparedRun {
     destination_report: RunDestinationReport,
     adhoc: Option<AdhocRunReport>,
     explain_memory: bool,
+    retention_rule: Option<RetentionRule>,
     portable_artifact_root: Option<tempfile::TempDir>,
 }
 
@@ -784,6 +792,10 @@ fn prepare_single(
     run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
+    let retention_rule = retention_rule_for_trust(
+        context.environment.retention.as_ref(),
+        &prepared.resource.as_queryable().descriptor().trust_level,
+    );
     Ok(PreparedRun {
         package_root,
         explicit,
@@ -800,6 +812,7 @@ fn prepare_single(
         destination_report,
         adhoc,
         explain_memory,
+        retention_rule,
         portable_artifact_root: None,
     })
 }
@@ -826,6 +839,7 @@ fn execute_prepared(
         destination_report,
         adhoc,
         explain_memory,
+        retention_rule,
         portable_artifact_root: _portable_artifact_root,
     } = prepared_run;
     let run_services = match schema_authority.as_ref() {
@@ -839,6 +853,8 @@ fn execute_prepared(
     };
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
+    let collection_package_root = package_root.clone();
+    let collection_state_store_path = state_store_path.clone();
     let report = match host
         .block_on_root(run_project_with_scheduler_and_telemetry(
             ProjectRunRequest {
@@ -877,6 +893,25 @@ fn execute_prepared(
     );
     match report {
         ProjectRunOutcome::Committed(report) => {
+            let package_collection = retention_rule
+                .as_ref()
+                .map(|rule| {
+                    collect_settled_packages(
+                        &collection_package_root,
+                        &collection_state_store_path,
+                        state_store_path_ownership,
+                        &report.checkpoint.delta.resource_id,
+                        rule,
+                    )
+                    .map_err(|mut error| {
+                        error.message = format!(
+                            "checkpoint {} committed, but automatic package collection failed: {}; retry with `cdf package gc --execute`",
+                            report.checkpoint.delta.checkpoint_id, error.message
+                        );
+                        error
+                    })
+                })
+                .transpose()?;
             let mut cli_report = RunCliReport::from_report(
                 &report,
                 destination_report,
@@ -886,6 +921,9 @@ fn execute_prepared(
             );
             if let Some(adhoc) = adhoc {
                 cli_report = cli_report.with_adhoc(adhoc);
+            }
+            if let Some(package_collection) = package_collection {
+                cli_report = cli_report.with_package_collection(package_collection);
             }
             cli_report = cli_report.with_explain_memory(explain_memory);
             let document = cli_report.render_document();
@@ -925,6 +963,42 @@ fn execute_prepared(
             }
         }
     }
+}
+
+fn collect_settled_packages(
+    package_root: &Path,
+    state_store_path: &Path,
+    state_store_path_ownership: cdf_state_sqlite::StateStorePathOwnership,
+    resource_id: &ResourceId,
+    retention_rule: &RetentionRule,
+) -> cdf_kernel::Result<RunPackageCollectionReport> {
+    let checkpoints = cdf_state_sqlite::SqliteCheckpointStore::open_read_only_with_path_ownership(
+        state_store_path,
+        state_store_path_ownership,
+    )?
+    .committed_checkpoints()?;
+    let policies = BTreeMap::from([(resource_id.clone(), Some(retention_rule.clone()))]);
+    let evaluated_at_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "read the host clock for package collection: {error}; correct the system clock and retry"
+                ))
+            })?
+            .as_millis(),
+    )
+    .map_err(|_| CdfError::environment("package collection epoch milliseconds exceed i64"))?;
+    let request = PackageCollectionRequest {
+        package_root,
+        committed_checkpoints: &checkpoints,
+        retention_by_resource: &policies,
+        protected_resources: &BTreeSet::new(),
+        evaluated_at_ms,
+    };
+    let planned = plan_package_collection(&request)?;
+    let executed = execute_package_collection(&request, &planned)?;
+    Ok(RunPackageCollectionReport::from_plan(&executed))
 }
 
 fn run_destination_resolution_error(

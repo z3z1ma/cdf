@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-07
 Updated: 2026-08-07
 
@@ -101,12 +101,11 @@ the old and new route; CDF MUST NOT infer the old route from destination state.
 5. Null, sensitive, colliding, or over-ceiling route values fail closed.
 6. PostgreSQL and DuckDB commit all routed tables in one transaction and report per-target effects.
 
-## Open blockers
+## Ratification
 
-1. Ratify the exact `ROUTE BY <field> MAX TARGETS <n>` grammar and mandatory per-resource ceiling.
-2. Ratify `__` as the separator and the exact-token / slug-plus-hash fold above.
-3. Ratify that route keys are non-sensitive scalar control fields and may be omitted from physical
-   rows only after route resolution.
+The user ratified the `ROUTE BY <field> MAX TARGETS <n>` grammar, mandatory resource ceiling, `__`
+separator, exact-token/slug-plus-hash fold, null/sensitive-key rejection, and post-routing omission
+rule on 2026-08-07.
 
 ## References
 

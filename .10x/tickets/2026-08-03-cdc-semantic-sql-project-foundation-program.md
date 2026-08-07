@@ -148,7 +148,8 @@ Depends-On: at least one terminal CDC adapter proof. Governed by
 - preserve branch package byte identity and per-resource receipt/checkpoint authority;
 - gate shared source acknowledgement on settlement of every branch.
 
-Governing draft: `.10x/specs/shared-upstream-fanout-execution.md`.
+Governing authority: `.10x/specs/shared-upstream-fanout-execution.md`. Executable child:
+`.10x/tickets/2026-08-07-a6-1-shared-upstream-fanout.md`.
 
 **A6.2. Routed destination target families**
 
@@ -157,7 +158,8 @@ Governing draft: `.10x/specs/shared-upstream-fanout-execution.md`.
 - multi-target application and receipt are package-atomic;
 - PostgreSQL and DuckDB provide the first destination proof.
 
-Governing draft: `.10x/specs/routed-destination-target-families.md`.
+Governing authority: `.10x/specs/routed-destination-target-families.md`. Executable child:
+`.10x/tickets/2026-08-07-a6-2-routed-target-families.md`.
 
 Depends-On: A1.5 package-native effects for CDC deletes; ordinary row routing may stage its neutral
 identity/graph work independently after the focused syntax/naming checkpoint is ratified.
@@ -573,10 +575,6 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- exact routed-target SQL grammar, deterministic physical-name folding, sensitive-key prohibition,
-  and mandatory maximum target count in `.10x/specs/routed-destination-target-families.md`;
-- exact shared-upstream compatibility/settlement rules in
-  `.10x/specs/shared-upstream-fanout-execution.md`;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
@@ -707,9 +705,8 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
 
 The compiler/state lanes are closed. Package-native effects, retention collection, log runtime,
 finite MySQL, CDC adapters, destinations, and the continuous run loop may now receive bounded child
-owners. Routed target families and shared-upstream fan-out remain at the compact ratification
-checkpoint in their focused drafts. Hooks remain independently parked pending runtime
-ratification.
+owners. Routed target families and shared-upstream fan-out are ratified and have executable child
+owners. Hooks remain independently parked pending runtime ratification.
 
 ## Evidence
 

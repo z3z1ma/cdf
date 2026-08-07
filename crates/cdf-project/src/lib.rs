@@ -65,6 +65,7 @@ mod internal;
 mod manifest;
 mod models;
 mod observation_cache;
+mod package_collection;
 mod portable_plan;
 mod project_files;
 mod project_inputs;
@@ -135,6 +136,11 @@ pub use observation_cache::{
     ObservationCacheEntry, ObservationCacheKey, ObservationCacheLookup, ObservationCacheMissReason,
     ObservationCachePolicy, ObservationCacheStore, ObservationCacheStoreOutcome,
     StrongObservationSourceIdentity,
+};
+pub use package_collection::{
+    PackageCollectionAction, PackageCollectionArtifact, PackageCollectionClassification,
+    PackageCollectionPlan, PackageCollectionReason, PackageCollectionRequest,
+    execute_package_collection, plan_package_collection, retention_rule_for_trust,
 };
 pub use portable_plan::{
     PORTABLE_PLAN_MAX_BYTES, PORTABLE_PLAN_VERSION, PortableDestinationBinding,

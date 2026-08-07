@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use cdf_kernel::{SchemaObservationScope, TargetName, TerminalSchemaObservationQuarantine};
 use cdf_project::{
-    DiscoveryManifestArtifact, DiscoveryParticipation, ProjectDestinationDescription,
+    DiscoveryManifestArtifact, DiscoveryParticipation, PackageCollectionAction,
+    PackageCollectionClassification, PackageCollectionPlan, ProjectDestinationDescription,
     ProjectReceiptSource, ProjectRunNoOpReport, ProjectRunReport,
 };
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
@@ -104,6 +105,8 @@ pub(crate) struct RunCliReport {
     package_dir: String,
     package_hash: String,
     package_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_collection: Option<RunPackageCollectionReport>,
     schema_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
@@ -170,6 +173,7 @@ impl RunCliReport {
             package_dir: report.package_dir.display().to_string(),
             package_hash: report.package_hash.to_string(),
             package_status: report.package_status.as_str().to_owned(),
+            package_collection: None,
             schema_hash: report.checkpoint.delta.schema_hash.to_string(),
             schema_snapshot,
             schema_authority,
@@ -207,6 +211,14 @@ impl RunCliReport {
 
     pub(crate) fn with_explain_memory(mut self, explain_memory: bool) -> Self {
         self.explain_memory = explain_memory;
+        self
+    }
+
+    pub(crate) fn with_package_collection(
+        mut self,
+        package_collection: RunPackageCollectionReport,
+    ) -> Self {
+        self.package_collection = Some(package_collection);
         self
     }
 
@@ -290,6 +302,24 @@ impl RunCliReport {
                     .row("schema", self.schema_hash.clone())
                     .row("dir", safe_display_value(&self.package_dir)),
             );
+        let document = if let Some(collection) = &self.package_collection {
+            document.blank_line().push(
+                KeyValuePanel::new("Package retention")
+                    .row("evaluated", collection.evaluated_packages.to_string())
+                    .row("collected", collection.collected_packages.to_string())
+                    .row(
+                        "files reclaimed",
+                        collection.reclaimed_file_count.to_string(),
+                    )
+                    .row(
+                        "bytes reclaimed",
+                        humanize_bytes(collection.reclaimed_byte_count),
+                    )
+                    .row("tombstoned", collection.tombstoned_packages.to_string()),
+            )
+        } else {
+            document
+        };
         let document = if let Some(snapshot) = &self.schema_snapshot {
             let document = document.blank_line().push_verbose(
                 KeyValuePanel::new("Schema Snapshot")
@@ -449,6 +479,57 @@ impl RunCliReport {
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RunPackageCollectionReport {
+    evaluated_packages: usize,
+    collected_packages: usize,
+    retained_packages: usize,
+    tombstoned_packages: usize,
+    reclaimed_file_count: u64,
+    reclaimed_byte_count: u64,
+    promotion_availability_impacts: usize,
+}
+
+impl RunPackageCollectionReport {
+    pub(crate) fn from_plan(plan: &PackageCollectionPlan) -> Self {
+        let mut report = Self {
+            evaluated_packages: plan.artifacts.len(),
+            collected_packages: 0,
+            retained_packages: 0,
+            tombstoned_packages: 0,
+            reclaimed_file_count: 0,
+            reclaimed_byte_count: 0,
+            promotion_availability_impacts: plan
+                .promotion_availability
+                .iter()
+                .filter(|availability| availability.collection_removes_last_local_promotable_copy)
+                .count(),
+        };
+        for artifact in &plan.artifacts {
+            match artifact.classification {
+                PackageCollectionClassification::Collected => report.collected_packages += 1,
+                PackageCollectionClassification::Tombstoned => report.tombstoned_packages += 1,
+                PackageCollectionClassification::Retained
+                | PackageCollectionClassification::Missing
+                | PackageCollectionClassification::Corrupt
+                | PackageCollectionClassification::Protected => report.retained_packages += 1,
+                PackageCollectionClassification::Collectible => {
+                    if artifact.planned_action == PackageCollectionAction::WouldCollect {
+                        report.retained_packages += 1;
+                    }
+                }
+            }
+            report.reclaimed_file_count = report
+                .reclaimed_file_count
+                .saturating_add(artifact.reclaimed_file_count.unwrap_or(0));
+            report.reclaimed_byte_count = report
+                .reclaimed_byte_count
+                .saturating_add(artifact.reclaimed_byte_count.unwrap_or(0));
+        }
+        report
     }
 }
 
@@ -1353,6 +1434,7 @@ mod tests {
             package_dir: ".cdf/packages/pkg-redacted".to_owned(),
             package_hash: "sha256:package".to_owned(),
             package_status: "checkpointed".to_owned(),
+            package_collection: None,
             schema_hash: "sha256:schema".to_owned(),
             schema_snapshot: None,
             schema_authority: None,

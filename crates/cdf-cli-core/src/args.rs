@@ -275,9 +275,16 @@ pub struct BackfillArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PackageCommand {
-    Ls { packages_dir: Option<PathBuf> },
-    Gc { packages_dir: Option<PathBuf> },
-    Verify { package_dir: PathBuf },
+    Ls {
+        packages_dir: Option<PathBuf>,
+    },
+    Gc {
+        packages_dir: Option<PathBuf>,
+        execute: bool,
+    },
+    Verify {
+        package_dir: PathBuf,
+    },
     Archive(PackageArchiveArgs),
 }
 
@@ -1022,6 +1029,7 @@ fn parse_package(matches: &ArgMatches) -> Result<PackageCommand, CliError> {
         }),
         "gc" => Ok(PackageCommand::Gc {
             packages_dir: optional_path_arg("package gc", &values(matches, "packages_dir"))?,
+            execute: matches.get_flag("execute"),
         }),
         "verify" => Ok(PackageCommand::Verify {
             package_dir: required_single_path(
@@ -1325,7 +1333,11 @@ fn backfill_command() -> ClapCommand {
 fn package_command() -> ClapCommand {
     cmd("package")
         .subcommand(cmd("ls").arg(values_arg("packages_dir").value_name("DIR")))
-        .subcommand(cmd("gc").arg(values_arg("packages_dir").value_name("DIR")))
+        .subcommand(
+            cmd("gc")
+                .arg(values_arg("packages_dir").value_name("DIR"))
+                .arg(flag("execute", "execute")),
+        )
         .subcommand(cmd("verify").arg(values_arg("package_dir").value_name("DIR")))
         .subcommand(
             cmd("archive")

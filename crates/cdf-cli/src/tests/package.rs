@@ -1,5 +1,40 @@
 use super::*;
 
+fn commit_gc_epoch(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+    parent: Option<&cdf_kernel::Checkpoint>,
+    committed_at_ms: i64,
+) -> (PathBuf, cdf_kernel::Checkpoint) {
+    let package_root = project.root.join(".cdf/packages");
+    let package_dir = build_archive_cli_package(&package_root, package_id);
+    let manifest = cdf_package::read_manifest(&package_dir).unwrap();
+    let mut delta = status_delta("pipeline-gc-execute", checkpoint_id, &manifest.package_hash);
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(committed_at_ms),
+    });
+    delta.parent_checkpoint_id = parent.map(|checkpoint| checkpoint.delta.checkpoint_id.clone());
+    delta.input_position = parent.map(|checkpoint| checkpoint.delta.output_position.clone());
+    delta.output_position = output_position.clone();
+    delta.segments[0].output_position = output_position;
+    let receipt = status_receipt(
+        &manifest.package_hash,
+        &format!("receipt-{checkpoint_id}"),
+        committed_at_ms,
+    );
+    cdf_package::append_receipt(&package_dir, receipt.clone()).unwrap();
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    store.propose(delta).unwrap();
+    let committed = store
+        .commit(&CheckpointId::new(checkpoint_id).unwrap(), receipt)
+        .unwrap();
+    cdf_package::update_package_status(&package_dir, PackageStatus::Checkpointed).unwrap();
+    (package_dir, committed)
+}
+
 #[test]
 fn package_verify_uses_lower_package_reader() {
     let temp = TempDir::new("cdf-cli-package");
@@ -119,6 +154,16 @@ fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
 
     let protected_dir = build_archive_cli_package(&package_root, "pkg-gc-protected");
     let protected_manifest = cdf_package::read_manifest(&protected_dir).unwrap();
+    cdf_package::append_receipt(
+        &protected_dir,
+        status_receipt(
+            &protected_manifest.package_hash,
+            "receipt-gc-protected",
+            1_783_296_000_000,
+        ),
+    )
+    .unwrap();
+    cdf_package::update_package_status(&protected_dir, PackageStatus::Checkpointed).unwrap();
     commit_status_head(
         &project,
         "pipeline-gc",
@@ -169,25 +214,26 @@ fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
     assert_eq!(json["command"], "package gc");
     assert_eq!(json["result"]["command"], "package gc");
     assert_eq!(json["result"]["mode"], "dry_run");
-    assert_eq!(json["result"]["counts"]["protected"], 2);
-    assert_eq!(json["result"]["counts"]["collectible"], 1);
-    assert_eq!(json["result"]["counts"]["retained"], 1);
+    assert_eq!(json["result"]["counts"]["protected"], 1);
+    assert_eq!(json["result"]["counts"]["collectible"], 0);
+    assert_eq!(json["result"]["counts"]["retained"], 2);
     assert_eq!(json["result"]["counts"]["corrupt"], 2);
     assert_eq!(json["result"]["counts"]["missing"], 1);
+    assert_eq!(json["result"]["counts"]["tombstoned"], 1);
 
     assert_gc_artifact(
         &json,
         Some(&protected_manifest.package_hash),
         "protected",
-        "committed_checkpoint",
+        "retention_disabled",
         "retain",
     );
     assert_gc_artifact(
         &json,
         Some(&collectible_manifest.package_hash),
-        "collectible",
-        "pre_packaged_artifact",
-        "would_collect",
+        "retained",
+        "incomplete_package",
+        "retain",
     );
     assert_gc_artifact(
         &json,
@@ -206,9 +252,9 @@ fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
     assert_gc_artifact(
         &json,
         Some(&tombstone_manifest.package_hash),
-        "protected",
+        "tombstoned",
         "retention_tombstone",
-        "retain",
+        "already_tombstoned",
     );
     assert_gc_artifact(
         &json,
@@ -293,14 +339,96 @@ fn package_gc_explicit_directory_is_dry_run_without_deleting_collectible_artifac
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(package_dir.join("manifest.json").is_file());
     let json = stderr_or_stdout_json(&result.stdout);
-    assert_eq!(json["result"]["counts"]["collectible"], 1);
+    assert_eq!(json["result"]["counts"]["collectible"], 0);
+    assert_eq!(json["result"]["counts"]["retained"], 1);
     assert_gc_artifact(
         &json,
         Some(&manifest.package_hash),
-        "collectible",
-        "pre_packaged_artifact",
-        "would_collect",
+        "retained",
+        "incomplete_package",
+        "retain",
     );
+}
+
+#[test]
+fn package_gc_execute_tombstones_only_expired_epochs_and_is_idempotent() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf.toml"),
+        PROJECT.replace(
+            "destination = \"duckdb://.cdf/dev.duckdb\"\n",
+            "destination = \"duckdb://.cdf/dev.duckdb\"\nretention = { default = \"1 runs\" }\n",
+        ),
+    )
+    .unwrap();
+    let (old_dir, first) = commit_gc_epoch(
+        &project,
+        "pkg-gc-old",
+        "checkpoint-gc-old",
+        None,
+        1_783_296_000_000,
+    );
+    let (new_dir, _) = commit_gc_epoch(
+        &project,
+        "pkg-gc-new",
+        "checkpoint-gc-new",
+        Some(&first),
+        1_783_296_001_000,
+    );
+
+    let dry_run = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "package",
+        "gc",
+    ]);
+    assert_eq!(dry_run.exit_code, 0, "{}", dry_run.stderr);
+    let dry_run_json = stderr_or_stdout_json(&dry_run.stdout);
+    assert_eq!(dry_run_json["result"]["counts"]["collectible"], 1);
+    assert!(old_dir.join("data/seg-000001.arrow").is_file());
+
+    let executed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "package",
+        "gc",
+        "--execute",
+    ]);
+    assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
+    let executed_json = stderr_or_stdout_json(&executed.stdout);
+    assert_eq!(executed_json["result"]["mode"], "execute");
+    assert_eq!(executed_json["result"]["counts"]["collected"], 1);
+    assert!(
+        executed_json["result"]["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| artifact["classification"] == "collected"
+                && artifact["reclaimed_file_count"].as_u64().unwrap() > 0
+                && artifact["reclaimed_byte_count"].as_u64().unwrap() > 0)
+    );
+    assert!(!old_dir.join("data/seg-000001.arrow").exists());
+    assert!(old_dir.join("manifest.json").is_file());
+    assert!(old_dir.join(RECEIPTS_FILE).is_file());
+    assert!(new_dir.join("data/seg-000001.arrow").is_file());
+
+    let repeated = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "package",
+        "gc",
+        "--execute",
+    ]);
+    assert_eq!(repeated.exit_code, 0, "{}", repeated.stderr);
+    let repeated_json = stderr_or_stdout_json(&repeated.stdout);
+    assert_eq!(repeated_json["result"]["counts"]["collected"], 0);
+    assert_eq!(repeated_json["result"]["counts"]["tombstoned"], 1);
 }
 
 #[test]

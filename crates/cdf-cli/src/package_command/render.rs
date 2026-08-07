@@ -51,7 +51,7 @@ impl PackageGcPlanReport {
                     artifact_display(artifact),
                     classification_name(&artifact.classification).to_owned(),
                     planned_action_name(&artifact.planned_action).to_owned(),
-                    artifact.retention_reason.to_owned(),
+                    artifact.retention_reason.as_str().to_owned(),
                 ])
             },
         );
@@ -68,7 +68,9 @@ impl PackageGcPlanReport {
                     .row("mode", self.mode)
                     .row("artifacts", self.artifacts.len().to_string())
                     .row("collectible", self.counts.collectible.to_string())
+                    .row("collected", self.counts.collected.to_string())
                     .row("protected", self.counts.protected.to_string())
+                    .row("tombstoned", self.counts.tombstoned.to_string())
                     .row("corrupt", self.counts.corrupt.to_string())
                     .row("missing", self.counts.missing.to_string()),
             );
@@ -169,7 +171,7 @@ fn package_archive_status(status: &cdf_package::PackageArchiveWriteStatus) -> &'
     }
 }
 
-fn artifact_display(artifact: &PackageGcArtifact) -> String {
+fn artifact_display(artifact: &PackageCollectionArtifact) -> String {
     artifact
         .package_path
         .as_deref()
@@ -178,21 +180,25 @@ fn artifact_display(artifact: &PackageGcArtifact) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-fn classification_name(classification: &PackageGcClassification) -> &'static str {
+fn classification_name(classification: &PackageCollectionClassification) -> &'static str {
     match classification {
-        PackageGcClassification::Retained => "retained",
-        PackageGcClassification::Collectible => "collectible",
-        PackageGcClassification::Missing => "missing",
-        PackageGcClassification::Corrupt => "corrupt",
-        PackageGcClassification::Protected => "protected",
+        PackageCollectionClassification::Retained => "retained",
+        PackageCollectionClassification::Collectible => "collectible",
+        PackageCollectionClassification::Collected => "collected",
+        PackageCollectionClassification::Missing => "missing",
+        PackageCollectionClassification::Corrupt => "corrupt",
+        PackageCollectionClassification::Protected => "protected",
+        PackageCollectionClassification::Tombstoned => "tombstoned",
     }
 }
 
-fn planned_action_name(action: &PackageGcPlannedAction) -> &'static str {
+fn planned_action_name(action: &PackageCollectionAction) -> &'static str {
     match action {
-        PackageGcPlannedAction::Retain => "retain",
-        PackageGcPlannedAction::WouldCollect => "would_collect",
-        PackageGcPlannedAction::RestoreRequired => "restore_required",
+        PackageCollectionAction::Retain => "retain",
+        PackageCollectionAction::WouldCollect => "would_collect",
+        PackageCollectionAction::Collected => "collected",
+        PackageCollectionAction::RestoreRequired => "restore_required",
+        PackageCollectionAction::AlreadyTombstoned => "already_tombstoned",
     }
 }
 

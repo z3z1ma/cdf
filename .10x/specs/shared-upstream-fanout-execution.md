@@ -1,4 +1,4 @@
-Status: draft
+Status: active
 Created: 2026-08-07
 Updated: 2026-08-07
 
@@ -113,13 +113,11 @@ leaves the prior shared frontier authoritative, and preserves any durable recove
 7. A shared CDC transaction boundary is acknowledged upstream only after every branch receipt and
    checkpoint covers it.
 
-## Open blockers
+## Ratification
 
-1. Ratify the all-branches settlement barrier and recovery behavior above.
-2. Ratify that sharing requires identical start/frontier authority; divergent branches execute
-   separately rather than reading from the oldest frontier and filtering positions.
-3. Ratify that projection union is the only initial widening optimization; branch-specific
-   predicates, limits, and ordering are not hoisted without an exact common proof.
+The user ratified the all-branches settlement barrier, identical-frontier compatibility rule,
+separate execution for divergent branches, projection-union-only initial widening, and exact-proof
+requirement for later predicate/limit/order hoisting on 2026-08-07.
 
 ## References
 

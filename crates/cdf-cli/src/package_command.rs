@@ -2,16 +2,23 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_kernel::{CdfError, PackageHash};
-use cdf_package::PackageReader;
-use cdf_package_contract::{MANIFEST_FILE, PackageStatus};
-use cdf_project::{
-    LocalPromotionCollectionAction, LocalPromotionCollectionAssessment,
-    assess_local_promotion_collection, inspect_local_package_promotion_availability,
+use cdf_kernel::{
+    CdfError, EnvironmentName, ResourceId, SchemaAuthorityKey, SchemaAuthorityStore,
+    SchemaHeadStatus,
 };
-use cdf_state_sqlite::SqliteCheckpointStore;
+use cdf_package::PackageReader;
+use cdf_package_contract::MANIFEST_FILE;
+use cdf_project::{
+    LocalPromotionCollectionAssessment, PackageCollectionAction, PackageCollectionArtifact,
+    PackageCollectionClassification, PackageCollectionRequest, RetentionRule,
+    execute_package_collection, plan_package_collection, retention_rule_for_trust,
+};
+use cdf_state_sqlite::{
+    SqliteCheckpointStore, SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore,
+};
 use serde::Serialize;
 
 use crate::{
@@ -41,8 +48,11 @@ pub(crate) fn package(
             let report = PackageListReport { packages };
             CommandOutput::rendered("package ls", report.render_document(), report)
         }
-        PackageCommand::Gc { packages_dir } => {
-            let report = package_gc_plan(cli, packages_dir, destinations)?;
+        PackageCommand::Gc {
+            packages_dir,
+            execute,
+        } => {
+            let report = package_gc(cli, packages_dir, execute, destinations)?;
             CommandOutput::rendered("package gc", report.render_document(), report)
         }
         PackageCommand::Verify { package_dir } => {
@@ -59,9 +69,10 @@ pub(crate) fn package(
     }
 }
 
-fn package_gc_plan(
+fn package_gc(
     cli: &Cli,
     packages_dir: Option<PathBuf>,
+    execute: bool,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<PackageGcPlanReport, CliError> {
     let context = if packages_dir.is_none() || cli.project.is_some() {
@@ -79,221 +90,114 @@ fn package_gc_plan(
             .expect("context loaded when package gc has no explicit directory")
             .package_root()
     });
-    let protected_hashes = match context.as_ref() {
-        Some(context) => committed_package_hashes(context)?,
-        None => BTreeSet::new(),
+    let checkpoints = committed_checkpoints(context.as_ref())?;
+    let retention_by_resource = retention_by_resource(context.as_ref());
+    let protected_resources = active_promotion_resources(context.as_ref())?;
+    let evaluated_at_ms = system_time_ms()?;
+    let request = PackageCollectionRequest {
+        package_root: &root,
+        committed_checkpoints: &checkpoints,
+        retention_by_resource: &retention_by_resource,
+        protected_resources: &protected_resources,
+        evaluated_at_ms,
     };
-    let artifacts = plan_package_gc_artifacts(&root, &protected_hashes)?;
-    let promotion_availability = promotion_gc_availability(&root, &artifacts)?;
-    let counts = PackageGcCounts::from_artifacts(&artifacts);
+    let planned = plan_package_collection(&request)?;
+    let plan = if execute {
+        execute_package_collection(&request, &planned)?
+    } else {
+        planned
+    };
+    let counts = PackageGcCounts::from_artifacts(&plan.artifacts);
     Ok(PackageGcPlanReport {
         command: "package gc",
-        package_root: root.display().to_string(),
-        mode: "dry_run",
-        artifacts,
-        promotion_availability,
+        package_root: plan.package_root,
+        mode: if execute { "execute" } else { "dry_run" },
+        artifacts: plan.artifacts,
+        promotion_availability: plan.promotion_availability,
         counts,
     })
 }
 
-fn committed_package_hashes(context: &ProjectContext) -> Result<BTreeSet<PackageHash>, CliError> {
+fn committed_checkpoints(
+    context: Option<&ProjectContext>,
+) -> Result<Vec<cdf_kernel::Checkpoint>, CliError> {
+    let Some(context) = context else {
+        return Ok(Vec::new());
+    };
     let path = context.state_store_path()?;
     let ownership = context.state_store_path_ownership();
     if !cdf_state_sqlite::database_path_exists(&path, ownership)? {
-        return Ok(BTreeSet::new());
+        return Ok(Vec::new());
     }
     SqliteCheckpointStore::open_read_only_with_path_ownership(path, ownership)?
-        .committed_package_hashes()
-        .map_err(CliError::from)
+        .committed_checkpoints()
+        .map_err(Into::into)
 }
 
-fn plan_package_gc_artifacts(
-    root: &Path,
-    protected_hashes: &BTreeSet<PackageHash>,
-) -> Result<Vec<PackageGcArtifact>, CliError> {
-    let mut artifacts = Vec::new();
-    let mut readable_hashes = BTreeSet::new();
-    if package_root_is_directory(root)? {
-        for entry in sorted_child_entries(root)? {
-            let path = entry.path();
-            if !package_entry_is_directory(&entry)? {
-                continue;
-            }
-            let artifact = classify_package_artifact(&path, protected_hashes)?;
-            if let Some(hash) = artifact.package_hash.as_deref() {
-                readable_hashes.insert(hash.to_owned());
-            }
-            artifacts.push(artifact);
-        }
-    }
-
-    for protected_hash in protected_hashes {
-        if !readable_hashes.contains(protected_hash.as_str()) {
-            artifacts.push(PackageGcArtifact {
-                package_path: None,
-                package_hash: Some(protected_hash.as_str().to_owned()),
-                classification: PackageGcClassification::Missing,
-                retention_reason: "committed_checkpoint_missing_artifact",
-                planned_action: PackageGcPlannedAction::RestoreRequired,
-            });
-        }
-    }
-
-    artifacts.sort_by(|left, right| {
-        (
-            left.package_path.as_deref().unwrap_or(""),
-            left.package_hash.as_deref().unwrap_or(""),
-            left.retention_reason,
-        )
-            .cmp(&(
-                right.package_path.as_deref().unwrap_or(""),
-                right.package_hash.as_deref().unwrap_or(""),
-                right.retention_reason,
-            ))
-    });
-    Ok(artifacts)
-}
-
-fn classify_package_artifact(
-    package_dir: &Path,
-    protected_hashes: &BTreeSet<PackageHash>,
-) -> Result<PackageGcArtifact, CliError> {
-    let package_path = Some(package_dir.display().to_string());
-    let manifest_path = package_dir.join(MANIFEST_FILE);
-    match fs::symlink_metadata(&manifest_path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash: None,
-                classification: PackageGcClassification::Corrupt,
-                retention_reason: "manifest_unreadable",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash: None,
-                classification: PackageGcClassification::Corrupt,
-                retention_reason: "manifest_missing",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Err(error) if package_artifact_shape_error(&error) => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash: None,
-                classification: PackageGcClassification::Corrupt,
-                retention_reason: "manifest_unreadable",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Err(error) => {
-            return Err(package_artifact_host_error(
-                "inspect package manifest",
-                &manifest_path,
-                error,
-            ));
-        }
-    }
-
-    let manifest = match cdf_package::read_manifest_header(package_dir) {
-        Ok(manifest) => manifest,
-        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash: None,
-                classification: PackageGcClassification::Corrupt,
-                retention_reason: "manifest_unreadable",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Err(error) => return Err(error.into()),
+fn retention_by_resource(
+    context: Option<&ProjectContext>,
+) -> BTreeMap<ResourceId, Option<RetentionRule>> {
+    let Some(context) = context else {
+        return BTreeMap::new();
     };
-    let package_hash = Some(manifest.package_hash.clone());
-
-    if manifest.lifecycle.status == PackageStatus::Archived {
-        return Ok(PackageGcArtifact {
-            package_path,
-            package_hash,
-            classification: PackageGcClassification::Protected,
-            retention_reason: "retention_tombstone",
-            planned_action: PackageGcPlannedAction::Retain,
-        });
-    }
-
-    let protected_by_checkpoint = PackageHash::new(manifest.package_hash.clone())
-        .is_ok_and(|hash| protected_hashes.contains(&hash));
-    if let Err(error) = cdf_package::verify_package(package_dir) {
-        if error.kind != cdf_kernel::ErrorKind::Data {
-            return Err(error.into());
-        }
-        return Ok(PackageGcArtifact {
-            package_path,
-            package_hash,
-            classification: PackageGcClassification::Corrupt,
-            retention_reason: if protected_by_checkpoint {
-                "committed_checkpoint_verification_failed"
-            } else {
-                "verification_failed"
-            },
-            planned_action: PackageGcPlannedAction::Retain,
-        });
-    }
-
-    if protected_by_checkpoint {
-        return Ok(PackageGcArtifact {
-            package_path,
-            package_hash,
-            classification: PackageGcClassification::Protected,
-            retention_reason: "committed_checkpoint",
-            planned_action: PackageGcPlannedAction::Retain,
-        });
-    }
-    match cdf_package::PackageReader::open(package_dir).and_then(|reader| reader.receipt_count()) {
-        Ok(count) if count != 0 => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash,
-                classification: PackageGcClassification::Protected,
-                retention_reason: "package_receipt",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Ok(_) => {}
-        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
-            return Ok(PackageGcArtifact {
-                package_path,
-                package_hash,
-                classification: PackageGcClassification::Corrupt,
-                retention_reason: "receipt_unreadable",
-                planned_action: PackageGcPlannedAction::Retain,
-            });
-        }
-        Err(error) => return Err(error.into()),
-    }
-
-    if matches!(
-        manifest.lifecycle.status,
-        PackageStatus::Planned | PackageStatus::Extracting | PackageStatus::Validated
-    ) {
-        Ok(PackageGcArtifact {
-            package_path,
-            package_hash,
-            classification: PackageGcClassification::Collectible,
-            retention_reason: "pre_packaged_artifact",
-            planned_action: PackageGcPlannedAction::WouldCollect,
+    context
+        .resources
+        .iter()
+        .map(|resource| {
+            (
+                resource.descriptor().resource_id.clone(),
+                retention_rule_for_trust(
+                    context.environment.retention.as_ref(),
+                    &resource.descriptor().trust_level,
+                ),
+            )
         })
-    } else {
-        Ok(PackageGcArtifact {
-            package_path,
-            package_hash,
-            classification: PackageGcClassification::Retained,
-            retention_reason: "replay_or_recovery_artifact",
-            planned_action: PackageGcPlannedAction::Retain,
-        })
+        .collect()
+}
+
+fn active_promotion_resources(
+    context: Option<&ProjectContext>,
+) -> Result<BTreeSet<ResourceId>, CliError> {
+    let Some(context) = context else {
+        return Ok(BTreeSet::new());
+    };
+    let state_path = context.state_store_path()?;
+    let ownership = context.state_store_path_ownership();
+    let SqliteSchemaAuthorityState::Ready {
+        authority_domain_id,
+    } = SqliteSchemaAuthorityStore::inspect_state(&state_path, ownership)?
+    else {
+        return Ok(BTreeSet::new());
+    };
+    let store =
+        SqliteSchemaAuthorityStore::open_read_only_with_path_ownership(&state_path, ownership)?;
+    let mut protected = BTreeSet::new();
+    for resource in &context.resources {
+        let resource_id = resource.descriptor().resource_id.clone();
+        let key = SchemaAuthorityKey::new(
+            authority_domain_id.clone(),
+            context.config.project.id.clone(),
+            EnvironmentName::new(context.environment.name.clone())?,
+            resource_id.clone(),
+        )?;
+        if store
+            .head(&key)?
+            .is_some_and(|head| matches!(head.status, SchemaHeadStatus::Promoting { .. }))
+        {
+            protected.insert(resource_id);
+        }
     }
+    Ok(protected)
+}
+
+fn system_time_ms() -> Result<i64, CliError> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            CdfError::environment(format!("system clock precedes Unix epoch: {error}"))
+        })?;
+    i64::try_from(elapsed.as_millis())
+        .map_err(|_| CdfError::environment("system epoch milliseconds exceed i64").into())
 }
 
 fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> {
@@ -557,97 +461,53 @@ struct PackageGcPlanReport {
     command: &'static str,
     package_root: String,
     mode: &'static str,
-    artifacts: Vec<PackageGcArtifact>,
+    artifacts: Vec<PackageCollectionArtifact>,
     promotion_availability: Vec<LocalPromotionCollectionAssessment>,
     counts: PackageGcCounts,
-}
-
-fn promotion_gc_availability(
-    package_root: &Path,
-    artifacts: &[PackageGcArtifact],
-) -> Result<Vec<LocalPromotionCollectionAssessment>, CliError> {
-    let local = inspect_local_package_promotion_availability(package_root)?;
-    let actions = artifacts
-        .iter()
-        .filter_map(|artifact| {
-            artifact.package_path.as_ref().map(|path| {
-                let action = match artifact.planned_action {
-                    PackageGcPlannedAction::Retain => LocalPromotionCollectionAction::Retain,
-                    PackageGcPlannedAction::WouldCollect => {
-                        LocalPromotionCollectionAction::WouldCollect
-                    }
-                    PackageGcPlannedAction::RestoreRequired => {
-                        LocalPromotionCollectionAction::RestoreRequired
-                    }
-                };
-                (path.clone(), action)
-            })
-        })
-        .collect::<BTreeMap<_, _>>();
-    Ok(assess_local_promotion_collection(local, &actions))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct PackageGcArtifact {
-    package_path: Option<String>,
-    package_hash: Option<String>,
-    classification: PackageGcClassification,
-    retention_reason: &'static str,
-    planned_action: PackageGcPlannedAction,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PackageGcClassification {
-    Retained,
-    Collectible,
-    Missing,
-    Corrupt,
-    Protected,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PackageGcPlannedAction {
-    Retain,
-    WouldCollect,
-    RestoreRequired,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 struct PackageGcCounts {
     retained: usize,
     collectible: usize,
+    collected: usize,
     missing: usize,
     corrupt: usize,
     protected: usize,
+    tombstoned: usize,
 }
 
 impl PackageGcCounts {
-    fn from_artifacts(artifacts: &[PackageGcArtifact]) -> Self {
+    fn from_artifacts(artifacts: &[PackageCollectionArtifact]) -> Self {
         let mut counts = BTreeMap::from([
             ("retained", 0),
             ("collectible", 0),
+            ("collected", 0),
             ("missing", 0),
             ("corrupt", 0),
             ("protected", 0),
+            ("tombstoned", 0),
         ]);
         for artifact in artifacts {
             let key = match artifact.classification {
-                PackageGcClassification::Retained => "retained",
-                PackageGcClassification::Collectible => "collectible",
-                PackageGcClassification::Missing => "missing",
-                PackageGcClassification::Corrupt => "corrupt",
-                PackageGcClassification::Protected => "protected",
+                PackageCollectionClassification::Retained => "retained",
+                PackageCollectionClassification::Collectible => "collectible",
+                PackageCollectionClassification::Collected => "collected",
+                PackageCollectionClassification::Missing => "missing",
+                PackageCollectionClassification::Corrupt => "corrupt",
+                PackageCollectionClassification::Protected => "protected",
+                PackageCollectionClassification::Tombstoned => "tombstoned",
             };
             *counts.get_mut(key).expect("known package gc count key") += 1;
         }
         Self {
             retained: counts["retained"],
             collectible: counts["collectible"],
+            collected: counts["collected"],
             missing: counts["missing"],
             corrupt: counts["corrupt"],
             protected: counts["protected"],
+            tombstoned: counts["tombstoned"],
         }
     }
 }

@@ -160,6 +160,21 @@ impl SqliteCheckpointStore {
         .collect()
     }
 
+    /// Returns every committed checkpoint in canonical store sequence order.
+    ///
+    /// Retention and recovery planners consume the complete typed rows so package eligibility is
+    /// derived from receipt/checkpoint authority rather than filesystem age or hash presence.
+    pub fn committed_checkpoints(&self) -> Result<Vec<Checkpoint>> {
+        let conn = self.lock_conn()?;
+        let sql = format!("{CHECKPOINT_SELECT} WHERE status = 'committed' ORDER BY sequence");
+        let mut statement = conn.prepare(&sql).map_err(sqlite_error)?;
+        let rows = statement
+            .query_map([], row_to_checkpoint)
+            .map_err(sqlite_error)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(sqlite_error)
+    }
+
     fn lock_conn(&self) -> Result<SqliteConnectionGuard<'_>> {
         lock_sqlite_connection(&self.conn, self.error_context)
     }

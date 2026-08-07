@@ -132,6 +132,66 @@ fn run_command_commits_package_rows_mirrors_and_checkpoint() {
 }
 
 #[test]
+fn run_automatically_collects_settled_packages_outside_retention() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf.toml"),
+        PROJECT.replace(
+            "destination = \"duckdb://.cdf/dev.duckdb\"\n",
+            "destination = \"duckdb://.cdf/dev.duckdb\"\nretention = { default = \"1 runs\" }\n",
+        ),
+    )
+    .unwrap();
+    let first = run_valid_run_args(&project);
+    assert_eq!(first.exit_code, 0, "{}", first.stderr);
+    let first_package = run_package_dir(&project, &first);
+    let first_payload = cdf_package::read_manifest(&first_package)
+        .unwrap()
+        .identity
+        .segments[0]
+        .path
+        .clone();
+    assert!(first_package.join(&first_payload).is_file());
+
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        concat!(
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":2,\"updated_at\":1783296060000000}\n",
+            "{\"id\":3,\"updated_at\":1783296120000000}\n"
+        ),
+    )
+    .unwrap();
+    let second = run_valid_run_args(&project);
+    assert_eq!(second.exit_code, 0, "{}", second.stderr);
+    let json = stderr_or_stdout_json(&second.stdout);
+    let report = single_resource_run_report(&json);
+    assert_eq!(report["package_collection"]["collected_packages"], 1);
+    assert!(
+        report["package_collection"]["reclaimed_file_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        cdf_package::read_manifest_header(&first_package)
+            .unwrap()
+            .lifecycle
+            .status,
+        PackageStatus::Archived
+    );
+    assert!(!first_package.join(first_payload).exists());
+    assert!(first_package.join(RECEIPTS_FILE).is_file());
+    assert_eq!(
+        cdf_package::read_manifest_header(run_package_dir(&project, &second))
+            .unwrap()
+            .lifecycle
+            .status,
+        PackageStatus::Checkpointed
+    );
+}
+
+#[test]
 fn run_short_form_uses_product_defaults_and_destination_alias() {
     let project = TestProject::new();
     let result = run([

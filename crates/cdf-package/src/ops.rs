@@ -574,6 +574,12 @@ pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneRepor
     let manifest = read_manifest_header_from_root(&root)?;
     let mut removed_file_count = 0_u64;
 
+    // Publish the tombstone before reclaiming identity files. A crash after this point leaves a
+    // truthful archived package with possibly reclaimable residual bytes; retry is idempotent and
+    // completes deletion. Publishing after deletion could instead leave a live manifest claiming
+    // files that were already removed.
+    update_package_status(package_dir, PackageStatus::Archived)?;
+
     for entry in manifest_file_stream(&root)? {
         let entry = entry?;
         validate_manifest_identity_path(None, &entry.path)?;
@@ -587,7 +593,6 @@ pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneRepor
         }
     }
 
-    update_package_status(package_dir, PackageStatus::Archived)?;
     Ok(TombstoneReport {
         package_hash: manifest.package_hash,
         removed_file_count,
