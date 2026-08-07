@@ -9,7 +9,7 @@ use cdf_conformance::checkpoint_store::{
 };
 use cdf_conformance::schema_authority::{
     assert_schema_authority_store_conformance, assert_schema_authority_store_send_sync,
-    first_use_schema_authority_establishment,
+    first_use_schema_authority_establishment, schema_authority_version,
 };
 use cdf_conformance::scope_lease::{
     ManualScopeLeaseClock, assert_scope_lease_store_conformance, assert_scope_lease_store_send_sync,
@@ -25,10 +25,10 @@ use cdf_kernel::{
     PostgresLogScope, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
     PromotionSettlementStore, Receipt, ReceiptId, ResourceId, ResumeTokenPosition, RewindRequest,
     RunId, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaAuthorityStore, SchemaHash,
-    ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause,
-    WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim, WatermarkObservationContext,
-    WatermarkValue, WriteDisposition,
+    SchemaPromotionFence, SchemaSettlementStore, ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TableSnapshotPosition, TableSnapshotSelector,
+    TargetName, VerifyClause, WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim,
+    WatermarkObservationContext, WatermarkValue, WriteDisposition,
 };
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
@@ -2835,7 +2835,7 @@ fn sqlite_schema_authority_records_and_requires_current_schema_version() {
     assert!(
         error
             .message
-            .contains("current schema version 1 is required")
+            .contains("current schema version 2 is required")
     );
 }
 
@@ -2852,7 +2852,7 @@ fn sqlite_schema_authority_rejects_incomplete_current_schema() {
             recorded_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
-        VALUES ('schema_authority_store', 1, 1);
+        VALUES ('schema_authority_store', 2, 1);
         ",
     )
     .unwrap();
@@ -2908,5 +2908,141 @@ fn sqlite_schema_authority_concurrent_first_use_has_one_winner() {
     assert_eq!(
         reopened.head(&winning_head.key).unwrap(),
         Some(winning_head)
+    );
+}
+
+#[test]
+fn schema_settlement_permit_fences_and_atomically_commits_checkpoint() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("schema-settlement.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(1_000));
+    let store = SqliteSchemaAuthorityStore::open_with_clock(&path, clock.clone()).unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    let active = store.establish_if_absent(establishment).unwrap();
+    let run_id = RunId::new("run-settlement-1").unwrap();
+    let permit = store.acquire_run_permit(&active, run_id, 100).unwrap();
+    assert_eq!(permit.expires_at_ms, 1_100);
+    clock.set(1_050);
+    let permit = store.renew_run_permit(&permit, 100).unwrap();
+    assert_eq!(permit.expires_at_ms, 1_150);
+
+    let mut state_delta = delta(
+        "checkpoint-schema-settlement",
+        None,
+        partition_scope(),
+        cursor_position(1),
+        "package-schema-settlement",
+    );
+    state_delta.schema_hash = active.schema_hash.clone();
+    let checkpoint_store = SqliteCheckpointStore::open(&path).unwrap();
+    checkpoint_store.propose(state_delta.clone()).unwrap();
+    let committed = store
+        .commit_run_checkpoint(&permit, &state_delta.checkpoint_id, receipt(&state_delta))
+        .unwrap();
+
+    assert_eq!(committed.status, CheckpointStatus::Committed);
+    assert!(store.assert_run_permit(&permit).is_err());
+    assert_eq!(
+        checkpoint_store
+            .head(
+                &state_delta.pipeline_id,
+                &state_delta.resource_id,
+                &state_delta.scope
+            )
+            .unwrap(),
+        Some(committed)
+    );
+}
+
+#[test]
+fn promoting_head_blocks_new_permits_but_drains_an_existing_generation() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("schema-promotion-drain.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(2_000));
+    let store = SqliteSchemaAuthorityStore::open_with_clock(&path, clock.clone()).unwrap();
+    let leases = SqliteScopeLeaseStore::open_with_clock(&path, clock).unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    let first_version = establishment.version.clone();
+    let active = store.establish_if_absent(establishment).unwrap();
+    let permit = store
+        .acquire_run_permit(&active, RunId::new("run-before-promotion").unwrap(), 100)
+        .unwrap();
+    let lease = leases
+        .acquire(
+            active.key.promotion_scope().unwrap(),
+            LeaseOwnerId::new("schema-promoter").unwrap(),
+            1_000,
+        )
+        .unwrap();
+    let fence = SchemaPromotionFence::new(
+        store.authority_domain_id(),
+        PromotionId::new("promotion-01").unwrap(),
+        lease,
+    )
+    .unwrap();
+    let promoting = store
+        .begin_promotion(
+            &active,
+            schema_authority_version("order_total", Some(&first_version)),
+            &fence,
+        )
+        .unwrap();
+
+    assert!(
+        store
+            .acquire_run_permit(
+                &active,
+                RunId::new("run-after-promotion-fence").unwrap(),
+                100
+            )
+            .is_err()
+    );
+    store.assert_run_permit(&permit).unwrap();
+    store.release_run_permit(&permit).unwrap();
+    store.publish_promotion(&promoting, &fence).unwrap();
+}
+
+#[test]
+fn expired_schema_settlement_permit_cannot_commit() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("expired-schema-settlement.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(3_000));
+    let store = SqliteSchemaAuthorityStore::open_with_clock(&path, clock.clone()).unwrap();
+    let active = store
+        .establish_if_absent(first_use_schema_authority_establishment(
+            &store, "dev", "orders", "order_id",
+        ))
+        .unwrap();
+    let permit = store
+        .acquire_run_permit(&active, RunId::new("run-expired").unwrap(), 10)
+        .unwrap();
+    let mut state_delta = delta(
+        "checkpoint-expired-settlement",
+        None,
+        partition_scope(),
+        cursor_position(1),
+        "package-expired-settlement",
+    );
+    state_delta.schema_hash = active.schema_hash;
+    let checkpoint_store = SqliteCheckpointStore::open(&path).unwrap();
+    checkpoint_store.propose(state_delta.clone()).unwrap();
+    clock.set(3_010);
+
+    let error = store
+        .commit_run_checkpoint(&permit, &state_delta.checkpoint_id, receipt(&state_delta))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Transient);
+    assert_eq!(
+        checkpoint_store
+            .history(
+                &state_delta.pipeline_id,
+                &state_delta.resource_id,
+                &state_delta.scope
+            )
+            .unwrap()[0]
+            .status,
+        CheckpointStatus::Proposed
     );
 }

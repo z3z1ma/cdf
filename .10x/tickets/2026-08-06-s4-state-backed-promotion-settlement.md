@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-06-state-backed-schema-authority-program.md`
@@ -75,14 +75,41 @@ promotion lifecycle:
 ## Journal
 
 - 2026-08-06: Opened behind S1–S3; implementation intentionally deferred.
+- 2026-08-06: S1–S3 are closed and pushed. Re-read every governing record and the prior
+  residual-promotion implementation history, then inspected the kernel schema head/version store,
+  SQLite transactions, ordinary replay settlement path, promotion planner/executor, CLI reports,
+  and recovery tests. The existing correction package and destination strategy machinery remains
+  useful; lockfile CAS, filesystem-staged plan authority, and ledger-only publication do not.
+- 2026-08-06: Began with the shared state settlement boundary: generation-bound ordinary-run
+  permits, promotion fencing/cutoff, and atomic publication must serialize before the CLI and
+  planner can safely consume the state-backed lifecycle.
+- 2026-08-06: Added state-clock-owned renewable settlement permits and durable checkpoint-to-
+  logical-authority bindings. Permit acquisition serializes against the active head, a promoting
+  head refuses new permits while allowing an already-issued generation to drain, expiry fences
+  commit, and receipt/checkpoint/authority settlement plus permit release commit atomically.
+- 2026-08-06: Bound normal `run` and backfill execution services to the exact prepared state head.
+  The replay path now acquires immediately at `DestinationWriteReady`, renews process-locally
+  during the destination call, performs a final renewal, and uses the fenced atomic checkpoint
+  commit. Ad-hoc and artifact-only paths remain outside project authority until their own typed
+  authority is supplied; no schema permit is held during extraction or packaging.
 
 ## Blockers
 
-S1–S3 must close with state heads, state-backed preparation, and total residual dispositions.
+None. S1–S3 are closed with state heads, state-backed preparation, and total residual
+dispositions.
 
 ## Evidence
 
-Pending execution.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-kernel -p cdf-state-sqlite` passed after the store
+  boundary was introduced.
+- Focused SQLite tests passed: `schema_settlement_permit_fences_and_atomically_commits_checkpoint`,
+  `expired_schema_settlement_permit_cannot_commit`, and
+  `promoting_head_blocks_new_permits_but_drains_an_existing_generation`.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-project -p cdf-cli` passed after runtime/CLI binding.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli
+  run_ndjson_discovery_establishes_schema_authority_and_commits -- --nocapture` passed and asserts
+  the durable generation-one checkpoint settlement. This proves the ordinary CLI path; it does
+  not yet prove promotion cutoff/publication or correction execution.
 
 ## Review
 

@@ -15,8 +15,8 @@ use arrow_schema::Schema;
 use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     DestinationCommitRequest, DestinationId, PackageHash, PlanId, PushdownFidelity, Receipt,
-    Result, RunPhase, RunPhaseMetric, RunPhaseStatus, SchemaHash, SegmentAck, SegmentId,
-    StateDelta, TargetName, WriteDisposition,
+    Result, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, SchemaHash, SchemaSettlementPermit,
+    SegmentAck, SegmentId, StateDelta, TargetName, WriteDisposition,
 };
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageReader, VerifiedPackage, VerifiedPackageReader};
@@ -812,7 +812,125 @@ pub(crate) struct PackageReplayHooks<'a> {
     pub(crate) before_package_receipt_recorded: Option<ReceiptVerifiedHook<'a>>,
     pub(crate) after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     pub(crate) stage: Option<PackageReplayStageHook<'a>>,
+    pub(crate) schema_settlement_run_id: Option<&'a RunId>,
     pub(crate) interrupted_by_stage_hook: std::cell::Cell<bool>,
+}
+
+struct ActiveSchemaSettlement {
+    store: Arc<dyn cdf_kernel::SchemaSettlementStore>,
+    permit: Arc<Mutex<SchemaSettlementPermit>>,
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    worker: Option<std::thread::JoinHandle<Result<()>>>,
+    permit_duration_ms: u64,
+    committed: bool,
+}
+
+impl ActiveSchemaSettlement {
+    fn acquire(binding: &cdf_runtime::SchemaSettlementBinding, run_id: &RunId) -> Result<Self> {
+        let store = Arc::clone(binding.store());
+        let permit = store.acquire_run_permit(
+            binding.active_head(),
+            run_id.clone(),
+            binding.permit_duration_ms(),
+        )?;
+        let permit = Arc::new(Mutex::new(permit));
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_store = Arc::clone(&store);
+        let worker_permit = Arc::clone(&permit);
+        let worker_stop = Arc::clone(&stop);
+        let duration_ms = binding.permit_duration_ms();
+        let renewal_interval = Duration::from_millis((duration_ms / 3).max(1));
+        let worker = std::thread::Builder::new()
+            .name("cdf-schema-settlement-renewal".to_owned())
+            .spawn(move || {
+                loop {
+                    let (stop_lock, stop_signal) = &*worker_stop;
+                    let stopped = stop_lock.lock().map_err(|_| {
+                        CdfError::internal("schema settlement renewal lock is poisoned")
+                    })?;
+                    let (stopped, timeout) = stop_signal
+                        .wait_timeout_while(stopped, renewal_interval, |stopped| !*stopped)
+                        .map_err(|_| {
+                            CdfError::internal("schema settlement renewal wait is poisoned")
+                        })?;
+                    if *stopped {
+                        return Ok(());
+                    }
+                    drop(stopped);
+                    if timeout.timed_out() {
+                        let current = worker_permit
+                            .lock()
+                            .map_err(|_| {
+                                CdfError::internal("schema settlement permit lock is poisoned")
+                            })?
+                            .clone();
+                        let renewed = worker_store.renew_run_permit(&current, duration_ms)?;
+                        *worker_permit.lock().map_err(|_| {
+                            CdfError::internal("schema settlement permit lock is poisoned")
+                        })? = renewed;
+                    }
+                }
+            })
+            .map_err(|error| {
+                CdfError::environment(format!("start schema settlement renewal worker: {error}"))
+            })?;
+        Ok(Self {
+            store,
+            permit,
+            stop,
+            worker: Some(worker),
+            permit_duration_ms: duration_ms,
+            committed: false,
+        })
+    }
+
+    fn stop_worker(&mut self) -> Result<()> {
+        if let Some(worker) = self.worker.take() {
+            let (stop_lock, stop_signal) = &*self.stop;
+            *stop_lock
+                .lock()
+                .map_err(|_| CdfError::internal("schema settlement renewal lock is poisoned"))? =
+                true;
+            stop_signal.notify_all();
+            worker
+                .join()
+                .map_err(|_| CdfError::internal("schema settlement renewal worker panicked"))??;
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, checkpoint_id: &CheckpointId, receipt: Receipt) -> Result<Checkpoint> {
+        self.stop_worker()?;
+        let current = self
+            .permit
+            .lock()
+            .map_err(|_| CdfError::internal("schema settlement permit lock is poisoned"))?
+            .clone();
+        let renewed = self
+            .store
+            .renew_run_permit(&current, self.permit_duration_ms)?;
+        *self
+            .permit
+            .lock()
+            .map_err(|_| CdfError::internal("schema settlement permit lock is poisoned"))? =
+            renewed.clone();
+        let checkpoint = self
+            .store
+            .commit_run_checkpoint(&renewed, checkpoint_id, receipt)?;
+        self.committed = true;
+        Ok(checkpoint)
+    }
+}
+
+impl Drop for ActiveSchemaSettlement {
+    fn drop(&mut self) {
+        let _ = self.stop_worker();
+        if !self.committed
+            && let Ok(permit) = self.permit.lock().map(|permit| permit.clone())
+        {
+            let _ = self.store.release_run_permit(&permit);
+        }
+    }
 }
 
 pub fn replay_package_from_artifacts<Store>(
@@ -1637,6 +1755,7 @@ where
     let checkpoint = propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
     let checkpoint_already_committed = checkpoint.status == CheckpointStatus::Committed;
     let destination_started = Instant::now();
+    let mut schema_settlement = None;
     let settlement = (|| {
         if !checkpoint_already_committed {
             notify_destination_replay_stage(
@@ -1650,6 +1769,16 @@ where
             package.reader_mut().update_status(PackageStatus::Loading)?;
         }
         notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
+        if !checkpoint_already_committed
+            && let Some(binding) = execution.and_then(ExecutionServices::schema_settlement)
+        {
+            let run_id = hooks.schema_settlement_run_id.ok_or_else(|| {
+                CdfError::internal(
+                    "state-backed schema settlement requires the current project run id",
+                )
+            })?;
+            schema_settlement = Some(ActiveSchemaSettlement::acquire(binding, run_id)?);
+        }
 
         let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
             cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
@@ -1766,11 +1895,16 @@ where
     )?;
 
     let checkpoint_started = Instant::now();
-    let checkpoint = commit_or_reuse_committed_checkpoint(
-        checkpoint_store,
-        &inputs.state_delta,
-        receipt.clone(),
-    )?;
+    let checkpoint = match schema_settlement.as_mut() {
+        Some(settlement) => {
+            settlement.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?
+        }
+        None => commit_or_reuse_committed_checkpoint(
+            checkpoint_store,
+            &inputs.state_delta,
+            receipt.clone(),
+        )?,
+    };
     let package_status =
         mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
     let checkpoint_metric =

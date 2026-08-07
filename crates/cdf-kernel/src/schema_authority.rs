@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CanonicalArrowSchema, CdfError, ContractRef, EnvironmentName, FencingToken,
-    ImmutableContentIdentity, LeaseAuthorityDomainId, LeaseOwnerId, ProjectId, PromotionId,
-    ResourceId, Result, SchemaHash, ScopeKey, ScopeLease, canonical_arrow_schema_hash,
+    CanonicalArrowSchema, CdfError, Checkpoint, CheckpointId, ContractRef, EnvironmentName,
+    FencingToken, ImmutableContentIdentity, LeaseAuthorityDomainId, LeaseOwnerId, ProjectId,
+    PromotionId, Receipt, ResourceId, Result, RunId, SchemaHash, ScopeKey, ScopeLease,
+    canonical_arrow_schema_hash,
 };
 
 pub const MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT: u32 = 10_000;
@@ -304,6 +305,39 @@ pub struct SchemaPromotionFence {
     pub lease: ScopeLease,
 }
 
+/// A renewable, generation-bound capability to cross one destination settlement boundary.
+///
+/// The state store, rather than the caller's clock, owns validity. A permit is deliberately
+/// resource/run scoped: packaging does not require it, and it is acquired only when a verified
+/// package is ready to mutate its destination.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSettlementPermit {
+    pub key: SchemaAuthorityKey,
+    pub run_id: RunId,
+    pub generation: u64,
+    pub schema_hash: SchemaHash,
+    pub acquired_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+impl SchemaSettlementPermit {
+    pub fn validate(&self) -> Result<()> {
+        self.key.validate()?;
+        RunId::new(self.run_id.as_str()).map(drop)?;
+        SchemaHash::new(self.schema_hash.as_str()).map(drop)?;
+        if self.generation == 0
+            || self.acquired_at_ms < 0
+            || self.expires_at_ms <= self.acquired_at_ms
+        {
+            return Err(CdfError::contract(
+                "schema settlement permit generation and lifetime must be valid",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl SchemaPromotionFence {
     pub fn new(
         authority_domain_id: LeaseAuthorityDomainId,
@@ -464,6 +498,36 @@ pub trait SchemaAuthorityStore: Send + Sync {
     ) -> Result<SchemaHead>;
 
     fn history(&self, key: &SchemaAuthorityKey, limit: u32) -> Result<Vec<SchemaAuthorityEvent>>;
+}
+
+/// State-atomic ordinary-run settlement fencing for one schema authority domain.
+///
+/// Implementations MUST serialize permit acquisition with promotion begin, and MUST validate the
+/// exact permit, head generation, schema hash, receipt, and checkpoint commit in one transaction.
+pub trait SchemaSettlementStore: Send + Sync {
+    fn acquire_run_permit(
+        &self,
+        expected_active: &SchemaHead,
+        run_id: RunId,
+        permit_duration_ms: u64,
+    ) -> Result<SchemaSettlementPermit>;
+
+    fn renew_run_permit(
+        &self,
+        permit: &SchemaSettlementPermit,
+        permit_duration_ms: u64,
+    ) -> Result<SchemaSettlementPermit>;
+
+    fn assert_run_permit(&self, permit: &SchemaSettlementPermit) -> Result<()>;
+
+    fn release_run_permit(&self, permit: &SchemaSettlementPermit) -> Result<()>;
+
+    fn commit_run_checkpoint(
+        &self,
+        permit: &SchemaSettlementPermit,
+        checkpoint_id: &CheckpointId,
+        receipt: Receipt,
+    ) -> Result<Checkpoint>;
 }
 
 #[cfg(test)]

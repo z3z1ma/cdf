@@ -726,9 +726,31 @@ pub struct ExecutionServices {
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
     content_reachability: Option<Arc<dyn cdf_kernel::ContentReachabilityStore>>,
+    schema_settlement: Option<SchemaSettlementBinding>,
     task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
     source_rate_gates: Arc<SourceRateGateRegistry>,
     source_io_controllers: Arc<SourceIoControllerRegistry>,
+}
+
+#[derive(Clone)]
+pub struct SchemaSettlementBinding {
+    store: Arc<dyn cdf_kernel::SchemaSettlementStore>,
+    active_head: cdf_kernel::SchemaHead,
+    permit_duration_ms: u64,
+}
+
+impl SchemaSettlementBinding {
+    pub fn active_head(&self) -> &cdf_kernel::SchemaHead {
+        &self.active_head
+    }
+
+    pub fn store(&self) -> &Arc<dyn cdf_kernel::SchemaSettlementStore> {
+        &self.store
+    }
+
+    pub fn permit_duration_ms(&self) -> u64 {
+        self.permit_duration_ms
+    }
 }
 
 #[derive(Default)]
@@ -1110,6 +1132,7 @@ impl ExecutionServices {
             run_work: None,
             staging_leases: None,
             content_reachability: None,
+            schema_settlement: None,
             task_reports: None,
             source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
             source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),
@@ -1139,6 +1162,7 @@ impl ExecutionServices {
             })),
             staging_leases: self.staging_leases.clone(),
             content_reachability: self.content_reachability.clone(),
+            schema_settlement: self.schema_settlement.clone(),
             task_reports: None,
             source_rate_gates: Arc::clone(&self.source_rate_gates),
             source_io_controllers: Arc::clone(&self.source_io_controllers),
@@ -1159,6 +1183,7 @@ impl ExecutionServices {
                 Arc::clone(&self.host),
             )?),
             content_reachability: self.content_reachability.clone(),
+            schema_settlement: self.schema_settlement.clone(),
             task_reports: self.task_reports.clone(),
             source_rate_gates: Arc::clone(&self.source_rate_gates),
             source_io_controllers: Arc::clone(&self.source_io_controllers),
@@ -1176,6 +1201,7 @@ impl ExecutionServices {
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
             content_reachability: Some(store),
+            schema_settlement: self.schema_settlement.clone(),
             task_reports: self.task_reports.clone(),
             source_rate_gates: Arc::clone(&self.source_rate_gates),
             source_io_controllers: Arc::clone(&self.source_io_controllers),
@@ -1190,6 +1216,36 @@ impl ExecutionServices {
                 "immutable content publication requires an injected reachability store",
             )
         })
+    }
+
+    pub fn with_schema_settlement(
+        &self,
+        store: Arc<dyn cdf_kernel::SchemaSettlementStore>,
+        active_head: cdf_kernel::SchemaHead,
+        permit_duration_ms: u64,
+    ) -> Result<Self> {
+        active_head.validate()?;
+        if !matches!(active_head.status, cdf_kernel::SchemaHeadStatus::Active) {
+            return Err(CdfError::contract(
+                "run schema settlement requires an active authority head",
+            ));
+        }
+        if permit_duration_ms == 0 {
+            return Err(CdfError::contract(
+                "run schema settlement permit duration must be positive",
+            ));
+        }
+        let mut services = self.clone();
+        services.schema_settlement = Some(SchemaSettlementBinding {
+            store,
+            active_head,
+            permit_duration_ms,
+        });
+        Ok(services)
+    }
+
+    pub fn schema_settlement(&self) -> Option<&SchemaSettlementBinding> {
+        self.schema_settlement.as_ref()
     }
 
     /// Returns invocation-local services carrying the cancellation authority for this run.
@@ -1590,6 +1646,7 @@ impl ExecutionServices {
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
             content_reachability: self.content_reachability.clone(),
+            schema_settlement: self.schema_settlement.clone(),
             task_reports: match (enabled, &self.task_reports) {
                 (true, Some(reports)) => Some(Arc::clone(reports)),
                 (true, None) => Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
@@ -2180,6 +2237,7 @@ mod tests {
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,
                 content_reachability: None,
+                schema_settlement: None,
                 task_reports: Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
                 source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
                 source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),

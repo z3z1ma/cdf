@@ -812,7 +812,7 @@ fn execute_prepared(
         explicit,
         run_services,
         prepared,
-        schema_authority: _schema_authority,
+        schema_authority,
         schema_authority_report,
         state_store_path,
         state_store_path_ownership,
@@ -825,6 +825,15 @@ fn execute_prepared(
         explain_memory,
         portable_artifact_root: _portable_artifact_root,
     } = prepared_run;
+    let run_services = match schema_authority.as_ref() {
+        Some(authority) => crate::schema_authority::bind_settlement_services_at(
+            state_store_path.clone(),
+            state_store_path_ownership,
+            authority,
+            &run_services,
+        )?,
+        None => run_services,
+    };
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match host

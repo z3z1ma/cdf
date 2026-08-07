@@ -77,6 +77,8 @@ pub(crate) fn backfill(
     }
 
     crate::schema_authority::commit_one_idempotent(&context, &schema_authority)?;
+    let services =
+        crate::schema_authority::bind_settlement_services(&context, &schema_authority, services)?;
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
     let mut progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
@@ -92,7 +94,7 @@ pub(crate) fn backfill(
                 pipeline_id: &pipeline_id,
                 event_sink,
                 host,
-                services,
+                services: &services,
             }
             .execute(slice)
         };

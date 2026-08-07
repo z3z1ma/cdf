@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::BTreeMap,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,6 +15,8 @@ use cdf_project::CompiledSchemaAuthority;
 use cdf_state_sqlite::{SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore};
 
 use crate::{context::ProjectContext, output::CliError};
+
+const DEFAULT_RUN_SCHEMA_SETTLEMENT_PERMIT_MS: u64 = 30_000;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedSchemaAuthority {
@@ -208,6 +211,45 @@ pub(crate) fn commit_one_idempotent(
         }
     }
     Ok(())
+}
+
+pub(crate) fn bind_settlement_services(
+    context: &ProjectContext,
+    prepared: &PreparedSchemaAuthority,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<cdf_runtime::ExecutionServices, CliError> {
+    bind_settlement_services_at(
+        context.state_store_path()?,
+        context.state_store_path_ownership(),
+        prepared,
+        services,
+    )
+}
+
+pub(crate) fn bind_settlement_services_at(
+    state_path: std::path::PathBuf,
+    ownership: cdf_state_sqlite::StateStorePathOwnership,
+    prepared: &PreparedSchemaAuthority,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<cdf_runtime::ExecutionServices, CliError> {
+    let authority = prepared.compiled_authority()?;
+    let active_head = SchemaHead::active(
+        authority.key.clone(),
+        authority.generation,
+        authority.schema_hash,
+    )?;
+    let store = SqliteSchemaAuthorityStore::open_with_authority_domain_and_path_ownership(
+        state_path,
+        &authority.key.authority_domain_id,
+        ownership,
+    )?;
+    services
+        .with_schema_settlement(
+            Arc::new(store),
+            active_head,
+            DEFAULT_RUN_SCHEMA_SETTLEMENT_PERMIT_MS,
+        )
+        .map_err(Into::into)
 }
 
 pub(crate) fn commit_at(

@@ -969,8 +969,11 @@ fn run_ndjson_discovery_establishes_schema_authority_and_commits() {
 
     let result = run_valid_run_args(&project);
 
-    assert_eq!(result.exit_code, 0, "{}", result.stderr);
-    assert!(project.root.join(".cdf/schemas").exists());
+    assert_eq!(
+        result.exit_code, 0,
+        "stderr:\n{}\nstdout:\n{}",
+        result.stderr, result.stdout
+    );
     assert!(
         run_package_dir(&project, &result)
             .join("manifest.json")
@@ -982,6 +985,15 @@ fn run_ndjson_discovery_establishes_schema_authority_and_commits() {
         "local.events"
     );
     assert!(project.root.join(".cdf/state.db").exists());
+    let state = rusqlite::Connection::open(project.root.join(".cdf/state.db")).unwrap();
+    let settlement_count: i64 = state
+        .query_row(
+            "SELECT COUNT(*) FROM cdf_schema_checkpoint_settlements WHERE resource_id = 'local.events' AND generation = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(settlement_count, 1);
 }
 
 #[test]

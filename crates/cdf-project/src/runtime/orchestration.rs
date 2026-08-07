@@ -1036,6 +1036,7 @@ async fn run_project_inner(
             before_package_receipt_recorded: None,
             after_receipt_verified: execution.after_receipt_verified,
             stage: Some(&stage_hook),
+            schema_settlement_run_id: Some(&execution.recorder.run_id),
             ..Default::default()
         },
         active_staged,

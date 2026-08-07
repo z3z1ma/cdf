@@ -79,8 +79,8 @@ pub use execution_host::{
     BlockingValueTask, CancellationFuture, CpuFutureTask, CpuTaskSpec, ExecutionHost,
     ExecutionHostCapabilities, ExecutionServices, ExecutionTaskScope, InterruptionSafety, IoTask,
     IoValue, IoValueTask, LaneAffinity, RunCancellation, RunWorkPermit, RunWorkReport,
-    RuntimeSchedulerReport, ScopedBlockingTask, ScopedTaskStream, SourceIoController,
-    SourceIoControllerLimits, SourceIoControllerMode, SourceIoControllerReport,
+    RuntimeSchedulerReport, SchemaSettlementBinding, ScopedBlockingTask, ScopedTaskStream,
+    SourceIoController, SourceIoControllerLimits, SourceIoControllerMode, SourceIoControllerReport,
     SourceIoRequestPermit, SourceRateAdmissionReport, TaskScopeReport, TaskStreamSender,
 };
 pub use format::{

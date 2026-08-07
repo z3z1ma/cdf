@@ -5,11 +5,12 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, LeaseAuthorityDomainId, MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, Result,
-    SchemaAuthorityCheck, SchemaAuthorityEstablishment, SchemaAuthorityEvent,
-    SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityStore, SchemaHash, SchemaHead,
-    SchemaHeadStatus, SchemaPromotionFence, SchemaVersion, SchemaVersionProvenance,
-    ScopeLeaseClock,
+    CdfError, Checkpoint, CheckpointId, CheckpointStatus, LeaseAuthorityDomainId,
+    MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, Receipt, Result, RunId, SchemaAuthorityCheck,
+    SchemaAuthorityEstablishment, SchemaAuthorityEvent, SchemaAuthorityEventKind,
+    SchemaAuthorityKey, SchemaAuthorityStore, SchemaHash, SchemaHead, SchemaHeadStatus,
+    SchemaPromotionFence, SchemaSettlementPermit, SchemaSettlementStore, SchemaVersion,
+    SchemaVersionProvenance, ScopeLeaseClock,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -19,6 +20,10 @@ use crate::{
         initialize_schema as initialize_lease_schema,
         initialize_schema_with_domain as initialize_lease_schema_with_domain,
         read_authority_domain_id, validate_schema_version as validate_lease_schema_version,
+    },
+    sqlite::{
+        SqliteCheckpointStore as CheckpointSql, commit_checkpoint_tx,
+        initialize_schema as initialize_checkpoint_schema,
     },
     support::{
         SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
@@ -30,11 +35,12 @@ use crate::{
 };
 
 pub(crate) const SCHEMA_AUTHORITY_COMPONENT: &str = "schema_authority_store";
-pub(crate) const SCHEMA_AUTHORITY_SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_AUTHORITY_SCHEMA_VERSION: i64 = 2;
 
 const VERSION_SELECT: &str = "SELECT schema_hash, predecessor_schema_hash, created_at_ms, version_json FROM cdf_schema_versions";
 const HEAD_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, generation, schema_hash, status, promotion_id, promotion_from_schema_hash, promotion_to_schema_hash, promotion_lease_owner, promotion_fencing_token, head_json FROM cdf_schema_heads";
 const EVENT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, ordinal, generation, schema_hash, recorded_at_ms, event_json FROM cdf_schema_authority_events";
+const PERMIT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, run_id, generation, schema_hash, acquired_at_ms, expires_at_ms, released, permit_json FROM cdf_schema_settlement_permits";
 
 pub struct SqliteSchemaAuthorityStore {
     conn: Mutex<Connection>,
@@ -125,7 +131,9 @@ impl SqliteSchemaAuthorityStore {
                 Some(version) => Err(unsupported_schema_version(version)),
                 None if sqlite_table_exists(&conn, "cdf_schema_heads")?
                     || sqlite_table_exists(&conn, "cdf_schema_versions")?
-                    || sqlite_table_exists(&conn, "cdf_schema_authority_events")? =>
+                    || sqlite_table_exists(&conn, "cdf_schema_authority_events")?
+                    || sqlite_table_exists(&conn, "cdf_schema_settlement_permits")?
+                    || sqlite_table_exists(&conn, "cdf_schema_checkpoint_settlements")? =>
                 {
                     Err(CdfError::internal(format!(
                         "schema authority SQLite schema is unversioned; expected current version {SCHEMA_AUTHORITY_SCHEMA_VERSION}"
@@ -403,7 +411,9 @@ fn initialize_schema_with_domain(
         Some(version) => return Err(unsupported_schema_version(version)),
         None if sqlite_table_exists(conn, "cdf_schema_heads")?
             || sqlite_table_exists(conn, "cdf_schema_versions")?
-            || sqlite_table_exists(conn, "cdf_schema_authority_events")? =>
+            || sqlite_table_exists(conn, "cdf_schema_authority_events")?
+            || sqlite_table_exists(conn, "cdf_schema_settlement_permits")?
+            || sqlite_table_exists(conn, "cdf_schema_checkpoint_settlements")? =>
         {
             return Err(CdfError::internal(format!(
                 "schema authority SQLite schema is unversioned; expected current version {SCHEMA_AUTHORITY_SCHEMA_VERSION}"
@@ -411,6 +421,7 @@ fn initialize_schema_with_domain(
         }
         None => {}
     }
+    initialize_checkpoint_schema(conn)?;
     ensure_schema_version_table(conn)?;
     conn.execute_batch(
         "
@@ -506,6 +517,61 @@ fn initialize_schema_with_domain(
                 authority_domain_id, project_id, environment, resource_id, ordinal
             );
 
+        CREATE TABLE IF NOT EXISTS cdf_schema_settlement_permits (
+            authority_domain_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            schema_hash TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL CHECK (acquired_at_ms >= 0),
+            expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms > acquired_at_ms),
+            released INTEGER NOT NULL CHECK (released IN (0, 1)),
+            permit_json TEXT NOT NULL,
+            PRIMARY KEY (
+                authority_domain_id, project_id, environment, resource_id, run_id
+            ),
+            FOREIGN KEY (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            ) REFERENCES cdf_schema_versions (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS cdf_schema_settlement_permits_live
+            ON cdf_schema_settlement_permits (
+                authority_domain_id, project_id, environment, resource_id, released, expires_at_ms
+            );
+
+        CREATE TABLE IF NOT EXISTS cdf_schema_checkpoint_settlements (
+            checkpoint_id TEXT PRIMARY KEY,
+            authority_domain_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            schema_hash TEXT NOT NULL,
+            settled_at_ms INTEGER NOT NULL CHECK (settled_at_ms >= 0),
+            FOREIGN KEY (checkpoint_id) REFERENCES cdf_checkpoints (checkpoint_id),
+            FOREIGN KEY (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            ) REFERENCES cdf_schema_versions (
+                authority_domain_id, project_id, environment, resource_id, schema_hash
+            ),
+            FOREIGN KEY (
+                authority_domain_id, project_id, environment, resource_id, run_id
+            ) REFERENCES cdf_schema_settlement_permits (
+                authority_domain_id, project_id, environment, resource_id, run_id
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS cdf_schema_checkpoint_settlements_authority
+            ON cdf_schema_checkpoint_settlements (
+                authority_domain_id, project_id, environment, resource_id, generation
+            );
+
         CREATE TRIGGER IF NOT EXISTS cdf_schema_versions_no_update
         BEFORE UPDATE ON cdf_schema_versions
         BEGIN SELECT RAISE(ABORT, 'schema versions are immutable'); END;
@@ -546,6 +612,8 @@ fn validate_schema_structure(conn: &Connection) -> Result<()> {
             "cdf_schema_versions",
             "cdf_schema_heads",
             "cdf_schema_authority_events",
+            "cdf_schema_settlement_permits",
+            "cdf_schema_checkpoint_settlements",
         ],
     )
 }
@@ -1052,6 +1120,170 @@ fn u64_to_i64(name: &str, value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| CdfError::internal(format!("{name} exceeds SQLite i64")))
 }
 
+fn permit_expiry(now_ms: i64, duration_ms: u64) -> Result<i64> {
+    if duration_ms == 0 {
+        return Err(CdfError::contract(
+            "schema settlement permit duration must be positive",
+        ));
+    }
+    now_ms
+        .checked_add(u64_to_i64(
+            "schema settlement permit duration",
+            duration_ms,
+        )?)
+        .ok_or_else(|| CdfError::contract("schema settlement permit expiry exceeds SQLite range"))
+}
+
+#[derive(Debug)]
+struct StoredPermitRow {
+    authority_domain_id: String,
+    project_id: String,
+    environment: String,
+    resource_id: String,
+    run_id: String,
+    generation: i64,
+    schema_hash: String,
+    acquired_at_ms: i64,
+    expires_at_ms: i64,
+    released: i64,
+    permit_json: String,
+}
+
+fn stored_permit_row(row: &Row<'_>) -> rusqlite::Result<StoredPermitRow> {
+    Ok(StoredPermitRow {
+        authority_domain_id: row.get(0)?,
+        project_id: row.get(1)?,
+        environment: row.get(2)?,
+        resource_id: row.get(3)?,
+        run_id: row.get(4)?,
+        generation: row.get(5)?,
+        schema_hash: row.get(6)?,
+        acquired_at_ms: row.get(7)?,
+        expires_at_ms: row.get(8)?,
+        released: row.get(9)?,
+        permit_json: row.get(10)?,
+    })
+}
+
+fn fetch_permit(
+    conn: &Connection,
+    key: &SchemaAuthorityKey,
+    run_id: &RunId,
+) -> Result<Option<(SchemaSettlementPermit, bool)>> {
+    let sql = format!(
+        "{PERMIT_SELECT} WHERE authority_domain_id = ? AND project_id = ? AND environment = ? AND resource_id = ? AND run_id = ?"
+    );
+    conn.query_row(
+        &sql,
+        params![
+            key.authority_domain_id.as_str(),
+            key.project_id.as_str(),
+            key.environment.as_str(),
+            key.resource_id.as_str(),
+            run_id.as_str(),
+        ],
+        stored_permit_row,
+    )
+    .optional()
+    .map_err(sqlite_error)?
+    .map(decode_permit)
+    .transpose()
+}
+
+fn decode_permit(row: StoredPermitRow) -> Result<(SchemaSettlementPermit, bool)> {
+    private_state_decode(
+        "decode CDF-managed schema settlement permit",
+        (|| {
+            let permit: SchemaSettlementPermit =
+                serde_json::from_str(&row.permit_json).map_err(|error| {
+                    CdfError::internal(format!("decode settlement permit: {error}"))
+                })?;
+            permit.validate()?;
+            if permit.key.authority_domain_id.as_str() != row.authority_domain_id
+                || permit.key.project_id.as_str() != row.project_id
+                || permit.key.environment.as_str() != row.environment
+                || permit.key.resource_id.as_str() != row.resource_id
+                || permit.run_id.as_str() != row.run_id
+                || u64_to_i64("schema settlement generation", permit.generation)? != row.generation
+                || permit.schema_hash.as_str() != row.schema_hash
+                || permit.acquired_at_ms != row.acquired_at_ms
+                || permit.expires_at_ms != row.expires_at_ms
+                || !matches!(row.released, 0 | 1)
+            {
+                return Err(CdfError::internal(
+                    "schema settlement permit columns do not match serialized authority",
+                ));
+            }
+            Ok((permit, row.released == 1))
+        })(),
+    )
+}
+
+fn insert_permit(tx: &Transaction<'_>, permit: &SchemaSettlementPermit) -> Result<()> {
+    permit.validate()?;
+    tx.execute(
+        "INSERT INTO cdf_schema_settlement_permits (
+            authority_domain_id, project_id, environment, resource_id, run_id, generation,
+            schema_hash, acquired_at_ms, expires_at_ms, released, permit_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+        params![
+            permit.key.authority_domain_id.as_str(),
+            permit.key.project_id.as_str(),
+            permit.key.environment.as_str(),
+            permit.key.resource_id.as_str(),
+            permit.run_id.as_str(),
+            u64_to_i64("schema settlement generation", permit.generation)?,
+            permit.schema_hash.as_str(),
+            permit.acquired_at_ms,
+            permit.expires_at_ms,
+            encode_json(permit)?,
+        ],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn head_allows_permit(head: &SchemaHead, permit: &SchemaSettlementPermit) -> bool {
+    if head.key != permit.key
+        || head.generation != permit.generation
+        || head.schema_hash != permit.schema_hash
+    {
+        return false;
+    }
+    match &head.status {
+        SchemaHeadStatus::Active => true,
+        SchemaHeadStatus::Promoting {
+            from_schema_hash, ..
+        } => from_schema_hash == &permit.schema_hash,
+    }
+}
+
+fn require_live_permit(
+    conn: &Connection,
+    permit: &SchemaSettlementPermit,
+    now_ms: i64,
+) -> Result<()> {
+    let Some((current, released)) = fetch_permit(conn, &permit.key, &permit.run_id)? else {
+        return Err(CdfError::transient(
+            "schema settlement permit does not exist",
+        ));
+    };
+    if current != *permit || released || current.expires_at_ms <= now_ms {
+        return Err(CdfError::transient(
+            "schema settlement permit is stale, released, or expired",
+        ));
+    }
+    let head = fetch_head(conn, &permit.key)?
+        .ok_or_else(|| CdfError::contract("schema settlement authority head is missing"))?;
+    if !head_allows_permit(&head, permit) {
+        return Err(CdfError::contract(format!(
+            "schema settlement permit for generation {} and schema {} is not current authority",
+            permit.generation, permit.schema_hash
+        )));
+    }
+    Ok(())
+}
+
 impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
     fn authority_domain_id(&self) -> LeaseAuthorityDomainId {
         self.authority_domain_id.clone()
@@ -1278,6 +1510,193 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
             require_event_versions(&conn, event)?;
         }
         Ok(events)
+    }
+}
+
+impl SchemaSettlementStore for SqliteSchemaAuthorityStore {
+    fn acquire_run_permit(
+        &self,
+        expected_active: &SchemaHead,
+        run_id: RunId,
+        permit_duration_ms: u64,
+    ) -> Result<SchemaSettlementPermit> {
+        expected_active.validate()?;
+        self.validate_key_domain(&expected_active.key)?;
+        RunId::new(run_id.as_str()).map(drop)?;
+        if !matches!(expected_active.status, SchemaHeadStatus::Active) {
+            return Err(CdfError::contract(
+                "schema settlement permit requires an active authority head",
+            ));
+        }
+
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let now_ms = self.clock.now_ms()?;
+        let current = fetch_head(&tx, &expected_active.key)?
+            .ok_or_else(|| CdfError::contract("schema settlement authority head is missing"))?;
+        if current != *expected_active {
+            return Err(stale_head(expected_active, &current));
+        }
+        if let Some((existing, released)) = fetch_permit(&tx, &expected_active.key, &run_id)? {
+            if !released && existing.expires_at_ms > now_ms {
+                return Ok(existing);
+            }
+            return Err(CdfError::contract(format!(
+                "run {run_id} already consumed or expired its schema settlement permit"
+            )));
+        }
+        let permit = SchemaSettlementPermit {
+            key: expected_active.key.clone(),
+            run_id,
+            generation: expected_active.generation,
+            schema_hash: expected_active.schema_hash.clone(),
+            acquired_at_ms: now_ms,
+            expires_at_ms: permit_expiry(now_ms, permit_duration_ms)?,
+        };
+        insert_permit(&tx, &permit)?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(permit)
+    }
+
+    fn renew_run_permit(
+        &self,
+        permit: &SchemaSettlementPermit,
+        permit_duration_ms: u64,
+    ) -> Result<SchemaSettlementPermit> {
+        permit.validate()?;
+        self.validate_key_domain(&permit.key)?;
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let now_ms = self.clock.now_ms()?;
+        require_live_permit(&tx, permit, now_ms)?;
+        let renewed = SchemaSettlementPermit {
+            expires_at_ms: permit_expiry(now_ms, permit_duration_ms)?,
+            ..permit.clone()
+        };
+        tx.execute(
+            "UPDATE cdf_schema_settlement_permits
+             SET expires_at_ms = ?, permit_json = ?
+             WHERE authority_domain_id = ? AND project_id = ? AND environment = ?
+               AND resource_id = ? AND run_id = ? AND released = 0",
+            params![
+                renewed.expires_at_ms,
+                encode_json(&renewed)?,
+                renewed.key.authority_domain_id.as_str(),
+                renewed.key.project_id.as_str(),
+                renewed.key.environment.as_str(),
+                renewed.key.resource_id.as_str(),
+                renewed.run_id.as_str(),
+            ],
+        )
+        .map_err(sqlite_error)?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(renewed)
+    }
+
+    fn assert_run_permit(&self, permit: &SchemaSettlementPermit) -> Result<()> {
+        permit.validate()?;
+        self.validate_key_domain(&permit.key)?;
+        let conn = self.lock()?;
+        require_live_permit(&conn, permit, self.clock.now_ms()?)
+    }
+
+    fn release_run_permit(&self, permit: &SchemaSettlementPermit) -> Result<()> {
+        permit.validate()?;
+        self.validate_key_domain(&permit.key)?;
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let Some((current, released)) = fetch_permit(&tx, &permit.key, &permit.run_id)? else {
+            return Err(CdfError::transient(
+                "schema settlement permit does not exist",
+            ));
+        };
+        if current != *permit {
+            return Err(CdfError::transient("schema settlement permit is stale"));
+        }
+        if !released {
+            tx.execute(
+                "UPDATE cdf_schema_settlement_permits SET released = 1
+                 WHERE authority_domain_id = ? AND project_id = ? AND environment = ?
+                   AND resource_id = ? AND run_id = ? AND released = 0",
+                params![
+                    permit.key.authority_domain_id.as_str(),
+                    permit.key.project_id.as_str(),
+                    permit.key.environment.as_str(),
+                    permit.key.resource_id.as_str(),
+                    permit.run_id.as_str(),
+                ],
+            )
+            .map_err(sqlite_error)?;
+        }
+        tx.commit().map_err(sqlite_error)
+    }
+
+    fn commit_run_checkpoint(
+        &self,
+        permit: &SchemaSettlementPermit,
+        checkpoint_id: &CheckpointId,
+        receipt: Receipt,
+    ) -> Result<Checkpoint> {
+        permit.validate()?;
+        self.validate_key_domain(&permit.key)?;
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let checkpoint = CheckpointSql::fetch_by_id_tx(&tx, checkpoint_id)?
+            .ok_or_else(|| CdfError::data(format!("checkpoint {checkpoint_id} does not exist")))?;
+        if checkpoint.delta.resource_id != permit.key.resource_id {
+            return Err(CdfError::contract(format!(
+                "checkpoint {checkpoint_id} does not match schema settlement authority for {} generation {}",
+                permit.key.resource_id, permit.generation
+            )));
+        }
+        if checkpoint.status == CheckpointStatus::Committed
+            && checkpoint.receipt.as_ref() == Some(&receipt)
+        {
+            return Ok(checkpoint);
+        }
+        require_live_permit(&tx, permit, self.clock.now_ms()?)?;
+        let committed = commit_checkpoint_tx(&tx, checkpoint_id, &receipt)?;
+        tx.execute(
+            "INSERT INTO cdf_schema_checkpoint_settlements (
+                checkpoint_id, authority_domain_id, project_id, environment, resource_id,
+                run_id, generation, schema_hash, settled_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                checkpoint_id.as_str(),
+                permit.key.authority_domain_id.as_str(),
+                permit.key.project_id.as_str(),
+                permit.key.environment.as_str(),
+                permit.key.resource_id.as_str(),
+                permit.run_id.as_str(),
+                u64_to_i64("schema settlement generation", permit.generation)?,
+                permit.schema_hash.as_str(),
+                receipt.committed_at_ms,
+            ],
+        )
+        .map_err(sqlite_error)?;
+        tx.execute(
+            "UPDATE cdf_schema_settlement_permits SET released = 1
+             WHERE authority_domain_id = ? AND project_id = ? AND environment = ?
+               AND resource_id = ? AND run_id = ? AND released = 0",
+            params![
+                permit.key.authority_domain_id.as_str(),
+                permit.key.project_id.as_str(),
+                permit.key.environment.as_str(),
+                permit.key.resource_id.as_str(),
+                permit.run_id.as_str(),
+            ],
+        )
+        .map_err(sqlite_error)?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(committed)
     }
 }
 
