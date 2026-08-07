@@ -1,17 +1,15 @@
-Status: draft
+Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-07
 
 # CDC log-source foundation
 
 ## Status and ratification boundary
 
-This draft converts the 2026-08-03 core-readiness findings and fresh official protocol research
-into a proposed shared CDC runtime contract. The position/artifact, complete-image, and
-package-native keyed-effect subsets were ratified on 2026-08-03 and are extracted into focused
-active authority. The remaining draft surface is the PostgreSQL/MySQL large-transaction resource
-policy and concrete `cdc_apply` destination selection. MongoDB event-prefix segmentation is
-ratified and is not transaction-grouped.
+This active contract converts the 2026-08-03 core-readiness findings and official protocol
+research into the shared CDC runtime contract. Position/artifact, complete-image, package-native
+keyed-effect, large-transaction, destination, bootstrap, and continuous-run boundaries are now
+ratified. MongoDB event-prefix segmentation is not transaction-grouped.
 
 ## Purpose
 
@@ -30,12 +28,15 @@ receipt, and checkpoint commit gate. It MUST NOT introduce a parallel streaming 
 - canonical CDC operation metadata, control protection, and lowering into package-native keyed
   effects governed by `.10x/specs/package-keyed-delete-effects.md`;
 - a reusable log-source runtime/conformance archetype;
-- package/receipt/checkpoint behavior for finite CDC drain commands;
-- destination-facing `cdc_apply` input requirements, without implementing a concrete destination.
+- package/receipt/checkpoint behavior for finite CDC drain epochs;
+- destination-facing `cdc_apply` input requirements, with PostgreSQL and DuckDB as the first
+  implementations.
 
 ## Non-goals
 
-- resident process supervision, scheduling, leader election, or a daemon lifecycle;
+- daemon/service supervision, leader election, or a resident operator-graph lifecycle; the
+  process-local loop over finite drain epochs is governed by
+  `.10x/specs/cdc-resource-authoring-and-continuous-run.md`;
 - a universal wire protocol, replication client, schema registry, or database log model;
 - PostgreSQL slot/publication, MySQL binlog/GTID, or MongoDB change-stream protocol details;
 - a first-party `cdc_apply` destination implementation;
@@ -391,10 +392,18 @@ legacy readers or migrations. A partial transition is forbidden. This policy was
 - destination `cdc_apply` replay/verification tests;
 - memory and transaction-overshoot envelope evidence.
 
-## Open blockers
+## Ratified execution choices
 
-1. Exact PostgreSQL/MySQL large-transaction byte-bound ownership and behavior.
-2. First destination(s) authorized to implement `cdc_apply` after A1/A2.
+- The resolved host spill budget is the hard maximum PostgreSQL/MySQL single-transaction byte
+  authority. A resource may only lower it. Exceeding it advances no checkpoint.
+- PostgreSQL and DuckDB are the first `cdc_apply` destinations. Delete application is explicit
+  `HARD`, `IGNORE`, or Boolean-marker `SOFT` with no default, as governed by the focused authoring
+  spec.
+- First-use CDC explicitly chooses integrated `snapshot` or source-proven `latest`; no bootstrap
+  default exists.
+- `cdf run` provides continuous behavior by repeating settled finite drain epochs. First interrupt
+  settles the next safe frontier; second interrupt aborts unfinished work without checkpoint
+  advance.
 
 ## References
 
@@ -404,5 +413,7 @@ legacy readers or migrations. A partial transition is forbidden. This policy was
 - `.10x/specs/stream-epochs-watermarks.md`
 - `.10x/decisions/kernel-owned-stream-epoch-policy.md`
 - `.10x/specs/destination-receipts-guarantees.md`
+- `.10x/specs/cdc-resource-authoring-and-continuous-run.md`
+- `.10x/specs/retention-aware-package-collection.md`
 - `.10x/tickets/cancelled/2026-07-05-cdc-and-streaming-supervisor.md`
 - `VISION.md` §§6.5, 13.3, 25.3 and D-8/D-16

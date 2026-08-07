@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-04
+Updated: 2026-08-07
 Supersedes: `.10x/specs/superseded/sql-project-authoring.md`
 
 # Query-first SQL project authoring and native CDF lowering
@@ -104,6 +104,7 @@ resource_definition :=
     RESOURCE
     [target_clause]
     [disposition_clause]
+    [delete_clause]
     [cursor_clause]
     [trust_clause]
     [semantics_clause]
@@ -117,6 +118,7 @@ Canonical clause order is exactly:
 RESOURCE
 TARGET
 DISPOSITION
+DELETE
 CURSOR
 TRUST
 SEMANTICS
@@ -155,6 +157,7 @@ disposition_clause :=
     DISPOSITION APPEND
   | DISPOSITION REPLACE
   | DISPOSITION MERGE '(' output_column (',' output_column)* ')'
+  | DISPOSITION CDC_APPLY '(' output_column (',' output_column)* ')'
 ```
 
 `MERGE` requires at least one key. Keys preserve authored order, are unique, and each resolves
@@ -167,13 +170,32 @@ the input. Package-native captured delete effects and explicit hard/soft/ignore 
 governed by `.10x/specs/package-keyed-delete-effects.md`. Null-key behavior and duplicate input
 effect reduction MUST use native package authority; SQL does not create a second rule.
 
+`CDC_APPLY` requires at least one key and one immediately following `DELETE` clause. It consumes
+package-native complete upsert/key-only-delete effects and uses protocol-order last-effect
+semantics. Source mode, bootstrap, and execution lifecycle are governed by
+`.10x/specs/cdc-resource-authoring-and-continuous-run.md`.
+
+### Delete application
+
+```text
+delete_clause :=
+    DELETE HARD
+  | DELETE IGNORE
+  | DELETE SOFT '(' output_column ')'
+```
+
+`DELETE` is mandatory exactly once for `CDC_APPLY`, and for a deletion-capable `MERGE`; it is
+forbidden when deletes cannot enter that merge and under `APPEND` or `REPLACE`. There is no
+default. `SOFT` resolves one non-null Boolean marker under the package keyed-effect contract; it
+does not invent a timestamp or sparse tombstone.
+
 When disposition is omitted, precedence is explicit clause, applicable typed `[defaults]`
 `write_disposition`, narrow built-in default, then compile failure. Project defaults admit only
 `append` or capability-safe `replace`; keyed merge remains explicit because a keyless project
 default is incomplete. Built-in `REPLACE` is admitted only when the compiler proves the source is
 bounded and replayable and the selected destination supports it. Incremental or unbounded input
 without an applicable explicit/project disposition fails. The compiler never silently chooses
-`APPEND`; `cdc_apply` remains outside D3.
+`APPEND`, `MERGE`, or `CDC_APPLY`.
 
 ### Cursor
 
@@ -482,8 +504,9 @@ Successful compilation records at minimum:
 - effective normalized resource definition and execution identity;
 - parser, DataFusion, Arrow, scalar registry, compiler, and normalizer versions;
 - authoritative path, namespace, resource name, canonical resource id, and default target;
-- effective target, disposition/merge keys, cursor, trust, semantics, and execution policy, each
-  with origin, canonical identity, and authored span where present;
+- effective target, disposition/key fields, delete application/soft marker, cursor, trust,
+  semantics, and execution policy, each with origin, canonical identity, and authored span where
+  present;
 - configured source, effective typed secret-redacted source-config identity, immutable source type,
   driver id/version/descriptor/schema hashes, canonical structured resource arguments, and stable
   source-node identity;
@@ -508,6 +531,7 @@ The compiler MUST produce focused stable diagnostics for:
 - unknown, repeated, contradictory, or out-of-order envelope clauses;
 - unsafe or unresolved disposition/execution defaults;
 - empty, duplicate, ambiguous, or unknown merge keys;
+- missing, repeated, inapplicable, or invalid keyed-change delete application;
 - invalid semantic field/reference/definition/version/hash/type/control binding;
 - incomplete or inapplicable drain execution policy;
 - joins, all set operations including `UNION ALL`, aggregates, windows, subqueries, unsupported
@@ -555,28 +579,30 @@ ratified contract. Runtime interpolation remains forbidden.
     equal and authored SQL hashes differ.
 12. Given `DISPOSITION MERGE(user_id)`, the key resolves against the final output schema.
 13. Given empty, duplicate, ambiguous, or unknown merge keys, compile fails at their locations.
-14. Given valid `SEMANTICS (...)`, exact field binding, definition, version, parameters, and hash
+14. Given `DISPOSITION CDC_APPLY(user_id) DELETE HARD`, compile records exact key/delete policy;
+    omitting the delete clause fails before external I/O.
+15. Given valid `SEMANTICS (...)`, exact field binding, definition, version, parameters, and hash
     are recorded and Arrow compatibility is enforced.
-15. Given a join, compile fails before external I/O or native plan publication.
-16. Given `UNION ALL`, compile fails because set operations are outside the admitted language.
-17. Given equivalent bare and expanded resources, effective execution identity matches only when
+16. Given a join, compile fails before external I/O or native plan publication.
+17. Given `UNION ALL`, compile fails because set operations are outside the admitted language.
+18. Given equivalent bare and expanded resources, effective execution identity matches only when
     all resolved metadata/policy/dependencies match; authored hashes remain distinct.
-18. Given successful compilation, no DataFusion plan appears in any durable public, manifest,
+19. Given successful compilation, no DataFusion plan appears in any durable public, manifest,
     package, receipt, checkpoint, or destination type.
-19. Given any defaulted value, the manifest records effective value and exact origin.
-20. Given projection/filter/cast/alias expressions, pinned DataFusion analysis and native CDF
+20. Given any defaulted value, the manifest records effective value and exact origin.
+21. Given projection/filter/cast/alias expressions, pinned DataFusion analysis and native CDF
     execution agree on schema, values, nulls, and errors over differential/property fixtures.
-21. Given inexact pushdown, manifest records the decision and native residual evaluation preserves
+22. Given inexact pushdown, manifest records the decision and native residual evaluation preserves
     results.
-22. Given a non-immutable, ambient, UDF, table, aggregate, window, opaque, or otherwise inadmissible
+23. Given a non-immutable, ambient, UDF, table, aggregate, window, opaque, or otherwise inadmissible
     function, compile fails at the expression and publishes no plan.
-23. Given SQL attempts to alter a protected CDF operation/key field, compile fails as control-
+24. Given SQL attempts to alter a protected CDF operation/key field, compile fails as control-
     critical.
-24. Given a complete DRAIN policy, it lowers exactly to native stream policy; an incomplete or
+25. Given a complete DRAIN policy, it lowers exactly to native stream policy; an incomplete or
     inapplicable policy fails.
-25. Given `TRUST GOVERNED`, the governed contract preset and required review/validation/quarantine/
+26. Given `TRUST GOVERNED`, the governed contract preset and required review/validation/quarantine/
     retention evidence are compiled and exposed consistently.
-26. Given unrelated project directories outside `cdf/`, resource enumeration ignores them.
+27. Given unrelated project directories outside `cdf/`, resource enumeration ignores them.
 
 ## Performance requirements
 
@@ -629,5 +655,6 @@ templating.
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/specs/types-contracts-normalization.md`
 - `.10x/specs/package-keyed-delete-effects.md`
+- `.10x/specs/cdc-resource-authoring-and-continuous-run.md`
 - `.10x/knowledge/net-new-no-compatibility-policy.md`
 - `VISION.md` D-1, D-2, D-9, D-19, D-20

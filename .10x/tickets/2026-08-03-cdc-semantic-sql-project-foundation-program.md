@@ -90,7 +90,8 @@ Depends-On: A0.
 - provide merge/CDC conformance before either ingress mode adds streaming/partial availability.
 
 Governing authority: `.10x/decisions/package-native-keyed-delete-effects.md` and
-`.10x/specs/package-keyed-delete-effects.md`. Executable child intentionally pending a later turn.
+`.10x/specs/package-keyed-delete-effects.md`. Executable child:
+`.10x/tickets/2026-08-07-a1-5-package-native-keyed-effects.md`.
 
 Depends-On: A0. It may execute independently of A1 but must close before A2 keyed-effect package
 integration and A3 destination proof.
@@ -128,12 +129,38 @@ Current implementation placement is user-ratified: extend `cdf-source-postgres` 
 `cdf-source-mongodb`; create one `cdf-source-mysql` owning both finite table reads and binlog CDC.
 Do not register separate `postgres_cdc`, `mongodb_cdc`, or `mysql_cdc` source kinds.
 
-**A5. Resident supervision**
+**A5. Continuous command supervision**
 
-- pause/resume/daemon/operator lifecycle over proven finite drain epochs;
-- separate later program, not a prerequisite for A1-A4.
+- process-local continuous `cdf run` loop over proven finite drain epochs;
+- first interrupt settles the next safe frontier; second interrupt aborts the unfinished epoch
+  without checkpoint advance;
+- no daemon, `resume` command, or resident operator graph.
 
-Depends-On: at least one terminal CDC adapter proof. Parked until separately activated.
+Depends-On: at least one terminal CDC adapter proof. Governed by
+`.10x/specs/cdc-resource-authoring-and-continuous-run.md`.
+
+### Foundation lane A6 — shared extraction and routed target families
+
+**A6.1. Project-level shared-upstream execution graph**
+
+- separate physical upstream identity from logical resource identity;
+- compile compatible selected resources into one read/decode node with bounded accounted fan-out;
+- preserve branch package byte identity and per-resource receipt/checkpoint authority;
+- gate shared source acknowledgement on settlement of every branch.
+
+Governing draft: `.10x/specs/shared-upstream-fanout-execution.md`.
+
+**A6.2. Routed destination target families**
+
+- one logical resource/package/checkpoint may route to a bounded family of physical target tables;
+- physical targets derive from the logical base target plus deterministic route tokens;
+- multi-target application and receipt are package-atomic;
+- PostgreSQL and DuckDB provide the first destination proof.
+
+Governing draft: `.10x/specs/routed-destination-target-families.md`.
+
+Depends-On: A1.5 package-native effects for CDC deletes; ordinary row routing may stage its neutral
+identity/graph work independently after the focused syntax/naming checkpoint is ratified.
 
 ### Foundation lane B — Relational sources and MySQL
 
@@ -187,8 +214,8 @@ chosen by actual shared dependency evidence.
 - fail closed on corrupt, ambiguous, in-flight, recovery-required, or inside-retention artifacts.
 
 Depends-On: state-backed schema authority and promotion settlement (closed) but may execute before
-A1.5/A2. Exact execution flag and retention-boundary behavior await the compact ratification
-checkpoint below.
+A1.5/A2. Governed by `.10x/specs/retention-aware-package-collection.md`. Executable child:
+`.10x/tickets/2026-08-07-g1-retention-aware-package-collection.md`.
 
 ### Foundation lane C — Semantic types
 
@@ -377,6 +404,7 @@ Hooks:      E0 + C1 + D1/D3 → E1
 MySQL:      B0 → B1 + C1 → B2/B3
 Retention: G1 (independent) ───────────────┐
                                            └→ final CDC certificate
+Graph:     A6.1 + A6.2 ────────────────────┘
 ```
 
 This graph is explanatory, not authorization for parallel agents. The user has requested that the
@@ -391,6 +419,10 @@ primary agent own implementation and use separate agents only for red-team revie
 - no first-party database owns the broad source kind `sql`;
 - secrets remain references and never enter SQL/manifest/hook identity;
 - packages, receipts, and checkpoints remain the only execution commit gate;
+- shared extraction never merges resource/package/checkpoint identity and shared frontier
+  acknowledgement waits for every branch;
+- routed target families remain one logical resource and require package-atomic multi-target
+  settlement;
 - read-only commands do not recover or mutate project publication;
 - hooks are batch-level and vectorized; lifecycle side effects are separate;
 - runtime templating is forbidden; any future macro expansion is rendered and pinned;
@@ -433,6 +465,10 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 - `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
 - `.10x/specs/cdc-log-source-foundation.md`
+- `.10x/specs/cdc-resource-authoring-and-continuous-run.md`
+- `.10x/specs/retention-aware-package-collection.md`
+- `.10x/specs/shared-upstream-fanout-execution.md`
+- `.10x/specs/routed-destination-target-families.md`
 - `.10x/specs/sql-source-commons.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
@@ -513,6 +549,19 @@ deferred lanes are explicitly parked with owners. For a full close:
   readers, migrations, or transitional debt.
 - MongoDB accumulates ordered change events into segments/packages and advances the terminal resume
   token only after the exact destination receipt; it does not group events by source transaction.
+- The resolved host spill budget is the maximum PostgreSQL/MySQL transaction byte authority; a
+  resource may lower but not raise it.
+- PostgreSQL and DuckDB are the first `cdc_apply` destinations. Resource syntax is
+  `DISPOSITION CDC_APPLY(key, ...)` plus mandatory `DELETE HARD|IGNORE|SOFT(marker)`.
+- First-use CDC explicitly chooses `bootstrap => 'snapshot'` or `bootstrap => 'latest'`; no silent
+  default exists.
+- `cdf run` continuously loops over settled finite CDC epochs until interrupted. First interrupt
+  settles a safe frontier; second interrupt aborts unfinished work with no checkpoint advance.
+- `cdf package gc` remains dry-run by default, gains explicit `--execute`, and automatic
+  post-checkpoint collection tombstones only retention-expired heavy payloads while preserving
+  settlement proof.
+- One resource may own a bounded physical target family, and selected resources with a compatible
+  physical upstream must compose one extraction that fans out into independent resource branches.
 
 ### Record-backed constraints
 
@@ -524,12 +573,10 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- whether the resolved host spill budget is the maximum PostgreSQL/MySQL single-transaction byte
-  authority, with a resource allowed only to lower it;
-- the first `cdc_apply` destination set and exact resource syntax for explicit hard/soft/ignore
-  delete application;
-- whether first-use CDC requires an integrated consistent snapshot, requires an explicit native
-  start position, or explicitly starts from the current source frontier;
+- exact routed-target SQL grammar, deterministic physical-name folding, sensitive-key prohibition,
+  and mandatory maximum target count in `.10x/specs/routed-destination-target-families.md`;
+- exact shared-upstream compatibility/settlement rules in
+  `.10x/specs/shared-upstream-fanout-execution.md`;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
@@ -547,6 +594,15 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
   and one MySQL crate will own both finite and CDC modes. Three behavior choices still change
   source/destination/data-loss semantics and are held at a compact ratification checkpoint before
   executable adapter tickets are opened.
+
+- 2026-08-07: The user ratified the recommended host-spill transaction ceiling, PostgreSQL and
+  DuckDB `cdc_apply` with explicit delete policy, explicit snapshot/latest bootstrap, process-local
+  continuous run loop, retention-aware post-checkpoint tombstoning, and manual GC execution. The
+  user also added one-resource routed target families and project-level shared-upstream fan-out.
+  Static inspection proved current `source_node_id` includes resource identity and multi-resource
+  CLI execution is serial, so a new project execution graph is required rather than a CLI loop
+  optimization. Focused draft specs now hold the remaining routed naming/cardinality and fan-out
+  settlement choices.
 
 - 2026-08-04: The user challenged the undefined `source-driver catalog` phrase and the repeated
   source/resource identities visible in the sandbox project, then ratified the recommended
@@ -649,11 +705,11 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
 
 ## Blockers
 
-The compiler/state lanes are closed. CDC execution is blocked only on the three exact choices in
-`Unratified blockers`: one-transaction byte authority, initial `cdc_apply` destination/delete
-surface, and first-use CDC bootstrap. G1's collection mechanism also needs confirmation that
-retention expiry tombstones canonical package bytes automatically after checkpoint settlement.
-Hooks remain independently parked pending runtime ratification.
+The compiler/state lanes are closed. Package-native effects, retention collection, log runtime,
+finite MySQL, CDC adapters, destinations, and the continuous run loop may now receive bounded child
+owners. Routed target families and shared-upstream fan-out remain at the compact ratification
+checkpoint in their focused drafts. Hooks remain independently parked pending runtime
+ratification.
 
 ## Evidence
 
@@ -665,6 +721,8 @@ Hooks remain independently parked pending runtime ratification.
   MongoDB sources, exact proposed artifact fields/algebra, row-image consequences, and limits.
 - Current implementation/readiness evidence is recorded in
   `.10x/research/2026-08-07-cdc-mysql-continuous-readiness.md`.
+- Routed-target/shared-extraction readiness is recorded in
+  `.10x/research/2026-08-07-routed-target-shared-extraction-readiness.md`.
 - Implementation evidence pending ratification and child tickets.
 
 ## Review
