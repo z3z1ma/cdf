@@ -125,22 +125,3 @@ Follow `QUALITY.md` and keep feedback proportional to the change.
   push; repair concrete failures without starting an open-ended review/test loop.
 - Use `rg`/`rg --files` for bulk discovery before opening files one by one. Search current and
   terminal `.10x` records before inventing a new owner or repeating an investigation.
-
-## graphify
-
-This project has a knowledge graph at `graphify-out/` with god nodes, community structure, and
-cross-file relationships.
-
-When the user types `/graphify`, use the installed graphify skill or instructions before doing
-anything else.
-
-- For codebase questions, first run `graphify query "<question>"` when
-  `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and
-  `graphify explain "<concept>"` for focused concepts.
-- Dirty `graphify-out/` files are expected after hooks or incremental updates and are not a reason
-  to skip graphify. Skip it only when the task concerns stale/incorrect graph output or the user
-  explicitly says not to use it.
-- Prefer `graphify-out/wiki/index.md` for broad navigation. Read `GRAPH_REPORT.md` only for broad
-  architecture review or when scoped queries are insufficient.
-- After modifying code, run `graphify update .` when the graph exists so AST relationships remain
-  current.
