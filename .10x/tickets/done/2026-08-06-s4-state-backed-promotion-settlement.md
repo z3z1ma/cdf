@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-06-state-backed-schema-authority-program.md`
@@ -183,8 +183,30 @@ dispositions.
 
 ## Review
 
-Pending handback review.
+Verdict: pass for implementation handback. A focused self-review found no unresolved acceptance
+gap in the state lifecycle, ordinary-run fence, package replay/resume fence, target settlement, or
+atomic publication paths. The user explicitly deferred independent adversarial review to the S6
+program barrier; S6 remains responsible for attempting to falsify the integrated tranche rather
+than repeating this ticket's focused certificates.
+
+Residual risk: the focused S4 evidence does not certify every destination strategy or the whole
+workspace. Those are deliberately owned by S6's broad conformance, sandbox, current-only sweep,
+and independent review barrier.
 
 ## Retrospective
 
-Pending execution.
+The central mistake in the superseded model was treating publication as an event appended after a
+separate authority mutation. Moving the fence, target settlements, checkpoints, and head advance
+under one state transaction removed both the recovery gap and the temptation to reconstruct
+authority from filesystem or ledger history.
+
+The most expensive implementation surprise was SQLite self-contention caused by retaining several
+independently initialized aggregate connections. Short-lived validated component handles preserved
+the literal owning transaction while removing that incidental lock coupling. The package replay
+audit also exposed that fencing only ordinary authored runs was insufficient: immutable packages
+must carry the exact schema generation that authorized them, and replay must acquire its permit
+before even marking the package as loading.
+
+Focused lifecycle tests and one exact stale-package destination non-mutation regression produced
+more useful evidence during iteration than repeatedly running the workspace. The integrated matrix
+and independent falsification remain intentionally consolidated in S6.

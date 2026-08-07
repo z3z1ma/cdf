@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-06-state-backed-schema-authority-program.md`
-Depends-On: `.10x/tickets/done/2026-08-06-s2-state-backed-preparation-portable-plan.md`, `.10x/tickets/done/2026-08-06-s3-schema-drift-dispositions.md`, `.10x/tickets/2026-08-06-s4-state-backed-promotion-settlement.md`
+Depends-On: `.10x/tickets/done/2026-08-06-s2-state-backed-preparation-portable-plan.md`, `.10x/tickets/done/2026-08-06-s3-schema-drift-dispositions.md`, `.10x/tickets/done/2026-08-06-s4-state-backed-promotion-settlement.md`
 
 # S5 delete lockfile product surface
 
@@ -76,10 +76,13 @@ authority, and historical terminal records under `tickets/done`/`superseded`.
 ## Journal
 
 - 2026-08-06: Opened dependency-gated behind the complete authority and promotion cutover.
+- 2026-08-06: S2–S4 are closed and pushed. Began the current-only lockfile deletion after reading
+  the governing CLI report and project publication audit procedures. The integrated broad quality
+  and independent review barrier remains consolidated in S6 per explicit user direction.
 
 ## Blockers
 
-S2–S4 must close; deletion cannot strand a live compile/run/promotion consumer.
+None. S2–S4 are closed with state as the sole live schema and promotion authority.
 
 ## Evidence
 

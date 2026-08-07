@@ -29,7 +29,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
 4. **S4 — promotion settlement migration.** Implement generation-bound run settlement permits,
    fenced promotion head state, complete committed-frontier cutoff, historical residual correction,
    and state-atomic publication. Owner:
-   `.10x/tickets/2026-08-06-s4-state-backed-promotion-settlement.md`.
+   `.10x/tickets/done/2026-08-06-s4-state-backed-promotion-settlement.md`.
 5. **S5 — lockfile surface deletion.** Delete lock models/parsers/CAS/hydration, lock-bound contract
    and inspect commands, artifact/report/system-SQL fields, fixtures/docs/generated artifacts, and
    lock-only publication machinery. Owner:
@@ -100,6 +100,10 @@ promotion, or schema export/import.
   immutable active heads, plan-visible variant/admission facts, exact disjoint run counts, durable
   quarantine settlement, current source-adapter authority, focused conformance, and strict Clippy.
   S4 is now dependency-unblocked.
+- 2026-08-06: S4 closed with state-owned fenced promotion, complete committed-frontier cutoff,
+  resumable target correction, atomic head publication, and exact ordinary/package/recovery run
+  settlement permits. S5 is dependency-unblocked; independent integrated review remains owned by
+  S6 under the user's consolidated-review direction.
 
 ## Blockers
 
