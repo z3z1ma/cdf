@@ -200,13 +200,17 @@ pub(super) fn schema_promotion_execution_document(
                 .row("resumed", yes_no(report.resumed))
                 .row("old schema", report.old_schema_hash.clone())
                 .row("new schema", report.new_schema_hash.clone())
-                .row("staged plan", report.staged_plan_path.clone())
-                .row("snapshot", report.snapshot_path.clone())
-                .row("lock published", yes_no(report.lock_published))
+                .row("source generation", report.current_generation.to_string())
                 .row(
-                    "publication event",
-                    yes_no(report.publication_event_recorded),
+                    "published generation",
+                    report.published_generation.to_string(),
                 )
+                .row("plan hash", report.plan_sha256.clone())
+                .row(
+                    "cutoff checkpoints",
+                    report.cutoff_checkpoint_count.to_string(),
+                )
+                .row("state published", yes_no(report.state_published))
                 .row("remaining action", report.remaining_action.clone()),
         )
         .blank_line()
@@ -239,6 +243,20 @@ pub(super) fn schema_promote_document(
         .push(
             KeyValuePanel::new("Promotion")
                 .row("id", report.promotion_id.clone())
+                .row("authority domain", report.authority_domain_id.clone())
+                .row("project", report.project_id.clone())
+                .row("environment", report.environment.clone())
+                .row("current generation", report.current_generation.to_string())
+                .row(
+                    "proposed generation",
+                    report
+                        .proposed_generation
+                        .map_or_else(|| "blocked".to_owned(), |value| value.to_string()),
+                )
+                .row(
+                    "authority precondition",
+                    authority_precondition_label(&report.authority_precondition),
+                )
                 .row("old schema", report.old_schema_hash.clone())
                 .row(
                     "new schema",
@@ -281,8 +299,7 @@ pub(super) fn schema_promote_document(
                         .fresh_discovery_manifest_hash
                         .clone()
                         .unwrap_or_else(|| "unavailable".to_owned()),
-                )
-                .row("lock precondition", report.lock_precondition_sha256.clone()),
+                ),
         );
     if !report.fresh_discovery_content_identity.is_empty() {
         document = document
@@ -491,6 +508,16 @@ pub(super) fn schema_promote_document(
     document
         .blank_line()
         .push(NextCommand::new(report.recovery_command.clone()))
+}
+
+fn authority_precondition_label(precondition: &cdf_kernel::SchemaAuthorityPrecondition) -> String {
+    match precondition {
+        cdf_kernel::SchemaAuthorityPrecondition::Absent => "absent".to_owned(),
+        cdf_kernel::SchemaAuthorityPrecondition::Exact {
+            generation,
+            schema_hash,
+        } => format!("generation {generation}, {schema_hash}"),
+    }
 }
 
 fn promotion_availability_label(

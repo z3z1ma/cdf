@@ -637,6 +637,13 @@ pub enum SchemaAuthorityEventKind {
         lease_owner: LeaseOwnerId,
         fencing_token: FencingToken,
     },
+    PromotionResumed {
+        promotion_id: PromotionId,
+        from_schema_hash: SchemaHash,
+        to_schema_hash: SchemaHash,
+        lease_owner: LeaseOwnerId,
+        fencing_token: FencingToken,
+    },
     PromotionCutoffEstablished {
         promotion_id: PromotionId,
         checkpoint_count: u64,
@@ -702,6 +709,13 @@ impl SchemaAuthorityEvent {
                 lease_owner,
                 fencing_token,
             }
+            | SchemaAuthorityEventKind::PromotionResumed {
+                promotion_id,
+                from_schema_hash,
+                to_schema_hash,
+                lease_owner,
+                fencing_token,
+            }
             | SchemaAuthorityEventKind::PromotionPublished {
                 promotion_id,
                 from_schema_hash,
@@ -719,10 +733,11 @@ impl SchemaAuthorityEvent {
                 }
                 match &self.kind {
                     SchemaAuthorityEventKind::PromotionBegun { .. }
+                    | SchemaAuthorityEventKind::PromotionResumed { .. }
                         if &self.schema_hash != from_schema_hash =>
                     {
                         Err(CdfError::contract(
-                            "promotion-begun event must retain the source schema hash",
+                            "promotion begin/resume event must retain the source schema hash",
                         ))
                     }
                     SchemaAuthorityEventKind::PromotionPublished { .. }
@@ -778,6 +793,12 @@ pub trait SchemaAuthorityStore: Send + Sync {
         plan: SchemaPromotionPlanState,
         fence: &SchemaPromotionFence,
     ) -> Result<SchemaPromotionState>;
+
+    fn resume_promotion(
+        &self,
+        expected_source: &SchemaHead,
+        fence: &SchemaPromotionFence,
+    ) -> Result<SchemaHead>;
 
     fn promotion_state(
         &self,

@@ -31,13 +31,11 @@ pub use planning::{ProjectDestinationCommitPlan, ProjectDestinationSyntheticInpu
 pub use promotion::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION,
     SCHEMA_PROMOTION_CORRECTION_TARGET_AUTHORITY_VERSION,
-    SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION, SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION,
-    SchemaPromotionCorrectionPackageArtifact, SchemaPromotionExecutionFailpoint,
-    SchemaPromotionExecutionPhase, SchemaPromotionExecutionPlanArtifact,
-    SchemaPromotionExecutionReport, SchemaPromotionExecutionRequest,
-    SchemaPromotionExecutionTargetReport, SchemaPromotionRecoveryStatus, execute_schema_promotion,
-    inspect_local_promotion_availability, load_resumable_schema_promotion,
-    load_schema_promotion_recovery_status, promotion_plan_relative_path,
+    SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION, SchemaPromotionCorrectionPackageArtifact,
+    SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionPhase,
+    SchemaPromotionExecutionPlanArtifact, SchemaPromotionExecutionReport,
+    SchemaPromotionExecutionRequest, SchemaPromotionExecutionTargetReport,
+    execute_schema_promotion, inspect_local_promotion_availability,
 };
 pub use receipt_source::ProjectReceiptSource;
 pub use replay::{

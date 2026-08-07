@@ -32,10 +32,10 @@ use cdf_kernel::{
     CheckpointStore, CommitCounts, CursorPosition, CursorValue, DestinationId, FileManifest,
     FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId, PartitionPlan,
     PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceDescriptor, ResourceId,
-    ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSnapshotReference, SchemaSource,
-    ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TableSnapshotPosition, TableSnapshotSelector, TargetName, TrustLevel, VerifyClause,
-    WriteDisposition, with_semantic,
+    ResourceStream, RunId, ScanRequest, SchemaAuthorityStore, SchemaHash,
+    SchemaPromotionLifecyclePhase, SchemaSnapshotReference, SchemaSource, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
+    TableSnapshotSelector, TargetName, TrustLevel, VerifyClause, WriteDisposition, with_semantic,
 };
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
@@ -44,9 +44,9 @@ use cdf_package_contract::{
 };
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
-    ResolvedProjectDestination, SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionPhase,
-    SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, execute_schema_promotion,
-    load_schema_promotion_recovery_status, parse_lock, replay_package_from_artifacts,
+    ResolvedProjectDestination, SchemaPromotionExecutionFailpoint, SchemaPromotionExecutionRequest,
+    SchemaPromotionPlanReport, SchemaPromotionPlanningAuthority, SchemaSnapshotArtifact,
+    execute_schema_promotion, parse_lock, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -200,24 +200,22 @@ fn compile_resource(
     ])
 }
 
-fn locked_schema_hash(project: &TestProject, resource_id: &str) -> String {
-    let lock = cdf_project::parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap())
-        .unwrap();
-    lock.resources[resource_id]
-        .schema_hash
-        .clone()
-        .expect("compiled resource must bind a schema hash")
-}
-
-fn locked_schema_snapshot_hash(project: &TestProject, resource_id: &str) -> String {
-    let lock = cdf_project::parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap())
-        .unwrap();
-    lock.resources[resource_id]
-        .schema_snapshot
-        .as_ref()
-        .expect("compiled resource must bind a schema snapshot")
-        .schema_hash
-        .to_string()
+fn active_schema_hash(project: &TestProject, resource_id: &str) -> String {
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
+    crate::schema_authority::load_active(
+        &context,
+        &ResourceId::new(resource_id.to_owned()).unwrap(),
+    )
+    .unwrap()
+    .expect("compiled resource must establish active schema authority")
+    .head
+    .schema_hash
+    .to_string()
 }
 
 fn assert_no_preview_writes(project: &TestProject) {

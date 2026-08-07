@@ -69,6 +69,26 @@ impl SqliteRunLedger {
         Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
     }
 
+    pub(crate) fn open_existing_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        database_path_exists(path, ownership)?;
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            validate_run_schema_version(&conn)?;
+            Ok(conn)
+        })?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            error_context,
+        })
+    }
+
     pub fn open_read_only_with_path_ownership(
         path: impl AsRef<Path>,
         ownership: StateStorePathOwnership,

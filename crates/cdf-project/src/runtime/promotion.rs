@@ -19,12 +19,13 @@ use cdf_contract::{
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CanonicalArrowField, CanonicalArrowSchema, Checkpoint, CheckpointId,
-    CheckpointStatus, CheckpointStore, CompositePosition, ContractRef, CorrectionStrategy,
+    CheckpointStatus, CheckpointStore, CompositePosition, CorrectionStrategy,
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
-    DestinationId, IdempotencyToken, LeaseOwnerId, PROMOTION_PUBLICATION_EVENT_VERSION,
-    PackageHash, PipelineId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
-    PromotionSettlementStore, Receipt, ResourceId, SchemaHash, ScopeKey, ScopeLease,
-    SourcePosition, StateDelta, StateSegment, TargetName,
+    DestinationId, IdempotencyToken, LeaseOwnerId, PackageHash, PipelineId, PromotionId,
+    PromotionSettlementStore, Receipt, ResourceId, SchemaAuthorityStore, SchemaHash, SchemaHead,
+    SchemaPromotionFence, SchemaPromotionLifecyclePhase, SchemaPromotionPlanState,
+    SchemaPromotionState, SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeKey,
+    ScopeLease, SourcePosition, StateDelta, StateSegment, TargetName,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageBuilder, PackageReader};
@@ -36,10 +37,10 @@ use sha2::{Digest, Sha256};
 
 use super::destinations::ResolvedProjectDestination;
 use crate::{
-    CdfLock, LOCK_FILE_NAME, LocalPackagePromotionEvidenceInventory, LockFileAuthority,
-    PromotionEvidenceInventory, SchemaPromotionEvidenceAvailability, SchemaPromotionPlanReport,
-    SchemaPromotionTargetReport, SchemaSnapshotStore, compare_and_swap_lock_file, lock_to_toml,
-    parse_lock, read_lock_file_authority, validate_schema_promotion_plan_identity,
+    LocalPackagePromotionEvidenceInventory, PromotionEvidenceInventory,
+    SchemaPromotionEvidenceAvailability, SchemaPromotionPlanReport,
+    SchemaPromotionPlanningAuthority, SchemaPromotionTargetReport,
+    validate_schema_promotion_plan_identity,
 };
 
 static PROMOTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -56,29 +57,28 @@ fn promotion_segment_scan_memory() -> cdf_kernel::Result<Arc<dyn MemoryCoordinat
 pub const SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION: u16 = 1;
 pub const SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION: u16 = 1;
 pub const SCHEMA_PROMOTION_CORRECTION_TARGET_AUTHORITY_VERSION: u16 = 1;
-pub const SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION: u16 = 1;
 pub const DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS: u64 = 300_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchemaPromotionExecutionFailpoint {
-    AfterStagedArtifacts,
+    AfterPromotionFenced,
+    AfterCutoffEstablished,
     AfterCorrectionPackages,
     AfterDestinationReceipt,
-    AfterTargetCheckpoint,
-    AfterTargetCheckpointIndex(usize),
-    AfterLockPublication,
-    AfterPublicationEvent,
+    AfterTargetSettlement,
+    AfterTargetSettlementIndex(usize),
+    AfterHeadPublished,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SchemaPromotionExecutionPhase {
-    Staged,
+    Fenced,
+    CutoffEstablished,
     Packaged,
     DestinationSettled,
-    Checkpointed,
-    LockPublished,
-    Complete,
+    TargetSettled,
+    Published,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,23 +99,12 @@ pub struct SchemaPromotionExecutionReport {
     pub resumed: bool,
     pub old_schema_hash: String,
     pub new_schema_hash: String,
-    pub staged_plan_path: String,
-    pub snapshot_path: String,
+    pub current_generation: u64,
+    pub published_generation: u64,
+    pub plan_sha256: String,
+    pub cutoff_checkpoint_count: u64,
     pub targets: Vec<SchemaPromotionExecutionTargetReport>,
-    pub lock_published: bool,
-    pub publication_event_recorded: bool,
-    pub remaining_action: String,
-    pub recovery_command: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SchemaPromotionRecoveryStatus {
-    pub version: u16,
-    pub resource_id: String,
-    pub promotion_id: String,
-    pub phase: SchemaPromotionExecutionPhase,
-    pub targets: Vec<SchemaPromotionExecutionTargetReport>,
+    pub state_published: bool,
     pub remaining_action: String,
     pub recovery_command: String,
 }
@@ -126,7 +115,7 @@ pub struct SchemaPromotionExecutionPlanArtifact {
     pub version: u16,
     pub promotion_id: PromotionId,
     pub resource_id: ResourceId,
-    pub old_lock_authority: LockFileAuthority,
+    pub authority: SchemaPromotionPlanningAuthority,
     pub dry_plan: SchemaPromotionPlanReport,
 }
 
@@ -173,13 +162,12 @@ struct SchemaPromotionCorrectionTargetAuthority {
 
 pub struct SchemaPromotionExecutionRequest<'a, Store>
 where
-    Store: PromotionSettlementStore,
+    Store: PromotionSettlementStore + SchemaAuthorityStore,
 {
     pub project_root: &'a Path,
     pub package_root: &'a Path,
     pub resource: &'a CompiledResource,
-    pub lock: &'a CdfLock,
-    pub lock_authority: &'a LockFileAuthority,
+    pub authority: &'a SchemaPromotionPlanningAuthority,
     pub dry_plan: &'a SchemaPromotionPlanReport,
     pub destinations: Vec<ResolvedProjectDestination>,
     pub execution_services: cdf_runtime::ExecutionServices,
@@ -194,11 +182,11 @@ pub fn execute_schema_promotion<Store>(
     mut request: SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionReport>
 where
-    Store: PromotionSettlementStore,
+    Store: PromotionSettlementStore + SchemaAuthorityStore,
 {
     validate_execution_request(&request)?;
     bind_promotion_destinations(&mut request)?;
-    let scope = promotion_scope(request.resource);
+    let scope = request.authority.head.key.promotion_scope()?;
     let lease = request.settlement_store.acquire(
         scope,
         request.lease_owner.clone(),
@@ -217,7 +205,7 @@ fn bind_promotion_destinations<Store>(
     request: &mut SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<()>
 where
-    Store: PromotionSettlementStore,
+    Store: PromotionSettlementStore + SchemaAuthorityStore,
 {
     for target in &request.dry_plan.targets {
         let destination_id = DestinationId::new(target.destination.clone())?;
@@ -236,210 +224,200 @@ where
     Store: PromotionSettlementStore,
 {
     request.settlement_store.assert_current(lease)?;
-    let staged_path = request
-        .project_root
-        .join(promotion_plan_relative_path(&PromotionId::new(
-            request.dry_plan.promotion_id.clone(),
-        )?));
-    let resumed = verify_input_authority(request)? || promotion_regular_file_exists(&staged_path)?;
-    let staged = stage_execution_artifacts(request)?;
-    write_recovery_status(
-        request.project_root,
-        &staged,
-        0,
-        SchemaPromotionExecutionPhase::Staged,
-        Vec::new(),
-        "build authenticated correction packages",
+    let promotion_id = PromotionId::new(request.dry_plan.promotion_id.clone())?;
+    let fence = SchemaPromotionFence::new(
+        request.authority.head.key.authority_domain_id.clone(),
+        promotion_id.clone(),
+        lease.clone(),
     )?;
+    let existing = request
+        .settlement_store
+        .promotion_state(&request.authority.head.key, &promotion_id)?;
+    let resumed = existing.is_some();
+    if let Some(state) = existing.as_ref()
+        && state.phase == SchemaPromotionLifecyclePhase::Published
+    {
+        return execution_report_from_state(state, true);
+    }
+    let (staged, mut state) = stage_execution_state(request, &fence, existing)?;
+    let promoting = if resumed {
+        request
+            .settlement_store
+            .resume_promotion(&request.authority.head, &fence)?
+    } else {
+        SchemaAuthorityStore::head(request.settlement_store, &request.authority.head.key)?
+            .ok_or_else(|| cdf_kernel::CdfError::internal("promotion fenced no schema head"))?
+    };
     fail_if(
         request.failpoint,
-        SchemaPromotionExecutionFailpoint::AfterStagedArtifacts,
+        SchemaPromotionExecutionFailpoint::AfterPromotionFenced,
+    )?;
+    if state.phase == SchemaPromotionLifecyclePhase::Fenced {
+        state = request
+            .settlement_store
+            .establish_promotion_cutoff(&promoting, &fence)?;
+    }
+    fail_if(
+        request.failpoint,
+        SchemaPromotionExecutionFailpoint::AfterCutoffEstablished,
     )?;
 
     let packages = build_or_load_correction_packages(request, &staged)?;
-    let packaged_targets = packages
-        .iter()
-        .map(pending_target_report)
-        .collect::<Vec<_>>();
-    write_recovery_status(
-        request.project_root,
-        &staged,
-        1,
-        SchemaPromotionExecutionPhase::Packaged,
-        packaged_targets,
-        "settle remaining destination targets",
-    )?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterCorrectionPackages,
     )?;
 
-    if let Some(publication) = request
-        .settlement_store
-        .promotion_publication(&staged.promotion_id)?
-    {
-        let installed_lock = read_lock_file_authority(request.project_root.join(LOCK_FILE_NAME))?;
-        let mut verified_targets = Vec::new();
-        for package in &packages {
-            let destination = take_destination(
-                &mut request.destinations,
-                &package.artifact.destination_id,
-                &package.artifact.target,
-            )?;
-            let receipt = verify_stored_correction_receipt(destination, package)?;
-            verified_targets.push(committed_target_report(
-                request.settlement_store,
-                package,
-                &receipt,
-            )?);
-        }
-        let expected_targets = publication_targets(&verified_targets)?;
-        verify_publication_authority(&publication, &staged, &installed_lock, &expected_targets)?;
-        write_recovery_status(
-            request.project_root,
-            &staged,
-            u64::MAX,
-            SchemaPromotionExecutionPhase::Complete,
-            verified_targets,
-            "none",
-        )?;
-        return Ok(report_from_publication(&staged, &publication, true));
-    }
-
-    let lock_already_published = lock_has_staged_snapshot(request.project_root, &staged)?;
     let mut targets = Vec::new();
-    if lock_already_published {
-        for package in &packages {
+    for (target_index, package) in packages.into_iter().enumerate() {
+        let target_key = SchemaPromotionTarget {
+            destination_id: package.artifact.destination_id.clone(),
+            target: package.artifact.target.clone(),
+        };
+        if let Some(settlement) = state
+            .target_settlements
+            .iter()
+            .find(|settlement| settlement.target == target_key)
+        {
             let destination = take_destination(
                 &mut request.destinations,
                 &package.artifact.destination_id,
                 &package.artifact.target,
             )?;
-            let receipt = verify_stored_correction_receipt(destination, package)?;
-            targets.push(committed_target_report(
-                request.settlement_store,
-                package,
-                &receipt,
-            )?);
-        }
-    } else {
-        for (target_index, package) in packages.into_iter().enumerate() {
-            request.settlement_store.assert_current(lease)?;
-            let destination = take_destination(
-                &mut request.destinations,
-                &package.artifact.destination_id,
-                &package.artifact.target,
-            )?;
-            let receipt = settle_correction_package(destination, &package)?;
-            let mut destination_settled = targets.clone();
-            destination_settled.push(SchemaPromotionExecutionTargetReport {
-                destination: package.artifact.destination_id.to_string(),
-                target: package.artifact.target.to_string(),
-                correction_package_hash: package.package_hash.to_string(),
-                receipt_id: Some(receipt.receipt_id.to_string()),
-                checkpoint_id: None,
-                committed: false,
-            });
-            write_recovery_status(
-                request.project_root,
-                &staged,
-                target_recovery_status_sequence(target_index, false)?,
-                SchemaPromotionExecutionPhase::DestinationSettled,
-                destination_settled,
-                "commit the settled target checkpoint",
-            )?;
-            fail_if(
-                request.failpoint,
-                SchemaPromotionExecutionFailpoint::AfterDestinationReceipt,
-            )?;
-            let checkpoint = settle_promotion_checkpoint(
-                request.settlement_store,
-                lease,
-                &package,
-                receipt.clone(),
-            )?;
+            let receipt = verify_stored_correction_receipt(destination, &package)?;
             targets.push(SchemaPromotionExecutionTargetReport {
                 destination: package.artifact.destination_id.to_string(),
                 target: package.artifact.target.to_string(),
                 correction_package_hash: package.package_hash.to_string(),
                 receipt_id: Some(receipt.receipt_id.to_string()),
-                checkpoint_id: Some(checkpoint.delta.checkpoint_id.to_string()),
-                committed: checkpoint.status == CheckpointStatus::Committed,
+                checkpoint_id: Some(settlement.checkpoint_id.to_string()),
+                committed: true,
             });
-            let remaining_action = if targets.len() == staged.dry_plan.targets.len() {
-                "publish the pinned schema lock"
-            } else {
-                "settle the next destination target"
-            };
-            write_recovery_status(
-                request.project_root,
-                &staged,
-                target_recovery_status_sequence(target_index, true)?,
-                SchemaPromotionExecutionPhase::Checkpointed,
-                targets.clone(),
-                remaining_action,
-            )?;
-            fail_if(
-                request.failpoint,
-                SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
-            )?;
-            fail_if(
-                request.failpoint,
-                SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(target_index),
-            )?;
+            continue;
         }
+        request.settlement_store.assert_current(lease)?;
+        let destination = take_destination(
+            &mut request.destinations,
+            &package.artifact.destination_id,
+            &package.artifact.target,
+        )?;
+        let receipt = settle_correction_package(destination, &package)?;
+        fail_if(
+            request.failpoint,
+            SchemaPromotionExecutionFailpoint::AfterDestinationReceipt,
+        )?;
+        state = settle_promotion_checkpoint(
+            request.settlement_store,
+            &promoting,
+            &fence,
+            &target_key,
+            &package,
+            receipt.clone(),
+        )?;
+        targets.push(SchemaPromotionExecutionTargetReport {
+            destination: package.artifact.destination_id.to_string(),
+            target: package.artifact.target.to_string(),
+            correction_package_hash: package.package_hash.to_string(),
+            receipt_id: Some(receipt.receipt_id.to_string()),
+            checkpoint_id: Some(package.state_delta.checkpoint_id.to_string()),
+            committed: true,
+        });
+        fail_if(
+            request.failpoint,
+            SchemaPromotionExecutionFailpoint::AfterTargetSettlement,
+        )?;
+        fail_if(
+            request.failpoint,
+            SchemaPromotionExecutionFailpoint::AfterTargetSettlementIndex(target_index),
+        )?;
     }
 
-    request.settlement_store.assert_current(lease)?;
-    let installed_lock = publish_lock(request, lease, &staged)?;
-    write_recovery_status(
-        request.project_root,
-        &staged,
-        u64::MAX - 1,
-        SchemaPromotionExecutionPhase::LockPublished,
-        targets.clone(),
-        "record the exact promotion publication event",
-    )?;
+    let published =
+        SchemaAuthorityStore::publish_promotion(request.settlement_store, &promoting, &fence)?;
+    state = request
+        .settlement_store
+        .promotion_state(&request.authority.head.key, &promotion_id)?
+        .ok_or_else(|| cdf_kernel::CdfError::internal("published promotion state is missing"))?;
+    if published.generation
+        != state.published_generation.ok_or_else(|| {
+            cdf_kernel::CdfError::internal("published promotion state has no generation")
+        })?
+    {
+        return Err(cdf_kernel::CdfError::internal(
+            "published promotion head and lifecycle generations disagree",
+        ));
+    }
     fail_if(
         request.failpoint,
-        SchemaPromotionExecutionFailpoint::AfterLockPublication,
+        SchemaPromotionExecutionFailpoint::AfterHeadPublished,
     )?;
-    let publication = publish_event(request, lease, &installed_lock, &targets)?;
-    write_recovery_status(
-        request.project_root,
-        &staged,
-        u64::MAX,
-        SchemaPromotionExecutionPhase::Complete,
-        targets.clone(),
-        "none",
-    )?;
-    fail_if(
-        request.failpoint,
-        SchemaPromotionExecutionFailpoint::AfterPublicationEvent,
-    )?;
+    execution_report_from_state_with_targets(&state, resumed, targets)
+}
 
+fn execution_report_from_state(
+    state: &SchemaPromotionState,
+    resumed: bool,
+) -> cdf_kernel::Result<SchemaPromotionExecutionReport> {
+    let targets = state
+        .target_settlements
+        .iter()
+        .map(|settlement| SchemaPromotionExecutionTargetReport {
+            destination: settlement.target.destination_id.to_string(),
+            target: settlement.target.target.to_string(),
+            correction_package_hash: settlement.correction_package_hash.to_string(),
+            receipt_id: Some(settlement.receipt_id.to_string()),
+            checkpoint_id: Some(settlement.checkpoint_id.to_string()),
+            committed: true,
+        })
+        .collect();
+    execution_report_from_state_with_targets(state, resumed, targets)
+}
+
+fn execution_report_from_state_with_targets(
+    state: &SchemaPromotionState,
+    resumed: bool,
+    targets: Vec<SchemaPromotionExecutionTargetReport>,
+) -> cdf_kernel::Result<SchemaPromotionExecutionReport> {
+    if state.phase != SchemaPromotionLifecyclePhase::Published {
+        return Err(cdf_kernel::CdfError::internal(
+            "completed promotion report requires published state authority",
+        ));
+    }
+    let published_generation = state.published_generation.ok_or_else(|| {
+        cdf_kernel::CdfError::internal("published schema promotion has no generation")
+    })?;
+    let cutoff_checkpoint_count = u64::try_from(
+        state
+            .cutoff
+            .as_ref()
+            .ok_or_else(|| {
+                cdf_kernel::CdfError::internal("published schema promotion has no cutoff")
+            })?
+            .checkpoints
+            .len(),
+    )
+    .map_err(|_| cdf_kernel::CdfError::internal("promotion cutoff count overflow"))?;
+    let plan: SchemaPromotionPlanReport = serde_json::from_str(&state.plan.canonical_plan_json)
+        .map_err(|error| {
+            cdf_kernel::CdfError::internal(format!(
+                "decode persisted promotion plan for report: {error}"
+            ))
+        })?;
     Ok(SchemaPromotionExecutionReport {
-        resource_id: staged.resource_id.to_string(),
-        promotion_id: staged.promotion_id.to_string(),
-        phase: SchemaPromotionExecutionPhase::Complete,
+        resource_id: state.key.resource_id.to_string(),
+        promotion_id: state.plan.promotion_id.to_string(),
+        phase: SchemaPromotionExecutionPhase::Published,
         resumed,
-        old_schema_hash: staged.dry_plan.old_schema_hash.clone(),
-        new_schema_hash: staged
-            .dry_plan
-            .new_schema_hash
-            .clone()
-            .expect("validated executable plan has a new schema hash"),
-        staged_plan_path: promotion_plan_relative_path(&staged.promotion_id),
-        snapshot_path: staged
-            .dry_plan
-            .new_schema_snapshot_path
-            .clone()
-            .expect("validated executable plan has a snapshot path"),
+        old_schema_hash: state.from_schema_hash.to_string(),
+        new_schema_hash: state.to_schema_hash.to_string(),
+        current_generation: state.from_generation,
+        published_generation,
+        plan_sha256: state.plan.plan_sha256.clone(),
+        cutoff_checkpoint_count,
         targets,
-        lock_published: true,
-        publication_event_recorded: publication.promotion_id == staged.promotion_id,
+        state_published: true,
         remaining_action: "none".to_owned(),
-        recovery_command: execution_recovery_command(&staged.dry_plan),
+        recovery_command: execution_recovery_command(&plan),
     })
 }
 
@@ -454,20 +432,13 @@ where
             "schema promotion execution requires an executable conflict-free dry plan",
         ));
     }
-    if request.dry_plan.resource_id != request.resource.descriptor().resource_id.as_str()
-        || request.dry_plan.lock_precondition_sha256 != request.lock_authority.sha256
-    {
+    if request.dry_plan.resource_id != request.resource.descriptor().resource_id.as_str() {
         return Err(cdf_kernel::CdfError::contract(
-            "schema promotion dry plan does not match resource and lock authority",
+            "schema promotion dry plan does not match the selected resource",
         ));
     }
-    let authoritative_lock = parse_lock_authority(&request.lock_authority.bytes)?;
-    if &authoritative_lock != request.lock {
-        return Err(cdf_kernel::CdfError::contract(
-            "schema promotion caller lock projection does not equal the exact old lock bytes",
-        ));
-    }
-    validate_schema_promotion_plan_identity(request.dry_plan, request.lock_authority)?;
+    request.authority.validate(request.resource)?;
+    validate_schema_promotion_plan_identity(request.dry_plan, request.authority)?;
     let snapshot =
         request.dry_plan.proposed_snapshot.as_ref().ok_or_else(|| {
             cdf_kernel::CdfError::contract("executable promotion has no snapshot")
@@ -486,60 +457,11 @@ where
     Ok(())
 }
 
-fn parse_lock_authority(bytes: &[u8]) -> cdf_kernel::Result<CdfLock> {
-    parse_lock(
-        std::str::from_utf8(bytes)
-            .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-    )
-}
-
-fn verify_input_authority<Store>(
+fn stage_execution_state<Store>(
     request: &SchemaPromotionExecutionRequest<'_, Store>,
-) -> cdf_kernel::Result<bool>
-where
-    Store: PromotionSettlementStore,
-{
-    let lock_path = request.project_root.join(LOCK_FILE_NAME);
-    let current = read_lock_file_authority(&lock_path)?;
-    if current != *request.lock_authority {
-        let current_lock = parse_lock(
-            std::str::from_utf8(&current.bytes)
-                .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-        )?;
-        let proposed = request
-            .dry_plan
-            .proposed_snapshot
-            .as_ref()
-            .ok_or_else(|| cdf_kernel::CdfError::contract("promotion snapshot is missing"))?;
-        let installed = current_lock
-            .resources
-            .get(&request.dry_plan.resource_id)
-            .and_then(|resource| resource.schema_snapshot.as_ref());
-        if installed == Some(&proposed.artifact.reference()) {
-            return Ok(true);
-        }
-        return Err(cdf_kernel::CdfError::contract(format!(
-            "concurrent schema authority conflict: promotion planned lock {}, current lock {}",
-            request.lock_authority.sha256, current.sha256
-        )));
-    }
-    let locked = request
-        .lock
-        .resources
-        .get(&request.dry_plan.resource_id)
-        .and_then(|resource| resource.schema_snapshot.as_ref())
-        .ok_or_else(|| cdf_kernel::CdfError::contract("current lock has no pinned snapshot"))?;
-    if locked.schema_hash.to_string() != request.dry_plan.old_schema_hash {
-        return Err(cdf_kernel::CdfError::contract(
-            "schema promotion old snapshot no longer matches cdf.lock",
-        ));
-    }
-    Ok(false)
-}
-
-fn stage_execution_artifacts<Store>(
-    request: &SchemaPromotionExecutionRequest<'_, Store>,
-) -> cdf_kernel::Result<SchemaPromotionExecutionPlanArtifact>
+    fence: &SchemaPromotionFence,
+    existing: Option<SchemaPromotionState>,
+) -> cdf_kernel::Result<(SchemaPromotionExecutionPlanArtifact, SchemaPromotionState)>
 where
     Store: PromotionSettlementStore,
 {
@@ -548,38 +470,89 @@ where
         version: SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION,
         promotion_id: promotion_id.clone(),
         resource_id: request.resource.descriptor().resource_id.clone(),
-        old_lock_authority: request.lock_authority.clone(),
+        authority: request.authority.clone(),
         dry_plan: request.dry_plan.clone(),
     };
     artifact.validate()?;
-    let snapshot = &request
+    if let Some(state) = existing {
+        let persisted_plan: SchemaPromotionPlanReport =
+            serde_json::from_str(&state.plan.canonical_plan_json).map_err(|error| {
+                cdf_kernel::CdfError::internal(format!(
+                    "decode persisted schema promotion plan: {error}"
+                ))
+            })?;
+        if persisted_plan != *request.dry_plan
+            || state.key != request.authority.head.key
+            || state.from_generation != request.authority.head.generation
+            || state.from_schema_hash != request.authority.head.schema_hash
+        {
+            return Err(cdf_kernel::CdfError::contract(
+                "persisted promotion state conflicts with the exact requested dry plan",
+            ));
+        }
+        return Ok((artifact, state));
+    }
+
+    let snapshot = request
         .dry_plan
         .proposed_snapshot
         .as_ref()
-        .expect("validated executable plan has a snapshot")
-        .artifact;
-    write_create_or_verify(
-        request.project_root,
-        &request.project_root.join(&snapshot.path),
-        &canonical_json_bytes(snapshot)?,
+        .ok_or_else(|| cdf_kernel::CdfError::contract("promotion snapshot is missing"))?;
+    let proposed_schema = snapshot.artifact.schema.to_arrow()?;
+    let proposed = SchemaVersion::new(
+        CanonicalArrowSchema::from_arrow(&proposed_schema)?,
+        Some(request.authority.head.schema_hash.clone()),
+        None,
+        now_ms()?,
+        SchemaVersionProvenance::Promotion {
+            promotion_id: promotion_id.clone(),
+        },
     )?;
-    let path = request
-        .project_root
-        .join(promotion_plan_relative_path(&promotion_id));
-    write_create_or_verify(
-        request.project_root,
-        &path,
-        &canonical_json_bytes(&artifact)?,
-    )?;
-    let hydrated: SchemaPromotionExecutionPlanArtifact =
-        read_promotion_json_file(request.project_root, &path)?;
-    hydrated.validate()?;
-    if hydrated != artifact {
-        return Err(cdf_kernel::CdfError::data(
-            "staged promotion plan conflicts with current exact authority",
+    if request.dry_plan.new_schema_hash.as_deref() != Some(proposed.schema_hash.as_str()) {
+        return Err(cdf_kernel::CdfError::contract(
+            "promotion proposed schema does not match the dry plan's logical schema hash",
         ));
     }
-    Ok(hydrated)
+    let canonical_plan_json =
+        serde_json::to_string(&serde_json::to_value(request.dry_plan).map_err(|error| {
+            cdf_kernel::CdfError::internal(format!("serialize promotion plan: {error}"))
+        })?)
+        .map_err(|error| {
+            cdf_kernel::CdfError::internal(format!("encode canonical promotion plan: {error}"))
+        })?;
+    let mut required_targets = request
+        .dry_plan
+        .targets
+        .iter()
+        .map(|target| {
+            Ok(SchemaPromotionTarget {
+                destination_id: DestinationId::new(target.destination.clone())?,
+                target: TargetName::new(target.target.clone())?,
+            })
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    required_targets.sort();
+    required_targets.dedup();
+    let mut residual_summary_sha256s = request
+        .dry_plan
+        .evidence
+        .iter()
+        .map(crate::internal::semantic_hash)
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    residual_summary_sha256s.sort();
+    residual_summary_sha256s.dedup();
+    let plan = SchemaPromotionPlanState::new(
+        promotion_id,
+        canonical_plan_json,
+        required_targets,
+        residual_summary_sha256s,
+        now_ms()?,
+    )?;
+    let state =
+        request
+            .settlement_store
+            .begin_promotion(&request.authority.head, proposed, plan, fence)?;
+    Ok((artifact, state))
 }
 
 impl SchemaPromotionExecutionPlanArtifact {
@@ -587,7 +560,6 @@ impl SchemaPromotionExecutionPlanArtifact {
         if self.version != SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION
             || self.promotion_id.as_str() != self.dry_plan.promotion_id
             || self.resource_id.as_str() != self.dry_plan.resource_id
-            || self.old_lock_authority.sha256 != self.dry_plan.lock_precondition_sha256
         {
             return Err(cdf_kernel::CdfError::data(
                 "staged schema promotion plan does not match its typed dry-plan authority",
@@ -599,8 +571,7 @@ impl SchemaPromotionExecutionPlanArtifact {
             .as_ref()
             .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion has no snapshot"))?;
         snapshot.artifact.validate_hash_input()?;
-        let recomputed =
-            validate_schema_promotion_plan_identity(&self.dry_plan, &self.old_lock_authority)?;
+        let recomputed = validate_schema_promotion_plan_identity(&self.dry_plan, &self.authority)?;
         if recomputed != self.promotion_id {
             return Err(cdf_kernel::CdfError::data(
                 "staged schema promotion id does not match canonical RP5 authority",
@@ -624,13 +595,14 @@ fn build_or_load_correction_packages<Store>(
 where
     Store: PromotionSettlementStore,
 {
-    let validation_program =
-        promotion_validation_program(request.project_root, request.resource, staged)?;
-    let scope = promotion_scope(request.resource);
-    let mut chain_parent =
-        request
-            .settlement_store
-            .head(&request.pipeline_id, &staged.resource_id, &scope)?;
+    let validation_program = promotion_validation_program(request.resource, staged)?;
+    let scope = staged.authority.head.key.promotion_scope()?;
+    let mut chain_parent = CheckpointStore::head(
+        request.settlement_store,
+        &request.pipeline_id,
+        &staged.resource_id,
+        &scope,
+    )?;
     let correction_directories = staged
         .dry_plan
         .targets
@@ -783,7 +755,6 @@ fn expected_checkpoint_input_authority<Store: CheckpointStore>(
 }
 
 fn promotion_validation_program(
-    project_root: &Path,
     resource: &CompiledResource,
     staged: &SchemaPromotionExecutionPlanArtifact,
 ) -> cdf_kernel::Result<cdf_contract::ValidationProgram> {
@@ -793,13 +764,23 @@ fn promotion_validation_program(
         .as_ref()
         .and_then(|snapshot| snapshot.artifact.promotion_authority.as_ref())
         .ok_or_else(|| cdf_kernel::CdfError::data("promotion snapshot authority is missing"))?;
-    let old_snapshot = SchemaSnapshotStore::new(project_root).read(&authority.old_snapshot)?;
-    let old_schema = old_snapshot.schema.to_arrow()?;
+    let old_schema = staged.authority.version.canonical_schema.to_arrow()?;
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let policy_hash = crate::internal::semantic_hash(&policy)?;
+    if authority.contract_policy_hash != policy_hash {
+        return Err(cdf_kernel::CdfError::contract(format!(
+            "promotion policy hash {policy_hash} does not match typed plan authority {}",
+            authority.contract_policy_hash
+        )));
+    }
     let observed = ObservedSchema::from_arrow(&old_schema);
     let program = compile_resource_validation_program(&policy, &observed, resource.descriptor())?;
     let hash = crate::internal::semantic_hash(&program)?;
-    if authority.validation_program_hash.as_deref() != Some(hash.as_str()) {
+    if authority
+        .validation_program_hash
+        .as_deref()
+        .is_some_and(|expected| expected != hash)
+    {
         return Err(cdf_kernel::CdfError::contract(format!(
             "promotion validation program hash {hash} does not match typed snapshot authority {:?}",
             authority.validation_program_hash
@@ -940,21 +921,24 @@ where
     let strategy = target.strategy.ok_or_else(|| {
         cdf_kernel::CdfError::contract("promotion target has no selected correction strategy")
     })?;
-    let locked_destination = request
-        .lock
-        .destination(&target.destination)?
+    let destination_authority = request
+        .authority
+        .destinations
+        .get(&target.destination)
         .ok_or_else(|| {
             cdf_kernel::CdfError::contract(format!(
-                "promotion destination {:?} is absent from cdf.lock",
+                "promotion destination {:?} is absent from the planned state authority",
                 target.destination
             ))
         })?;
-    let capability = locked_destination
+    let capability = destination_authority
         .protocol_capabilities
         .corrections
         .strategy(strategy)
         .ok_or_else(|| {
-            cdf_kernel::CdfError::contract("selected correction strategy is no longer locked")
+            cdf_kernel::CdfError::contract(
+                "selected correction strategy is absent from the planned destination authority",
+            )
         })?;
     let snapshot = &staged
         .dry_plan
@@ -964,7 +948,12 @@ where
         .artifact;
     let promotion_id = staged.promotion_id.clone();
     let old_schema_hash = SchemaHash::new(staged.dry_plan.old_schema_hash.clone())?;
-    let new_schema_hash = snapshot.schema_hash.clone();
+    let new_schema_hash =
+        SchemaHash::new(
+            staged.dry_plan.new_schema_hash.clone().ok_or_else(|| {
+                cdf_kernel::CdfError::contract("promotion schema hash is missing")
+            })?,
+        )?;
     let mut operations = Vec::new();
     let mut source_packages = BTreeSet::new();
     for path in &staged.dry_plan.paths {
@@ -1387,6 +1376,11 @@ fn validate_correction_artifact_for_staged(
         .proposed_snapshot
         .as_ref()
         .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion snapshot is missing"))?;
+    let expected_new_schema_hash = staged
+        .dry_plan
+        .new_schema_hash
+        .as_ref()
+        .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion schema hash is missing"))?;
     let expected_packages = target
         .affected_packages
         .iter()
@@ -1397,7 +1391,7 @@ fn validate_correction_artifact_for_staged(
         || artifact.destination_id.as_str() != target.destination
         || artifact.target.as_str() != target.target
         || artifact.old_schema_hash.as_str() != staged.dry_plan.old_schema_hash
-        || artifact.new_schema_hash != snapshot.artifact.schema_hash
+        || artifact.new_schema_hash.as_str() != expected_new_schema_hash
         || Some(artifact.strategy) != target.strategy
         || &artifact.disposition != disposition
         || artifact.source_packages != expected_packages
@@ -1646,65 +1640,22 @@ fn verify_stored_correction_receipt(
     Ok(receipt)
 }
 
-fn committed_target_report<StateStore: CheckpointStore>(
-    checkpoint_store: &StateStore,
-    package: &PreparedCorrectionPackage,
-    verified_receipt: &Receipt,
-) -> cdf_kernel::Result<SchemaPromotionExecutionTargetReport> {
-    let checkpoint = checkpoint_store
-        .history(
-            &package.state_delta.pipeline_id,
-            &package.state_delta.resource_id,
-            &package.state_delta.scope,
-        )?
-        .into_iter()
-        .find(|checkpoint| checkpoint.delta.checkpoint_id == package.state_delta.checkpoint_id)
-        .ok_or_else(|| {
-            cdf_kernel::CdfError::contract(
-                "published promotion lock is missing a required target checkpoint",
-            )
-        })?;
-    if checkpoint.status != CheckpointStatus::Committed {
-        return Err(cdf_kernel::CdfError::contract(
-            "published promotion lock has an uncommitted target checkpoint",
-        ));
-    }
-    let receipt = checkpoint.receipt.as_ref().ok_or_else(|| {
-        cdf_kernel::CdfError::contract("committed promotion checkpoint has no receipt")
-    })?;
-    if receipt != verified_receipt
-        || receipt.package_hash != package.package_hash
-        || receipt.destination != package.artifact.destination_id
-        || receipt.target != package.artifact.target
-    {
-        return Err(cdf_kernel::CdfError::contract(
-            "promotion checkpoint receipt conflicts with correction package authority",
-        ));
-    }
-    Ok(SchemaPromotionExecutionTargetReport {
-        destination: package.artifact.destination_id.to_string(),
-        target: package.artifact.target.to_string(),
-        correction_package_hash: package.package_hash.to_string(),
-        receipt_id: Some(receipt.receipt_id.to_string()),
-        checkpoint_id: Some(checkpoint.delta.checkpoint_id.to_string()),
-        committed: true,
-    })
-}
-
 fn settle_promotion_checkpoint<Store: PromotionSettlementStore>(
     settlement_store: &Store,
-    lease: &ScopeLease,
+    promoting: &SchemaHead,
+    fence: &SchemaPromotionFence,
+    target: &SchemaPromotionTarget,
     package: &PreparedCorrectionPackage,
     receipt: Receipt,
-) -> cdf_kernel::Result<cdf_kernel::Checkpoint> {
-    let existing = settlement_store
-        .history(
-            &package.state_delta.pipeline_id,
-            &package.state_delta.resource_id,
-            &package.state_delta.scope,
-        )?
-        .into_iter()
-        .find(|checkpoint| checkpoint.delta.checkpoint_id == package.state_delta.checkpoint_id);
+) -> cdf_kernel::Result<SchemaPromotionState> {
+    let existing = CheckpointStore::history(
+        settlement_store,
+        &package.state_delta.pipeline_id,
+        &package.state_delta.resource_id,
+        &package.state_delta.scope,
+    )?
+    .into_iter()
+    .find(|checkpoint| checkpoint.delta.checkpoint_id == package.state_delta.checkpoint_id);
     let proposed = match existing {
         Some(checkpoint) if checkpoint.status == CheckpointStatus::Committed => {
             if checkpoint.receipt.as_ref() != Some(&receipt) {
@@ -1712,7 +1663,7 @@ fn settle_promotion_checkpoint<Store: PromotionSettlementStore>(
                     "committed promotion checkpoint has conflicting receipt authority",
                 ));
             }
-            return Ok(checkpoint);
+            checkpoint
         }
         Some(checkpoint) if checkpoint.status == CheckpointStatus::Proposed => checkpoint,
         Some(_) => {
@@ -1722,344 +1673,13 @@ fn settle_promotion_checkpoint<Store: PromotionSettlementStore>(
         }
         None => settlement_store.propose(package.state_delta.clone())?,
     };
-    settlement_store.commit_promotion_checkpoint(lease, &proposed.delta.checkpoint_id, receipt)
-}
-
-fn publish_lock<Store>(
-    request: &SchemaPromotionExecutionRequest<'_, Store>,
-    lease: &ScopeLease,
-    staged: &SchemaPromotionExecutionPlanArtifact,
-) -> cdf_kernel::Result<LockFileAuthority>
-where
-    Store: PromotionSettlementStore,
-{
-    let lock_path = request.project_root.join(LOCK_FILE_NAME);
-    let snapshot = staged
-        .dry_plan
-        .proposed_snapshot
-        .as_ref()
-        .expect("validated staged plan has snapshot");
-    let current = read_lock_file_authority(&lock_path)?;
-    if current.sha256 != staged.old_lock_authority.sha256 {
-        let current_lock = parse_lock(
-            std::str::from_utf8(&current.bytes)
-                .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-        )?;
-        let installed = current_lock
-            .resources
-            .get(staged.resource_id.as_str())
-            .and_then(|resource| resource.schema_snapshot.as_ref());
-        if installed == Some(&snapshot.artifact.reference()) {
-            return Ok(current);
-        }
-        return Err(cdf_kernel::CdfError::contract(format!(
-            "concurrent schema authority conflict: expected lock {}, found {}",
-            staged.old_lock_authority.sha256, current.sha256
-        )));
-    }
-    let mut replacement = parse_lock_authority(&staged.old_lock_authority.bytes)?;
-    let locked = replacement
-        .resources
-        .get_mut(staged.resource_id.as_str())
-        .ok_or_else(|| cdf_kernel::CdfError::contract("promotion resource left cdf.lock"))?;
-    let promoted_schema = snapshot.artifact.schema.to_arrow()?;
-    locked.schema_snapshot = Some(snapshot.artifact.reference());
-    locked.schema_hash =
-        Some(cdf_kernel::canonical_arrow_schema_hash(&promoted_schema)?.to_string());
-    locked.schema = CanonicalArrowSchema::from_arrow(&promoted_schema)?;
-    locked.compiled_artifact_hash = None;
-    let replacement = lock_to_toml(&replacement)?;
-    Ok(compare_and_swap_lock_file(
-        lock_path,
-        &staged.old_lock_authority,
-        replacement.as_bytes(),
-        request.settlement_store,
-        lease,
-    )?
-    .installed)
-}
-
-fn publish_event<Store>(
-    request: &SchemaPromotionExecutionRequest<'_, Store>,
-    lease: &ScopeLease,
-    installed_lock: &LockFileAuthority,
-    targets: &[SchemaPromotionExecutionTargetReport],
-) -> cdf_kernel::Result<PromotionPublicationEvent>
-where
-    Store: PromotionSettlementStore,
-{
-    let target_events = publication_targets(targets)?;
-    request.settlement_store.publish_promotion(
-        lease,
-        PromotionPublicationEvent {
-            version: PROMOTION_PUBLICATION_EVENT_VERSION,
-            promotion_id: PromotionId::new(request.dry_plan.promotion_id.clone())?,
-            resource_id: request.resource.descriptor().resource_id.clone(),
-            old_schema_hash: SchemaHash::new(request.dry_plan.old_schema_hash.clone())?,
-            new_schema_hash: SchemaHash::new(
-                request
-                    .dry_plan
-                    .new_schema_hash
-                    .clone()
-                    .ok_or_else(|| cdf_kernel::CdfError::internal("new schema hash missing"))?,
-            )?,
-            installed_lock_sha256: installed_lock.sha256.clone(),
-            targets: target_events,
-            published_at_ms: now_ms()?,
-        },
+    settlement_store.commit_promotion_target(
+        promoting,
+        fence,
+        target,
+        &proposed.delta.checkpoint_id,
+        receipt,
     )
-}
-
-fn publication_targets(
-    targets: &[SchemaPromotionExecutionTargetReport],
-) -> cdf_kernel::Result<Vec<PromotionPublicationTarget>> {
-    let mut target_events =
-        targets
-            .iter()
-            .map(|target| {
-                Ok(PromotionPublicationTarget {
-                    destination_id: DestinationId::new(target.destination.clone())?,
-                    target: TargetName::new(target.target.clone())?,
-                    correction_package_hash: PackageHash::new(
-                        target.correction_package_hash.clone(),
-                    )?,
-                    receipt_id: cdf_kernel::ReceiptId::new(target.receipt_id.clone().ok_or_else(
-                        || cdf_kernel::CdfError::internal("target receipt missing"),
-                    )?)?,
-                    checkpoint_id: CheckpointId::new(target.checkpoint_id.clone().ok_or_else(
-                        || cdf_kernel::CdfError::internal("target checkpoint missing"),
-                    )?)?,
-                })
-            })
-            .collect::<cdf_kernel::Result<Vec<_>>>()?;
-    target_events.sort_by(|left, right| {
-        (&left.destination_id, &left.target).cmp(&(&right.destination_id, &right.target))
-    });
-    Ok(target_events)
-}
-
-fn lock_has_staged_snapshot(
-    project_root: &Path,
-    staged: &SchemaPromotionExecutionPlanArtifact,
-) -> cdf_kernel::Result<bool> {
-    let authority = read_lock_file_authority(project_root.join(LOCK_FILE_NAME))?;
-    let lock = parse_lock(
-        std::str::from_utf8(&authority.bytes)
-            .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-    )?;
-    let expected = staged
-        .dry_plan
-        .proposed_snapshot
-        .as_ref()
-        .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion has no snapshot"))?
-        .artifact
-        .reference();
-    Ok(lock
-        .resources
-        .get(staged.resource_id.as_str())
-        .and_then(|resource| resource.schema_snapshot.as_ref())
-        == Some(&expected))
-}
-
-fn verify_publication_authority(
-    publication: &PromotionPublicationEvent,
-    staged: &SchemaPromotionExecutionPlanArtifact,
-    installed_lock: &LockFileAuthority,
-    expected_targets: &[PromotionPublicationTarget],
-) -> cdf_kernel::Result<()> {
-    publication.validate()?;
-    let expected_new = staged
-        .dry_plan
-        .new_schema_hash
-        .as_deref()
-        .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion has no new schema hash"))?;
-    if publication.promotion_id != staged.promotion_id
-        || publication.resource_id != staged.resource_id
-        || publication.old_schema_hash.as_str() != staged.dry_plan.old_schema_hash
-        || publication.new_schema_hash.as_str() != expected_new
-        || publication.installed_lock_sha256 != installed_lock.sha256
-        || publication.targets != expected_targets
-        || !lock_has_staged_snapshot_from_authority(installed_lock, staged)?
-    {
-        return Err(cdf_kernel::CdfError::contract(
-            "promotion publication event conflicts with staged plan or installed lock authority",
-        ));
-    }
-    Ok(())
-}
-
-fn lock_has_staged_snapshot_from_authority(
-    authority: &LockFileAuthority,
-    staged: &SchemaPromotionExecutionPlanArtifact,
-) -> cdf_kernel::Result<bool> {
-    let lock = parse_lock(
-        std::str::from_utf8(&authority.bytes)
-            .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-    )?;
-    let expected = staged
-        .dry_plan
-        .proposed_snapshot
-        .as_ref()
-        .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion has no snapshot"))?
-        .artifact
-        .reference();
-    Ok(lock
-        .resources
-        .get(staged.resource_id.as_str())
-        .and_then(|resource| resource.schema_snapshot.as_ref())
-        == Some(&expected))
-}
-
-fn report_from_publication(
-    staged: &SchemaPromotionExecutionPlanArtifact,
-    publication: &PromotionPublicationEvent,
-    resumed: bool,
-) -> SchemaPromotionExecutionReport {
-    SchemaPromotionExecutionReport {
-        resource_id: staged.resource_id.to_string(),
-        promotion_id: staged.promotion_id.to_string(),
-        phase: SchemaPromotionExecutionPhase::Complete,
-        resumed,
-        old_schema_hash: staged.dry_plan.old_schema_hash.clone(),
-        new_schema_hash: publication.new_schema_hash.to_string(),
-        staged_plan_path: promotion_plan_relative_path(&staged.promotion_id),
-        snapshot_path: staged
-            .dry_plan
-            .new_schema_snapshot_path
-            .clone()
-            .expect("validated staged plan has snapshot path"),
-        targets: publication
-            .targets
-            .iter()
-            .map(|target| SchemaPromotionExecutionTargetReport {
-                destination: target.destination_id.to_string(),
-                target: target.target.to_string(),
-                correction_package_hash: target.correction_package_hash.to_string(),
-                receipt_id: Some(target.receipt_id.to_string()),
-                checkpoint_id: Some(target.checkpoint_id.to_string()),
-                committed: true,
-            })
-            .collect(),
-        lock_published: true,
-        publication_event_recorded: true,
-        remaining_action: "none".to_owned(),
-        recovery_command: execution_recovery_command(&staged.dry_plan),
-    }
-}
-
-fn pending_target_report(
-    package: &PreparedCorrectionPackage,
-) -> SchemaPromotionExecutionTargetReport {
-    SchemaPromotionExecutionTargetReport {
-        destination: package.artifact.destination_id.to_string(),
-        target: package.artifact.target.to_string(),
-        correction_package_hash: package.package_hash.to_string(),
-        receipt_id: None,
-        checkpoint_id: None,
-        committed: false,
-    }
-}
-
-fn target_recovery_status_sequence(
-    target_index: usize,
-    checkpointed: bool,
-) -> cdf_kernel::Result<u64> {
-    let index = u64::try_from(target_index)
-        .map_err(|_| cdf_kernel::CdfError::internal("promotion target index exceeds u64"))?;
-    let sequence = index
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(if checkpointed { 3 } else { 2 }))
-        .ok_or_else(|| {
-            cdf_kernel::CdfError::internal("promotion recovery journal sequence overflow")
-        })?;
-    if sequence >= u64::MAX - 1 {
-        return Err(cdf_kernel::CdfError::internal(
-            "promotion recovery journal exhausted target sequence space",
-        ));
-    }
-    Ok(sequence)
-}
-
-fn write_recovery_status(
-    project_root: &Path,
-    staged: &SchemaPromotionExecutionPlanArtifact,
-    sequence: u64,
-    phase: SchemaPromotionExecutionPhase,
-    targets: Vec<SchemaPromotionExecutionTargetReport>,
-    remaining_action: &str,
-) -> cdf_kernel::Result<()> {
-    let status = SchemaPromotionRecoveryStatus {
-        version: SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION,
-        resource_id: staged.resource_id.to_string(),
-        promotion_id: staged.promotion_id.to_string(),
-        phase,
-        targets,
-        remaining_action: remaining_action.to_owned(),
-        recovery_command: execution_recovery_command(&staged.dry_plan),
-    };
-    write_create_or_verify(
-        project_root,
-        &project_root.join(promotion_recovery_status_relative_path(
-            &staged.promotion_id,
-            sequence,
-        )),
-        &canonical_json_bytes(&status)?,
-    )
-}
-
-pub fn load_schema_promotion_recovery_status(
-    project_root: &Path,
-    promotion_id: &PromotionId,
-) -> cdf_kernel::Result<Option<SchemaPromotionRecoveryStatus>> {
-    let directory = project_root.join(promotion_recovery_status_directory(promotion_id));
-    if !promotion_directory_exists(&directory)? {
-        return Ok(None);
-    }
-    let entries = fs::read_dir(&directory).map_err(|error| {
-        promotion_artifact_enumeration_error(
-            "read promotion recovery status directory",
-            &directory,
-            error,
-        )
-    })?;
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            promotion_artifact_enumeration_error(
-                "read promotion recovery status entry",
-                &directory,
-                error,
-            )
-        })?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let file_type = entry.file_type().map_err(|error| {
-            promotion_artifact_enumeration_error(
-                "inspect promotion recovery status entry",
-                &path,
-                error,
-            )
-        })?;
-        if !file_type.is_file() {
-            return Err(content_addressed_conflict(&path));
-        }
-        paths.push(path);
-    }
-    paths.sort();
-    let Some(path) = paths.last() else {
-        return Ok(None);
-    };
-    let status: SchemaPromotionRecoveryStatus = read_promotion_json_file(project_root, path)?;
-    if status.version != SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION
-        || status.promotion_id != promotion_id.as_str()
-    {
-        return Err(cdf_kernel::CdfError::data(
-            "schema promotion recovery status conflicts with its directory authority",
-        ));
-    }
-    Ok(Some(status))
 }
 
 fn execution_recovery_command(plan: &SchemaPromotionPlanReport) -> String {
@@ -2138,15 +1758,6 @@ fn source_package_position(
     }))
 }
 
-fn promotion_scope(resource: &CompiledResource) -> ScopeKey {
-    ScopeKey::SchemaContract {
-        contract: resource.descriptor().contract.clone().unwrap_or_else(|| {
-            ContractRef::new(resource.descriptor().resource_id.to_string())
-                .expect("resource id is a valid contract ref")
-        }),
-    }
-}
-
 fn take_destination<'a>(
     destinations: &'a mut [ResolvedProjectDestination],
     destination_id: &DestinationId,
@@ -2208,116 +1819,6 @@ fn correction_target_authority_relative_path(
         format!("{}:{}", target.destination, target.target).as_bytes(),
     ));
     format!(".cdf/promotions/{id}/targets/{target_hash}.json")
-}
-
-pub fn promotion_plan_relative_path(promotion_id: &PromotionId) -> String {
-    let id = promotion_id
-        .as_str()
-        .strip_prefix("sha256:")
-        .unwrap_or(promotion_id.as_str());
-    format!(".cdf/promotions/{id}/plan.json")
-}
-
-fn promotion_recovery_status_directory(promotion_id: &PromotionId) -> String {
-    let id = promotion_id
-        .as_str()
-        .strip_prefix("sha256:")
-        .unwrap_or(promotion_id.as_str());
-    format!(".cdf/promotions/{id}/status")
-}
-
-fn promotion_recovery_status_relative_path(promotion_id: &PromotionId, sequence: u64) -> String {
-    format!(
-        "{}/{sequence:020}.json",
-        promotion_recovery_status_directory(promotion_id)
-    )
-}
-
-pub fn load_resumable_schema_promotion(
-    project_root: &Path,
-    resource_id: &ResourceId,
-    current_lock: &LockFileAuthority,
-) -> cdf_kernel::Result<Option<SchemaPromotionExecutionPlanArtifact>> {
-    let root = project_root.join(".cdf/promotions");
-    if !promotion_directory_exists(&root)? {
-        return Ok(None);
-    }
-    let current = parse_lock(
-        std::str::from_utf8(&current_lock.bytes)
-            .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
-    )?;
-    let mut matches = Vec::new();
-    for entry in fs::read_dir(&root).map_err(|error| {
-        promotion_artifact_enumeration_error("read staged promotion directory", &root, error)
-    })? {
-        let entry = entry.map_err(|error| {
-            promotion_artifact_enumeration_error("read staged promotion entry", &root, error)
-        })?;
-        let entry_path = entry.path();
-        if !entry
-            .file_type()
-            .map_err(|error| {
-                promotion_artifact_enumeration_error(
-                    "inspect staged promotion entry",
-                    &entry_path,
-                    error,
-                )
-            })?
-            .is_dir()
-        {
-            continue;
-        }
-        let path = entry.path().join("plan.json");
-        if !promotion_regular_file_exists(&path)? {
-            continue;
-        }
-        let artifact: SchemaPromotionExecutionPlanArtifact =
-            read_promotion_json_file(project_root, &path)?;
-        artifact.validate()?;
-        if path != project_root.join(promotion_plan_relative_path(&artifact.promotion_id)) {
-            return Err(cdf_kernel::CdfError::data(format!(
-                "staged promotion plan {} is not stored under its canonical promotion identity",
-                path.display()
-            )));
-        }
-        if artifact.resource_id != *resource_id {
-            continue;
-        }
-        let proposed = artifact
-            .dry_plan
-            .proposed_snapshot
-            .as_ref()
-            .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion has no snapshot"))?;
-        let installed = current
-            .resources
-            .get(resource_id.as_str())
-            .and_then(|resource| resource.schema_snapshot.as_ref());
-        if current_lock.sha256 == artifact.old_lock_authority.sha256
-            || installed == Some(&proposed.artifact.reference())
-        {
-            matches.push(artifact);
-        }
-    }
-    if matches.len() > 1 {
-        return Err(cdf_kernel::CdfError::contract(format!(
-            "multiple staged schema promotions match resource {resource_id}; specify or remove stale staged authority before retrying"
-        )));
-    }
-    let artifact = matches.pop();
-    if let Some(artifact) = artifact.as_ref() {
-        let snapshot = artifact
-            .dry_plan
-            .proposed_snapshot
-            .as_ref()
-            .expect("validated staged promotion has snapshot");
-        let stored = SchemaSnapshotStore::new(project_root).read(&snapshot.artifact.reference())?;
-        if stored != snapshot.artifact {
-            return Err(cdf_kernel::CdfError::data(
-                "staged promotion snapshot conflicts with its content-addressed authority",
-            ));
-        }
-    }
-    Ok(artifact)
 }
 
 fn canonical_json_bytes(value: &impl Serialize) -> cdf_kernel::Result<Vec<u8>> {
@@ -2948,25 +2449,6 @@ mod tests {
             write_create_or_verify(root.path(), &escaped, b"outside-write").unwrap_err();
         assert_eq!(ancestor_error.kind, cdf_kernel::ErrorKind::Data);
         assert!(!outside.path().join("promotions").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn promotion_recovery_status_rejects_symlinked_json_authority() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::NamedTempFile::new().unwrap();
-        let promotion_id = PromotionId::new("promotion-001").unwrap();
-        let status_dir = root
-            .path()
-            .join(promotion_recovery_status_directory(&promotion_id));
-        fs::create_dir_all(&status_dir).unwrap();
-        symlink(outside.path(), status_dir.join("00000000000000000000.json")).unwrap();
-
-        let error = load_schema_promotion_recovery_status(root.path(), &promotion_id).unwrap_err();
-
-        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
     }
 
     #[cfg(unix)]

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Checkpoint, CheckpointId, CheckpointStore, LeaseAuthorityDomainId, LeaseOwnerId, PromotionId,
-    PromotionPublicationEvent, Receipt, Result, ScopeKey,
+    PromotionPublicationEvent, Receipt, Result, SchemaAuthorityStore, ScopeKey,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -88,7 +88,9 @@ pub trait ScopeLeaseClock: Send + Sync {
 ///
 /// Implementations must check the lease and perform each protected mutation in one
 /// consistency-domain transaction. A caller-side `assert_current` is not sufficient.
-pub trait PromotionSettlementStore: CheckpointStore + ScopeLeaseStore {
+pub trait PromotionSettlementStore:
+    CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore
+{
     fn promotion_publication(
         &self,
         promotion_id: &PromotionId,

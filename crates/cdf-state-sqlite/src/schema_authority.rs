@@ -72,6 +72,31 @@ impl SqliteSchemaAuthorityStore {
         )
     }
 
+    pub(crate) fn open_existing_with_clock_and_path_ownership(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn ScopeLeaseClock>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        database_path_exists(path, ownership)?;
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let (conn, authority_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            validate_lease_schema_version(&conn)?;
+            validate_schema_version(&conn)?;
+            let authority_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, authority_domain_id))
+        })?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            clock,
+            authority_domain_id,
+            error_context,
+        })
+    }
+
     pub fn open_with_path_ownership(
         path: impl AsRef<Path>,
         ownership: StateStorePathOwnership,
@@ -1042,7 +1067,9 @@ fn require_event_versions(conn: &Connection, event: &SchemaAuthorityEvent) -> Re
             event.ordinal, event.key.resource_id, event.schema_hash
         ))
     })?;
-    if let SchemaAuthorityEventKind::PromotionBegun { to_schema_hash, .. } = &event.kind {
+    if let SchemaAuthorityEventKind::PromotionBegun { to_schema_hash, .. }
+    | SchemaAuthorityEventKind::PromotionResumed { to_schema_hash, .. } = &event.kind
+    {
         fetch_version(conn, &event.key, to_schema_hash)?.ok_or_else(|| {
             CdfError::internal(format!(
                 "schema authority promotion event {} for {} references missing target version {}",
@@ -1687,6 +1714,99 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         insert_event(&tx, &event)?;
         tx.commit().map_err(sqlite_error)?;
         Ok(state)
+    }
+
+    fn resume_promotion(
+        &self,
+        expected_source: &SchemaHead,
+        fence: &SchemaPromotionFence,
+    ) -> Result<SchemaHead> {
+        expected_source.validate()?;
+        self.validate_key_domain(&expected_source.key)?;
+        self.validate_fence(&expected_source.key, fence)?;
+        if !matches!(expected_source.status, SchemaHeadStatus::Active) {
+            return Err(CdfError::contract(
+                "schema promotion recovery requires the exact active source precondition",
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let now_ms = self.clock.now_ms()?;
+        assert_current_lease_at(&tx, &fence.lease, now_ms)?;
+        let current = fetch_head(&tx, &expected_source.key)?
+            .ok_or_else(|| CdfError::contract("schema promotion authority head is missing"))?;
+        let SchemaHeadStatus::Promoting {
+            promotion_id,
+            from_schema_hash,
+            to_schema_hash,
+            lease_owner,
+            fencing_token,
+        } = &current.status
+        else {
+            return Err(CdfError::contract(
+                "schema promotion recovery requires a promoting authority head",
+            ));
+        };
+        if current.generation != expected_source.generation
+            || current.schema_hash != expected_source.schema_hash
+            || from_schema_hash != &expected_source.schema_hash
+            || promotion_id != &fence.promotion_id
+        {
+            return Err(CdfError::contract(
+                "schema promotion recovery source precondition does not match state",
+            ));
+        }
+        if lease_owner == &fence.lease.owner && fencing_token == &fence.lease.fencing_token {
+            return Ok(current);
+        }
+        let mut state = fetch_promotion(&tx, &expected_source.key, promotion_id)?
+            .ok_or_else(|| CdfError::internal("promoting head has no persisted promotion state"))?;
+        if state.phase == SchemaPromotionLifecyclePhase::Published
+            || state.from_generation != expected_source.generation
+            || state.from_schema_hash != expected_source.schema_hash
+            || state.to_schema_hash != *to_schema_hash
+        {
+            return Err(CdfError::contract(
+                "schema promotion recovery state conflicts with its authority head",
+            ));
+        }
+        let resumed = SchemaHead {
+            key: current.key.clone(),
+            generation: current.generation,
+            schema_hash: current.schema_hash.clone(),
+            status: SchemaHeadStatus::Promoting {
+                promotion_id: promotion_id.clone(),
+                from_schema_hash: from_schema_hash.clone(),
+                to_schema_hash: to_schema_hash.clone(),
+                lease_owner: fence.lease.owner.clone(),
+                fencing_token: fence.lease.fencing_token,
+            },
+        };
+        resumed.validate()?;
+        update_head(&tx, &resumed)?;
+        state.updated_at_ms = now_ms;
+        update_promotion(&tx, &state)?;
+        insert_event(
+            &tx,
+            &SchemaAuthorityEvent {
+                key: resumed.key.clone(),
+                ordinal: next_event_ordinal(&tx, &resumed.key)?,
+                generation: resumed.generation,
+                schema_hash: resumed.schema_hash.clone(),
+                recorded_at_ms: now_ms,
+                kind: SchemaAuthorityEventKind::PromotionResumed {
+                    promotion_id: promotion_id.clone(),
+                    from_schema_hash: from_schema_hash.clone(),
+                    to_schema_hash: to_schema_hash.clone(),
+                    lease_owner: fence.lease.owner.clone(),
+                    fencing_token: fence.lease.fencing_token,
+                },
+            },
+        )?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(resumed)
     }
 
     fn promotion_state(

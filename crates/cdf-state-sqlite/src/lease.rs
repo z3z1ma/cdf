@@ -227,6 +227,30 @@ impl SqliteScopeLeaseStore {
         Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
     }
 
+    pub(crate) fn open_existing_with_clock_and_path_ownership(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn ScopeLeaseClock>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        database_path_exists(path, ownership)?;
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let (conn, authority_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            validate_schema_version(&conn)?;
+            let authority_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, authority_domain_id))
+        })?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            clock,
+            authority_domain_id,
+            error_context,
+        })
+    }
+
     pub fn open_read_only_with_path_ownership(
         path: impl AsRef<Path>,
         ownership: StateStorePathOwnership,

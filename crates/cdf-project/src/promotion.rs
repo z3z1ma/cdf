@@ -14,8 +14,9 @@ use cdf_contract::{
 };
 use cdf_declarative::{CompiledResource, parse_arrow_field_type};
 use cdf_kernel::{
-    CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, PackageHash, PromotionId,
-    RowProvenanceAddress, TypeMappingFidelity,
+    CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, DestinationSheetArtifact,
+    PackageHash, PromotionId, RowProvenanceAddress, SchemaAuthorityPrecondition, SchemaHead,
+    SchemaHeadStatus, SchemaVersion, TypeMappingFidelity,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::PackageReader;
@@ -26,24 +27,29 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CdfLock, DiscoveryFileCoverage, DiscoveryManifestArtifact, LockFileAuthority,
-    SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION, SchemaSnapshotArtifact,
-    SchemaSnapshotPromotionAuthority, SchemaSnapshotPromotionCoercionAuthority,
-    SchemaSnapshotPromotionEvidenceAvailability, SchemaSnapshotPromotionPathAuthority,
-    SchemaSnapshotPromotionTargetAssociationAuthority, SchemaSnapshotSchema,
+    DiscoveryFileCoverage, DiscoveryManifestArtifact, SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION,
+    SchemaSnapshotArtifact, SchemaSnapshotPromotionAuthority,
+    SchemaSnapshotPromotionCoercionAuthority, SchemaSnapshotPromotionEvidenceAvailability,
+    SchemaSnapshotPromotionPathAuthority, SchemaSnapshotPromotionTargetAssociationAuthority,
+    SchemaSnapshotSchema,
 };
 
 const PROMOTION_RESIDUAL_SCAN_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaPromotionPlanReport {
+    pub authority_domain_id: String,
+    pub project_id: String,
+    pub environment: String,
     pub resource_id: String,
     pub promotion_id: String,
+    pub current_generation: u64,
+    pub proposed_generation: Option<u64>,
+    pub authority_precondition: SchemaAuthorityPrecondition,
     pub old_schema_hash: String,
     pub new_schema_hash: Option<String>,
     pub new_schema_snapshot_path: Option<String>,
     pub proposed_snapshot: Option<SchemaPromotionSnapshotPlan>,
-    pub lock_precondition_sha256: String,
     pub evidence_extraction_program: String,
     pub evidence_inventory_complete: bool,
     pub fresh_discovery_schema_hash: Option<String>,
@@ -59,6 +65,39 @@ pub struct SchemaPromotionPlanReport {
     pub writes: SchemaPromotionWrites,
     pub recovery_argv: Vec<String>,
     pub recovery_command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaPromotionPlanningAuthority {
+    pub head: SchemaHead,
+    pub version: SchemaVersion,
+    pub schema_cache: SchemaSnapshotArtifact,
+    pub destinations: BTreeMap<String, DestinationSheetArtifact>,
+}
+
+impl SchemaPromotionPlanningAuthority {
+    pub fn validate(&self, resource: &CompiledResource) -> cdf_kernel::Result<()> {
+        self.head.validate()?;
+        self.version.validate()?;
+        self.schema_cache.validate_hash_input()?;
+        if !matches!(self.head.status, SchemaHeadStatus::Active)
+            || self.head.key.resource_id != resource.descriptor().resource_id
+            || self.head.schema_hash != self.version.schema_hash
+            || self.schema_cache.resource_id != self.head.key.resource_id.as_str()
+            || cdf_kernel::canonical_arrow_schema_hash(&self.schema_cache.schema.to_arrow()?)?
+                != self.version.schema_hash
+        {
+            return Err(CdfError::contract(
+                "schema promotion planning authority does not match the exact active state head/version",
+            ));
+        }
+        for destination in self.destinations.values() {
+            destination
+                .protocol_capabilities
+                .validate(&destination.sheet)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -682,34 +721,18 @@ fn receipt_targets(receipts: &[cdf_kernel::Receipt]) -> Vec<LocalPromotionReceip
         .collect()
 }
 
-/// Builds a promotion proposal from immutable package and lock evidence. This function is
+/// Builds a promotion proposal from immutable package and state-head evidence. This function is
 /// deliberately read-only; execution lives behind the separate promotion transaction protocol.
 pub fn plan_schema_promotion(
     evidence_inventory: &dyn PromotionEvidenceInventory,
     resource: &CompiledResource,
-    pinned: &SchemaSnapshotArtifact,
-    lock: &CdfLock,
-    authority: &LockFileAuthority,
+    authority: &SchemaPromotionPlanningAuthority,
     fresh_discovery: &SchemaPromotionFreshDiscovery,
     type_overrides: &[String],
 ) -> cdf_kernel::Result<SchemaPromotionPlanReport> {
+    authority.validate(resource)?;
+    let pinned = &authority.schema_cache;
     let resource_id = resource.descriptor().resource_id.as_str();
-    let locked_resource = lock.resources.get(resource_id).ok_or_else(|| {
-        CdfError::contract(format!(
-            "schema promote resource {resource_id:?} is absent from cdf.lock; run `cdf project lock --update`"
-        ))
-    })?;
-    let locked_snapshot = locked_resource.schema_snapshot.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "schema promote resource {resource_id:?} has no pinned snapshot in cdf.lock"
-        ))
-    })?;
-    if locked_snapshot.schema_hash != pinned.schema_hash || pinned.resource_id != resource_id {
-        return Err(CdfError::contract(format!(
-            "stale schema promotion authority for {resource_id:?}: cdf.lock pins {} but the inspected snapshot is {}; run `cdf schema show {resource_id}` and retry",
-            locked_snapshot.schema_hash, pinned.schema_hash
-        )));
-    }
 
     let overrides = parse_type_overrides(type_overrides)?;
     let mut conflicts = Vec::new();
@@ -737,23 +760,7 @@ pub fn plan_schema_promotion(
     let fresh_authority = fresh_discovery_types(resource_id, fresh_discovery)?;
     let fresh_discovery_schema_hash = fresh_authority.schema_hash.clone();
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let locked_contract = locked_resource.contract.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "schema promote resource {resource_id:?} has no locked contract authority"
-        ))
-    })?;
-    let locked_policy_hash = locked_contract.policy_hash.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "schema promote resource {resource_id:?} has no locked policy hash"
-        ))
-    })?;
     let derived_policy_hash = crate::internal::semantic_hash(&policy)?;
-    if locked_policy_hash != &derived_policy_hash {
-        return Err(CdfError::contract(format!(
-            "schema promote cannot replace locked policy authority {locked_policy_hash} with derived {:?} trust-policy {derived_policy_hash}; refresh the exact contract compiler input or provide a typed policy planner adapter",
-            resource.descriptor().trust_level
-        )));
-    }
     let mut paths = build_path_reports(
         &residual_paths,
         &overrides,
@@ -786,9 +793,9 @@ pub fn plan_schema_promotion(
                 schema,
                 &fresh_authority,
                 SnapshotCompilerLineage {
-                    normalizer_version: &locked_resource.compiler.normalizer,
-                    contract_policy_hash: locked_policy_hash,
-                    validation_program_hash: locked_contract.validation_program_hash.as_deref(),
+                    normalizer_version: cdf_contract::NORMALIZER_NAMECASE_V1,
+                    contract_policy_hash: &derived_policy_hash,
+                    validation_program_hash: None,
                 },
                 &paths,
             )
@@ -796,12 +803,16 @@ pub fn plan_schema_promotion(
         .transpose()?;
     let new_schema_hash = proposed_snapshot
         .as_ref()
-        .map(|snapshot| snapshot.schema_hash.clone());
+        .map(|snapshot| {
+            cdf_kernel::canonical_arrow_schema_hash(&snapshot.artifact.schema.to_arrow()?)
+                .map(|hash| hash.to_string())
+        })
+        .transpose()?;
     let new_schema_snapshot_path = proposed_snapshot
         .as_ref()
         .map(|snapshot| snapshot.path.clone());
     let targets = plan_targets(
-        lock,
+        &authority.destinations,
         &target_keys,
         &paths,
         &policy,
@@ -826,16 +837,36 @@ pub fn plan_schema_promotion(
         .map(|argument| shell_quote(argument))
         .collect::<Vec<_>>()
         .join(" ");
-    let execution_preconditions =
-        vec!["reverify_recorded_destination_receipts_and_current_target_state".to_owned()];
+    let execution_preconditions = vec![
+        "acquire_exact_state_head_promotion_fence".to_owned(),
+        "drain_or_expire_earlier_run_settlement_permits".to_owned(),
+        "establish_complete_committed_source_generation_cutoff".to_owned(),
+        "reverify_recorded_destination_receipts_and_current_target_state".to_owned(),
+        "atomically_publish_only_after_all_target_settlements".to_owned(),
+    ];
+    let proposed_generation = new_schema_hash
+        .as_ref()
+        .map(|_| {
+            authority
+                .head
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| CdfError::internal("schema authority generation overflow"))
+        })
+        .transpose()?;
     let mut report = SchemaPromotionPlanReport {
+        authority_domain_id: authority.head.key.authority_domain_id.to_string(),
+        project_id: authority.head.key.project_id.to_string(),
+        environment: authority.head.key.environment.to_string(),
         resource_id: resource_id.to_owned(),
         promotion_id: String::new(),
-        old_schema_hash: pinned.schema_hash.to_string(),
+        current_generation: authority.head.generation,
+        proposed_generation,
+        authority_precondition: authority.head.exact_precondition(),
+        old_schema_hash: authority.head.schema_hash.to_string(),
         new_schema_hash,
         new_schema_snapshot_path,
         proposed_snapshot,
-        lock_precondition_sha256: authority.sha256.clone(),
         evidence_extraction_program: "residual-json-v1/all-verified-package-rows/v1".to_owned(),
         evidence_inventory_complete,
         fresh_discovery_schema_hash,
@@ -856,10 +887,10 @@ pub fn plan_schema_promotion(
     Ok(report)
 }
 
-/// Recomputes the canonical RP5 promotion identity from the typed dry-plan projection.
+/// Recomputes the canonical promotion identity from the typed dry-plan projection.
 ///
 /// The identifier deliberately excludes presentation-only fields, but binds every execution
-/// authority selected by the planner: schema transition, lock precondition, evidence lineage,
+/// authority selected by the planner: schema transition, state-head precondition, evidence lineage,
 /// path/package/receipt associations, destination targets and strategies, and execution
 /// preconditions.
 pub fn recompute_schema_promotion_id(
@@ -868,17 +899,25 @@ pub fn recompute_schema_promotion_id(
     PromotionId::new(semantic_hash(&PromotionIdentity::from_report(plan))?)
 }
 
-/// Validates a persisted executable promotion plan against its typed version-3 snapshot and the
-/// exact old lock bytes, then returns the recomputed canonical identifier.
+/// Validates a persisted executable promotion plan against its typed state authority and proposed
+/// schema cache, then returns the recomputed canonical identifier.
 pub fn validate_schema_promotion_plan_identity(
     plan: &SchemaPromotionPlanReport,
-    old_lock_authority: &LockFileAuthority,
+    authority: &SchemaPromotionPlanningAuthority,
 ) -> cdf_kernel::Result<PromotionId> {
-    if LockFileAuthority::from_bytes(old_lock_authority.bytes.clone()) != *old_lock_authority
-        || plan.lock_precondition_sha256 != old_lock_authority.sha256
+    authority.head.validate()?;
+    authority.version.validate()?;
+    if plan.authority_domain_id != authority.head.key.authority_domain_id.as_str()
+        || plan.project_id != authority.head.key.project_id.as_str()
+        || plan.environment != authority.head.key.environment.as_str()
+        || plan.resource_id != authority.head.key.resource_id.as_str()
+        || plan.current_generation != authority.head.generation
+        || plan.old_schema_hash != authority.head.schema_hash.as_str()
+        || plan.authority_precondition != authority.head.exact_precondition()
+        || authority.version.schema_hash != authority.head.schema_hash
     {
         return Err(CdfError::data(
-            "schema promotion plan old lock bytes/hash do not match its execution precondition",
+            "schema promotion plan does not match its exact state head/version precondition",
         ));
     }
     if !plan.executable
@@ -888,7 +927,13 @@ pub fn validate_schema_promotion_plan_identity(
         || plan.targets.is_empty()
         || plan.evidence_extraction_program != "residual-json-v1/all-verified-package-rows/v1"
         || plan.execution_preconditions
-            != ["reverify_recorded_destination_receipts_and_current_target_state"]
+            != [
+                "acquire_exact_state_head_promotion_fence",
+                "drain_or_expire_earlier_run_settlement_permits",
+                "establish_complete_committed_source_generation_cutoff",
+                "reverify_recorded_destination_receipts_and_current_target_state",
+                "atomically_publish_only_after_all_target_settlements",
+            ]
     {
         return Err(CdfError::data(
             "schema promotion execution requires one complete conflict-free canonical dry plan",
@@ -898,9 +943,11 @@ pub fn validate_schema_promotion_plan_identity(
         CdfError::data("executable schema promotion plan has no typed proposed snapshot")
     })?;
     snapshot_plan.artifact.validate_hash_input()?;
+    let proposed_schema_hash =
+        cdf_kernel::canonical_arrow_schema_hash(&snapshot_plan.artifact.schema.to_arrow()?)?;
     if snapshot_plan.schema_hash != snapshot_plan.artifact.schema_hash.as_str()
         || snapshot_plan.path != snapshot_plan.artifact.path
-        || plan.new_schema_hash.as_deref() != Some(snapshot_plan.schema_hash.as_str())
+        || plan.new_schema_hash.as_deref() != Some(proposed_schema_hash.as_str())
         || plan.new_schema_snapshot_path.as_deref() != Some(snapshot_plan.path.as_str())
         || plan.resource_id != snapshot_plan.artifact.resource_id
     {
@@ -914,7 +961,9 @@ pub fn validate_schema_promotion_plan_identity(
         .as_ref()
         .ok_or_else(|| CdfError::data("promotion snapshot has no typed version-3 authority"))?;
     if snapshot_authority.resource_id != plan.resource_id
-        || snapshot_authority.old_snapshot.schema_hash.as_str() != plan.old_schema_hash
+        || snapshot_authority.old_snapshot != authority.schema_cache.reference()
+        || cdf_kernel::canonical_arrow_schema_hash(&authority.schema_cache.schema.to_arrow()?)?
+            != authority.head.schema_hash
         || snapshot_authority.fresh_discovery_schema_hash != plan.fresh_discovery_schema_hash
         || snapshot_authority.fresh_discovery_manifest_hash != plan.fresh_discovery_manifest_hash
         || snapshot_authority.fresh_discovery_file_coverage != plan.fresh_discovery_file_coverage
@@ -923,18 +972,6 @@ pub fn validate_schema_promotion_plan_identity(
     {
         return Err(CdfError::data(
             "schema promotion dry plan diverges from typed snapshot lineage",
-        ));
-    }
-
-    let lock_text = std::str::from_utf8(&old_lock_authority.bytes)
-        .map_err(|error| CdfError::data(format!("decode staged old lock: {error}")))?;
-    let old_lock = crate::parse_lock(lock_text)?;
-    let locked_resource = old_lock.resources.get(&plan.resource_id).ok_or_else(|| {
-        CdfError::data("schema promotion resource is absent from staged old lock authority")
-    })?;
-    if locked_resource.schema_snapshot.as_ref() != Some(&snapshot_authority.old_snapshot) {
-        return Err(CdfError::data(
-            "schema promotion typed old snapshot does not match staged old lock authority",
         ));
     }
 
@@ -1032,10 +1069,10 @@ pub fn validate_schema_promotion_plan_identity(
         }
     }
     for (key, packages) in evidence_by_target {
-        expected_targets
-            .get_mut(&key)
-            .expect("association target was inserted")
-            .3 = packages
+        let target = expected_targets.get_mut(&key).ok_or_else(|| {
+            CdfError::internal("promotion association target accumulation was lost")
+        })?;
+        target.3 = packages
             .into_iter()
             .map(|(package_hash, (availability, receipt_ids))| {
                 SchemaPromotionTargetEvidenceReport {
@@ -1056,9 +1093,14 @@ pub fn validate_schema_promotion_plan_identity(
         let expected = expected_targets.remove(&key).ok_or_else(|| {
             CdfError::data("schema promotion dry plan contains an untyped destination target")
         })?;
-        let locked = old_lock.destination(&target.destination)?.ok_or_else(|| {
-            CdfError::data("schema promotion target destination is absent from staged old lock")
-        })?;
+        let destination = authority
+            .destinations
+            .get(&target.destination)
+            .ok_or_else(|| {
+                CdfError::data(
+                    "schema promotion target destination has no current capability sheet",
+                )
+            })?;
         let strategy = target.strategy.ok_or_else(|| {
             CdfError::data("executable schema promotion target has no correction strategy")
         })?;
@@ -1071,10 +1113,10 @@ pub fn validate_schema_promotion_plan_identity(
                 )
             });
         let expected_strategy = select_correction_strategy(
-            &locked.protocol_capabilities.corrections,
+            &destination.protocol_capabilities.corrections,
             residual_values_available,
         );
-        if target.destination_sheet_hash != locked.sheet_hash
+        if target.destination_sheet_hash != semantic_hash(destination)?
             || expected_strategy != CorrectionStrategySelection::Selected(strategy)
             || target.affected_packages != expected.0.into_iter().collect::<Vec<_>>()
             || target.affected_paths != expected.1.into_iter().collect::<Vec<_>>()
@@ -1082,7 +1124,7 @@ pub fn validate_schema_promotion_plan_identity(
             || target.evidence != expected.3
         {
             return Err(CdfError::data(format!(
-                "schema promotion target {}/{} diverges from typed snapshot and lock authority",
+                "schema promotion target {}/{} diverges from typed snapshot and destination authority",
                 target.destination, target.target
             )));
         }
@@ -2129,7 +2171,7 @@ fn promotion_snapshot_plan(
 }
 
 fn plan_targets(
-    lock: &CdfLock,
+    destinations: &BTreeMap<String, DestinationSheetArtifact>,
     target_keys: &BTreeSet<TargetKey>,
     paths: &[SchemaPromotionPathReport],
     policy: &ContractPolicy,
@@ -2158,20 +2200,22 @@ fn plan_targets(
                 "restore the exact retained packages or provide verified destination readback for this target",
             ));
         }
-        let Some(locked) = lock.destination(&key.destination)? else {
+        let Some(destination) = destinations.get(&key.destination) else {
             conflicts.push(conflict(
                 "destination_sheet_missing",
                 format!(
-                    "verified receipt names destination {:?}, absent from cdf.lock",
+                    "verified receipt names destination {:?}, but no current capability sheet was supplied",
                     key.destination
                 ),
-                "refresh the lock from the exact destination capability sheet",
+                "resolve the exact configured destination and retry promotion planning",
             ));
             continue;
         };
-        locked.protocol_capabilities.validate(&locked.sheet)?;
+        destination
+            .protocol_capabilities
+            .validate(&destination.sheet)?;
         let identifier_policy = IdentifierPolicy::from_destination_rules(
-            &locked.sheet.identifier_rules,
+            &destination.sheet.identifier_rules,
         )
         .map_err(|error| {
             CdfError::contract(format!(
@@ -2190,7 +2234,7 @@ fn plan_targets(
             };
             let arrow_type = selected.to_arrow()?.to_string();
             let mapping = resolve_destination_type_mapping(
-                &locked.sheet.type_mappings,
+                &destination.sheet.type_mappings,
                 &selected.to_arrow()?,
             )?;
             let destination_field = match &identifier_policy {
@@ -2256,7 +2300,7 @@ fn plan_targets(
             });
         }
         let strategy_selection = select_correction_strategy(
-            &locked.protocol_capabilities.corrections,
+            &destination.protocol_capabilities.corrections,
             retained_values_available,
         );
         let strategy = match strategy_selection {
@@ -2309,8 +2353,8 @@ fn plan_targets(
         reports.push(SchemaPromotionTargetReport {
             destination: key.destination.clone(),
             target: key.target.clone(),
-            destination_sheet_hash: locked.sheet_hash.clone(),
-            residual_readback: locked
+            destination_sheet_hash: semantic_hash(destination)?,
+            residual_readback: destination
                 .protocol_capabilities
                 .corrections
                 .residual_readback
@@ -2523,10 +2567,15 @@ fn semantic_hash(value: &impl Serialize) -> cdf_kernel::Result<String> {
 #[derive(Serialize)]
 struct PromotionIdentity<'a> {
     version: u16,
+    authority_domain_id: &'a str,
+    project_id: &'a str,
+    environment: &'a str,
     resource_id: &'a str,
+    current_generation: u64,
+    proposed_generation: Option<u64>,
+    authority_precondition: SchemaAuthorityPrecondition,
     old_schema_hash: String,
     new_schema_hash: Option<String>,
-    lock_precondition_sha256: String,
     evidence_extraction_program: String,
     evidence_inventory_complete: bool,
     fresh_discovery_schema_hash: Option<String>,
@@ -2566,11 +2615,16 @@ struct PromotionIdentityTarget {
 impl<'a> PromotionIdentity<'a> {
     fn from_report(plan: &'a SchemaPromotionPlanReport) -> Self {
         Self {
-            version: 1,
+            version: 2,
+            authority_domain_id: &plan.authority_domain_id,
+            project_id: &plan.project_id,
+            environment: &plan.environment,
             resource_id: &plan.resource_id,
+            current_generation: plan.current_generation,
+            proposed_generation: plan.proposed_generation,
+            authority_precondition: plan.authority_precondition.clone(),
             old_schema_hash: plan.old_schema_hash.clone(),
             new_schema_hash: plan.new_schema_hash.clone(),
-            lock_precondition_sha256: plan.lock_precondition_sha256.clone(),
             evidence_extraction_program: plan.evidence_extraction_program.clone(),
             evidence_inventory_complete: plan.evidence_inventory_complete,
             fresh_discovery_schema_hash: plan.fresh_discovery_schema_hash.clone(),
@@ -3239,24 +3293,13 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let config = crate::parse_cdf_toml(crate::tests::support::BOOK_PROJECT).unwrap();
-        let resources = crate::tests::support::compile_declarative_fixture(
-            &crate::tests::support::test_source_registry(),
-            crate::tests::support::GITHUB_RESOURCE,
-        )
-        .unwrap();
-        let lock = crate::generate_lockfile_with_destination_artifacts(
-            &config,
-            &resources,
-            crate::current_dependency_tuple(),
-            &[locked_destination.sheet_artifact().unwrap()],
-            BTreeMap::new(),
-            &cdf_semantic::SemanticCatalog::builtins().unwrap(),
-        )
-        .unwrap();
+        let destinations = BTreeMap::from([(
+            "warehouse".to_owned(),
+            locked_destination.sheet_artifact().unwrap(),
+        )]);
         let mut conflicts = Vec::new();
         let targets = plan_targets(
-            &lock,
+            &destinations,
             &target_keys,
             &[],
             &ContractPolicy::default(),

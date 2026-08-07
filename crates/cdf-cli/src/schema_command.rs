@@ -1,20 +1,26 @@
 mod render;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
-    CdfError, LeaseOwnerId, PipelineId, PromotionId, ResourceId, SchemaSnapshotReference,
-    SchemaSource, TargetName,
+    CdfError, EnvironmentName, LeaseOwnerId, PipelineId, ResourceId, SchemaAuthorityKey,
+    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaSnapshotReference, SchemaSource,
+    SchemaVersion, TargetName,
 };
 use cdf_project::{
-    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore,
+    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore, PromotionEvidenceInventory,
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions,
-    SchemaPromotionExecutionRequest, SchemaSnapshotArtifact, SchemaSnapshotDataType,
-    SchemaSnapshotField, SchemaSnapshotStore, execute_schema_promotion,
-    load_resumable_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
+    SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, SchemaPromotionPlanningAuthority,
+    SchemaSnapshotArtifact, SchemaSnapshotDataType, SchemaSnapshotField, SchemaSnapshotStore,
+    execute_schema_promotion,
 };
-use cdf_state_sqlite::SqlitePromotionSettlementStore;
+use cdf_state_sqlite::{
+    SqlitePromotionSettlementStore, SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore,
+};
 use serde::Serialize;
 
 use crate::{
@@ -49,49 +55,18 @@ fn promote(
     if args.execute {
         return execute_promotion(&context, resource, &args, execution, destination_registry);
     }
-    let reference = pinned_snapshot_reference(&context, resource)
-        .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
-    let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let lock = context.lock.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "schema promote requires locked schema authority; run `cdf compile {}` first",
-            args.resource_id
-        ))
-    })?;
-    let authority = context.lock_authority.as_ref().ok_or_else(|| {
-        CdfError::contract("schema promote requires an exact cdf.lock precondition")
-    })?;
-    let inspection_root = inspection_artifact_root("schema-promote")?;
-    let fresh_discovery = match discover_artifacts_for_cli_at(
+    let prepared = prepare_new_promotion(
         &context,
         resource,
-        execution,
-        inspection_root.path(),
-    ) {
-        Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
-            content_identity: artifacts.discovery.snapshot.source_identity,
-            snapshot: Box::new(artifacts.discovery.snapshot.artifact),
-            discovery_manifest: artifacts.discovery_manifest.map(Box::new),
-        },
-        Err(error) => cdf_project::SchemaPromotionFreshDiscovery::Unavailable {
-            reason: error.message,
-        },
-    };
-    let evidence_inventory =
-        cdf_project::LocalPackagePromotionEvidenceInventory::new(context.package_root());
-    let report = cdf_project::plan_schema_promotion(
-        &evidence_inventory,
-        resource,
-        &pinned,
-        lock,
-        authority,
-        &fresh_discovery,
         &args.types,
+        execution,
+        destination_registry,
+        "schema-promote",
     )?;
     CommandOutput::rendered(
         "schema promote",
-        render::schema_promote_document(&report),
-        report,
+        render::schema_promote_document(&prepared.report),
+        prepared.report,
     )
 }
 
@@ -102,15 +77,11 @@ fn execute_promotion(
     execution: &cdf_runtime::ExecutionServices,
     destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let current_authority = context.lock_authority.as_ref().ok_or_else(|| {
-        CdfError::contract("schema promote --execute requires an exact cdf.lock precondition")
-    })?;
     let resource_id = ResourceId::new(args.resource_id.clone())?;
-    let resumable =
-        load_resumable_schema_promotion(&context.root, &resource_id, current_authority)?;
-    let (lock, authority, report) = if let Some(staged) = resumable {
-        let expected_types = staged
-            .dry_plan
+    let prepared = if let Some((head, version, report)) =
+        load_resumable_promotion_state(context, &resource_id, &args.types)?
+    {
+        let expected_types = report
             .paths
             .iter()
             .filter_map(|path| {
@@ -126,79 +97,29 @@ fn execute_promotion(
             .collect::<std::collections::BTreeSet<_>>();
         if !supplied_types.is_empty() && supplied_types != expected_types {
             return Err(CdfError::contract(
-                "schema promote recovery --type values conflict with the exact staged authority; use the rendered recovery command",
+                "schema promote recovery --type values conflict with the exact state-backed plan; use the rendered recovery command",
             )
             .into());
         }
-        let lock = parse_lock(
-            std::str::from_utf8(&staged.old_lock_authority.bytes)
-                .map_err(|error| CdfError::data(error.to_string()))?,
-        )?;
-        (lock, staged.old_lock_authority, staged.dry_plan)
-    } else {
-        let reference = pinned_snapshot_reference(context, resource)
-            .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
-        let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
-        let lock = context.lock.as_ref().ok_or_else(|| {
-            CdfError::contract(format!(
-                "schema promote requires locked schema authority; run `cdf compile {}` first",
-                args.resource_id
-            ))
-        })?;
-        let inspection_root = inspection_artifact_root("schema-promote-execute")?;
-        let fresh_discovery = match discover_artifacts_for_cli_at(
+        prepare_resumable_promotion(
             context,
             resource,
+            head,
+            version,
+            report,
             execution,
-            inspection_root.path(),
-        ) {
-            Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
-                content_identity: artifacts.discovery.snapshot.source_identity,
-                snapshot: Box::new(artifacts.discovery.snapshot.artifact),
-                discovery_manifest: artifacts.discovery_manifest.map(Box::new),
-            },
-            Err(error) => cdf_project::SchemaPromotionFreshDiscovery::Unavailable {
-                reason: error.message,
-            },
-        };
-        let inventory =
-            cdf_project::LocalPackagePromotionEvidenceInventory::new(context.package_root());
-        let report = cdf_project::plan_schema_promotion(
-            &inventory,
-            resource,
-            &pinned,
-            lock,
-            current_authority,
-            &fresh_discovery,
-            &args.types,
-        )?;
-        (lock.clone(), current_authority.clone(), report)
-    };
-
-    let mut destinations = Vec::new();
-    let mut redactions = Vec::new();
-    for target in &report.targets {
-        let target_name = TargetName::new(target.target.clone())?;
-        let resolved = resolve_selected_destination_with_services(
             destination_registry,
+        )?
+    } else {
+        prepare_new_promotion(
             context,
-            &target_name,
-            None,
-            Some(execution),
-        )
-        .map_err(|error| CliError::from(redact_error_value(error, None)))?;
-        if resolved.destination.describe().destination_id.as_str() != target.destination {
-            return Err(CdfError::contract(format!(
-                "resolved destination {} does not match staged promotion target {} for {}",
-                resolved.destination.describe().destination_id,
-                target.destination,
-                target.target
-            ))
-            .into());
-        }
-        redactions.push(resolved.secret_redaction);
-        destinations.push(resolved.destination);
-    }
+            resource,
+            &args.types,
+            execution,
+            destination_registry,
+            "schema-promote-execute",
+        )?
+    };
 
     let state_path = context.state_store_path()?;
     let settlement_store = SqlitePromotionSettlementStore::open_with_path_ownership(
@@ -209,26 +130,25 @@ fn execute_promotion(
         project_root: &context.root,
         package_root: &context.package_root(),
         resource,
-        lock: &lock,
-        lock_authority: &authority,
-        dry_plan: &report,
-        destinations,
+        authority: &prepared.authority,
+        dry_plan: &prepared.report,
+        destinations: prepared.destinations,
         execution_services: execution.clone(),
         pipeline_id: PipelineId::new("cdf-schema-promotion")?,
-        lease_owner: LeaseOwnerId::new(format!("schema-promote:{}", report.promotion_id))?,
+        lease_owner: LeaseOwnerId::new(format!("schema-promote:{}", prepared.report.promotion_id))?,
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
         settlement_store: &settlement_store,
         failpoint: None,
     })
     .map_err(|mut error| {
-        for redaction in redactions.iter().flatten() {
+        for redaction in prepared.redactions.iter().flatten() {
             error = redact_error_value(error, Some(redaction));
         }
         let mut cli_error = CliError::from(error);
-        if let Ok(promotion_id) = PromotionId::new(report.promotion_id.clone())
-            && let Ok(Some(status)) =
-                load_schema_promotion_recovery_status(&context.root, &promotion_id)
-            && let Ok(details) = serde_json::to_value(status)
+        if let Ok(promotion_id) = cdf_kernel::PromotionId::new(prepared.report.promotion_id.clone())
+            && let Ok(Some(state)) =
+                settlement_store.promotion_state(&prepared.authority.head.key, &promotion_id)
+            && let Ok(details) = serde_json::to_value(state)
         {
             cli_error = cli_error.with_details(details);
         }
@@ -239,6 +159,243 @@ fn execute_promotion(
         render::schema_promotion_execution_document(&result),
         result,
     )
+}
+
+struct PreparedPromotion {
+    authority: SchemaPromotionPlanningAuthority,
+    report: SchemaPromotionPlanReport,
+    destinations: Vec<cdf_project::ResolvedProjectDestination>,
+    redactions: Vec<Option<String>>,
+}
+
+fn prepare_new_promotion(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    types: &[String],
+    execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
+    inspection_label: &str,
+) -> Result<PreparedPromotion, CliError> {
+    let resource_id = resource.descriptor().resource_id.clone();
+    let active = crate::schema_authority::load_active(context, &resource_id)?.ok_or_else(|| {
+        CdfError::contract(format!(
+            "schema promote requires active state authority for `{resource_id}`; run `cdf compile {resource_id}` first"
+        ))
+    })?;
+    let inventory =
+        cdf_project::LocalPackagePromotionEvidenceInventory::new(context.package_root());
+    let facts = inventory.inventory(resource_id.as_str())?;
+    let targets = facts
+        .paths
+        .iter()
+        .flat_map(|path| path.associations.iter())
+        .map(|association| (association.destination.clone(), association.target.clone()))
+        .collect::<BTreeSet<_>>();
+    let (authority, destinations, redactions) = resolve_promotion_authority(
+        context,
+        resource,
+        active.head,
+        active.version,
+        targets,
+        execution,
+        destination_registry,
+    )?;
+    let inspection_root = inspection_artifact_root(inspection_label)?;
+    let fresh_discovery =
+        match discover_artifacts_for_cli_at(context, resource, execution, inspection_root.path()) {
+            Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
+                content_identity: artifacts.discovery.snapshot.source_identity,
+                snapshot: Box::new(artifacts.discovery.snapshot.artifact),
+                discovery_manifest: artifacts.discovery_manifest.map(Box::new),
+            },
+            Err(error) => cdf_project::SchemaPromotionFreshDiscovery::Unavailable {
+                reason: error.message,
+            },
+        };
+    let report = cdf_project::plan_schema_promotion(
+        &inventory,
+        resource,
+        &authority,
+        &fresh_discovery,
+        types,
+    )?;
+    Ok(PreparedPromotion {
+        authority,
+        report,
+        destinations,
+        redactions,
+    })
+}
+
+fn prepare_resumable_promotion(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    head: SchemaHead,
+    version: SchemaVersion,
+    report: SchemaPromotionPlanReport,
+    execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
+) -> Result<PreparedPromotion, CliError> {
+    let targets = report
+        .targets
+        .iter()
+        .map(|target| (target.destination.clone(), target.target.clone()))
+        .collect();
+    let (authority, destinations, redactions) = resolve_promotion_authority(
+        context,
+        resource,
+        head,
+        version,
+        targets,
+        execution,
+        destination_registry,
+    )?;
+    cdf_project::validate_schema_promotion_plan_identity(&report, &authority)?;
+    Ok(PreparedPromotion {
+        authority,
+        report,
+        destinations,
+        redactions,
+    })
+}
+
+fn resolve_promotion_authority(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    head: SchemaHead,
+    version: SchemaVersion,
+    targets: BTreeSet<(String, String)>,
+    execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
+) -> Result<
+    (
+        SchemaPromotionPlanningAuthority,
+        Vec<cdf_project::ResolvedProjectDestination>,
+        Vec<Option<String>>,
+    ),
+    CliError,
+> {
+    let schema_cache = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        &version.canonical_schema.to_arrow()?,
+        BTreeMap::new(),
+    )?;
+    let mut destination_sheets = BTreeMap::new();
+    let mut destinations = Vec::new();
+    let mut redactions = Vec::new();
+    for (expected_destination, target) in targets {
+        let target = TargetName::new(target)?;
+        let resolved = resolve_selected_destination_with_services(
+            destination_registry,
+            context,
+            &target,
+            None,
+            Some(execution),
+        )
+        .map_err(|error| CliError::from(redact_error_value(error, None)))?;
+        let actual_destination = resolved.destination.describe().destination_id.to_string();
+        if actual_destination != expected_destination {
+            return Err(CdfError::contract(format!(
+                "resolved destination {actual_destination} does not match promotion target {expected_destination} for {target}"
+            ))
+            .into());
+        }
+        let sheet = resolved.destination.destination_sheet_artifact()?;
+        if destination_sheets
+            .insert(actual_destination.clone(), sheet.clone())
+            .is_some_and(|existing| existing != sheet)
+        {
+            return Err(CdfError::contract(format!(
+                "destination {actual_destination} returned inconsistent capability authority while planning promotion"
+            ))
+            .into());
+        }
+        redactions.push(resolved.secret_redaction);
+        destinations.push(resolved.destination);
+    }
+    let authority = SchemaPromotionPlanningAuthority {
+        head,
+        version,
+        schema_cache,
+        destinations: destination_sheets,
+    };
+    authority.validate(resource)?;
+    Ok((authority, destinations, redactions))
+}
+
+fn load_resumable_promotion_state(
+    context: &ProjectContext,
+    resource_id: &ResourceId,
+    supplied_types: &[String],
+) -> Result<Option<(SchemaHead, SchemaVersion, SchemaPromotionPlanReport)>, CliError> {
+    let state_path = context.state_store_path()?;
+    let ownership = context.state_store_path_ownership();
+    let SqliteSchemaAuthorityState::Ready {
+        authority_domain_id,
+    } = SqliteSchemaAuthorityStore::inspect_state(&state_path, ownership)?
+    else {
+        return Ok(None);
+    };
+    let key = SchemaAuthorityKey::new(
+        authority_domain_id,
+        context.config.project.id.clone(),
+        EnvironmentName::new(context.environment.name.clone())?,
+        resource_id.clone(),
+    )?;
+    let store = SqlitePromotionSettlementStore::open_with_path_ownership(&state_path, ownership)?;
+    let Some(current_head) = SchemaAuthorityStore::head(&store, &key)? else {
+        return Ok(None);
+    };
+    let (promotion_id, from_schema_hash, published) = match &current_head.status {
+        SchemaHeadStatus::Promoting {
+            promotion_id,
+            from_schema_hash,
+            ..
+        } => (promotion_id.clone(), from_schema_hash.clone(), false),
+        SchemaHeadStatus::Active if !supplied_types.is_empty() => {
+            let Some(event) = SchemaAuthorityStore::history(&store, &key, 1)?.pop() else {
+                return Ok(None);
+            };
+            let cdf_kernel::SchemaAuthorityEventKind::PromotionPublished {
+                promotion_id,
+                from_schema_hash,
+                ..
+            } = event.kind
+            else {
+                return Ok(None);
+            };
+            (promotion_id, from_schema_hash, true)
+        }
+        SchemaHeadStatus::Active => return Ok(None),
+    };
+    let state = store
+        .promotion_state(&key, &promotion_id)?
+        .ok_or_else(|| CdfError::internal("promoting schema head has no lifecycle state"))?;
+    let version = store
+        .version(&key, &from_schema_hash)?
+        .ok_or_else(|| CdfError::internal("promoting schema head has no source version"))?;
+    let report: SchemaPromotionPlanReport = serde_json::from_str(&state.plan.canonical_plan_json)
+        .map_err(|error| {
+        CdfError::internal(format!(
+            "decode state-backed schema promotion plan: {error}"
+        ))
+    })?;
+    if published {
+        let expected_types = report
+            .paths
+            .iter()
+            .filter_map(|path| {
+                path.selected_type
+                    .as_ref()
+                    .map(|data_type| format!("{}={data_type}", path.path))
+            })
+            .collect::<BTreeSet<_>>();
+        if expected_types != supplied_types.iter().cloned().collect::<BTreeSet<_>>() {
+            return Ok(None);
+        }
+    }
+    let active_head = SchemaHead::active(key, state.from_generation, state.from_schema_hash)?;
+    Ok(Some((active_head, version, report)))
 }
 
 fn show(

@@ -1,5 +1,33 @@
 use super::*;
 
+fn promotion_planning_authority(
+    context: &crate::context::ProjectContext,
+    resource: &cdf_declarative::CompiledResource,
+    destinations: &[ResolvedProjectDestination],
+) -> SchemaPromotionPlanningAuthority {
+    let active = crate::schema_authority::load_active(context, &resource.descriptor().resource_id)
+        .unwrap()
+        .unwrap();
+    let mut destination_sheets = BTreeMap::new();
+    for destination in destinations {
+        destination_sheets.insert(
+            destination.describe().destination_id.to_string(),
+            destination.destination_sheet_artifact().unwrap(),
+        );
+    }
+    SchemaPromotionPlanningAuthority {
+        head: active.head,
+        schema_cache: SchemaSnapshotArtifact::new(
+            &resource.descriptor().resource_id,
+            &active.version.canonical_schema.to_arrow().unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap(),
+        version: active.version,
+        destinations: destination_sheets,
+    }
+}
+
 #[test]
 fn schema_promote_plans_fresh_residual_correction_without_writes() {
     let project = TestProject::new();
@@ -8,7 +36,7 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let locked_hash = locked_schema_hash(&project, "local.events");
+    let locked_hash = active_schema_hash(&project, "local.events");
 
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &locked_hash);
@@ -63,7 +91,15 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
         report["proposed_snapshot"]["path"]
             .as_str()
             .unwrap()
-            .contains(report["new_schema_hash"].as_str().unwrap())
+            .contains(report["proposed_snapshot"]["schema_hash"].as_str().unwrap())
+    );
+    let proposed: cdf_project::SchemaSnapshotArtifact =
+        serde_json::from_value(report["proposed_snapshot"]["artifact"].clone()).unwrap();
+    assert_eq!(
+        cdf_kernel::canonical_arrow_schema_hash(&proposed.schema.to_arrow().unwrap())
+            .unwrap()
+            .as_str(),
+        report["new_schema_hash"].as_str().unwrap()
     );
     assert_eq!(
         report["proposed_snapshot"]["artifact"]["version"],
@@ -146,48 +182,10 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
             .iter()
             .any(|conflict| conflict["code"] == "unknown_path")
     );
-
-    let mut stale_lock =
-        parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    stale_lock
-        .resources
-        .get_mut("local.events")
-        .unwrap()
-        .schema_snapshot
-        .as_mut()
-        .unwrap()
-        .schema_hash = SchemaHash::new("sha256:stale-pin").unwrap();
-    fs::write(
-        project.root.join("cdf.lock"),
-        cdf_project::lock_to_toml(&stale_lock).unwrap(),
-    )
-    .unwrap();
-    let stale_before = project_tree_snapshot(&project.root);
-    let stale = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "schema",
-        "promote",
-        "local.events",
-    ]);
-    assert_ne!(stale.exit_code, 0);
-    assert_eq!(project_tree_snapshot(&project.root), stale_before);
-    let stale_json = stderr_or_stdout_json(&stale.stderr);
-    assert_eq!(stale_json["error"]["kind"], "data");
-    assert!(
-        stale_json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("stale-pin"),
-        "{}",
-        stale.stderr
-    );
 }
 
 #[test]
-fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publication() {
+fn schema_promote_execute_commits_correction_checkpoint_and_state_publication() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     let resource_path = project.root.join("cdf/local/events.cdf.sql");
@@ -204,7 +202,7 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
 
@@ -221,9 +219,10 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
     assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
     let json = stderr_or_stdout_json(&executed.stdout);
     let report = &json["result"];
-    assert_eq!(report["phase"], "complete");
-    assert_eq!(report["lock_published"], true);
-    assert_eq!(report["publication_event_recorded"], true);
+    assert_eq!(report["phase"], "published");
+    assert_eq!(report["state_published"], true);
+    assert_eq!(report["current_generation"], 1);
+    assert_eq!(report["published_generation"], 2);
     assert_eq!(report["targets"][0]["committed"], true);
     assert!(
         report["recovery_command"]
@@ -243,23 +242,23 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
         .unwrap()
         .replay_inputs()
         .unwrap();
+    let published_context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
+    let published = crate::schema_authority::load_active(
+        &published_context,
+        &ResourceId::new("local.events").unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         replay_inputs.state_delta.scope,
-        ScopeKey::SchemaContract {
-            contract: cdf_kernel::ContractRef::new("local.events").unwrap(),
-        }
+        published.head.key.promotion_scope().unwrap()
     );
-
-    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    assert_eq!(
-        lock.resources["local.events"]
-            .schema_snapshot
-            .as_ref()
-            .unwrap()
-            .schema_hash
-            .as_str(),
-        new_hash
-    );
+    assert_eq!(published.head.schema_hash.as_str(), new_hash);
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = conn
         .prepare("SELECT vendor_id, score, _cdf_variant FROM events ORDER BY _cdf_row_key")
@@ -306,7 +305,7 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture_for_target(
         &project,
@@ -352,14 +351,18 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
             .unwrap()
             .destination
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let authority = promotion_planning_authority(
+        &context,
+        context.resource("local.events").unwrap(),
+        &destinations,
+    );
     let store = SqlitePromotionSettlementStore::open(context.state_store_path().unwrap()).unwrap();
     let failure = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
         package_root: &context.package_root(),
         resource: context.resource("local.events").unwrap(),
-        lock: context.lock.as_ref().unwrap(),
-        lock_authority: context.lock_authority.as_ref().unwrap(),
+        authority: &authority,
         dry_plan: &plan,
         destinations,
         execution_services: test_execution_services(),
@@ -367,7 +370,7 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         lease_owner: LeaseOwnerId::new("multi-target-crash").unwrap(),
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
         settlement_store: &store,
-        failpoint: Some(SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(1)),
+        failpoint: Some(SchemaPromotionExecutionFailpoint::AfterTargetSettlementIndex(1)),
     })
     .unwrap_err();
     assert!(
@@ -403,13 +406,13 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
     let scope = ScopeKey::SchemaContract {
         contract: cdf_kernel::ContractRef::new("local.events").unwrap(),
     };
-    let history = store
-        .history(
-            &PipelineId::new("cdf-schema-promotion").unwrap(),
-            &ResourceId::new("local.events").unwrap(),
-            &scope,
-        )
-        .unwrap();
+    let history = CheckpointStore::history(
+        &store,
+        &PipelineId::new("cdf-schema-promotion").unwrap(),
+        &ResourceId::new("local.events").unwrap(),
+        &scope,
+    )
+    .unwrap();
     let committed = history
         .iter()
         .filter(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
@@ -441,12 +444,12 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
 #[test]
 fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
     for failpoint in [
-        SchemaPromotionExecutionFailpoint::AfterStagedArtifacts,
+        SchemaPromotionExecutionFailpoint::AfterPromotionFenced,
+        SchemaPromotionExecutionFailpoint::AfterCutoffEstablished,
         SchemaPromotionExecutionFailpoint::AfterCorrectionPackages,
         SchemaPromotionExecutionFailpoint::AfterDestinationReceipt,
-        SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
-        SchemaPromotionExecutionFailpoint::AfterLockPublication,
-        SchemaPromotionExecutionFailpoint::AfterPublicationEvent,
+        SchemaPromotionExecutionFailpoint::AfterTargetSettlement,
+        SchemaPromotionExecutionFailpoint::AfterHeadPublished,
     ] {
         let project = TestProject::new();
         write_parquet_discover_resource(&project, "*.parquet");
@@ -454,7 +457,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         write_vendor_parquet(&source_path);
         let compile = compile_resource(&project, "local.events");
         assert_eq!(compile.exit_code, 0, "{failpoint:?}: {}", compile.stderr);
-        let old_hash = locked_schema_hash(&project, "local.events");
+        let old_hash = active_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -487,6 +490,8 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         )
         .unwrap()
         .destination;
+        let destinations = vec![destination];
+        let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
@@ -494,10 +499,9 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             project_root: &context.root,
             package_root: &context.package_root(),
             resource,
-            lock: context.lock.as_ref().unwrap(),
-            lock_authority: context.lock_authority.as_ref().unwrap(),
+            authority: &authority,
             dry_plan: &plan,
-            destinations: vec![destination],
+            destinations,
             execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new(format!("crash-{failpoint:?}")).unwrap(),
@@ -511,39 +515,41 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             "{failpoint:?}: {error}"
         );
         let expected_phase = match failpoint {
-            SchemaPromotionExecutionFailpoint::AfterStagedArtifacts => {
-                SchemaPromotionExecutionPhase::Staged
+            SchemaPromotionExecutionFailpoint::AfterPromotionFenced => {
+                SchemaPromotionLifecyclePhase::Fenced
+            }
+            SchemaPromotionExecutionFailpoint::AfterCutoffEstablished => {
+                SchemaPromotionLifecyclePhase::CutoffEstablished
             }
             SchemaPromotionExecutionFailpoint::AfterCorrectionPackages => {
-                SchemaPromotionExecutionPhase::Packaged
+                SchemaPromotionLifecyclePhase::CutoffEstablished
             }
             SchemaPromotionExecutionFailpoint::AfterDestinationReceipt => {
-                SchemaPromotionExecutionPhase::DestinationSettled
+                SchemaPromotionLifecyclePhase::CutoffEstablished
             }
-            SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint => {
-                SchemaPromotionExecutionPhase::Checkpointed
+            SchemaPromotionExecutionFailpoint::AfterTargetSettlement => {
+                SchemaPromotionLifecyclePhase::CutoffEstablished
             }
-            SchemaPromotionExecutionFailpoint::AfterLockPublication => {
-                SchemaPromotionExecutionPhase::LockPublished
+            SchemaPromotionExecutionFailpoint::AfterHeadPublished => {
+                SchemaPromotionLifecyclePhase::Published
             }
-            SchemaPromotionExecutionFailpoint::AfterPublicationEvent => {
-                SchemaPromotionExecutionPhase::Complete
-            }
-            SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(_) => unreachable!(),
+            SchemaPromotionExecutionFailpoint::AfterTargetSettlementIndex(_) => unreachable!(),
         };
-        let status = load_schema_promotion_recovery_status(
-            &project.root,
-            &cdf_kernel::PromotionId::new(plan.promotion_id.clone()).unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let status = settlement_store
+            .promotion_state(
+                &authority.head.key,
+                &cdf_kernel::PromotionId::new(plan.promotion_id.clone()).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(status.phase, expected_phase, "{failpoint:?}");
-        assert!(status.recovery_command.ends_with("--execute"));
         drop(run_ledger);
         drop(settlement_store);
         drop(context);
 
-        if failpoint != SchemaPromotionExecutionFailpoint::AfterStagedArtifacts {
+        if failpoint != SchemaPromotionExecutionFailpoint::AfterPromotionFenced
+            && failpoint != SchemaPromotionExecutionFailpoint::AfterCutoffEstablished
+        {
             fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-source")).unwrap();
             let correction_packages = fs::read_dir(project.root.join(".cdf/packages"))
                 .unwrap()
@@ -575,14 +581,24 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             recovered.stderr
         );
         let recovered_json = stderr_or_stdout_json(&recovered.stdout);
-        assert_eq!(recovered_json["result"]["phase"], "complete");
+        assert_eq!(recovered_json["result"]["phase"], "published");
         assert_eq!(recovered_json["result"]["resumed"], true);
-        let ledger = SqliteRunLedger::open_read_only(&state_path).unwrap();
-        assert!(
-            ledger
-                .promotion_publication(&cdf_kernel::PromotionId::new(plan.promotion_id).unwrap())
-                .unwrap()
-                .is_some(),
+        let state = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let head = SchemaAuthorityStore::head(&state, &authority.head.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(head.generation, 2, "{failpoint:?}");
+        assert!(matches!(head.status, cdf_kernel::SchemaHeadStatus::Active));
+        let lifecycle = state
+            .promotion_state(
+                &authority.head.key,
+                &cdf_kernel::PromotionId::new(plan.promotion_id).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.phase,
+            SchemaPromotionLifecyclePhase::Published,
             "{failpoint:?}"
         );
     }
@@ -602,7 +618,7 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
@@ -666,16 +682,15 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
 }
 
 #[test]
-fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutation() {
-    for tamper_correction_package in [false, true] {
+fn schema_promote_rejects_tampered_correction_authority_before_mutation() {
+    for _attempt in 0..1 {
         let project = TestProject::new();
         write_parquet_discover_resource(&project, "*.parquet");
         let source_path = project.root.join("data/events.parquet");
         write_vendor_parquet(&source_path);
         let compile = compile_resource(&project, "local.events");
         assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-        let old_hash = locked_schema_hash(&project, "local.events");
-        let old_snapshot_hash = locked_schema_snapshot_hash(&project, "local.events");
+        let old_hash = active_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -706,59 +721,38 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         )
         .unwrap()
         .destination;
+        let destinations = vec![destination];
+        let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
-        let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
-        let failpoint = if tamper_correction_package {
-            SchemaPromotionExecutionFailpoint::AfterCorrectionPackages
-        } else {
-            SchemaPromotionExecutionFailpoint::AfterStagedArtifacts
-        };
         execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
             package_root: &context.package_root(),
             resource,
-            lock: context.lock.as_ref().unwrap(),
-            lock_authority: context.lock_authority.as_ref().unwrap(),
+            authority: &authority,
             dry_plan: &plan,
-            destinations: vec![destination],
+            destinations,
             execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("tamper-fixture").unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
             settlement_store: &settlement_store,
-            failpoint: Some(failpoint),
+            failpoint: Some(SchemaPromotionExecutionFailpoint::AfterCorrectionPackages),
         })
         .unwrap_err();
-        drop(run_ledger);
         drop(settlement_store);
         drop(context);
 
-        if tamper_correction_package {
-            let correction = fs::read_dir(project.root.join(".cdf/packages"))
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .find(|path| path.file_name().unwrap() != "pkg-promote-source")
-                .unwrap();
-            let artifact = correction.join("plan/promotion-correction.json");
-            let mut bytes = fs::read(&artifact).unwrap();
-            bytes.push(b' ');
-            fs::write(&artifact, bytes).unwrap();
-            fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-source")).unwrap();
-        } else {
-            let staged = project.root.join(cdf_project::promotion_plan_relative_path(
-                &cdf_kernel::PromotionId::new(plan.promotion_id.clone()).unwrap(),
-            ));
-            let mut artifact: cdf_project::SchemaPromotionExecutionPlanArtifact =
-                serde_json::from_slice(&fs::read(&staged).unwrap()).unwrap();
-            artifact.dry_plan.targets[0]
-                .affected_packages
-                .push("sha256:forged".to_owned());
-            let forged = cdf_project::recompute_schema_promotion_id(&artifact.dry_plan).unwrap();
-            artifact.promotion_id = forged.clone();
-            artifact.dry_plan.promotion_id = forged.to_string();
-            fs::write(&staged, serde_json::to_vec_pretty(&artifact).unwrap()).unwrap();
-        }
+        let correction = fs::read_dir(project.root.join(".cdf/packages"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap() != "pkg-promote-source")
+            .unwrap();
+        let artifact = correction.join("plan/promotion-correction.json");
+        let mut bytes = fs::read(&artifact).unwrap();
+        bytes.push(b' ');
+        fs::write(&artifact, bytes).unwrap();
+        fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-source")).unwrap();
 
         let recovered = run([
             "cdf",
@@ -773,16 +767,15 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
             "--execute",
         ]);
         assert_ne!(recovered.exit_code, 0, "{}", recovered.stdout);
-        let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-        assert_eq!(
-            lock.resources["local.events"]
-                .schema_snapshot
-                .as_ref()
-                .unwrap()
-                .schema_hash
-                .as_str(),
-            old_snapshot_hash
-        );
+        let store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let head = SchemaAuthorityStore::head(&store, &authority.head.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(head.schema_hash.as_str(), old_hash);
+        assert!(matches!(
+            head.status,
+            cdf_kernel::SchemaHeadStatus::Promoting { .. }
+        ));
         let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
         let score_columns = connection
             .prepare("SELECT count(*) FROM pragma_table_info('events') WHERE name = 'score'")
@@ -794,14 +787,14 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
 }
 
 #[test]
-fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
+fn schema_promote_api_rejects_divergent_destination_authority_before_mutation() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
     let dry = run([
@@ -832,26 +825,19 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     )
     .unwrap()
     .destination;
+    let destinations = vec![destination];
+    let mut authority = promotion_planning_authority(&context, resource, &destinations);
+    authority.destinations.clear();
     let state_path = context.state_store_path().unwrap();
     let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
-    let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
-    let mut divergent_lock = context.lock.as_ref().unwrap().clone();
-    divergent_lock
-        .resources
-        .get_mut("local.events")
-        .unwrap()
-        .compiler
-        .normalizer = "divergent-caller-projection".to_owned();
-    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
 
     let error = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
         package_root: &context.package_root(),
         resource,
-        lock: &divergent_lock,
-        lock_authority: context.lock_authority.as_ref().unwrap(),
+        authority: &authority,
         dry_plan: &plan,
-        destinations: vec![destination],
+        destinations,
         execution_services: test_execution_services(),
         pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
         lease_owner: LeaseOwnerId::new("divergent-lock-fixture").unwrap(),
@@ -861,11 +847,7 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     })
     .unwrap_err();
 
-    assert!(error.message.contains("caller lock projection"));
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
-    );
+    assert!(error.message.contains("destination sheet"), "{error}");
     assert!(!project.root.join(".cdf/promotions").exists());
     assert_eq!(
         fs::read_dir(project.root.join(".cdf/packages"))
@@ -874,8 +856,11 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
         1
     );
     assert!(
-        run_ledger
-            .promotion_publication(&cdf_kernel::PromotionId::new(plan.promotion_id).unwrap())
+        settlement_store
+            .promotion_state(
+                &authority.head.key,
+                &cdf_kernel::PromotionId::new(plan.promotion_id).unwrap(),
+            )
             .unwrap()
             .is_none()
     );
@@ -893,7 +878,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         write_vendor_parquet(&source_path);
         let compile = compile_resource(&project, "local.events");
         assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-        let old_hash = locked_schema_hash(&project, "local.events");
+        let old_hash = active_schema_hash(&project, "local.events");
         write_vendor_score_parquet(&source_path);
         write_schema_promote_package_fixture(&project, &old_hash);
         let dry = run([
@@ -924,17 +909,17 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         )
         .unwrap()
         .destination;
+        let destinations = vec![destination];
+        let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
-        let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
         execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
             package_root: &context.package_root(),
             resource,
-            lock: context.lock.as_ref().unwrap(),
-            lock_authority: context.lock_authority.as_ref().unwrap(),
+            authority: &authority,
             dry_plan: &plan,
-            destinations: vec![destination],
+            destinations,
             execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("semantic-repackage-fixture").unwrap(),
@@ -943,7 +928,6 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             failpoint: Some(SchemaPromotionExecutionFailpoint::AfterCorrectionPackages),
         })
         .unwrap_err();
-        drop(run_ledger);
         drop(settlement_store);
         drop(context);
 
@@ -954,7 +938,6 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             .unwrap();
         rebuild_correction_package_semantically(&correction, tamper);
         fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-source")).unwrap();
-        let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
 
         let recovered = run([
             "cdf",
@@ -969,10 +952,6 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             "--execute",
         ]);
         assert_ne!(recovered.exit_code, 0, "{}", recovered.stdout);
-        assert_eq!(
-            fs::read(project.root.join("cdf.lock")).unwrap(),
-            lock_before
-        );
         assert!(collect_package_receipts(&PackageReader::open(&correction).unwrap()).is_empty());
         let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
         let score_columns = connection
@@ -981,13 +960,14 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             .query_row([], |row| row.get::<_, i64>(0))
             .unwrap();
         assert_eq!(score_columns, 0);
-        let ledger = SqliteRunLedger::open_read_only(&state_path).unwrap();
-        assert!(
-            ledger
-                .promotion_publication(&cdf_kernel::PromotionId::new(plan.promotion_id).unwrap())
-                .unwrap()
-                .is_none()
-        );
+        let state = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let head = SchemaAuthorityStore::head(&state, &authority.head.key)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            head.status,
+            cdf_kernel::SchemaHeadStatus::Promoting { .. }
+        ));
     }
 }
 
@@ -1003,7 +983,7 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     let target = TargetName::new("events").unwrap();
     let policy = cdf_project::DestinationPolicy::default();
     let services = test_execution_services();
@@ -1122,7 +1102,7 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
     write_vendor_parquet(&source_path);
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
-    let old_hash = locked_schema_hash(&project, "local.events");
+    let old_hash = active_schema_hash(&project, "local.events");
     write_vendor_score_parquet(&source_path);
     let target = postgres.table("events_promotion");
     write_schema_promote_package_fixture_for_target_with_commit(

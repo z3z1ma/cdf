@@ -99,6 +99,21 @@ promotion lifecycle:
   generation. Target receipt/checkpoint settlement is atomic and idempotent. Publication rechecks
   permit drain and every exact planned target before atomically advancing the head, lifecycle
   state, and ordered event to the next generation.
+- 2026-08-06: Replaced promotion planning and execution's lockfile precondition with the exact
+  state authority domain/key/generation/schema version. Dry planning now derives its schema cache
+  from the immutable state version, revalidates current destination capability sheets, and writes
+  nothing. Execute persists and resumes the canonical dry plan from SQLite; correction artifacts
+  carry the logical state schema hash rather than a derived snapshot-artifact hash.
+- 2026-08-06: Removed filesystem-staged promotion plans and recovery-status journals. A failed
+  executor now resumes from the persisted `Promoting` lifecycle, reacquires the exclusive scope,
+  atomically refences the head, and records a `PromotionResumed` event. Released, expired, and old
+  fencing tokens cannot settle a target or publish after refencing. Completed recovery commands
+  return the exact persisted published report idempotently.
+- 2026-08-06: Fixed the SQLite aggregate to avoid keeping independently initialized component
+  connections alive. It initializes components sequentially, then opens short-lived validated
+  current-schema handles per delegated operation; state-atomic target settlement/publication still
+  use their single owning transaction. This removed self-contention without broadening busy-wait
+  behavior.
 
 ## Blockers
 
@@ -126,6 +141,15 @@ dispositions.
 - Strict affected-package Clippy passed for `cdf-kernel`, `cdf-runtime`, and `cdf-state-sqlite`
   (including all targets). Boxing the settlement binding in `ExecutionServices` kept the shared
   runtime service handle compact and avoided inflating downstream execution enums.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-kernel -p cdf-state-sqlite -p cdf-project -p
+  cdf-cli` passed after the state planner/executor and resumable-fence rewire.
+- Focused CLI promotion tests passed:
+  `schema_promote_plans_fresh_residual_correction_without_writes`,
+  `schema_promote_execute_commits_correction_checkpoint_and_state_publication`, and
+  `schema_promote_execute_recovers_every_persisted_crash_boundary`. Together they prove stable
+  no-write planning, exact historical residual correction, generation-one to generation-two
+  state publication, idempotent completed execution, and recovery after every injected lifecycle
+  boundary. They do not certify every destination strategy or the final lock-surface deletion.
 
 ## Review
 
