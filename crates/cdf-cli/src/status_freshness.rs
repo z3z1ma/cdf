@@ -246,7 +246,6 @@ impl LocalLedger {
         }
         let run_footprint = table_exists(&conn, "cdf_runs")?
             || table_exists(&conn, "cdf_run_events")?
-            || table_exists(&conn, "cdf_promotion_publications")?
             || component_marker_exists(&conn, "run_ledger")?;
         if run_footprint {
             SqliteRunLedger::open_read_only_with_path_ownership(path, ownership)

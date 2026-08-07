@@ -19,7 +19,7 @@ use cdf_project::{
     execute_schema_promotion,
 };
 use cdf_state_sqlite::{
-    SqlitePromotionSettlementStore, SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore,
+    SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore, SqliteSchemaPromotionStore,
 };
 use serde::Serialize;
 
@@ -122,7 +122,7 @@ fn execute_promotion(
     };
 
     let state_path = context.state_store_path()?;
-    let settlement_store = SqlitePromotionSettlementStore::open_with_path_ownership(
+    let settlement_store = SqliteSchemaPromotionStore::open_with_path_ownership(
         &state_path,
         context.state_store_path_ownership(),
     )?;
@@ -342,7 +342,7 @@ fn load_resumable_promotion_state(
         EnvironmentName::new(context.environment.name.clone())?,
         resource_id.clone(),
     )?;
-    let store = SqlitePromotionSettlementStore::open_with_path_ownership(&state_path, ownership)?;
+    let store = SqliteSchemaPromotionStore::open_with_path_ownership(&state_path, ownership)?;
     let Some(current_head) = SchemaAuthorityStore::head(&store, &key)? else {
         return Ok(None);
     };

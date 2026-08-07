@@ -20,7 +20,7 @@ pub use in_memory::InMemoryCheckpointStore;
 pub use lease::{InMemoryScopeLeaseStore, SqliteScopeLeaseStore};
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
 pub use schema_authority::{SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore};
-pub use settlement::SqlitePromotionSettlementStore;
+pub use settlement::SqliteSchemaPromotionStore;
 pub use sqlite::SqliteCheckpointStore;
 pub use support::{
     SqliteErrorContext, StateStorePathOwnership, classify_sqlite_error, database_open_path,

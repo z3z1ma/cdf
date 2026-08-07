@@ -113,8 +113,7 @@ pub use ids::{
     SegmentId, SourceId, TargetName, ValidationProgramHash,
 };
 pub use lease::{
-    ExpiredScopeLeaseProof, FencingToken, PromotionSettlementStore, ScopeLease, ScopeLeaseClock,
-    ScopeLeaseStore,
+    ExpiredScopeLeaseProof, FencingToken, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
 };
 pub use metadata::{
     NULL_ORIGIN_METADATA_KEY, PHYSICAL_TYPE_METADATA_KEY, SEMANTIC_METADATA_KEY,
@@ -165,7 +164,6 @@ pub use resource::{
 };
 pub use retention::PayloadRetention;
 pub use run_event::{
-    PROMOTION_PUBLICATION_EVENT_VERSION, PromotionPublicationEvent, PromotionPublicationTarget,
     RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventSinkResult,
     RunEventValue, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
     RunProgressObservation, RunProgressObservationKind, RunProgressSink, SecretReference,

@@ -31,11 +31,11 @@ use cdf_kernel::{
     BatchStream, CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus,
     CheckpointStore, CommitCounts, CursorPosition, CursorValue, DestinationId, FileManifest,
     FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId, PartitionPlan,
-    PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceDescriptor, ResourceId,
-    ResourceStream, RunId, ScanRequest, SchemaAuthorityStore, SchemaHash,
-    SchemaPromotionLifecyclePhase, SchemaSnapshotReference, SchemaSource, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
-    TableSnapshotSelector, TargetName, TrustLevel, VerifyClause, WriteDisposition, with_semantic,
+    PipelineId, Receipt, ReceiptId, ResourceDescriptor, ResourceId, ResourceStream, RunId,
+    ScanRequest, SchemaAuthorityStore, SchemaHash, SchemaPromotionLifecyclePhase,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition,
+    StateDelta, StateSegment, TableSnapshotPosition, TableSnapshotSelector, TargetName, TrustLevel,
+    VerifyClause, WriteDisposition, with_semantic,
 };
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
@@ -50,7 +50,7 @@ use cdf_project::{
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
-    SqliteCheckpointStore, SqlitePromotionSettlementStore, SqliteRunLedger,
+    SqliteCheckpointStore, SqliteRunLedger, SqliteSchemaPromotionStore,
 };
 use duckdb::Connection as DuckConnection;
 use postgres::{Client, NoTls};

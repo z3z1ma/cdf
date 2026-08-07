@@ -9,12 +9,12 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::support::{
     SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
-    database_path_exists, decode_json, decode_private_promotion_publication_row, encode_json,
-    ensure_schema_version_table, lock_sqlite_connection, managed_sqlite_open_flags,
-    missing_checkpoint, now_ms, packages_ahead_of_state, prepare_managed_database_path,
-    private_state_decode, read_component_schema_version, require_sqlite_tables, rewind_marker,
-    same_tuple, sqlite_error, sqlite_table_exists, validate_state_version, verify_receipt,
-    with_sqlite_error_context, write_component_schema_version,
+    database_path_exists, decode_json, encode_json, ensure_schema_version_table,
+    lock_sqlite_connection, managed_sqlite_open_flags, missing_checkpoint, now_ms,
+    packages_ahead_of_state, prepare_managed_database_path, private_state_decode,
+    read_component_schema_version, require_sqlite_tables, rewind_marker, same_tuple, sqlite_error,
+    sqlite_table_exists, validate_state_version, verify_receipt, with_sqlite_error_context,
+    write_component_schema_version,
 };
 
 pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
@@ -500,8 +500,6 @@ pub(crate) fn commit_checkpoint_tx(
     checkpoint
         .delta
         .validate_transition_from_head(head.as_ref().map(|head| &head.delta))?;
-    verify_current_published_schema_tx(tx, &checkpoint.delta)?;
-
     let scope_json = encode_json(&checkpoint.delta.scope)?;
     tx.execute(
         "UPDATE cdf_checkpoints SET is_head = 0 WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? AND is_head = 1",
@@ -524,51 +522,6 @@ pub(crate) fn commit_checkpoint_tx(
     .map_err(sqlite_error)?;
     SqliteCheckpointStore::fetch_by_id_tx(tx, checkpoint_id)?
         .ok_or_else(|| missing_checkpoint(checkpoint_id))
-}
-
-fn verify_current_published_schema_tx(tx: &Transaction<'_>, delta: &StateDelta) -> Result<()> {
-    if matches!(delta.scope, ScopeKey::SchemaContract { .. }) {
-        return Ok(());
-    }
-    let publication_table_exists = tx
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_promotion_publications'",
-            [],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(sqlite_error)?
-        .is_some();
-    if !publication_table_exists {
-        return Ok(());
-    }
-    let mut statement = tx
-        .prepare(
-            "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications ORDER BY published_at_ms DESC, promotion_id DESC",
-        )
-        .map_err(sqlite_error)?;
-    let mut rows = statement.query([]).map_err(sqlite_error)?;
-    let mut publication = None;
-    while let Some(row) = rows.next().map_err(sqlite_error)? {
-        let event = decode_private_promotion_publication_row(
-            row.get::<_, String>(0).map_err(sqlite_error)?,
-            row.get::<_, i64>(1).map_err(sqlite_error)?,
-            row.get::<_, String>(2).map_err(sqlite_error)?,
-        )?;
-        if event.resource_id == delta.resource_id && publication.is_none() {
-            publication = Some(event);
-        }
-    }
-    let Some(event) = publication else {
-        return Ok(());
-    };
-    if event.new_schema_hash != delta.schema_hash {
-        return Err(CdfError::contract(format!(
-            "checkpoint {} carries schema {} but promotion {} published current schema {}; rebuild the run plan from current schema authority",
-            delta.checkpoint_id, delta.schema_hash, event.promotion_id, event.new_schema_hash
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {

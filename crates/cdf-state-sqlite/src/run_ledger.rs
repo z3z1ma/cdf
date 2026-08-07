@@ -1,9 +1,8 @@
 use std::{path::Path, sync::Mutex};
 
 use cdf_kernel::{
-    CdfError, CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, PromotionId,
-    PromotionPublicationEvent, ReceiptId, ResourceId, Result, RunEvent, RunEventAppend,
-    RunEventDetails, RunEventKind, RunId, ScopeKey,
+    CdfError, CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, ReceiptId, ResourceId,
+    Result, RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunId, ScopeKey,
 };
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior, params,
@@ -12,12 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::support::{
     SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
-    database_path_exists, decode_private_promotion_publication_row, encode_json,
-    ensure_schema_version_table, lock_sqlite_connection, managed_sqlite_open_flags, now_ms,
-    prepare_managed_database_path, private_state_decode, read_component_schema_version,
-    require_sqlite_tables, sqlite_error, sqlite_table_exists,
-    validate_private_promotion_publications, with_sqlite_error_context,
-    write_component_schema_version,
+    database_path_exists, encode_json, ensure_schema_version_table, lock_sqlite_connection,
+    managed_sqlite_open_flags, now_ms, prepare_managed_database_path, private_state_decode,
+    read_component_schema_version, require_sqlite_tables, sqlite_error, sqlite_table_exists,
+    with_sqlite_error_context, write_component_schema_version,
 };
 
 pub(crate) const RUN_LEDGER_COMPONENT: &str = "run_ledger";
@@ -67,26 +64,6 @@ impl SqliteRunLedger {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
-    }
-
-    pub(crate) fn open_existing_with_path_ownership(
-        path: impl AsRef<Path>,
-        ownership: StateStorePathOwnership,
-    ) -> Result<Self> {
-        let path = path.as_ref();
-        database_path_exists(path, ownership)?;
-        let open_path = database_open_path(path, ownership)?;
-        let error_context = SqliteErrorContext::ManagedState;
-        let conn = with_sqlite_error_context(error_context, || {
-            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
-                .map_err(sqlite_error)?;
-            validate_run_schema_version(&conn)?;
-            Ok(conn)
-        })?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-            error_context,
-        })
     }
 
     pub fn open_read_only_with_path_ownership(
@@ -188,76 +165,6 @@ impl SqliteRunLedger {
             run,
             events: self.events(run_id)?,
         }))
-    }
-
-    pub fn promotion_publication(
-        &self,
-        promotion_id: &PromotionId,
-    ) -> Result<Option<PromotionPublicationEvent>> {
-        let conn = self.lock_conn()?;
-        conn.query_row(
-            "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
-            params![promotion_id.as_str()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(sqlite_error)?
-        .map(|(promotion_id, published_at_ms, json)| {
-            decode_private_promotion_publication_row(promotion_id, published_at_ms, json)
-        })
-        .transpose()
-    }
-
-    pub fn publish_promotion(
-        &self,
-        event: PromotionPublicationEvent,
-    ) -> Result<PromotionPublicationEvent> {
-        event.validate()?;
-        let mut conn = self.lock_conn()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sqlite_error)?;
-        let existing = tx
-            .query_row(
-                "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
-                params![event.promotion_id.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(sqlite_error)?
-            .map(|(promotion_id, published_at_ms, json)| {
-                decode_private_promotion_publication_row(promotion_id, published_at_ms, json)
-            })
-            .transpose()?;
-        if let Some(existing) = existing {
-            if !existing.same_authority(&event) {
-                return Err(CdfError::contract(format!(
-                    "promotion publication {} conflicts with existing ledger authority",
-                    event.promotion_id
-                )));
-            }
-            return Ok(existing);
-        }
-        let json = encode_json(&event)?;
-        tx.execute(
-            "INSERT INTO cdf_promotion_publications (promotion_id, published_at_ms, event_json) VALUES (?, ?, ?)",
-            params![event.promotion_id.as_str(), event.published_at_ms, json],
-        )
-        .map_err(sqlite_error)?;
-        tx.commit().map_err(sqlite_error)?;
-        Ok(event)
     }
 
     fn lock_conn(&self) -> Result<SqliteConnectionGuard<'_>> {
@@ -388,7 +295,6 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
     .map_err(sqlite_error)?;
 
     create_run_event_indexes(conn)?;
-    create_promotion_publication_table(conn)?;
 
     conn.execute_batch(
         "
@@ -437,11 +343,7 @@ fn validate_run_schema_version(conn: &Connection) -> Result<()> {
 }
 
 fn validate_run_schema_structure(conn: &Connection) -> Result<()> {
-    require_sqlite_tables(
-        conn,
-        "run ledger",
-        &["cdf_runs", "cdf_run_events", "cdf_promotion_publications"],
-    )
+    require_sqlite_tables(conn, "run ledger", &["cdf_runs", "cdf_run_events"])
 }
 
 fn validate_private_run_ledger_rows(conn: &Connection) -> Result<()> {
@@ -463,7 +365,7 @@ fn validate_private_run_ledger_rows(conn: &Connection) -> Result<()> {
         event.map_err(sqlite_error)?;
     }
 
-    validate_private_promotion_publications(conn)
+    Ok(())
 }
 
 fn read_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
@@ -497,31 +399,6 @@ fn create_run_event_indexes(conn: &Connection) -> Result<()> {
     )
     .map_err(sqlite_error)?;
     Ok(())
-}
-
-fn create_promotion_publication_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS cdf_promotion_publications (
-            promotion_id TEXT PRIMARY KEY,
-            published_at_ms INTEGER NOT NULL,
-            event_json TEXT NOT NULL
-        );
-
-        CREATE TRIGGER IF NOT EXISTS cdf_promotion_publications_no_update
-        BEFORE UPDATE ON cdf_promotion_publications
-        BEGIN
-            SELECT RAISE(ABORT, 'cdf_promotion_publications is append-only');
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS cdf_promotion_publications_no_delete
-        BEFORE DELETE ON cdf_promotion_publications
-        BEGIN
-            SELECT RAISE(ABORT, 'cdf_promotion_publications is append-only');
-        END;
-        ",
-    )
-    .map_err(sqlite_error)
 }
 
 fn insert_supplied_run(

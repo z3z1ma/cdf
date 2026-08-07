@@ -357,7 +357,7 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         context.resource("local.events").unwrap(),
         &destinations,
     );
-    let store = SqlitePromotionSettlementStore::open(context.state_store_path().unwrap()).unwrap();
+    let store = SqliteSchemaPromotionStore::open(context.state_store_path().unwrap()).unwrap();
     let failure = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
         package_root: &context.package_root(),
@@ -402,10 +402,8 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
     assert_eq!(targets[0]["target"], "a_events");
     assert_eq!(targets[1]["target"], "z_events");
 
-    let store = SqlitePromotionSettlementStore::open(project.root.join(".cdf/state.db")).unwrap();
-    let scope = ScopeKey::SchemaContract {
-        contract: cdf_kernel::ContractRef::new("local.events").unwrap(),
-    };
+    let store = SqliteSchemaPromotionStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let scope = authority.head.key.promotion_scope().unwrap();
     let history = CheckpointStore::history(
         &store,
         &PipelineId::new("cdf-schema-promotion").unwrap(),
@@ -426,17 +424,24 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         committed[1].delta.input_position.as_ref(),
         Some(&committed[0].delta.output_position)
     );
-    let publication = store
-        .promotion_publication(
+    let promotion = store
+        .promotion_state(
+            &authority.head.key,
             &cdf_kernel::PromotionId::new(report["promotion_id"].as_str().unwrap()).unwrap(),
         )
         .unwrap()
         .unwrap();
-    assert_eq!(publication.targets.len(), 2);
-    assert_eq!(publication.targets[0].target.as_str(), "a_events");
-    assert_eq!(publication.targets[1].target.as_str(), "z_events");
+    assert_eq!(promotion.target_settlements.len(), 2);
     assert_eq!(
-        publication.targets[1].checkpoint_id,
+        promotion.target_settlements[0].target.target.as_str(),
+        "a_events"
+    );
+    assert_eq!(
+        promotion.target_settlements[1].target.target.as_str(),
+        "z_events"
+    );
+    assert_eq!(
+        promotion.target_settlements[1].checkpoint_id,
         committed[1].delta.checkpoint_id
     );
 }
@@ -493,7 +498,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         let destinations = vec![destination];
         let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
-        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let settlement_store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
         let error = execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
@@ -583,7 +588,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         let recovered_json = stderr_or_stdout_json(&recovered.stdout);
         assert_eq!(recovered_json["result"]["phase"], "published");
         assert_eq!(recovered_json["result"]["resumed"], true);
-        let state = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let state = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         let head = SchemaAuthorityStore::head(&state, &authority.head.key)
             .unwrap()
             .unwrap();
@@ -724,7 +729,7 @@ fn schema_promote_rejects_tampered_correction_authority_before_mutation() {
         let destinations = vec![destination];
         let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
-        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let settlement_store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
             package_root: &context.package_root(),
@@ -767,7 +772,7 @@ fn schema_promote_rejects_tampered_correction_authority_before_mutation() {
             "--execute",
         ]);
         assert_ne!(recovered.exit_code, 0, "{}", recovered.stdout);
-        let store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         let head = SchemaAuthorityStore::head(&store, &authority.head.key)
             .unwrap()
             .unwrap();
@@ -829,7 +834,7 @@ fn schema_promote_api_rejects_divergent_destination_authority_before_mutation() 
     let mut authority = promotion_planning_authority(&context, resource, &destinations);
     authority.destinations.clear();
     let state_path = context.state_store_path().unwrap();
-    let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+    let settlement_store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
 
     let error = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
@@ -912,7 +917,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         let destinations = vec![destination];
         let authority = promotion_planning_authority(&context, resource, &destinations);
         let state_path = context.state_store_path().unwrap();
-        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let settlement_store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
             package_root: &context.package_root(),
@@ -960,7 +965,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             .query_row([], |row| row.get::<_, i64>(0))
             .unwrap();
         assert_eq!(score_columns, 0);
-        let state = SqlitePromotionSettlementStore::open(&state_path).unwrap();
+        let state = SqliteSchemaPromotionStore::open(&state_path).unwrap();
         let head = SchemaAuthorityStore::head(&state, &authority.head.key)
             .unwrap()
             .unwrap();

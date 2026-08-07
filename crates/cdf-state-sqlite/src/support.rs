@@ -11,8 +11,8 @@ use std::{
 
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus, ErrorKind,
-    PackageHash, PipelineId, PromotionId, PromotionPublicationEvent, Receipt, ResourceId, Result,
-    RewindRequest, ScopeKey, StateDelta, StateSegment,
+    PackageHash, PipelineId, Receipt, ResourceId, Result, RewindRequest, ScopeKey, StateDelta,
+    StateSegment,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::de::DeserializeOwned;
@@ -318,54 +318,6 @@ pub(crate) fn private_state_decode<T>(action: &str, result: Result<T>) -> Result
         ErrorKind::Environment | ErrorKind::Transient | ErrorKind::RateLimited => error,
         _ => CdfError::internal(format!("{action}: {}", error.message)),
     })
-}
-
-pub(crate) fn decode_private_promotion_publication_row(
-    promotion_id: String,
-    published_at_ms: i64,
-    json: String,
-) -> Result<PromotionPublicationEvent> {
-    let promotion_id = PromotionId::new(promotion_id).map_err(|error| {
-        CdfError::internal(format!(
-            "decode CDF-managed promotion publication id: {}",
-            error.message
-        ))
-    })?;
-    let event = serde_json::from_str::<PromotionPublicationEvent>(&json).map_err(|error| {
-        CdfError::internal(format!(
-            "decode CDF-managed promotion publication JSON: {error}"
-        ))
-    })?;
-    private_state_decode(
-        "validate CDF-managed promotion publication",
-        event.validate(),
-    )?;
-    if event.promotion_id != promotion_id || event.published_at_ms != published_at_ms {
-        return Err(CdfError::internal(
-            "promotion publication row columns do not match serialized event JSON",
-        ));
-    }
-    Ok(event)
-}
-
-pub(crate) fn validate_private_promotion_publications(conn: &Connection) -> Result<()> {
-    let mut statement = conn
-        .prepare("SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications")
-        .map_err(sqlite_error)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(sqlite_error)?;
-    for row in rows {
-        let (promotion_id, published_at_ms, json) = row.map_err(sqlite_error)?;
-        decode_private_promotion_publication_row(promotion_id, published_at_ms, json)?;
-    }
-    Ok(())
 }
 
 pub fn classify_sqlite_error(

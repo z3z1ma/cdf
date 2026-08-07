@@ -114,6 +114,11 @@ promotion lifecycle:
   current-schema handles per delegated operation; state-atomic target settlement/publication still
   use their single owning transaction. This removed self-contention without broadening busy-wait
   behavior.
+- 2026-08-06: Deleted the superseded lock-hash promotion publication model end to end: kernel event
+  types and settlement trait, run-ledger table/read/write/validation paths, the generic checkpoint
+  scan against resource-only publication history, and freshness/test dependencies. The remaining
+  `SqliteSchemaPromotionStore` composes checkpoint, lease, and schema authority while promotion
+  target settlement and publication remain owned by the state-authority transaction.
 
 ## Blockers
 
@@ -150,6 +155,11 @@ dispositions.
   no-write planning, exact historical residual correction, generation-one to generation-two
   state publication, idempotent completed execution, and recovery after every injected lifecycle
   boundary. They do not certify every destination strategy or the final lock-surface deletion.
+- `cargo fmt --all` and `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-kernel -p cdf-state-sqlite -p
+  cdf-project -p cdf-cli` passed after deleting the old ledger publication surface.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-state-sqlite schema_authority --lib` passed 8 focused
+  state-authority tests, and the focused multi-target CLI promotion test passed with assertions
+  against the canonical state lifecycle target settlements and committed checkpoint chain.
 
 ## Review
 

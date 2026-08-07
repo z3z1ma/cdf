@@ -21,11 +21,11 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CanonicalArrowField, CanonicalArrowSchema, Checkpoint, CheckpointId,
     CheckpointStatus, CheckpointStore, CompositePosition, CorrectionStrategy,
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
-    DestinationId, IdempotencyToken, LeaseOwnerId, PackageHash, PipelineId, PromotionId,
-    PromotionSettlementStore, Receipt, ResourceId, SchemaAuthorityStore, SchemaHash, SchemaHead,
-    SchemaPromotionFence, SchemaPromotionLifecyclePhase, SchemaPromotionPlanState,
-    SchemaPromotionState, SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeKey,
-    ScopeLease, SourcePosition, StateDelta, StateSegment, TargetName,
+    DestinationId, IdempotencyToken, LeaseOwnerId, PackageHash, PipelineId, PromotionId, Receipt,
+    ResourceId, SchemaAuthorityStore, SchemaHash, SchemaHead, SchemaPromotionFence,
+    SchemaPromotionLifecyclePhase, SchemaPromotionPlanState, SchemaPromotionState,
+    SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeKey, ScopeLease,
+    ScopeLeaseStore, SourcePosition, StateDelta, StateSegment, TargetName,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageBuilder, PackageReader};
@@ -162,7 +162,7 @@ struct SchemaPromotionCorrectionTargetAuthority {
 
 pub struct SchemaPromotionExecutionRequest<'a, Store>
 where
-    Store: PromotionSettlementStore + SchemaAuthorityStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     pub project_root: &'a Path,
     pub package_root: &'a Path,
@@ -182,7 +182,7 @@ pub fn execute_schema_promotion<Store>(
     mut request: SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionReport>
 where
-    Store: PromotionSettlementStore + SchemaAuthorityStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     validate_execution_request(&request)?;
     bind_promotion_destinations(&mut request)?;
@@ -205,7 +205,7 @@ fn bind_promotion_destinations<Store>(
     request: &mut SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<()>
 where
-    Store: PromotionSettlementStore + SchemaAuthorityStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     for target in &request.dry_plan.targets {
         let destination_id = DestinationId::new(target.destination.clone())?;
@@ -221,7 +221,7 @@ fn execute_under_lease<Store>(
     lease: &ScopeLease,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionReport>
 where
-    Store: PromotionSettlementStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     request.settlement_store.assert_current(lease)?;
     let promotion_id = PromotionId::new(request.dry_plan.promotion_id.clone())?;
@@ -425,7 +425,7 @@ fn validate_execution_request<Store>(
     request: &SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<()>
 where
-    Store: PromotionSettlementStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     if !request.dry_plan.executable || !request.dry_plan.conflicts.is_empty() {
         return Err(cdf_kernel::CdfError::contract(
@@ -463,7 +463,7 @@ fn stage_execution_state<Store>(
     existing: Option<SchemaPromotionState>,
 ) -> cdf_kernel::Result<(SchemaPromotionExecutionPlanArtifact, SchemaPromotionState)>
 where
-    Store: PromotionSettlementStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     let promotion_id = PromotionId::new(request.dry_plan.promotion_id.clone())?;
     let artifact = SchemaPromotionExecutionPlanArtifact {
@@ -593,7 +593,7 @@ fn build_or_load_correction_packages<Store>(
     staged: &SchemaPromotionExecutionPlanArtifact,
 ) -> cdf_kernel::Result<Vec<PreparedCorrectionPackage>>
 where
-    Store: PromotionSettlementStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     let validation_program = promotion_validation_program(request.resource, staged)?;
     let scope = staged.authority.head.key.promotion_scope()?;
@@ -916,7 +916,7 @@ fn correction_package_artifact<Store>(
     package_index: &BTreeMap<String, PathBuf>,
 ) -> cdf_kernel::Result<SchemaPromotionCorrectionPackageArtifact>
 where
-    Store: PromotionSettlementStore,
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
 {
     let strategy = target.strategy.ok_or_else(|| {
         cdf_kernel::CdfError::contract("promotion target has no selected correction strategy")
@@ -1640,14 +1640,17 @@ fn verify_stored_correction_receipt(
     Ok(receipt)
 }
 
-fn settle_promotion_checkpoint<Store: PromotionSettlementStore>(
+fn settle_promotion_checkpoint<Store>(
     settlement_store: &Store,
     promoting: &SchemaHead,
     fence: &SchemaPromotionFence,
     target: &SchemaPromotionTarget,
     package: &PreparedCorrectionPackage,
     receipt: Receipt,
-) -> cdf_kernel::Result<SchemaPromotionState> {
+) -> cdf_kernel::Result<SchemaPromotionState>
+where
+    Store: CheckpointStore + ScopeLeaseStore + SchemaAuthorityStore,
+{
     let existing = CheckpointStore::history(
         settlement_store,
         &package.state_delta.pipeline_id,
