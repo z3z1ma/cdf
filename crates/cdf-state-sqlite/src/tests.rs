@@ -7,6 +7,10 @@ use std::{
 use cdf_conformance::checkpoint_store::{
     assert_checkpoint_store_conformance, assert_checkpoint_store_send_sync,
 };
+use cdf_conformance::schema_authority::{
+    assert_schema_authority_store_conformance, assert_schema_authority_store_send_sync,
+    first_use_schema_authority_establishment,
+};
 use cdf_conformance::scope_lease::{
     ManualScopeLeaseClock, assert_scope_lease_store_conformance, assert_scope_lease_store_send_sync,
 };
@@ -20,8 +24,8 @@ use cdf_kernel::{
     PartitionId, PartitionWatermarkState, PipelineId, PlanId, PostgresCommitPosition,
     PostgresLogScope, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
     PromotionSettlementStore, Receipt, ReceiptId, ResourceId, ResumeTokenPosition, RewindRequest,
-    RunId, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaHash, ScopeKey,
-    ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    RunId, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaAuthorityStore, SchemaHash,
+    ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
     TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause,
     WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim, WatermarkObservationContext,
     WatermarkValue, WriteDisposition,
@@ -2688,4 +2692,203 @@ fn in_memory_rejects_unsupported_state_version_without_sqlite_constraints() {
 
 fn positions_count() -> usize {
     7
+}
+
+#[test]
+fn sqlite_schema_authority_passes_shared_conformance() {
+    assert_schema_authority_store_send_sync::<SqliteSchemaAuthorityStore>();
+    let mut directories = Vec::new();
+    assert_schema_authority_store_conformance(|| {
+        directories.push(tempdir().unwrap());
+        let path = directories.last().unwrap().path().join("schema-state.db");
+        let store = SqliteSchemaAuthorityStore::open(&path).unwrap();
+        let leases = SqliteScopeLeaseStore::open(&path).unwrap();
+        (store, leases)
+    });
+}
+
+#[test]
+fn sqlite_schema_authority_failure_rolls_back_complete_batch() {
+    let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
+    let first = first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    let second =
+        first_use_schema_authority_establishment(&store, "dev", "customers", "customer_id");
+
+    let error = store
+        .establish_batch_with_failure_for_test(vec![first.clone(), second.clone()])
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(store.head(&first.key).unwrap().is_none());
+    assert!(store.head(&second.key).unwrap().is_none());
+    for table in [
+        "cdf_schema_versions",
+        "cdf_schema_heads",
+        "cdf_schema_authority_events",
+    ] {
+        let count: i64 = store
+            .query_row_for_test(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "{table} must roll back with the transaction");
+    }
+}
+
+#[test]
+fn sqlite_schema_authority_detects_corrupt_version_bytes_behind_head() {
+    let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    store.establish_if_absent(establishment.clone()).unwrap();
+    store
+        .execute_for_test("DROP TRIGGER cdf_schema_versions_no_update", [])
+        .unwrap();
+    store
+        .execute_for_test(
+            "UPDATE cdf_schema_versions SET version_json = 'not-json' WHERE resource_id = ?",
+            [establishment.key.resource_id.as_str()],
+        )
+        .unwrap();
+
+    let error = store.head(&establishment.key).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("schema version"));
+}
+
+#[test]
+fn sqlite_schema_authority_detects_missing_version_behind_head() {
+    let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    store.establish_if_absent(establishment.clone()).unwrap();
+    store
+        .execute_for_test("DROP TRIGGER cdf_schema_versions_no_delete", [])
+        .unwrap();
+    store
+        .execute_for_test("PRAGMA foreign_keys = OFF", [])
+        .unwrap();
+    store
+        .execute_for_test(
+            "DELETE FROM cdf_schema_versions WHERE resource_id = ?",
+            [establishment.key.resource_id.as_str()],
+        )
+        .unwrap();
+
+    let error = store.head(&establishment.key).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(
+        error
+            .message
+            .contains("references missing or corrupt version")
+    );
+}
+
+#[test]
+fn sqlite_schema_authority_records_and_requires_current_schema_version() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("schema-version.db");
+    let store = SqliteSchemaAuthorityStore::open(&path).unwrap();
+    let version: i64 = store
+        .query_row_for_test(
+            "SELECT version FROM cdf_sqlite_schema_versions WHERE component = 'schema_authority_store'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        version,
+        crate::schema_authority::SCHEMA_AUTHORITY_SCHEMA_VERSION
+    );
+    drop(store);
+
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE cdf_sqlite_schema_versions SET version = 999 WHERE component = 'schema_authority_store'",
+            [],
+        )
+        .unwrap();
+    let error = match SqliteSchemaAuthorityStore::open(&path) {
+        Ok(_) => panic!("schema authority store accepted an unsupported schema version"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(
+        error
+            .message
+            .contains("current schema version 1 is required")
+    );
+}
+
+#[test]
+fn sqlite_schema_authority_rejects_incomplete_current_schema() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("incomplete-schema.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE cdf_sqlite_schema_versions (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            recorded_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
+        VALUES ('schema_authority_store', 1, 1);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = match SqliteSchemaAuthorityStore::open(&path) {
+        Ok(_) => panic!("schema authority store recreated an incomplete current schema"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(
+        error
+            .message
+            .contains("required table cdf_schema_versions is missing")
+    );
+}
+
+#[test]
+fn sqlite_schema_authority_concurrent_first_use_has_one_winner() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("concurrent-schema.db");
+    let first = Arc::new(SqliteSchemaAuthorityStore::open(&path).unwrap());
+    let second = Arc::new(SqliteSchemaAuthorityStore::open(&path).unwrap());
+    let first_proposal =
+        first_use_schema_authority_establishment(first.as_ref(), "dev", "orders", "order_id");
+    let second_proposal = first_use_schema_authority_establishment(
+        second.as_ref(),
+        "dev",
+        "orders",
+        "different_order_id",
+    );
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = [(first, first_proposal), (second, second_proposal)].map(|(store, proposal)| {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.establish_if_absent(proposal)
+        })
+    });
+    let results = handles.map(|handle| handle.join().unwrap());
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let losing_error = results
+        .iter()
+        .find_map(|result| result.as_ref().err().cloned())
+        .unwrap();
+    assert_eq!(losing_error.kind, ErrorKind::Contract, "{losing_error}");
+
+    let reopened = SqliteSchemaAuthorityStore::open(&path).unwrap();
+    let winning_head = results
+        .iter()
+        .find_map(|result| result.as_ref().ok().cloned())
+        .unwrap();
+    assert_eq!(
+        reopened.head(&winning_head.key).unwrap(),
+        Some(winning_head)
+    );
 }

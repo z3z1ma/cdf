@@ -1,0 +1,56 @@
+path,line,kind,owner_classification
+crates/cdf-kernel/src/schema_authority.rs,55,Internal,CDF-owned delimiter-safe scope encoding invariant
+crates/cdf-kernel/src/schema_authority.rs,106,Contract,caller-supplied schema version timestamp
+crates/cdf-kernel/src/schema_authority.rs,112,Contract,caller-supplied schema bytes and hash disagree
+crates/cdf-kernel/src/schema_authority.rs,118,Contract,caller-supplied predecessor equals proposed version
+crates/cdf-kernel/src/schema_authority.rs,127,Contract,caller-supplied first-use provenance has predecessor
+crates/cdf-kernel/src/schema_authority.rs,130,Contract,caller-supplied promotion provenance lacks predecessor
+crates/cdf-kernel/src/schema_authority.rs,190,Contract,caller-supplied head generation is zero
+crates/cdf-kernel/src/schema_authority.rs,206,Contract,caller-supplied promoting head disagrees with source schema
+crates/cdf-kernel/src/schema_authority.rs,211,Contract,caller-supplied promotion does not change schema
+crates/cdf-kernel/src/schema_authority.rs,246,Contract,caller-supplied exact precondition generation is zero
+crates/cdf-kernel/src/schema_authority.rs,268,Contract,caller-supplied establishment is not first use
+crates/cdf-kernel/src/schema_authority.rs,309,Contract,caller-supplied promotion lease lifetime is invalid
+crates/cdf-kernel/src/schema_authority.rs,352,Contract,caller-supplied event ordinal generation or time is invalid
+crates/cdf-kernel/src/schema_authority.rs,376,Contract,caller-supplied promotion event does not change schema
+crates/cdf-kernel/src/schema_authority.rs,384,Contract,caller-supplied begin event does not retain source schema
+crates/cdf-kernel/src/schema_authority.rs,391,Contract,caller-supplied publication event does not carry target schema
+crates/cdf-kernel/src/schema_authority.rs,420,Internal,store implementation violated single-result trait invariant
+crates/cdf-state-sqlite/src/schema_authority.rs,99,Data,explicit read-only state database is absent
+crates/cdf-state-sqlite/src/schema_authority.rs,149,Contract,caller key belongs to another state domain
+crates/cdf-state-sqlite/src/schema_authority.rs,160,Contract,caller promotion fence belongs to another state domain
+crates/cdf-state-sqlite/src/schema_authority.rs,166,Contract,caller promotion lease scope does not match key
+crates/cdf-state-sqlite/src/schema_authority.rs,183,Contract,caller batch repeats one authority key
+crates/cdf-state-sqlite/src/schema_authority.rs,220,Internal,CDF-managed versions exist without required head
+crates/cdf-state-sqlite/src/schema_authority.rs,240,Internal,intentional CDF-owned transactional failpoint
+crates/cdf-state-sqlite/src/schema_authority.rs,273,Internal,CDF-managed authority tables are unversioned
+crates/cdf-state-sqlite/src/schema_authority.rs,400,Internal,CDF-managed authority schema version row is missing
+crates/cdf-state-sqlite/src/schema_authority.rs,419,Internal,CDF-managed authority schema version is unsupported
+crates/cdf-state-sqlite/src/schema_authority.rs,457,Contract,caller reused schema hash with different immutable content
+crates/cdf-state-sqlite/src/schema_authority.rs,524,Internal,CDF-managed head disappeared inside one transaction
+crates/cdf-state-sqlite/src/schema_authority.rs,607,Internal,CDF-managed history ordinal is negative
+crates/cdf-state-sqlite/src/schema_authority.rs,610,Internal,CDF-managed history ordinal overflow
+crates/cdf-state-sqlite/src/schema_authority.rs,661,Internal,CDF-managed schema version JSON is corrupt
+crates/cdf-state-sqlite/src/schema_authority.rs,669,Internal,CDF-managed version scalar columns disagree with JSON
+crates/cdf-state-sqlite/src/schema_authority.rs,756,Internal,CDF-managed schema head JSON is corrupt
+crates/cdf-state-sqlite/src/schema_authority.rs,772,Internal,CDF-managed head scalar columns disagree with JSON
+crates/cdf-state-sqlite/src/schema_authority.rs,789,Internal,CDF-managed promoting head references missing target
+crates/cdf-state-sqlite/src/schema_authority.rs,800,Internal,CDF-managed event references missing version
+crates/cdf-state-sqlite/src/schema_authority.rs,807,Internal,CDF-managed promotion event references missing target
+crates/cdf-state-sqlite/src/schema_authority.rs,817,Internal,CDF-managed head references missing or corrupt version
+crates/cdf-state-sqlite/src/schema_authority.rs,824,Contract,caller first-use proposal conflicts with established head
+crates/cdf-state-sqlite/src/schema_authority.rs,831,Contract,caller expected head is stale
+crates/cdf-state-sqlite/src/schema_authority.rs,874,Internal,CDF-managed schema authority event JSON is corrupt
+crates/cdf-state-sqlite/src/schema_authority.rs,887,Internal,CDF-managed event scalar columns disagree with JSON
+crates/cdf-state-sqlite/src/schema_authority.rs,900,Internal,CDF-managed history query returned another authority key
+crates/cdf-state-sqlite/src/schema_authority.rs,907,Internal,CDF-managed history is not monotonic
+crates/cdf-state-sqlite/src/schema_authority.rs,917,Internal,CDF-managed generation token or ordinal exceeds SQLite range
+crates/cdf-state-sqlite/src/schema_authority.rs,963,Contract,caller attempted promotion from a non-active head
+crates/cdf-state-sqlite/src/schema_authority.rs,968,Contract,caller promotion predecessor is stale or unrelated
+crates/cdf-state-sqlite/src/schema_authority.rs,977,Contract,caller promotion provenance differs from fence
+crates/cdf-state-sqlite/src/schema_authority.rs,989,Contract,caller expected an absent active head during promotion
+crates/cdf-state-sqlite/src/schema_authority.rs,1045,Contract,caller attempted publication from a non-promoting head
+crates/cdf-state-sqlite/src/schema_authority.rs,1053,Contract,caller publication head differs from fence
+crates/cdf-state-sqlite/src/schema_authority.rs,1065,Contract,caller expected an absent promoting head during publication
+crates/cdf-state-sqlite/src/schema_authority.rs,1073,Internal,CDF-managed schema head generation overflow
+crates/cdf-state-sqlite/src/schema_authority.rs,1101,Contract,caller history bound is zero or excessive

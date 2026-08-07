@@ -29,6 +29,7 @@ mod position_aggregation;
 mod resource;
 mod retention;
 mod run_event;
+mod schema_authority;
 mod schema_fingerprint;
 mod scope;
 mod semantic;
@@ -108,10 +109,10 @@ pub use ids::{
     BatchId, CheckpointId, CommittedContentRootId, ContentClaimAttemptId, ContentDigestAlgorithm,
     ContentDigestValue, ContentObjectKey, ContentProviderGeneration, ContentPublicationClaimId,
     ContentReclamationCandidateSource, ContentReclamationReservationId, ContentRootShardRef,
-    ContentStoreNamespace, ContractRef, DestinationId, DiscoveryManifestHash, IdempotencyToken,
-    LeaseAuthorityDomainId, LeaseOwnerId, PackageHash, PartitionId, PipelineId, PlanId,
-    PredicateId, PromotionId, ReceiptId, ResourceId, RunId, SchemaHash, SegmentId, SourceId,
-    TargetName, ValidationProgramHash,
+    ContentStoreNamespace, ContractRef, DestinationId, DiscoveryManifestHash, EnvironmentName,
+    IdempotencyToken, LeaseAuthorityDomainId, LeaseOwnerId, PackageHash, PartitionId, PipelineId,
+    PlanId, PredicateId, ProjectId, PromotionId, ReceiptId, ResourceId, RunId, SchemaHash,
+    SegmentId, SourceId, TargetName, ValidationProgramHash,
 };
 pub use lease::{
     ExpiredScopeLeaseProof, FencingToken, PromotionSettlementStore, ScopeLease, ScopeLeaseClock,
@@ -170,6 +171,12 @@ pub use run_event::{
     RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventSinkResult,
     RunEventValue, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
     RunProgressObservation, RunProgressObservationKind, RunProgressSink, SecretReference,
+};
+pub use schema_authority::{
+    MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, SchemaAuthorityEstablishment, SchemaAuthorityEvent,
+    SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityPrecondition,
+    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaPromotionFence, SchemaVersion,
+    SchemaVersionProvenance,
 };
 pub use schema_fingerprint::canonical_arrow_schema_hash;
 pub use scope::{ScopeKey, ScopeKind};

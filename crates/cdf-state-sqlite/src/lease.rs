@@ -454,7 +454,7 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
     write_component_schema_version(conn, SCOPE_LEASE_COMPONENT, SCOPE_LEASE_SCHEMA_VERSION)
 }
 
-fn validate_schema_version(conn: &Connection) -> Result<()> {
+pub(crate) fn validate_schema_version(conn: &Connection) -> Result<()> {
     match read_component_schema_version(conn, SCOPE_LEASE_COMPONENT)? {
         Some(SCOPE_LEASE_SCHEMA_VERSION) => require_sqlite_tables(
             conn,
@@ -471,7 +471,7 @@ fn validate_schema_version(conn: &Connection) -> Result<()> {
     }
 }
 
-fn read_authority_domain_id(conn: &Connection) -> Result<LeaseAuthorityDomainId> {
+pub(crate) fn read_authority_domain_id(conn: &Connection) -> Result<LeaseAuthorityDomainId> {
     let value = conn
         .query_row(
             "SELECT domain_id FROM cdf_scope_lease_authority WHERE singleton = 1",
@@ -485,6 +485,28 @@ fn read_authority_domain_id(conn: &Connection) -> Result<LeaseAuthorityDomainId>
         "decode CDF-managed scope lease authority domain",
         LeaseAuthorityDomainId::new(value),
     )
+}
+
+pub(crate) fn assert_current_lease_at(
+    conn: &Connection,
+    lease: &ScopeLease,
+    now_ms: i64,
+) -> Result<()> {
+    let current = conn
+        .query_row(
+            "SELECT 1 FROM cdf_scope_leases \
+             WHERE scope_json = ? AND owner = ? AND fencing_token = ? AND released = 0 AND expires_at_ms > ?",
+            params![
+                encode_json(&lease.scope)?,
+                lease.owner.as_str(),
+                token_i64(lease.fencing_token)?,
+                now_ms,
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    current.ok_or_else(|| stale_error(&lease.scope))
 }
 
 fn row_to_lease(row: &Row<'_>) -> rusqlite::Result<ScopeLease> {

@@ -17,7 +17,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
 1. **S1 — state schema-authority foundation.** Add kernel authority types/traits, SQLite current
    tables/transactions, batch first-use establishment, history, domain fencing, and reusable store
    conformance. Owner:
-   `.10x/tickets/2026-08-06-s1-state-schema-authority-foundation.md`.
+   `.10x/tickets/done/2026-08-06-s1-state-schema-authority-foundation.md`.
 2. **S2 — preparation and portable-plan cutover.** Add stable project id, move selected
    plan/compile/run and derived artifacts to state bindings, implement all-selected first-use CAS,
    and replace portable lock preconditions with per-resource state preconditions. Owner:
@@ -90,6 +90,9 @@ promotion, or schema export/import.
   first-use/`--locked` semantics, state-atomic promotion, and full current-only lockfile deletion.
   The governing decision and focused specifications were authored in this shaping turn. Per the
   explicit handoff and 10x separation, no implementation begins in the same turn.
+- 2026-08-06: S1 closed with backend-neutral authority contracts, the current-only SQLite store,
+  reusable conformance, 76/76 SQLite tests, and strict affected-package Clippy. S2 and S3 are now
+  dependency-unblocked; S4 still depends on both.
 
 ## Blockers
 

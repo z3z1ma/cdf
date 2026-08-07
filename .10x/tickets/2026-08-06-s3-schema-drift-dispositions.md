@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-06-state-backed-schema-authority-program.md`
-Depends-On: `.10x/tickets/2026-08-06-s1-state-schema-authority-foundation.md`
+Depends-On: `.10x/tickets/done/2026-08-06-s1-state-schema-authority-foundation.md`
 
 # S3 total schema drift dispositions
 

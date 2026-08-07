@@ -13,6 +13,7 @@ pub mod property_fuzz;
 pub mod resource;
 pub mod run_matrix;
 pub mod runtime_chaos;
+pub mod schema_authority;
 pub mod scope_lease;
 mod source_fixture;
 

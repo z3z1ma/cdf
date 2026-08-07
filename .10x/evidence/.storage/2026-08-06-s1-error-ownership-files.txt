@@ -1,0 +1,2 @@
+crates/cdf-kernel/src/schema_authority.rs
+crates/cdf-state-sqlite/src/schema_authority.rs

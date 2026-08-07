@@ -4,6 +4,7 @@ mod content_reachability;
 mod in_memory;
 mod lease;
 mod run_ledger;
+mod schema_authority;
 mod settlement;
 mod sqlite;
 mod support;
@@ -18,6 +19,7 @@ pub use content_reachability::SqliteContentReachabilityStore;
 pub use in_memory::InMemoryCheckpointStore;
 pub use lease::{InMemoryScopeLeaseStore, SqliteScopeLeaseStore};
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
+pub use schema_authority::SqliteSchemaAuthorityStore;
 pub use settlement::SqlitePromotionSettlementStore;
 pub use sqlite::SqliteCheckpointStore;
 pub use support::{
