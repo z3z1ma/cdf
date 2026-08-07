@@ -217,7 +217,7 @@ fn write_compiled_plan_artifacts(
     cdf_kernel::SchemaObservationBinding,
 )> {
     let mut program = compile_validation_program(
-        &ContractPolicy::evolve(),
+        &ContractPolicy::for_trust(TrustLevel::Governed),
         &ObservedSchema::from_arrow(schema.as_ref()),
     )?;
     program.row_rules.clear();

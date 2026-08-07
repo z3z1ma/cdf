@@ -1136,7 +1136,7 @@ fn write_current_replay_artifacts(
     output_position: SourcePosition,
 ) {
     let mut program = cdf_contract::compile_validation_program(
-        &cdf_contract::ContractPolicy::evolve(),
+        &cdf_contract::ContractPolicy::for_trust(TrustLevel::Governed),
         &cdf_contract::ObservedSchema::from_arrow(schema),
     )
     .unwrap();

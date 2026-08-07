@@ -1615,10 +1615,11 @@ fn field_by_name<'a>(schema: &'a Schema, name: &str) -> Option<&'a Field> {
 fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
+        SchemaSource::Active { schema_hash } => Ok(schema_hash.clone()),
         SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
         SchemaSource::Discover | SchemaSource::Hints { .. } | SchemaSource::Contract { .. } => {
             Err(CdfError::data(
-                "Postgres table source execution requires a declared schema hash or pinned discovered schema snapshot",
+                "Postgres table source execution requires an active, declared, or discovered schema hash",
             ))
         }
     }
@@ -1900,8 +1901,21 @@ mod tests {
     }
 
     #[test]
-    fn source_shape_accepts_discovered_snapshot_and_rejects_unpinned_schema_modes() {
+    fn source_shape_accepts_active_and_discovered_authority() {
         let target = PostgresTarget::parse("raw.orders").unwrap();
+        let mut active = descriptor(None);
+        active.schema_source = SchemaSource::Active {
+            schema_hash: SchemaHash::new("sha256:postgres-active-test").unwrap(),
+        };
+        PostgresTableResource::new(
+            "postgresql://localhost/db",
+            active,
+            schema(),
+            target.clone(),
+            test_egress(),
+        )
+        .unwrap();
+
         let mut discovered = descriptor(None);
         discovered.schema_source = SchemaSource::Discovered {
             snapshot: cdf_kernel::SchemaSnapshotReference {
@@ -1945,7 +1959,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("declared schema hash or pinned discovered schema snapshot")
+                    .contains("active, declared, or discovered schema hash")
             );
         }
     }

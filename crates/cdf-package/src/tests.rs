@@ -669,7 +669,7 @@ fn statistics_profile_stream_rejects_schema_drift_and_omitted_manifest_segments(
 }
 
 #[test]
-fn verification_rejects_unknown_contract_evolution_versions() {
+fn verification_rejects_unknown_schema_admission_versions() {
     for (name, artifact) in [
         (
             "top-level",
@@ -700,7 +700,7 @@ fn verification_rejects_unknown_contract_evolution_versions() {
         let builder = package_builder!(temp.path(), format!("pkg-{name}")).unwrap();
         builder.update_status(PackageStatus::Extracting).unwrap();
         builder
-            .write_json_artifact("schema/contract-evolution.json", &artifact)
+            .write_json_artifact("schema/admission-evidence.json", &artifact)
             .unwrap();
         builder.update_status(PackageStatus::Validated).unwrap();
         builder.finish().unwrap();

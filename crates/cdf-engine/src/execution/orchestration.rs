@@ -21,12 +21,13 @@ use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use arrow_select::take::take_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
-    RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
-    VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
-    encode_package_dedup_keys, encode_residual_json_v1, encode_residual_json_v1_redacted,
-    evaluate_package_order_dedup, materialize_schema_coercion, package_dedup_rule,
-    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
+    ContractEvaluationContext, FieldDisposition, FieldRole, QuarantineCandidate,
+    RESIDUAL_ENCODING_METADATA_KEY, RecordViolationDisposition, RedactionDecision,
+    ResidualFieldRef, ResidualFieldWithRedaction, VARIANT_COLUMN_NAME, ValidationProgram,
+    VectorValidationEvaluator, VerdictSummary, encode_package_dedup_keys, encode_residual_json_v1,
+    encode_residual_json_v1_redacted, evaluate_package_order_dedup, materialize_schema_coercion,
+    package_dedup_rule, reject_untrusted_schema_coercion_metadata,
+    schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     Batch, CdfError, CompositePosition, ExecutablePartition, ExecutionExtent,
@@ -89,9 +90,9 @@ use crate::{
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
     variant_capture::{
-        ContractEvolutionArtifact, FieldTypeEvidenceArtifact, ResidualDecisionArtifact,
-        ResidualRuntimeVerdict, ResidualTypedProjection, contract_evolution_artifact_metadata,
-        normalize_batch,
+        FieldTypeEvidenceArtifact, ResidualDecisionArtifact, ResidualRuntimeVerdict,
+        ResidualTypedProjection, SchemaAdmissionArtifact, normalize_batch,
+        schema_admission_artifact_metadata,
     },
 };
 
@@ -1865,13 +1866,22 @@ fn reserve_quarantine_evidence(
 }
 
 fn program_may_quarantine(program: &ValidationProgram) -> bool {
-    matches!(
+    let row_rules_quarantine = matches!(
         program.disposition_for(cdf_contract::RuleOutcome::Violation, "quarantine-admission"),
         cdf_contract::RuleDisposition::Quarantine { .. }
     ) && program
         .row_rules
         .iter()
-        .any(|rule| !rule.is_dedup_expression())
+        .any(|rule| !rule.is_dedup_expression());
+    row_rules_quarantine
+        || program.admission.field == FieldDisposition::QuarantineRow
+        || program.admission.record == RecordViolationDisposition::QuarantineRecord
+        || program.residual.as_ref().is_some_and(|residual| {
+            residual
+                .fields
+                .iter()
+                .any(|field| field.disposition == FieldDisposition::QuarantineRow)
+        })
 }
 
 enum ResidualDecisionAccumulator {
@@ -4818,6 +4828,11 @@ where
                         let row_count = u64::try_from(recaptured.num_rows()).map_err(|_| {
                             CdfError::data("late-data carryover row count exceeds u64")
                         })?;
+                        remove_late_data_from_accepted_summary(
+                            &mut verdict_summary,
+                            row_count,
+                            residual_row_count(&recaptured)?,
+                        )?;
                         let memory_bound_bytes =
                             cdf_memory::record_batch_retained_bytes(&recaptured)?;
                         let relative_path = format!(
@@ -4875,6 +4890,7 @@ where
                         let row_count = u64::try_from(quarantined.num_rows()).map_err(|_| {
                             CdfError::data("late-data quarantine row count exceeds u64")
                         })?;
+                        let residual_rows = residual_row_count(&quarantined)?;
                         let relative_path = format!(
                             "quarantine/late-data-{:020}.arrow",
                             late_data_payloads.next_ordinal()
@@ -4912,7 +4928,11 @@ where
                                 .push(quarantine_record_from_late_data(evidence, row)?)?;
                         }
                         quarantine_sink.finish()?;
-                        apply_late_data_quarantine_summary(&mut verdict_summary, evidence)?;
+                        apply_late_data_quarantine_summary(
+                            &mut verdict_summary,
+                            evidence,
+                            residual_rows,
+                        )?;
                     }
                     if let Some(evidence) = &classification.evidence {
                         late_data_evidence.push(&builder, evidence)?;
@@ -5282,6 +5302,8 @@ where
         stream_finalize,
         profile,
         lineage,
+        admission: validation_program.admission.clone(),
+        verdict_summary,
         terminal_schema_quarantines,
         segment_positions,
         phase_measurements,
@@ -5825,13 +5847,13 @@ fn prepare_package_artifacts(
     let mut residual_decision_output = residual_decisions.finish()?;
     physical_reconciliation_evidence.finish()?;
     let schema_authority = plan.schema_authority();
-    if let Some(evolution) = contract_evolution_artifact_metadata(
+    if let Some(admission) = schema_admission_artifact_metadata(
         validation_program,
         schema_authority.baseline_schema_hash.clone(),
         schema_authority.effective_schema_hash.clone(),
         residual_decision_output.is_some(),
     ) {
-        write_contract_evolution_stream(builder, &evolution, residual_decision_output.as_mut())?;
+        write_schema_admission_stream(builder, &admission, residual_decision_output.as_mut())?;
     }
     if let Some(mut statistics_profile) = statistics_profile {
         statistics_profile.write_stats(
@@ -5843,7 +5865,10 @@ fn prepare_package_artifacts(
         )?;
         statistics_profile.finish()?;
     }
-    if verdict_summary.violation_count > 0 || verdict_summary.quarantine_candidate_count > 0 {
+    if verdict_summary.accepted_with_residual_rows > 0
+        || verdict_summary.violation_count > 0
+        || verdict_summary.quarantine_candidate_count > 0
+    {
         builder.write_stats_artifact(
             "verdict-summary.json",
             &cdf_package::canonical_json_bytes(verdict_summary)?,
@@ -6346,6 +6371,7 @@ fn observe_drain_batch_frontier(
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
     total.input_rows += batch.input_rows;
     total.accepted_rows += batch.accepted_rows;
+    total.accepted_with_residual_rows += batch.accepted_with_residual_rows;
     total.quarantined_rows += batch.quarantined_rows;
     total.violation_count += batch.violation_count;
     total.quarantine_candidate_count += batch.quarantine_candidate_count;
@@ -6371,6 +6397,7 @@ fn pre_contract_quarantine_summary(facts: &[PreContractQuarantineFact]) -> Verdi
     let mut summary = VerdictSummary {
         input_rows: quarantined_rows,
         accepted_rows: 0,
+        accepted_with_residual_rows: 0,
         quarantined_rows,
         violation_count: facts.len() as u64,
         quarantine_candidate_count: facts.len() as u64,
@@ -6440,15 +6467,11 @@ fn quarantine_record_from_late_data(
 fn apply_late_data_quarantine_summary(
     summary: &mut VerdictSummary,
     evidence: &LateDataBatchEvidence,
+    residual_rows: u64,
 ) -> Result<()> {
     let row_count = u64::try_from(evidence.rows.len())
         .map_err(|_| CdfError::data("late-data quarantine count exceeds u64"))?;
-    summary.accepted_rows = summary
-        .accepted_rows
-        .checked_sub(row_count)
-        .ok_or_else(|| {
-            CdfError::internal("late-data quarantine exceeds contract-accepted row count")
-        })?;
+    remove_late_data_from_accepted_summary(summary, row_count, residual_rows)?;
     summary.quarantined_rows = summary
         .quarantined_rows
         .checked_add(row_count)
@@ -6486,6 +6509,42 @@ fn apply_late_data_quarantine_summary(
             }),
     }
     Ok(())
+}
+
+fn remove_late_data_from_accepted_summary(
+    summary: &mut VerdictSummary,
+    row_count: u64,
+    residual_rows: u64,
+) -> Result<()> {
+    if residual_rows > row_count {
+        return Err(CdfError::internal(
+            "late-data residual row count exceeds withheld row count",
+        ));
+    }
+    summary.accepted_rows = summary
+        .accepted_rows
+        .checked_sub(row_count)
+        .ok_or_else(|| {
+            CdfError::internal("late-data removal exceeds contract-accepted row count")
+        })?;
+    summary.accepted_with_residual_rows = summary
+        .accepted_with_residual_rows
+        .checked_sub(residual_rows)
+        .ok_or_else(|| {
+            CdfError::internal(
+                "late-data residual removal exceeds accepted-with-residual row count",
+            )
+        })?;
+    Ok(())
+}
+
+fn residual_row_count(batch: &RecordBatch) -> Result<u64> {
+    batch
+        .column_by_name(VARIANT_COLUMN_NAME)
+        .map_or(Ok(0), |variant| {
+            u64::try_from(variant.len() - variant.null_count())
+                .map_err(|error| CdfError::internal(error.to_string()))
+        })
 }
 
 fn pre_contract_observed_value(value: &PreContractObservedValue) -> QuarantineObservedValue {
@@ -6532,23 +6591,19 @@ fn write_quarantine_summary(
     Ok(())
 }
 
-fn write_contract_evolution_stream(
+fn write_schema_admission_stream(
     builder: &PackageBuilder,
-    evolution: &ContractEvolutionArtifact,
+    admission: &SchemaAdmissionArtifact,
     mut decisions: Option<&mut ResidualDecisionOutput>,
 ) -> Result<()> {
     let mut artifact =
-        builder.begin_streaming_identity_artifact("schema/contract-evolution.json")?;
+        builder.begin_streaming_identity_artifact("schema/admission-evidence.json")?;
     artifact.write_all(b"{\"baseline_schema_hash\":")?;
-    artifact.write_json(&evolution.baseline_schema_hash)?;
+    artifact.write_json(&admission.baseline_schema_hash)?;
     artifact.write_all(b",\"effective_schema_hash\":")?;
-    artifact.write_json(&evolution.effective_schema_hash)?;
-    artifact.write_all(b",\"implicit_promotion_count\":")?;
-    artifact.write_json(&evolution.implicit_promotion_count)?;
-    artifact.write_all(b",\"promotion_events\":")?;
-    artifact.write_json(&evolution.promotion_events)?;
+    artifact.write_json(&admission.effective_schema_hash)?;
     artifact.write_all(b",\"residual_capture\":")?;
-    artifact.write_json(&evolution.residual_capture)?;
+    artifact.write_json(&admission.residual_capture)?;
     artifact.write_all(b",\"residual_decisions\":[")?;
     let mut first = true;
     if let Some(decisions) = decisions.as_mut() {
@@ -6561,9 +6616,9 @@ fn write_contract_evolution_stream(
         }
     }
     artifact.write_all(b"],\"variant_capture\":")?;
-    artifact.write_json(&evolution.variant_capture)?;
+    artifact.write_json(&admission.variant_capture)?;
     artifact.write_all(b",\"version\":")?;
-    artifact.write_json(&evolution.version)?;
+    artifact.write_json(&admission.version)?;
     artifact.write_all(b"}")?;
     artifact.finish()?;
     Ok(())
@@ -7190,8 +7245,11 @@ fn apply_contract_exec(
             .map_err(CdfError::from)?
     };
     let variants = filter_optional_strings(&residual.variant_values, &evaluation.accepted_rows);
+    let accepted_with_residual_rows =
+        variants.iter().filter(|value| value.is_some()).count() as u64;
     let mut combined = summary;
     combined.input_rows = residual.input_rows;
+    combined.accepted_with_residual_rows = accepted_with_residual_rows;
     combined.quarantined_rows += residual.quarantined_rows;
     combined.violation_count += residual.violation_count;
     combined.quarantine_candidate_count += residual.quarantine_candidate_count;
@@ -7298,7 +7356,7 @@ fn preflight_residual_quarantines(
     };
     for (batch_row, row_candidates) in grouped {
         let Some((rule_id, error_code)) =
-            residual_quarantine_reason(program, &row_candidates, &dynamic_controls)
+            residual_quarantine_reason(program, &row_candidates, &dynamic_controls)?
         else {
             output.remaining_candidates.extend(row_candidates);
             continue;
@@ -7646,7 +7704,7 @@ fn residual_quarantine_reason(
     program: &ValidationProgram,
     candidates: &[PreContractResidualCandidate],
     dynamic_controls: &BTreeSet<String>,
-) -> Option<(String, String)> {
+) -> Result<Option<(String, String)>> {
     for candidate in candidates {
         let field = candidate
             .source_path()
@@ -7659,26 +7717,39 @@ fn residual_quarantine_reason(
                 .iter()
                 .find(|item| item.source_name == field || item.output_name == field)
         });
-        let control_critical = dynamic_controls.contains(field)
-            || field_program.is_some_and(|field| field.control_critical || field.required);
-        let captures = program.residual.as_ref().is_some_and(|residual| {
-            residual.default_verdict == ResidualCandidateVerdict::Capture
-                && residual.capture.is_some()
-        });
-        if control_critical {
-            return Some((
-                format!("residual:{}:control-critical", residual_path(candidate)),
-                "cdf.residual_control_critical".to_owned(),
-            ));
-        }
-        if !captures {
-            return Some((
-                format!("residual:{}:contract", residual_path(candidate)),
-                "cdf.residual_contract_quarantine".to_owned(),
-            ));
+        let disposition = if dynamic_controls.contains(field)
+            || field_program.is_some_and(|field| {
+                field.roles.iter().any(|role| {
+                    matches!(
+                        role,
+                        FieldRole::DestinationIdentity
+                            | FieldRole::SourceProgress
+                            | FieldRole::CdcOperation
+                            | FieldRole::TransactionBoundary
+                    )
+                })
+            }) {
+            FieldDisposition::FailRun
+        } else {
+            field_program.map_or(program.admission.field, |field| field.disposition)
+        };
+        match disposition {
+            FieldDisposition::CaptureVariant => {}
+            FieldDisposition::QuarantineRow => {
+                return Ok(Some((
+                    format!("residual:{}:contract", residual_path(candidate)),
+                    "cdf.residual_quarantine_row".to_owned(),
+                )));
+            }
+            FieldDisposition::FailRun => {
+                return Err(CdfError::data(format!(
+                    "field {:?} violates the active schema and its compiled disposition is fail_run",
+                    residual_path(candidate)
+                )));
+            }
         }
     }
-    None
+    Ok(None)
 }
 
 fn apply_residual_verdicts(
@@ -7719,7 +7790,7 @@ fn apply_residual_verdicts(
             .map(|candidate| residual_redaction(program, candidate))
             .collect::<Result<Vec<_>>>()?;
         let mut quarantine_reason =
-            residual_quarantine_reason(program, &row_candidates, &dynamic_controls);
+            residual_quarantine_reason(program, &row_candidates, &dynamic_controls)?;
 
         let encoded = if quarantine_reason.is_none() {
             let fields = row_candidates
@@ -7739,6 +7810,12 @@ fn apply_residual_verdicts(
                     CdfError::internal(format!("residual codec produced non-UTF-8 JSON: {error}"))
                 })?),
                 Err(error) => {
+                    if program.admission.record == RecordViolationDisposition::FailRun {
+                        return Err(CdfError::data(format!(
+                            "residual value at {:?} cannot be encoded and the compiled malformed-record disposition is fail_run: {error}",
+                            residual_path(&row_candidates[0])
+                        )));
+                    }
                     quarantine_reason = Some((
                         format!("residual:{}:encode", residual_path(&row_candidates[0])),
                         error.code().to_owned(),
@@ -7839,13 +7916,19 @@ fn restore_contract_nullability(
     let Some(residual) = &program.residual else {
         return Ok(batch);
     };
-    let nullability = residual
+    let non_null_fields = program
+        .row_rules
+        .iter()
+        .filter(|rule| rule.expression_function() == Some("is_not_null"))
+        .flat_map(|rule| rule.expression.column_dependencies())
+        .collect::<BTreeSet<_>>();
+    let dispositions = residual
         .fields
         .iter()
         .flat_map(|field| {
             [
-                (field.source_name.as_str(), !field.required),
-                (field.output_name.as_str(), !field.required),
+                (field.source_name.as_str(), field.disposition),
+                (field.output_name.as_str(), field.disposition),
             ]
         })
         .collect::<std::collections::HashMap<_, _>>();
@@ -7855,12 +7938,23 @@ fn restore_contract_nullability(
         .iter()
         .map(|field| {
             let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
-            nullability
+            dispositions
                 .get(source)
-                .or_else(|| nullability.get(field.name().as_str()))
+                .or_else(|| dispositions.get(field.name().as_str()))
                 .map_or_else(
                     || field.as_ref().clone(),
-                    |nullable| field.as_ref().clone().with_nullable(*nullable),
+                    |disposition| {
+                        let nullable = if non_null_fields.contains(source)
+                            || non_null_fields.contains(field.name())
+                        {
+                            false
+                        } else if *disposition == FieldDisposition::CaptureVariant {
+                            true
+                        } else {
+                            field.is_nullable()
+                        };
+                        field.as_ref().clone().with_nullable(nullable)
+                    },
                 )
         })
         .collect::<Vec<_>>();
@@ -7928,11 +8022,17 @@ fn append_residual_variant(
             "residual variant values do not align with accepted rows",
         ));
     }
-    if batch.schema().index_of(&capture.variant_column).is_ok() {
-        return Err(CdfError::contract(format!(
-            "residual variant column {:?} conflicts with typed output",
-            capture.variant_column
-        )));
+    if let Ok(index) = batch.schema().index_of(&capture.variant_column) {
+        let field = batch.schema().field(index).clone();
+        if !cdf_contract::is_framework_variant_field(&field) {
+            return Err(CdfError::contract(format!(
+                "residual variant column {:?} conflicts with typed output",
+                capture.variant_column
+            )));
+        }
+        let mut columns = batch.columns().to_vec();
+        columns[index] = Arc::new(StringArray::from(values)) as ArrayRef;
+        return RecordBatch::try_new(batch.schema(), columns).map_err(CdfError::from);
     }
     let field = cdf_semantic::builtin_catalog()?.apply_reference(
         Field::new(&capture.variant_column, DataType::Utf8, true),
@@ -8163,6 +8263,7 @@ pub fn assemble_isolated_worker_package(
 
     let mut profile = ExecutionProfile::default();
     let mut lineage = LineageSummary::default();
+    let mut verdict_summary = VerdictSummary::default();
     let mut segment_positions = Vec::new();
     let mut processed_observations = Vec::new();
     let mut source_retries = Vec::new();
@@ -8196,6 +8297,7 @@ pub fn assemble_isolated_worker_package(
         lineage
             .input_observations
             .extend(evidence.lineage.input_observations.iter().cloned());
+        merge_verdict_summary(&mut verdict_summary, evidence.verdict_summary.clone());
         segment_positions.extend(evidence.segment_positions.iter().cloned());
         processed_observations.extend(evidence.processed_observations.iter().cloned());
         source_retries.extend(evidence.source_retries.iter().cloned());
@@ -8434,13 +8536,13 @@ pub fn assemble_isolated_worker_package(
         &schema_artifact(&runtime_output_schema),
     )?;
     builder.write_runtime_arrow_schema(&runtime_output_schema)?;
-    if let Some(evolution) = contract_evolution_artifact_metadata(
+    if let Some(admission) = schema_admission_artifact_metadata(
         &plan.validation_program,
         plan.schema_authority.baseline_schema_hash.clone(),
         plan.schema_authority.effective_schema_hash.clone(),
         false,
     ) {
-        write_contract_evolution_stream(&builder, &evolution, None)?;
+        write_schema_admission_stream(&builder, &admission, None)?;
     }
     builder.write_lineage_artifact(
         "lineage.json",
@@ -8511,6 +8613,8 @@ pub fn assemble_isolated_worker_package(
             verification,
             profile,
             lineage,
+            admission: plan.validation_program.admission.clone(),
+            verdict_summary,
             terminal_schema_quarantines,
         },
         segment_positions,
@@ -8666,7 +8770,7 @@ mod transform_kernel_tests {
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
         ContractEvaluationContext, ContractPolicy, DeclarativeExpression, ExpressionUse,
-        ObservedSchema, SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
+        ObservedSchema, TransformDescription, VectorValidationEvaluator,
         compile_validation_program,
     };
     use cdf_kernel::{
@@ -8682,9 +8786,8 @@ mod transform_kernel_tests {
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
         apply_pre_contract_expressions, bind_filter_expressions,
         canonicalize_admitted_batch_schema, execute_batch, preflight_residual_quarantines,
-        remove_preflight_quarantined_rows, reserve_quarantine_evidence, residual_redaction,
-        source_row_tracking_schema, validate_materialized_effective_batch_schema,
-        validate_physical_reconciliations,
+        reserve_quarantine_evidence, residual_redaction, source_row_tracking_schema,
+        validate_materialized_effective_batch_schema, validate_physical_reconciliations,
     };
 
     #[test]
@@ -8817,7 +8920,7 @@ mod transform_kernel_tests {
     }
 
     #[test]
-    fn control_residual_is_quarantined_even_when_filter_drops_its_placeholder() {
+    fn progress_residual_fails_before_filtering_can_hide_it() {
         let expected_schema = Schema::new(vec![Field::new("cursor", DataType::Int64, false)]);
         let program = compile_validation_program(
             &ContractPolicy::for_trust(TrustLevel::Governed),
@@ -8859,7 +8962,7 @@ mod transform_kernel_tests {
             }),
         ));
         let batch_id = BatchId::new("filtered-control-residual").unwrap();
-        let preflight = preflight_residual_quarantines(
+        let error = match preflight_residual_quarantines(
             &program,
             vec![candidate],
             &ResidualBatchContext {
@@ -8869,39 +8972,14 @@ mod transform_kernel_tests {
                 batch_id: &batch_id,
                 observation_id: Some("observation"),
             },
-        )
-        .unwrap();
+        ) {
+            Ok(_) => panic!("source progress residual unexpectedly remained admissible"),
+            Err(error) => error,
+        };
 
-        let executed = execute_batch(
-            &batch,
-            &bound,
-            true,
-            None,
-            &cdf_runtime::RunCancellation::default(),
-        )
-        .unwrap();
-        let executed = apply_pre_contract_expressions(
-            executed.batch,
-            &[],
-            &mut None,
-            true,
-            None,
-            &cdf_runtime::RunCancellation::default(),
-        )
-        .unwrap();
-        let (filtered, source_rows) = remove_preflight_quarantined_rows(
-            executed.batch,
-            executed.source_rows,
-            &preflight.quarantined_batch_rows,
-        )
-        .unwrap();
-
-        assert_eq!(filtered.num_rows(), 1);
-        assert_eq!(source_rows, Some(vec![1]));
-        assert_eq!(preflight.quarantine_records.len(), 1);
-        assert_eq!(preflight.quarantine_records[0].source_row_ordinal, 41);
-        assert_eq!(preflight.summary.quarantined_rows, 1);
-        assert_eq!(preflight.residual_decisions.len(), 1);
+        assert!(error.message.contains("compiled disposition is fail_run"));
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(bound.len(), 1);
     }
 
     #[test]
@@ -9164,8 +9242,7 @@ mod transform_kernel_tests {
             ],
         )
         .unwrap();
-        let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-        policy.schema.mode = SchemaEvolutionMode::Evolve;
+        let policy = ContractPolicy::for_trust(TrustLevel::Governed);
         let program =
             compile_validation_program(&policy, &ObservedSchema::from_arrow(schema.as_ref()))
                 .unwrap();

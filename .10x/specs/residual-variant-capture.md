@@ -20,7 +20,7 @@ The validation program MUST emit exactly one verdict for every nonconforming val
 
 Discover/evolve resources compile safe residual capture by default unless an explicit contract chooses quarantine or failure. Freeze resources quarantine schema drift by default and capture only when explicitly allowed. Declared and Hints resources follow their compiled contract rather than source-format-specific behavior.
 
-Residual capture is safe only when the decoder can isolate the original value and all control fields remain valid. A violation of a cursor, merge/primary key, contract-required non-null field, source-position field, operation field, or other field named by the validation program as control-critical MUST quarantine rather than replace the typed value with null. Corrupt framing or an encoding failure that prevents reliable row/path boundaries MUST quarantine the containing row/file.
+Residual capture is safe only when the decoder can isolate the original value and all protected fields remain valid. A violation of a cursor, merge/primary key, contract-required non-null field, source-position field, operation field, or transaction-boundary field MUST use only the dispositions allowed by the compiler-derived field roles rather than replace the typed value with null. Corrupt framing or an encoding failure that prevents reliable row/path boundaries MUST quarantine the containing row/file only when the compiled partition disposition permits it.
 
 For an isolated mismatch of an otherwise nullable typed field, the output typed field is null and the original value is captured. For an unknown field, no typed output field is invented during the run; the value appears only in the residual. Other conforming values in the row continue unchanged.
 
@@ -68,7 +68,7 @@ The encoder MUST round-trip supported Arrow scalar/nested values exactly back in
 
 ## Evidence, redaction, and replay
 
-The validation program and package contract-evolution artifact MUST record source path, observed physical type, expected/effective type when present, verdict rule, residual encoding version, baseline/effective schema hashes, and whether the typed field was nulled or absent.
+The validation program and package schema-admission artifact MUST record source path, observed physical type, expected/effective type when present, disposition rule, residual encoding version, baseline/effective schema hashes, and whether the typed field was nulled or absent.
 
 PII/secret semantic tags apply before artifact rendering. Residual values subject to redaction MUST retain a typed redacted/hash envelope sufficient to identify the rule and compare repeated observations without exposing plaintext.
 
@@ -76,7 +76,7 @@ The package's canonical Arrow IPC data contains `_cdf_variant`; replay therefore
 
 ## Scenarios
 
-Given a sampled pin with `fare_amount: int64` and an unprobed row containing `fare_amount: "unknown"`, when `fare_amount` is nullable and not control-critical, then the output contains null `fare_amount`, the other typed columns, and an exact residual at `/fare_amount`.
+Given an active schema with `fare_amount: int64` and an unobserved row containing `fare_amount: "unknown"`, when `fare_amount` is nullable ordinary data with `capture_variant` disposition, then the output contains null `fare_amount`, the other typed columns, and an exact residual at `/fare_amount`.
 
 Given the same mismatch on a merge key or cursor, when validation runs, then the row quarantines and no partially addressable destination row is admitted.
 

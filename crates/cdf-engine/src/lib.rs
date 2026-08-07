@@ -70,12 +70,11 @@ pub use statistics_pruning::{
     VerifiedPackageSegmentPruning, for_each_verified_package_segment_pruning,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
-pub(crate) use types::CompiledSchemaAdmissionOutcome;
 pub use types::{
-    COMPILED_SCHEMA_ADMISSION_VERSION, CompiledArrowSchema, CompiledSchemaAdmissionPlan,
-    CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence, DEFAULT_PREVIEW_MAX_BATCHES,
-    DEFAULT_PREVIEW_MAX_BYTES, DEFAULT_PREVIEW_MAX_ROWS, DrainPartitionResume,
-    ENGINE_EXECUTION_EVIDENCE_VERSION, ENGINE_PARTITION_EVIDENCE_VERSION,
+    COMPILED_SCHEMA_ADMISSION_VERSION, CompiledArrowSchema, CompiledSchemaAdmissionOutcome,
+    CompiledSchemaAdmissionPlan, CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence,
+    DEFAULT_PREVIEW_MAX_BATCHES, DEFAULT_PREVIEW_MAX_BYTES, DEFAULT_PREVIEW_MAX_ROWS,
+    DrainPartitionResume, ENGINE_EXECUTION_EVIDENCE_VERSION, ENGINE_PARTITION_EVIDENCE_VERSION,
     EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineDrainEpoch,
     EngineDrainEpochOutcome, EngineExecutionConfig, EngineExecutionEvidence,
     EngineExecutionInvocation, EnginePackageDraft, EnginePartitionDrainEvidence,

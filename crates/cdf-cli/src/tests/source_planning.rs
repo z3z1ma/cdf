@@ -37,6 +37,15 @@ fn first_use_plan_discovers_candidate_schema_without_project_writes() {
     assert_eq!(report["schema_authority"]["generation"], 1);
     assert_eq!(report["schema_authority"]["precondition"]["kind"], "absent");
     assert_eq!(report["schema_authority"]["drift"], "none");
+    assert_eq!(
+        report["admission"]["observation_strength"],
+        "bounded_first_use_discovery"
+    );
+    assert_eq!(
+        report["admission"]["dispositions"]["field"],
+        "capture_variant"
+    );
+    assert_eq!(report["admission"]["source_schema_migrations"], 0);
 }
 
 #[test]
@@ -74,6 +83,7 @@ fn active_plan_enforces_exact_state_authority_without_project_writes() {
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
     let compile = compile_resource(&project, "local.events");
     assert_eq!(compile.exit_code, 0, "{}{}", compile.stdout, compile.stderr);
+    write_string_vendor_parquet(&project.root.join("data/vendors.parquet"));
     fs::write(project.root.join("cdf.lock"), "not schema authority").unwrap();
     let before = project_tree_snapshot(&project.root);
 
@@ -93,6 +103,11 @@ fn active_plan_enforces_exact_state_authority_without_project_writes() {
     assert_eq!(report["schema_authority"]["status"], "active");
     assert_eq!(report["schema_authority"]["generation"], 1);
     assert_eq!(report["schema_authority"]["precondition"]["kind"], "exact");
+    assert_eq!(
+        report["admission"]["observation_strength"],
+        "runtime_stream"
+    );
+    assert_eq!(report["admission"]["source_schema_migrations"], 0);
 }
 
 #[test]

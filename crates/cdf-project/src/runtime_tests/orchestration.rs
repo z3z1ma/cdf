@@ -1046,6 +1046,8 @@ pub(super) fn engine_output_with_positions_and_checkpoint_eligibility(
             verification,
             profile: ExecutionProfile::default(),
             lineage: LineageSummary::default(),
+            admission: cdf_contract::ContractPolicy::default().admission,
+            verdict_summary: cdf_contract::VerdictSummary::default(),
             terminal_schema_quarantines: Vec::new(),
         },
         segment_positions,

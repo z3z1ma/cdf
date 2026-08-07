@@ -117,7 +117,7 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
 }
 
 #[test]
-fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
+fn run_rest_progress_drift_fails_closed_without_parse_coercion() {
     let parse_project = TestProject::new();
     fs::write(
         parse_project.root.join("rest-token"),
@@ -145,34 +145,21 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_coercion() {
 
     let parse = run_valid_run_resource(&parse_project, "api.items");
 
-    assert_eq!(parse.exit_code, 0, "{}", parse.stderr);
+    assert_eq!(
+        parse.exit_code, 1,
+        "stdout: {}\nstderr: {}",
+        parse.stdout, parse.stderr
+    );
     assert_secret_absent(&parse, "parse-token-secret");
     let parse_json = stderr_or_stdout_json(&parse.stdout);
-    let parse_report = single_resource_run_report(&parse_json);
-    assert_eq!(parse_report["row_count"], 1);
-    let parse_package = run_package_dir(&parse_project, &parse);
-    let quarantine_summary: serde_json::Value = serde_json::from_slice(
-        &fs::read(parse_package.join("stats/quarantine-summary.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(quarantine_summary["quarantined_rows"], 1);
-    assert_eq!(
-        quarantine_summary["artifacts"],
-        serde_json::json!(["quarantine/part-000001.parquet"])
+    let error = single_resource_run_error(&parse_json);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("compiled disposition is fail_run"),
+        "{error}"
     );
-    let parse_admission: CompiledStreamAdmissionEvidence = serde_json::from_slice(
-        &fs::read(parse_package.join("schema/stream-admission-evidence.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(parse_admission.observations.iter().all(|observation| {
-        observation.coercion_plan.fields.iter().all(|field| {
-            !matches!(
-                field.decision,
-                cdf_contract::FieldCoercionDecision::CoercedByPolicy
-                    | cdf_contract::FieldCoercionDecision::LossyAllowed
-            )
-        })
-    }));
 }
 
 #[test]
@@ -676,7 +663,7 @@ fn locked_multi_file_parquet_preview_attests_unopened_observed_partitions() {
 }
 
 #[test]
-fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream() {
+fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
@@ -685,8 +672,6 @@ fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     assert_eq!(baseline_compile.exit_code, 0, "{}", baseline_compile.stderr);
     let snapshot_path = single_schema_snapshot_path(&project);
     let snapshot = read_snapshot_json(&project, &snapshot_path);
-    let baseline_hash = snapshot["schema_hash"].as_str().unwrap().to_owned();
-    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
     let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
     let manifest_path = snapshot["metadata"]["cdf:discovery_manifest_path"]
         .as_str()
@@ -701,7 +686,7 @@ fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     write_vendor_score_parquet(&project.root.join("data/b.parquet"));
     write_empty_vendor_parquet(&project.root.join("data/c.parquet"));
 
-    let locked_plan = run([
+    let active_plan = run([
         "cdf",
         "--json",
         "--project",
@@ -709,11 +694,12 @@ fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
         "plan",
         "local.events",
     ]);
-    assert_eq!(locked_plan.exit_code, 0, "{}", locked_plan.stderr);
-    let locked_json = stderr_or_stdout_json(&locked_plan.stdout);
-    let locked_report = single_resource_plan_report(&locked_json);
-    let schema = &locked_report["resource_schema"];
-    assert_eq!(schema["schema_hash"], baseline_hash);
+    assert_eq!(active_plan.exit_code, 0, "{}", active_plan.stderr);
+    let active_json = stderr_or_stdout_json(&active_plan.stdout);
+    let active_report = single_resource_plan_report(&active_json);
+    let schema = &active_report["resource_schema"];
+    assert_eq!(active_report["schema_authority"]["status"], "active");
+    assert_eq!(active_report["schema_authority"]["generation"], 1);
     assert!(schema.get("baseline_schema_hash").is_none());
     assert!(schema.get("effective_schema_hash").is_none());
     assert!(schema.get("effective_arrow_schema_hash").is_none());
@@ -731,9 +717,12 @@ fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
             .iter()
             .all(|field| field["name"] != "score")
     );
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
+    assert!(
+        schema["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"] == "_cdf_variant")
     );
     assert_eq!(
         fs::read(project.root.join(&snapshot_path)).unwrap(),
@@ -805,10 +794,11 @@ fn locked_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     let result = run_valid_run_args(&project);
 
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
-    assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
-    );
+    let run_json = stderr_or_stdout_json(&result.stdout);
+    let run_report = single_resource_run_report(&run_json);
+    assert_eq!(run_report["admission"]["accepted_main_rows"], 2);
+    assert_eq!(run_report["admission"]["accepted_with_residual_rows"], 2);
+    assert_eq!(run_report["admission"]["quarantined_rows"], 0);
     assert_eq!(
         fs::read(project.root.join(&snapshot_path)).unwrap(),
         snapshot_before

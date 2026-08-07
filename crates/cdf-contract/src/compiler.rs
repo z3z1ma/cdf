@@ -81,7 +81,7 @@ pub fn compile_validation_program_with_semantic_catalog(
             )?,
             redaction: redaction_decision_for_resolved_semantic(
                 resolved_semantic.as_ref(),
-                &policy.quarantine.pii_redaction,
+                &policy.evidence.pii_redaction,
             ),
         });
     }
@@ -115,6 +115,7 @@ pub fn compile_validation_program_with_semantic_catalog(
         compiled_expression_plan: None,
         normalizer_version: policy.normalization.identifier.version.clone(),
         identifier_policy: policy.normalization.identifier.clone(),
+        admission: policy.admission.clone(),
         schema_coercion: None,
         residual: Some(residual_program(
             policy,
@@ -122,9 +123,7 @@ pub fn compile_validation_program_with_semantic_catalog(
             &normalized_schema,
             &row_rules,
             &resolved_semantics,
-            None,
         )),
-        schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
         column_programs,
         row_rules,
         explicit_anomalies: Vec::new(),
@@ -166,6 +165,7 @@ pub fn bind_validation_program_to_resource(
     mut program: ValidationProgram,
     descriptor: &ResourceDescriptor,
 ) -> Result<ValidationProgram> {
+    let admission = program.admission.clone();
     if matches!(descriptor.deduplication, Some(DeduplicationSpec::ExactRow)) {
         if program.has_keyed_dedup_rule() {
             return Err(CdfError::contract(
@@ -197,7 +197,7 @@ pub fn bind_validation_program_to_resource(
             });
             if let Some(residual) = &mut program.residual {
                 for field in &mut residual.fields {
-                    field.control_critical = true;
+                    assign_field_role(field, FieldRole::DestinationIdentity, &admission);
                 }
             }
         }
@@ -237,7 +237,16 @@ pub fn bind_validation_program_to_resource(
                         "resource control field {control:?} is not covered by the validation program"
                     ))
                 })?;
-            field.control_critical = true;
+            let role = if descriptor
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.field == *control)
+            {
+                FieldRole::SourceProgress
+            } else {
+                FieldRole::DestinationIdentity
+            };
+            assign_field_role(field, role, &admission);
         }
     } else if !controls.is_empty() {
         return Err(CdfError::contract(
@@ -253,18 +262,8 @@ fn residual_program(
     normalized_schema: &NormalizedSchema,
     row_rules: &[RowRuleProgram],
     resolved_semantics: &[Option<ResolvedSemantic>],
-    descriptor: Option<&ResourceDescriptor>,
 ) -> ResidualProgram {
-    let explicit_capture = matches!(
-        policy.normalization.nested,
-        NestedDataPolicy::VariantCapture(_)
-    );
-    let capture_allowed = policy.schema.mode == SchemaEvolutionMode::Evolve || explicit_capture;
-    let default_verdict = if capture_allowed {
-        ResidualCandidateVerdict::Capture
-    } else {
-        ResidualCandidateVerdict::Quarantine
-    };
+    let capture_allowed = policy.admission.field == FieldDisposition::CaptureVariant;
     let capture = if capture_allowed {
         let (variant_column, semantic) = match &policy.normalization.nested {
             NestedDataPolicy::VariantCapture(spec) => {
@@ -283,17 +282,6 @@ fn residual_program(
     } else {
         None
     };
-    let controls = descriptor
-        .map(|descriptor| {
-            descriptor
-                .primary_key
-                .iter()
-                .chain(&descriptor.merge_key)
-                .chain(descriptor.cursor.iter().map(|cursor| &cursor.field))
-                .cloned()
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
     let required = row_rules
         .iter()
         .filter(|rule| rule.expression_function() == Some("is_not_null"))
@@ -304,8 +292,8 @@ fn residual_program(
         .flat_map(RowRuleProgram::referenced_columns)
         .collect::<BTreeSet<_>>();
     ResidualProgram {
-        default_verdict,
-        pii_redaction: policy.quarantine.pii_redaction.clone(),
+        default_disposition: policy.admission.field,
+        pii_redaction: policy.evidence.pii_redaction.clone(),
         capture,
         fields: observed_schema
             .fields
@@ -314,19 +302,30 @@ fn residual_program(
             .zip(resolved_semantics)
             .map(|((field, normalized), resolved_semantic)| {
                 let required = required.contains(field.source_name.as_str())
-                    || required.contains(normalized.output_name.as_str());
-                let control_critical = controls.contains(&field.source_name)
-                    || controls.contains(&normalized.output_name)
+                    || required.contains(normalized.output_name.as_str())
                     || rule_controls.contains(field.source_name.as_str())
                     || rule_controls.contains(normalized.output_name.as_str());
+                let mut roles = vec![FieldRole::OrdinaryData];
+                if required {
+                    roles.push(FieldRole::RequiredOutput);
+                }
+                roles.sort();
+                roles.dedup();
+                let allowed_dispositions = allowed_field_dispositions(&roles);
+                let disposition = admitted_field_disposition(
+                    policy.admission.field,
+                    policy.admission.row,
+                    &allowed_dispositions,
+                );
                 ResidualFieldProgram {
                     source_name: field.source_name.clone(),
                     output_name: normalized.output_name.clone(),
-                    required,
-                    control_critical,
+                    roles,
+                    disposition,
+                    allowed_dispositions,
                     redaction: redaction_decision_for_resolved_semantic(
                         resolved_semantic.as_ref(),
-                        &policy.quarantine.pii_redaction,
+                        &policy.evidence.pii_redaction,
                     ),
                 }
             })
@@ -881,63 +880,10 @@ fn validate_timestamp_timezone(field: &ObservedField, claim: &TimestampZoneClaim
     }
 }
 
-fn schema_verdicts(
-    schema: &SchemaPolicy,
-    nested_policy: &NestedDataPolicy,
-) -> Vec<SchemaVerdictRule> {
-    vec![
-        SchemaVerdictRule {
-            change: SchemaChangeKind::NewTable,
-            verdict: if schema.allow_new_table {
-                VerdictAction::Admit
-            } else {
-                VerdictAction::RejectRun
-            },
-        },
-        SchemaVerdictRule {
-            change: SchemaChangeKind::NewColumn,
-            verdict: if schema.allow_new_column {
-                VerdictAction::Admit
-            } else {
-                VerdictAction::RejectRun
-            },
-        },
-        SchemaVerdictRule {
-            change: SchemaChangeKind::TypeWidening,
-            verdict: if schema.allow_type_widening {
-                VerdictAction::Admit
-            } else {
-                VerdictAction::RejectBatch
-            },
-        },
-        SchemaVerdictRule {
-            change: SchemaChangeKind::TypeNarrowing,
-            verdict: if schema.quarantine_type_narrowing {
-                VerdictAction::Quarantine
-            } else {
-                VerdictAction::RejectRun
-            },
-        },
-        SchemaVerdictRule {
-            change: SchemaChangeKind::UnknownField,
-            verdict: if matches!(nested_policy, NestedDataPolicy::VariantCapture(_)) {
-                VerdictAction::AdmitAsVariant
-            } else if schema.allow_unknown_fields {
-                VerdictAction::Admit
-            } else {
-                VerdictAction::RejectRun
-            },
-        },
-    ]
-}
-
 fn row_dispositions(policy: &ContractPolicy) -> Vec<RowDispositionRule> {
-    let violation = if policy.quarantine.enabled
-        && matches!(policy.verdicts.violation, VerdictAction::Quarantine)
-    {
-        RowDispositionKind::Quarantine
-    } else {
-        action_to_row_disposition(&policy.verdicts.violation)
+    let violation = match policy.admission.row {
+        RowViolationDisposition::QuarantineRow => RowDispositionKind::Quarantine,
+        RowViolationDisposition::FailRun => RowDispositionKind::RejectRun,
     };
 
     vec![
@@ -959,7 +905,7 @@ fn row_dispositions(policy: &ContractPolicy) -> Vec<RowDispositionRule> {
         },
         RowDispositionRule {
             outcome: RuleOutcome::Fatal,
-            disposition: action_to_row_disposition(&policy.verdicts.fatal),
+            disposition: RowDispositionKind::RejectRun,
         },
     ]
 }
@@ -1123,13 +1069,60 @@ fn dedup_expression(
     )
 }
 
-fn action_to_row_disposition(action: &VerdictAction) -> RowDispositionKind {
-    match action {
-        VerdictAction::Admit | VerdictAction::AdmitAsVariant => RowDispositionKind::Accept,
-        VerdictAction::Quarantine => RowDispositionKind::Quarantine,
-        VerdictAction::RejectBatch => RowDispositionKind::RejectBatch,
-        VerdictAction::RejectRun => RowDispositionKind::RejectRun,
+fn allowed_field_dispositions(roles: &[FieldRole]) -> Vec<FieldDisposition> {
+    if roles.iter().any(|role| {
+        matches!(
+            role,
+            FieldRole::DestinationIdentity
+                | FieldRole::SourceProgress
+                | FieldRole::CdcOperation
+                | FieldRole::TransactionBoundary
+        )
+    }) {
+        return vec![FieldDisposition::FailRun];
     }
+    if roles.contains(&FieldRole::RequiredOutput) {
+        return vec![FieldDisposition::QuarantineRow, FieldDisposition::FailRun];
+    }
+    vec![
+        FieldDisposition::CaptureVariant,
+        FieldDisposition::QuarantineRow,
+        FieldDisposition::FailRun,
+    ]
+}
+
+fn admitted_field_disposition(
+    configured: FieldDisposition,
+    row: RowViolationDisposition,
+    allowed: &[FieldDisposition],
+) -> FieldDisposition {
+    let requested = if allowed.contains(&FieldDisposition::CaptureVariant) {
+        configured
+    } else {
+        match row {
+            RowViolationDisposition::QuarantineRow => FieldDisposition::QuarantineRow,
+            RowViolationDisposition::FailRun => FieldDisposition::FailRun,
+        }
+    };
+    if allowed.contains(&requested) {
+        requested
+    } else {
+        FieldDisposition::FailRun
+    }
+}
+
+fn assign_field_role(
+    field: &mut ResidualFieldProgram,
+    role: FieldRole,
+    admission: &AdmissionPolicy,
+) {
+    if !field.roles.contains(&role) {
+        field.roles.push(role);
+        field.roles.sort();
+    }
+    field.allowed_dispositions = allowed_field_dispositions(&field.roles);
+    field.disposition =
+        admitted_field_disposition(admission.field, admission.row, &field.allowed_dispositions);
 }
 
 fn nested_action_for_field(

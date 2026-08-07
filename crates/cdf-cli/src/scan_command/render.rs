@@ -115,6 +115,27 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
                 report.schema_authority.status, report.schema_authority.generation
             ),
         )
+        .row("source observation", report.admission.observation_strength)
+        .row(
+            "field drift",
+            field_disposition_name(report.admission.dispositions.field),
+        )
+        .row(
+            "row violations",
+            row_disposition_name(report.admission.dispositions.row),
+        )
+        .row(
+            "wider source fetch",
+            if report.admission.wider_source_observation {
+                "required"
+            } else {
+                "no"
+            },
+        )
+        .row(
+            "source migrations",
+            report.admission.source_schema_migrations.to_string(),
+        )
         .row("migrations", migrations.to_string());
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
@@ -291,6 +312,21 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
             &report.resource_id,
             report.human_destination_uri.as_deref(),
         )))
+}
+
+fn field_disposition_name(disposition: cdf_contract::FieldDisposition) -> &'static str {
+    match disposition {
+        cdf_contract::FieldDisposition::CaptureVariant => "capture_variant",
+        cdf_contract::FieldDisposition::QuarantineRow => "quarantine_row",
+        cdf_contract::FieldDisposition::FailRun => "fail_run",
+    }
+}
+
+fn row_disposition_name(disposition: cdf_contract::RowViolationDisposition) -> &'static str {
+    match disposition {
+        cdf_contract::RowViolationDisposition::QuarantineRow => "quarantine_row",
+        cdf_contract::RowViolationDisposition::FailRun => "fail_run",
+    }
 }
 
 fn execution_extent_name(extent: &cdf_kernel::ExecutionExtent) -> &'static str {

@@ -22,9 +22,9 @@ use crate::{
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
-    ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, SchemaEvolutionMode,
-    normalize_arrow_schema, plan_aggregate_arrow_schema_join, plan_schema_reconciliation,
-    reconcile_schema,
+    ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, PartitionViolationDisposition,
+    RuleOutcome, normalize_arrow_schema, plan_aggregate_arrow_schema_join,
+    plan_schema_reconciliation, reconcile_schema,
 };
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
@@ -32,8 +32,7 @@ use cdf_kernel::{
     DiscoveryCoverageEvidence, DiscoveryCoverageEvidenceInput, DiscoveryExecutorBudgetEvidence,
     EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
     EffectiveSchemaRuntime, Result, SchemaBaselineReference, SchemaHash,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
-    TerminalSchemaObservationQuarantine,
+    SchemaObservationFieldQuarantine, SchemaSource, TerminalSchemaObservationQuarantine,
 };
 use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
@@ -198,16 +197,8 @@ impl RuntimeSchemaBaseline {
         self.0.schema()
     }
 
-    fn contains_baseline_observation_schema(&self, schema_hash: &SchemaHash) -> bool {
-        self.0.contains_baseline_observation_schema(schema_hash)
-    }
-
-    fn admits_evolution(&self) -> bool {
-        true
-    }
-
-    fn effective_schema_identity(&self, observed: &SchemaHash) -> SchemaHash {
-        observed.clone()
+    fn effective_schema_identity(&self, _observed: &SchemaHash) -> SchemaHash {
+        self.0.schema_hash().clone()
     }
 }
 
@@ -720,14 +711,7 @@ fn discover_registered_resource_schema(
     };
     let (effective_schema, terminal_quarantines) =
         if let Some(baseline) = options.runtime_baseline() {
-            let admit_compatible_evolution = baseline.admits_evolution()
-                && selection.file_coverage == DiscoveryFileCoverage::AllFiles;
-            classify_runtime_schema_observations(
-                &probes,
-                baseline,
-                &contract,
-                admit_compatible_evolution,
-            )?
+            classify_runtime_schema_observations(&probes, baseline, &contract)?
         } else {
             (
                 normalize_arrow_schema(initial_observed_schema, &IdentifierPolicy::default())?,
@@ -1211,52 +1195,33 @@ fn classify_runtime_schema_observations(
     probes: &[SchemaProbe],
     baseline: &RuntimeSchemaBaseline,
     contract: &ContractPolicy,
-    admit_compatible_evolution: bool,
 ) -> Result<(
     arrow_schema::Schema,
     Vec<TerminalSchemaObservationQuarantine>,
 )> {
-    let mut effective = baseline.schema().as_ref().clone();
+    let effective = baseline.schema().as_ref().clone();
     let physical_type_policy = contract.types.clone();
     let mut quarantines = Vec::new();
     for probe in probes {
-        if matches!(&contract.schema.mode, SchemaEvolutionMode::Freeze)
-            && baseline.contains_baseline_observation_schema(&probe.physical_schema_hash)
-        {
-            continue;
-        }
         let report = plan_aggregate_arrow_schema_join(&[
             AggregateSchemaCandidate::new("__cdf_verified_effective__", effective.clone()),
             AggregateSchemaCandidate::new(probe.location.clone(), probe.schema.as_ref().clone()),
         ])?;
-        let freeze_deviation = if matches!(&contract.schema.mode, SchemaEvolutionMode::Freeze) {
-            let joined = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
-            !same_effective_fields(&joined, baseline.schema().as_ref())
-        } else {
-            false
-        };
         let constrained = plan_schema_reconciliation(
             probe.schema.as_ref(),
             baseline.schema().as_ref(),
             &physical_type_policy,
         )?;
-        if report.is_compatible()
-            && !freeze_deviation
-            && admit_compatible_evolution
-            && matches!(&contract.schema.mode, SchemaEvolutionMode::Evolve)
-        {
-            effective = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
+        if constrained.errors.is_empty() {
             continue;
         }
-        if constrained.errors.is_empty() {
-            let projects_every_observed_field = constrained
-                .plan
-                .fields
-                .iter()
-                .all(|field| field.decision != cdf_contract::FieldCoercionDecision::Extra);
-            if projects_every_observed_field || (report.is_compatible() && !freeze_deviation) {
-                continue;
-            }
+        if contract.admission.partition == PartitionViolationDisposition::FailRun {
+            let Err(error) = constrained.into_result() else {
+                return Err(CdfError::internal(
+                    "schema reconciliation reported errors but produced a successful result",
+                ));
+            };
+            return Err(error);
         }
 
         let mut fields = constrained
@@ -1308,7 +1273,7 @@ fn classify_runtime_schema_observations(
         }
         if fields.is_empty() {
             fields.push(SchemaObservationFieldQuarantine::whole_schema(
-                "schema or field metadata differs from the frozen baseline",
+                "physical schema is incompatible with the active schema",
             )?);
         }
         fields.sort_by(|left, right| {
@@ -1316,25 +1281,12 @@ fn classify_runtime_schema_observations(
                 .cmp(&schema_observation_scope_sort_key(right.scope()))
         });
         fields.dedup();
-        let (rule_id, policy, remediation) = match &contract.schema.mode {
-            SchemaEvolutionMode::Freeze => (
-                "schema-observation:freeze-deviation",
-                SchemaObservationPolicy::Freeze,
-                "restore the pinned schema for this input, explicitly repin after review, or change the resource contract to evolve",
-            ),
-            SchemaEvolutionMode::Evolve => (
-                "schema-observation:incompatible",
-                SchemaObservationPolicy::Evolve,
-                "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
-            ),
-        };
         quarantines.push(TerminalSchemaObservationQuarantine::new(
             probe.location.clone(),
             probe.physical_schema_hash.clone(),
-            rule_id,
+            "schema-observation:incompatible-partition",
             "schema_observation_quarantined",
-            policy,
-            remediation,
+            "publish compatible input, declare an allowed lossless coercion, or explicitly promote the active schema after review",
             fields,
         )?);
     }
@@ -1677,24 +1629,6 @@ pub fn apply_discovered_schema(
         },
         Arc::clone(&discovery.normalized_schema),
     )
-}
-
-fn same_effective_fields(left: &arrow_schema::Schema, right: &arrow_schema::Schema) -> bool {
-    left.fields().len() == right.fields().len()
-        && left
-            .fields()
-            .iter()
-            .zip(right.fields())
-            .all(|(left, right)| {
-                let left_source =
-                    cdf_kernel::source_name(left.as_ref()).unwrap_or_else(|| left.name());
-                let right_source =
-                    cdf_kernel::source_name(right.as_ref()).unwrap_or_else(|| right.name());
-                left.name() == right.name()
-                    && left_source == right_source
-                    && left.data_type() == right.data_type()
-                    && left.is_nullable() == right.is_nullable()
-            })
 }
 
 fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {

@@ -1,16 +1,15 @@
 use super::support::{
-    Arc, ArrayRef, AtomicUsize, BTreeMap, Batch, BatchId, CompiledSchemaAdmissionOutcome,
-    CompiledStreamAdmissionEvidence, ContractPolicy, DataType, DiscoveryExecutorBudgetEvidence,
-    DurableSegmentPayload, EffectiveSchemaCatalogEntry, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, EngineExecutionConfig, EngineExecutionEvidence, EnginePackageDraft,
-    ExecutionExtent, Field, FieldCoercionDecision, Int32Array, Int64Array, MockResource, Mutex,
+    Arc, ArrayRef, AtomicUsize, BTreeMap, Batch, BatchId, CompiledStreamAdmissionEvidence,
+    ContractPolicy, DataType, DiscoveryExecutorBudgetEvidence, DurableSegmentPayload,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
+    EngineExecutionConfig, EngineExecutionEvidence, EnginePackageDraft, ExecutionExtent, Field,
+    FieldCoercionDecision, FieldDisposition, Int32Array, Int64Array, MockResource, Mutex,
     ObservedSchema, Ordering, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PhysicalObservationEvidence,
-    Planner, PreContractResidualCandidate, RecordBatch, ResourceId, RowRule, Schema,
-    SchemaChangeKind, SchemaEvolutionMode, SchemaHash, SchemaObservationFieldQuarantine,
-    SchemaObservationPolicy, SchemaRef, SegmentEntry, StandaloneExecutionHost,
+    Planner, PreContractResidualCandidate, RecordBatch, ResourceId, RowRule, Schema, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaRef, SegmentEntry, StandaloneExecutionHost,
     StreamAdmissionObservationEvidence, StringArray, TempDir, TerminalSchemaObservationQuarantine,
-    TrustLevel, VerdictAction, WriteDisposition, batch_for_partition_with_schema, block_on,
+    TrustLevel, WriteDisposition, batch_for_partition_with_schema, block_on,
     bound_effective_schema_evidence, coercion_decision, compile_validation_program,
     execute_to_package, execute_to_package_with_segment_positions,
     execute_to_package_with_streaming_hooks, incompatible_sample_schema, plan_input,
@@ -147,7 +146,7 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
 }
 
 #[test]
-fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
+fn compiled_stream_admission_fails_unknown_fields_and_admits_lossless_widening() {
     let resource = MockResource::tier_a(sample_batches());
     let mut plan = Planner::new()
         .plan_tier_a(
@@ -159,15 +158,10 @@ fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
         plan.compiled_schema_admission
             .captures_unknown_fields()
             .unwrap(),
-        "a fixed evolve schema must preserve admitted unknown fields in its residual capture"
+        "capture_variant must preserve admitted unknown fields in its residual capture"
     );
 
-    plan.compiled_schema_admission
-        .schema_verdicts
-        .iter_mut()
-        .find(|rule| rule.change == SchemaChangeKind::UnknownField)
-        .unwrap()
-        .verdict = VerdictAction::RejectRun;
+    plan.compiled_schema_admission.admission.field = FieldDisposition::FailRun;
     let unknown = Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("name", DataType::Utf8, false),
@@ -181,29 +175,18 @@ fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
         .unwrap_err();
     assert!(error.to_string().contains("unknown field"), "{error}");
 
-    plan.compiled_schema_admission
-        .schema_verdicts
-        .iter_mut()
-        .find(|rule| rule.change == SchemaChangeKind::UnknownField)
-        .unwrap()
-        .verdict = VerdictAction::AdmitAsVariant;
-    plan.compiled_schema_admission
-        .schema_verdicts
-        .iter_mut()
-        .find(|rule| rule.change == SchemaChangeKind::TypeWidening)
-        .unwrap()
-        .verdict = VerdictAction::RejectBatch;
+    plan.compiled_schema_admission.admission.field = FieldDisposition::CaptureVariant;
     let narrow = Schema::new(vec![
         Field::new("id", DataType::Int16, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("active", DataType::Boolean, false),
     ]);
     let narrow_hash = cdf_kernel::canonical_arrow_schema_hash(&narrow).unwrap();
-    let error = plan
+    let widening = plan
         .compiled_schema_admission
         .instantiate(&narrow, &narrow_hash)
-        .unwrap_err();
-    assert!(error.to_string().contains("width coercion"), "{error}");
+        .unwrap();
+    assert_eq!(widening.fields[0].decision, FieldCoercionDecision::Widened);
 }
 
 #[test]
@@ -218,13 +201,19 @@ fn pinned_baseline_admission_projects_full_physical_catalog_before_hashing() {
             baseline_hash,
             baseline_physical,
         )]);
-    let input = plan_input_for_schema(
+    let mut input = plan_input_for_schema(
         effective,
         Vec::new(),
         Some(vec!["id".to_owned()]),
         None,
         ExecutionExtent::bounded(),
     );
+    input.validation_program = compile_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Financial),
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    input.validation_program.row_rules.clear();
 
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     assert_eq!(
@@ -473,7 +462,7 @@ fn execution_evidence_rejects_repeated_observation_identity_even_when_identical(
 }
 
 #[test]
-fn missing_control_critical_field_becomes_a_named_schema_quarantine() {
+fn missing_identity_field_uses_the_compiled_fail_run_disposition() {
     let resource = MockResource::tier_a(sample_batches());
     let plan = Planner::new()
         .plan_tier_a(
@@ -487,23 +476,20 @@ fn missing_control_critical_field_becomes_a_named_schema_quarantine() {
     ]);
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(&physical).unwrap();
 
-    let outcome = plan
+    let error = plan
         .compiled_schema_admission
         .instantiate_or_quarantine("missing-id", &physical, &physical_hash)
-        .unwrap();
-    let CompiledSchemaAdmissionOutcome::Quarantined(quarantine) = outcome else {
-        panic!("control-critical missing field must not be admitted");
-    };
-    assert_eq!(
-        quarantine.rule_id(),
-        "schema-observation:control-critical-missing"
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("compiled disposition is fail_run")
     );
-    assert_eq!(quarantine.error_code(), "schema_control_field_missing");
 }
 
 #[test]
 fn recorded_schema_quarantine_must_match_the_compiled_admission_action() {
-    let resource = MockResource::tier_b(Vec::new());
+    let resource = MockResource::tier_b(Vec::new()).without_control_keys();
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
@@ -515,10 +501,9 @@ fn recorded_schema_quarantine_must_match_the_compiled_admission_action() {
     let quarantine = TerminalSchemaObservationQuarantine::new(
         "input-0",
         physical_hash,
-        "schema-observation:freeze-deviation",
+        "schema-observation:incompatible-partition",
         "schema_observation_quarantined",
-        SchemaObservationPolicy::Freeze,
-        "restore the pinned schema for this input",
+        "publish compatible input",
         vec![
             SchemaObservationFieldQuarantine::whole_schema("incompatible physical schema").unwrap(),
         ],
@@ -549,7 +534,7 @@ fn validation_program_rebind_rejects_new_physical_dependencies_without_mutating_
         ExecutionExtent::bounded(),
     );
     input.validation_program = compile_validation_program(
-        &ContractPolicy::evolve(),
+        &ContractPolicy::for_trust(TrustLevel::Financial),
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
     )
     .unwrap();
@@ -560,7 +545,7 @@ fn validation_program_rebind_rejects_new_physical_dependencies_without_mutating_
         Some(vec!["id".to_owned(), "name".to_owned()])
     );
     let original = plan.clone();
-    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Financial);
     policy.rows.rules = vec![RowRule::Nullability {
         column: "active".to_owned(),
     }];
@@ -729,6 +714,11 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
         None,
         ExecutionExtent::bounded(),
     );
+    input.validation_program = compile_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Financial),
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
     input.validation_program.row_rules.clear();
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let planned = &plan.effective_schema_evidence().unwrap().observations[0];
@@ -916,6 +906,7 @@ fn terminal_schema_observation_quarantine_processes_distinct_partitions_without_
     )];
     let resource = MockResource::tier_b(secret_batches)
         .with_effective_schema_runtime(effective_schema, runtime)
+        .without_control_keys()
         .with_attestation(PartitionAttestation::new(
             processed_position.clone(),
             Some(physical_hash),
@@ -991,6 +982,7 @@ fn terminal_schema_observation_attestation_change_aborts_before_processed_eviden
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
     let resource = MockResource::tier_b(Vec::new())
         .with_effective_schema_runtime(effective_schema, runtime)
+        .without_control_keys()
         .with_attestation(PartitionAttestation::new(
             terminal_file_position(),
             Some(SchemaHash::new("changed-physical-schema").unwrap()),
@@ -1033,6 +1025,7 @@ fn terminal_schema_observation_identity_attestation_failure_aborts_before_proces
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
     let resource = MockResource::tier_b(Vec::new())
         .with_effective_schema_runtime(effective_schema, runtime)
+        .without_control_keys()
         .with_attestation_error("file identity changed between planning and execution");
     let plan = Planner::new()
         .plan_tier_b(
@@ -1321,7 +1314,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     let resource = MockResource::tier_b(vec![captured_batch, quarantined_batch])
         .with_effective_schema_runtime(schema.clone(), runtime)
-        .with_write_disposition(WriteDisposition::Append);
+        .without_control_keys();
     let mut input = plan_input_for_schema(
         schema,
         vec![],
@@ -1330,7 +1323,11 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         ExecutionExtent::bounded(),
     );
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    policy.rows.rules = vec![RowRule::Range {
+        column: "id".to_owned(),
+        min: Some("0".to_owned()),
+        max: None,
+    }];
     input.validation_program = compile_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -1404,19 +1401,19 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     reader.verify().unwrap();
     assert_eq!(reader.runtime_arrow_schema().unwrap(), planned_schema);
 
-    let evolution: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap(),
+    let admission: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/admission-evidence.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        evolution["baseline_schema_hash"],
+        admission["baseline_schema_hash"],
         plan.schema_authority().baseline_schema_hash.as_str()
     );
     assert_eq!(
-        evolution["effective_schema_hash"],
+        admission["effective_schema_hash"],
         effective_schema_hash.as_str()
     );
-    let decisions = evolution["residual_decisions"].as_array().unwrap();
+    let decisions = admission["residual_decisions"].as_array().unwrap();
     assert_eq!(decisions.len(), 3);
     assert!(decisions.iter().all(|decision| decision["version"] == 1));
     let captured = decisions

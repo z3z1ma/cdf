@@ -11,8 +11,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    IdentifierRules, TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name,
-    with_physical_type, with_semantic, with_source_name,
+    CursorOrderingClaim, CursorSpec, IdentifierRules, ResourceDescriptor, ResourceId, SchemaSource,
+    ScopeKey, TrustLevel, TypeMapping, TypeMappingFidelity, WriteDisposition, physical_type,
+    source_name, with_physical_type, with_semantic, with_source_name,
 };
 
 fn semantic_field(field: Field, reference: &str) -> Field {
@@ -272,8 +273,7 @@ fn package_order_dedup_treats_null_as_a_typed_identity_value() {
 #[test]
 fn exact_row_dedup_compares_the_final_residual_variant_field() {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    let policy = ContractPolicy::for_trust(TrustLevel::Governed);
     let mut program =
         compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
     program.row_rules.push(RowRuleProgram {
@@ -405,10 +405,10 @@ fn row_evaluator_fails_closed_on_missing_coverage_type_mismatch_and_bad_timestam
 }
 
 #[test]
-fn reject_batch_disposition_aborts_evaluation() {
+fn fail_run_disposition_aborts_evaluation() {
     let schema = Schema::new(vec![Field::new("status", DataType::Utf8, false)]);
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.verdicts.violation = VerdictAction::RejectBatch;
+    policy.admission.row = RowViolationDisposition::FailRun;
     policy.rows.rules = vec![RowRule::Domain {
         column: "status".to_owned(),
         allowed: vec!["open".to_owned()],
@@ -424,7 +424,7 @@ fn reject_batch_disposition_aborts_evaluation() {
     let error =
         evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap_err();
 
-    assert!(error.to_string().contains("reject_batch"));
+    assert!(error.to_string().contains("reject_run"));
 }
 
 #[test]
@@ -718,21 +718,23 @@ fn destination_identifier_policy_keeps_collision_behavior_stable() {
 #[test]
 fn trust_presets_expand_to_specified_policy_shapes() {
     let experimental = ContractPolicy::for_trust(TrustLevel::Experimental);
-    assert_eq!(experimental.schema.mode, SchemaEvolutionMode::Evolve);
-    assert!(!experimental.quarantine.enabled);
+    assert_eq!(experimental.admission, AdmissionPolicy::experimental());
     assert!(matches!(
         experimental.normalization.nested,
         NestedDataPolicy::VariantCapture(_)
     ));
 
     let governed = ContractPolicy::for_trust(TrustLevel::Governed);
-    assert_eq!(governed.schema.mode, SchemaEvolutionMode::Evolve);
+    assert_eq!(governed.admission, AdmissionPolicy::governed());
     assert!(governed.schema.review_artifact_required);
     assert_eq!(governed.rows.validation_depth, ValidationDepth::Full);
-    assert!(governed.quarantine.enabled);
+    assert!(matches!(
+        governed.normalization.nested,
+        NestedDataPolicy::VariantCapture(_)
+    ));
 
     let financial = ContractPolicy::for_trust(TrustLevel::Financial);
-    assert_eq!(financial.schema.mode, SchemaEvolutionMode::Freeze);
+    assert_eq!(financial.admission, AdmissionPolicy::financial());
     assert!(financial.types.preserve_decimal_exactness);
     assert!(financial.types.preserve_timestamp_timezone);
     assert_eq!(financial.lineage, LineagePolicy::Full);
@@ -741,13 +743,88 @@ fn trust_presets_expand_to_specified_policy_shapes() {
     assert_eq!(financial.retention, RetentionClass::Long);
 
     let serving = ContractPolicy::for_trust(TrustLevel::Serving);
-    assert_eq!(serving.schema.mode, SchemaEvolutionMode::Freeze);
+    assert_eq!(serving.admission, AdmissionPolicy::governed());
+    assert!(matches!(
+        serving.normalization.nested,
+        NestedDataPolicy::VariantCapture(_)
+    ));
     assert!(serving.rows.freshness_slo);
     assert!(matches!(
         serving.rows.validation_depth,
         ValidationDepth::SampledFastPath { .. }
     ));
     assert!(serving.promotion.demote_on_anomaly);
+
+    for policy in [experimental, governed, financial, serving] {
+        let serialized = serde_json::to_value(policy).unwrap();
+        assert!(serialized.get("quarantine").is_none());
+        let schema = serialized["schema"].as_object().unwrap();
+        assert!(!schema.contains_key("mode"));
+        assert!(!schema.contains_key("allow_new_fields"));
+        assert!(!schema.contains_key("allow_unknown_fields"));
+        let admission = serialized["admission"].as_object().unwrap();
+        assert_eq!(admission.len(), 4);
+        for grain in ["field", "row", "record", "partition"] {
+            assert!(admission.contains_key(grain));
+        }
+    }
+}
+
+#[test]
+fn compiled_field_roles_fail_closed_for_identity_and_progress() {
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("updated_at", DataType::Int64, false),
+        Field::new("payload", DataType::Utf8, true),
+    ]);
+    let descriptor = ResourceDescriptor {
+        resource_id: ResourceId::new("orders").unwrap(),
+        schema_source: SchemaSource::Discover,
+        primary_key: vec!["id".to_owned()],
+        merge_key: vec!["id".to_owned()],
+        cursor: Some(CursorSpec {
+            field: "updated_at".to_owned(),
+            ordering: CursorOrderingClaim::Exact,
+            lag_tolerance_ms: 0,
+        }),
+        write_disposition: WriteDisposition::Merge,
+        deduplication: None,
+        contract: None,
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Governed,
+    };
+    let program = compile_resource_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Governed),
+        &ObservedSchema::from_arrow(&schema),
+        &descriptor,
+    )
+    .unwrap();
+    let residual = program.residual.unwrap();
+    let id = residual
+        .fields
+        .iter()
+        .find(|field| field.source_name == "id")
+        .unwrap();
+    assert!(id.roles.contains(&FieldRole::DestinationIdentity));
+    assert_eq!(id.allowed_dispositions, vec![FieldDisposition::FailRun]);
+    assert_eq!(id.disposition, FieldDisposition::FailRun);
+
+    let cursor = residual
+        .fields
+        .iter()
+        .find(|field| field.source_name == "updated_at")
+        .unwrap();
+    assert!(cursor.roles.contains(&FieldRole::SourceProgress));
+    assert_eq!(cursor.disposition, FieldDisposition::FailRun);
+
+    let payload = residual
+        .fields
+        .iter()
+        .find(|field| field.source_name == "payload")
+        .unwrap();
+    assert_eq!(payload.roles, vec![FieldRole::OrdinaryData]);
+    assert_eq!(payload.disposition, FieldDisposition::CaptureVariant);
 }
 
 #[test]
@@ -771,10 +848,8 @@ fn nested_variant_policy_compiles_variant_capture_action() {
             semantic: CDF_VARIANT_SEMANTIC.to_owned(),
         }
     );
-    assert!(program.schema_verdicts.iter().any(|rule| {
-        rule.change == SchemaChangeKind::UnknownField
-            && rule.verdict == VerdictAction::AdmitAsVariant
-    }));
+    assert_eq!(program.admission.field, FieldDisposition::CaptureVariant);
+    assert!(program.residual.as_ref().unwrap().capture.is_some());
 }
 
 #[test]

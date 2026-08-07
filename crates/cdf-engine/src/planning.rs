@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cdf_contract::{
     CompiledExpressionPlan, ContractPolicy, ExpressionUse, ObservedSchema, TransformDescription,
     ValidationProgram, assert_verdict_lattice_total, bind_validation_program_to_resource,
-    compile_validation_program, reconcile_schema_with_source_materializations,
+    compile_resource_validation_program, reconcile_schema_with_source_materializations,
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, CompiledScanIntent, DeliveryGuarantee, EstimateSupport,
@@ -430,9 +430,10 @@ where
     let allowances = resource.type_policy_allowances();
     policy.types.coerce_types = allowances.coerce_types;
     policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
-    compile_validation_program(
+    compile_resource_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
+        resource.descriptor(),
     )
 }
 
@@ -462,6 +463,11 @@ fn physical_scan_request(
     else {
         return Ok(request.clone());
     };
+    if program.admission.field == cdf_contract::FieldDisposition::CaptureVariant {
+        let mut physical = request.clone();
+        physical.projection = None;
+        return Ok(physical);
+    }
     let mut dependencies = requested.iter().cloned().collect::<BTreeSet<_>>();
     dependencies.extend(
         request
@@ -1057,6 +1063,7 @@ where
     }
     let schema_hash = match &resource.descriptor().schema_source {
         cdf_kernel::SchemaSource::Declared { schema_hash, .. } => schema_hash.clone(),
+        cdf_kernel::SchemaSource::Active { schema_hash } => schema_hash.clone(),
         cdf_kernel::SchemaSource::Discovered { snapshot } => snapshot.schema_hash.clone(),
         cdf_kernel::SchemaSource::Hints {
             snapshot: Some(snapshot),
@@ -1373,7 +1380,7 @@ mod expression_transform_tests {
         CompiledExpressionPlan, ContractPolicy, DeclarativeExpression, ObservedSchema, RowRule,
         TransformDescription, compile_validation_program,
     };
-    use cdf_kernel::{PredicateId, ResourceId, ScanPredicate, ScanRequest, ScopeKey};
+    use cdf_kernel::{PredicateId, ResourceId, ScanPredicate, ScanRequest, ScopeKey, TrustLevel};
 
     use super::{
         physical_scan_request, plan_transform_expressions, record_native_contract_expression,
@@ -1391,7 +1398,7 @@ mod expression_transform_tests {
             Field::new("other", DataType::Int64, false),
             Field::new("updated_at", DataType::Int64, false),
         ]);
-        let mut policy = ContractPolicy::evolve();
+        let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
         policy.transforms = vec![TransformDescription::Derive {
             column: "selected".to_owned(),
             expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
@@ -1456,7 +1463,7 @@ mod expression_transform_tests {
     #[test]
     fn derive_then_filter_share_one_sequential_compiled_expression_plan() {
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
-        let mut policy = ContractPolicy::evolve();
+        let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
         policy.transforms = vec![
             TransformDescription::Derive {
                 column: "selected".to_owned(),

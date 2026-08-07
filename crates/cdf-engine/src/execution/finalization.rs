@@ -1,5 +1,6 @@
 //! Package publication and final output assembly.
 
+use cdf_contract::{AdmissionPolicy, VerdictSummary};
 use cdf_kernel::{CdfError, Result, SourceTransferReport, TerminalSchemaObservationQuarantine};
 use cdf_package::PackageBuilder;
 use cdf_package_contract::PackageStatus;
@@ -38,6 +39,8 @@ pub(super) struct PackageFinalization<'pre, 'stream> {
     pub(super) stream_finalize: Option<&'stream mut StreamingFinalizeHook<'stream>>,
     pub(super) profile: ExecutionProfile,
     pub(super) lineage: LineageSummary,
+    pub(super) admission: AdmissionPolicy,
+    pub(super) verdict_summary: VerdictSummary,
     pub(super) terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     pub(super) segment_positions: Vec<EngineSegmentPosition>,
     pub(super) phase_measurements: PhaseMeasurements,
@@ -54,6 +57,11 @@ pub(super) struct PackageFinalization<'pre, 'stream> {
 
 impl PackageFinalization<'_, '_> {
     pub(super) fn finish(mut self) -> Result<PackageExecutionOutcome> {
+        if self.verdict_summary.accepted_with_residual_rows > self.verdict_summary.accepted_rows {
+            return Err(CdfError::internal(
+                "accepted-with-residual row count exceeds accepted row count",
+            ));
+        }
         if let Some(stream_finalize) = self.stream_finalize.as_deref_mut() {
             stream_finalize()?;
         }
@@ -92,6 +100,8 @@ impl PackageFinalization<'_, '_> {
                     verification,
                     profile: self.profile,
                     lineage: self.lineage,
+                    admission: self.admission,
+                    verdict_summary: self.verdict_summary,
                     terminal_schema_quarantines: self.terminal_schema_quarantines,
                 },
                 segment_positions: self.segment_positions,

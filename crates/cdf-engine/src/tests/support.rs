@@ -165,7 +165,7 @@ pub(super) fn terminal_effective_schema_runtime(
 ) -> EffectiveSchemaRuntime {
     let authority_plan = Planner::new()
         .plan_tier_b(
-            &MockResource::tier_b(Vec::new()),
+            &MockResource::tier_b(Vec::new()).without_control_keys(),
             plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();

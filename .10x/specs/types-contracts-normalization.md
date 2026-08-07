@@ -26,7 +26,7 @@ Destination type mapping MUST be declared data in destination sheets. Lossy mapp
 
 Source-original names MUST be preserved verbatim in schema metadata. Destination column identifiers MUST be derived by versioned normalizer `namecase-v1`: Unicode NFC, lower snake case, destination charset filter, and deterministic truncation/hash suffix for over-length names or collisions. Post-normalization collisions are plan-time hard errors. Parquet columns use `namecase-v1` with no destination-specific length cap; its storage object keys remain governed separately by `object-key-component-v1`.
 
-Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` carrying `cdf:semantic=cdf.variant@1`. Promoting a variant to typed columns is a contract-evolution event.
+Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` carrying `cdf:semantic=cdf.variant@1`. Promoting a variant to typed columns is an explicit schema-promotion event.
 
 ## Contract compiler
 

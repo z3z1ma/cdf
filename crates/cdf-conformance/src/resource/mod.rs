@@ -183,6 +183,12 @@ fn assert_schema_source_evidence(schema_source: &SchemaSource, schema_has_fields
                 "declared schema source must name its source evidence"
             );
         }
+        SchemaSource::Active { schema_hash } => {
+            assert!(
+                !schema_hash.as_str().trim().is_empty(),
+                "active schema source must carry state authority hash evidence"
+            );
+        }
         SchemaSource::Discover => {
             assert!(
                 !schema_has_fields,

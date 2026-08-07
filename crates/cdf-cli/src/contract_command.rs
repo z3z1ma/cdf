@@ -26,8 +26,6 @@ pub(crate) fn contract(
                 "governed" => ContractPolicy::for_trust(cdf_kernel::TrustLevel::Governed),
                 "financial" => ContractPolicy::for_trust(cdf_kernel::TrustLevel::Financial),
                 "serving" => ContractPolicy::for_trust(cdf_kernel::TrustLevel::Serving),
-                "evolve" => ContractPolicy::evolve(),
-                "freeze" => ContractPolicy::freeze(),
                 other => {
                     return Err(CliError::usage_with(
                         format!("unknown contract policy `{other}`"),

@@ -355,7 +355,7 @@ fn sparse_profile_batch(ids: Vec<i64>, names: Vec<&str>) -> RecordBatch {
 
 fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
     let mut program = cdf_contract::compile_validation_program(
-        &cdf_contract::ContractPolicy::evolve(),
+        &cdf_contract::ContractPolicy::for_trust(cdf_kernel::TrustLevel::Governed),
         &cdf_contract::ObservedSchema::from_arrow(schema),
     )
     .unwrap();

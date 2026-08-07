@@ -87,6 +87,7 @@ fn validate_schema_source(source: &SchemaSource) -> Result<()> {
             SchemaHash::new(schema_hash.as_str())?;
             validate_resource_token("declared schema source", source)
         }
+        SchemaSource::Active { schema_hash } => SchemaHash::new(schema_hash.as_str()).map(|_| ()),
         SchemaSource::Discover => Ok(()),
         SchemaSource::Discovered { snapshot } => validate_schema_snapshot(snapshot),
         SchemaSource::Hints {
@@ -194,6 +195,9 @@ pub enum SchemaSource {
         schema_hash: SchemaHash,
         source: String,
     },
+    Active {
+        schema_hash: SchemaHash,
+    },
     Discover,
     Discovered {
         snapshot: SchemaSnapshotReference,
@@ -292,7 +296,9 @@ impl SchemaSource {
                 hints_hash: hints_hash.clone(),
                 snapshot: Some(snapshot),
             }),
-            SchemaSource::Declared { .. } | SchemaSource::Contract { .. } => None,
+            SchemaSource::Declared { .. }
+            | SchemaSource::Active { .. }
+            | SchemaSource::Contract { .. } => None,
         }
     }
 
@@ -308,7 +314,9 @@ impl SchemaSource {
                 hints_hash: hints_hash.clone(),
                 snapshot: None,
             }),
-            SchemaSource::Declared { .. } | SchemaSource::Contract { .. } => None,
+            SchemaSource::Declared { .. }
+            | SchemaSource::Active { .. }
+            | SchemaSource::Contract { .. } => None,
         }
     }
 
@@ -320,6 +328,7 @@ impl SchemaSource {
                 ..
             } => Some(snapshot),
             SchemaSource::Declared { .. }
+            | SchemaSource::Active { .. }
             | SchemaSource::Discover
             | SchemaSource::Hints { snapshot: None, .. }
             | SchemaSource::Contract { .. } => None,
@@ -343,6 +352,7 @@ impl SchemaSource {
                 snapshot: snapshot.clone(),
             }),
             SchemaSource::Discover
+            | SchemaSource::Active { .. }
             | SchemaSource::Hints { snapshot: None, .. }
             | SchemaSource::Contract { .. } => None,
         }
@@ -1861,20 +1871,11 @@ impl SchemaObservationFieldQuarantine {
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SchemaObservationPolicy {
-    Evolve,
-    Freeze,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalSchemaObservationQuarantine {
     observation_id: String,
     physical_schema_hash: SchemaHash,
     rule_id: String,
     error_code: String,
-    policy: SchemaObservationPolicy,
     remediation: String,
     fields: Vec<SchemaObservationFieldQuarantine>,
     source_position: Option<SourcePosition>,
@@ -1886,7 +1887,6 @@ impl TerminalSchemaObservationQuarantine {
         physical_schema_hash: SchemaHash,
         rule_id: impl Into<String>,
         error_code: impl Into<String>,
-        policy: SchemaObservationPolicy,
         remediation: impl Into<String>,
         fields: Vec<SchemaObservationFieldQuarantine>,
     ) -> Result<Self> {
@@ -1895,7 +1895,6 @@ impl TerminalSchemaObservationQuarantine {
             physical_schema_hash,
             rule_id: rule_id.into(),
             error_code: error_code.into(),
-            policy,
             remediation: remediation.into(),
             fields,
             source_position: None,
@@ -1912,7 +1911,7 @@ impl TerminalSchemaObservationQuarantine {
             || self.fields.is_empty()
         {
             return Err(CdfError::contract(
-                "terminal schema-observation quarantine requires identity, rule, policy, remediation, and field evidence",
+                "terminal schema-observation quarantine requires identity, rule, remediation, and field evidence",
             ));
         }
         for field in &self.fields {
@@ -1935,10 +1934,6 @@ impl TerminalSchemaObservationQuarantine {
 
     pub fn error_code(&self) -> &str {
         &self.error_code
-    }
-
-    pub fn policy(&self) -> &SchemaObservationPolicy {
-        &self.policy
     }
 
     pub fn remediation(&self) -> &str {

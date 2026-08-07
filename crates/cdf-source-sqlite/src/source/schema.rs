@@ -207,9 +207,10 @@ pub(super) fn storage_class_mismatch(
 fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
+        SchemaSource::Active { schema_hash } => Ok(schema_hash.clone()),
         SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
         _ => Err(CdfError::data(
-            "SQLite table source execution requires a declared schema hash or pinned discovered schema snapshot",
+            "SQLite table source execution requires an active, declared, or discovered schema hash",
         )),
     }
 }

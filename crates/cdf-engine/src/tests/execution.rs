@@ -4,9 +4,8 @@ use super::support::{
     EffectiveSchemaCatalogEntry, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
     EngineExecutionConfig, EnginePackageDraft, EnginePreviewLimits, ExecutionExtent, Field,
     FieldCoercionDecision, MockResource, Ordering, PREVIEW_POLICY_BALANCED_STRATIFIED_V1, Planner,
-    STRATIFIED_HASH_SELECTOR_V1, Schema, SchemaChangeKind, SchemaHash, StandaloneExecutionHost,
-    StringArray, TempDir, VerdictAction, batch_for_partition_with_schema, block_on,
-    bound_effective_schema_evidence, execute_to_package,
+    STRATIFIED_HASH_SELECTOR_V1, Schema, SchemaHash, StandaloneExecutionHost, StringArray, TempDir,
+    batch_for_partition_with_schema, block_on, bound_effective_schema_evidence, execute_to_package,
     execute_to_package_with_segment_positions_and_pre_finalize, fast_test_retry_policy,
     mock_compiled_source_plan, plan_input, plan_input_for_schema, preview_resource, sample_batches,
     sample_schema, sample_stream_epoch_policy, schema_observation_binding, terminal_file_position,
@@ -83,21 +82,13 @@ fn preobserved_baseline_widening_survives_the_drift_reject_verdict() {
     .unwrap();
     let resource = MockResource::tier_b(sample_batches())
         .with_effective_schema_runtime(effective_schema.clone(), runtime);
-    let mut input = plan_input_for_schema(
+    let input = plan_input_for_schema(
         effective_schema,
         vec![],
         None,
         None,
         ExecutionExtent::bounded(),
     );
-    input
-        .validation_program
-        .schema_verdicts
-        .iter_mut()
-        .find(|rule| rule.change == SchemaChangeKind::TypeWidening)
-        .unwrap()
-        .verdict = VerdictAction::RejectBatch;
-
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let widening = plan
         .effective_schema_evidence

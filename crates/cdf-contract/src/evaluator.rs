@@ -71,6 +71,7 @@ pub enum RedactedObservedValue {
 pub struct VerdictSummary {
     pub input_rows: u64,
     pub accepted_rows: u64,
+    pub accepted_with_residual_rows: u64,
     pub quarantined_rows: u64,
     pub violation_count: u64,
     pub quarantine_candidate_count: u64,

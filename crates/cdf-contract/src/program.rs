@@ -7,8 +7,8 @@ use crate::{
         DeclarativeFunctionReference,
     },
     policy::{
-        IdentifierPolicy, PiiRedactionPolicy, PromotionPolicy, RedactionDecision,
-        TransformDescription, ValidationDepth, VerdictAction,
+        AdmissionPolicy, FieldDisposition, IdentifierPolicy, PiiRedactionPolicy, PromotionPolicy,
+        RedactionDecision, TransformDescription, ValidationDepth,
     },
     reconciliation::SchemaCoercionPlan,
     schema::ArrowType,
@@ -22,11 +22,11 @@ pub struct ValidationProgram {
     pub compiled_expression_plan: Option<crate::CompiledExpressionPlan>,
     pub normalizer_version: String,
     pub identifier_policy: IdentifierPolicy,
+    pub admission: AdmissionPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion: Option<SchemaCoercionPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residual: Option<ResidualProgram>,
-    pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub column_programs: Vec<ColumnProgram>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_rules: Vec<RowRuleProgram>,
@@ -41,7 +41,7 @@ pub struct ValidationProgram {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ResidualProgram {
-    pub default_verdict: ResidualCandidateVerdict,
+    pub default_disposition: FieldDisposition,
     pub pii_redaction: PiiRedactionPolicy,
     pub fields: Vec<ResidualFieldProgram>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,8 +53,9 @@ pub struct ResidualProgram {
 pub struct ResidualFieldProgram {
     pub source_name: String,
     pub output_name: String,
-    pub required: bool,
-    pub control_critical: bool,
+    pub roles: Vec<FieldRole>,
+    pub disposition: FieldDisposition,
+    pub allowed_dispositions: Vec<FieldDisposition>,
     pub redaction: RedactionDecision,
 }
 
@@ -66,12 +67,16 @@ pub struct ResidualCaptureOutput {
     pub encoding: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum ResidualCandidateVerdict {
-    Capture,
-    Quarantine,
+pub enum FieldRole {
+    OrdinaryData,
+    RequiredOutput,
+    DestinationIdentity,
+    SourceProgress,
+    CdcOperation,
+    TransactionBoundary,
 }
 
 impl ValidationProgram {
@@ -125,22 +130,6 @@ pub struct AnomalyFact {
     pub observed: String,
     pub threshold: String,
     pub window: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaVerdictRule {
-    pub change: SchemaChangeKind,
-    pub verdict: VerdictAction,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SchemaChangeKind {
-    NewTable,
-    NewColumn,
-    TypeWidening,
-    TypeNarrowing,
-    UnknownField,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

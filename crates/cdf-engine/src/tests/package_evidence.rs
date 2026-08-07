@@ -9,10 +9,10 @@ use super::support::{
     Ordering, PackageStatus, PartitionAttestation, PartitionId, Planner, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, QuarantineObservedValue,
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, Record, RecordBatch, ResourceId,
-    RowRule, RunId, RunPhase, RunPhaseStatus, Schema, SchemaEvolutionMode, SchemaHash, SchemaRef,
-    SegmentEntry, SourcePosition, StandaloneExecutionHost, StringArray, StringBuilder,
+    RowRule, RowViolationDisposition, RunId, RunPhase, RunPhaseStatus, Schema, SchemaHash,
+    SchemaRef, SegmentEntry, SourcePosition, StandaloneExecutionHost, StringArray, StringBuilder,
     StringDictionaryBuilder, StructArray, Subscriber, TempDir, TimeUnit, TimestampMillisecondArray,
-    TracingField, TrustLevel, VARIANT_COLUMN_NAME, VerdictAction, Visit, WriteDisposition,
+    TracingField, TrustLevel, VARIANT_COLUMN_NAME, Visit, WriteDisposition,
     assert_explain_carries_required_fields, assert_honest_cdf_native_operator_metadata,
     batch_for_partition, batch_for_partition_with_schema, batch_strings, block_on,
     coercion_decision, collect_quarantine_records, compile_resource_validation_program,
@@ -51,6 +51,7 @@ fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash.clone());
     let resource = MockResource::tier_b(sample_batches())
         .with_effective_schema_runtime(effective_schema, runtime)
+        .without_control_keys()
         .with_attestation(PartitionAttestation::new(
             terminal_file_position(),
             Some(physical_hash),
@@ -299,7 +300,7 @@ fn package_execution_rejects_source_carried_coercion_metadata_without_trusted_he
         record_batch,
     )
     .unwrap();
-    let resource = MockResource::tier_a(vec![batch]);
+    let resource = MockResource::tier_a(vec![batch]).without_control_keys();
     let input = plan_input_for_schema(
         Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
         vec![],
@@ -563,10 +564,17 @@ fn contract_quarantine_preserves_source_ordinal_after_transform_filter() {
     policy.transforms = vec![cdf_contract::TransformDescription::Filter {
         expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
     }];
-    policy.rows.rules = vec![RowRule::Regex {
-        column: "name".to_owned(),
-        pattern: "^ok$".to_owned(),
-    }];
+    policy.rows.rules = vec![
+        RowRule::Regex {
+            column: "name".to_owned(),
+            pattern: "^ok$".to_owned(),
+        },
+        RowRule::Range {
+            column: "id".to_owned(),
+            min: Some("0".to_owned()),
+            max: None,
+        },
+    ];
     input.validation_program = compile_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -619,14 +627,20 @@ fn contract_quarantine_preserves_source_ordinal_after_residual_quarantine() {
         )
         .unwrap(),
     );
-    let resource = MockResource::tier_a(vec![batch]);
+    let resource = MockResource::tier_a(vec![batch]).without_control_keys();
     let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
-    policy.rows.rules = vec![RowRule::Regex {
-        column: "name".to_owned(),
-        pattern: "^ok$".to_owned(),
-    }];
+    policy.rows.rules = vec![
+        RowRule::Regex {
+            column: "name".to_owned(),
+            pattern: "^ok$".to_owned(),
+        },
+        RowRule::Range {
+            column: "id".to_owned(),
+            min: Some("0".to_owned()),
+            max: None,
+        },
+    ];
     input.validation_program = compile_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -744,7 +758,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
 }
 
 #[test]
-fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() {
+fn variant_capture_materializes_nested_values_and_schema_admission_evidence() {
     let resource = MockResource::tier_a(vec![nested_variant_batch()]);
     let mut input = plan_input_for_schema(
         resource.schema(),
@@ -842,13 +856,11 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
             }
         })
     );
-    let evolution_path = temp.path().join("schema/contract-evolution.json");
-    let evolution_bytes = std::fs::read(&evolution_path).unwrap();
-    let evolution: serde_json::Value = serde_json::from_slice(&evolution_bytes).unwrap();
-    assert_eq!(evolution["implicit_promotion_count"], 0);
-    assert_eq!(evolution["promotion_events"], serde_json::json!([]));
+    let admission_path = temp.path().join("schema/admission-evidence.json");
+    let admission_bytes = std::fs::read(&admission_path).unwrap();
+    let admission: serde_json::Value = serde_json::from_slice(&admission_bytes).unwrap();
     assert_eq!(
-        evolution["variant_capture"],
+        admission["variant_capture"],
         serde_json::json!([
             {
                 "source_field": "attributes",
@@ -868,10 +880,10 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         ])
     );
     assert_eq!(
-        evolution_bytes,
-        cdf_package::canonical_json_bytes(&evolution).unwrap()
+        admission_bytes,
+        cdf_package::canonical_json_bytes(&admission).unwrap()
     );
-    assert!(package_identity_file_paths(&reader).contains("schema/contract-evolution.json"));
+    assert!(package_identity_file_paths(&reader).contains("schema/admission-evidence.json"));
     assert_eq!(reader.manifest().identity.segment_count, 1);
 
     let quarantine = collect_quarantine_records(&reader);
@@ -887,7 +899,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
 }
 
 #[test]
-fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_controls() {
+fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_required_rows() {
     let id_field = Field::new("id", DataType::Int32, true);
     let note_field = semantic_field(
         Field::new("note", DataType::Int32, true),
@@ -959,8 +971,7 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
         .unwrap(),
     );
 
-    let resource =
-        MockResource::tier_a(vec![batch]).with_write_disposition(WriteDisposition::Append);
+    let resource = MockResource::tier_a(vec![batch]).without_control_keys();
     let mut input = plan_input_for_schema(
         schema,
         vec![],
@@ -969,7 +980,11 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
         ExecutionExtent::bounded(),
     );
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    policy.rows.rules = vec![RowRule::Range {
+        column: "id".to_owned(),
+        min: Some("0".to_owned()),
+        max: None,
+    }];
     input.validation_program = compile_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -986,6 +1001,9 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
 
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    assert_eq!(output.verdict_summary.accepted_rows, 2);
+    assert_eq!(output.verdict_summary.accepted_with_residual_rows, 1);
+    assert_eq!(output.verdict_summary.quarantined_rows, 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let output = &batches[0];
@@ -1003,16 +1021,16 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
 
     let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
-    assert_eq!(quarantine[0].error_code, "cdf.residual_control_critical");
-    let evolution_bytes =
-        std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap();
-    let evolution_text = String::from_utf8(evolution_bytes.clone()).unwrap();
-    assert!(!evolution_text.contains("alice@example.test"));
-    assert!(!evolution_text.contains("top-secret"));
-    let evolution: serde_json::Value = serde_json::from_slice(&evolution_bytes).unwrap();
-    assert_eq!(evolution["version"], 1);
-    assert_eq!(evolution["residual_decisions"].as_array().unwrap().len(), 3);
-    let note_decision = evolution["residual_decisions"]
+    assert_eq!(quarantine[0].error_code, "cdf.residual_quarantine_row");
+    let admission_bytes =
+        std::fs::read(temp.path().join("schema/admission-evidence.json")).unwrap();
+    let admission_text = String::from_utf8(admission_bytes.clone()).unwrap();
+    assert!(!admission_text.contains("alice@example.test"));
+    assert!(!admission_text.contains("top-secret"));
+    let admission: serde_json::Value = serde_json::from_slice(&admission_bytes).unwrap();
+    assert_eq!(admission["version"], 1);
+    assert_eq!(admission["residual_decisions"].as_array().unwrap().len(), 3);
+    let note_decision = admission["residual_decisions"]
         .as_array()
         .unwrap()
         .iter()
@@ -1060,8 +1078,7 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
     let resource =
         MockResource::tier_a(vec![batch]).with_write_disposition(WriteDisposition::Append);
     let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
-    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    let policy = ContractPolicy::for_trust(TrustLevel::Governed);
     input.validation_program = compile_validation_program(
         &policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -1078,22 +1095,22 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
         quarantine[0].error_code,
         cdf_contract::RESIDUAL_ENCODE_UNSUPPORTED_CODE
     );
-    let evolution: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap(),
+    let admission: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/admission-evidence.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        evolution["residual_decisions"][0]["observed_field"]["arrow_type"]["kind"],
+        admission["residual_decisions"][0]["observed_field"]["arrow_type"]["kind"],
         "dictionary"
     );
 }
 
 #[test]
-fn reject_batch_contract_abort_prevents_packaged_manifest() {
+fn fail_run_contract_abort_prevents_packaged_manifest() {
     let resource = MockResource::tier_a(sample_batches());
     let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.verdicts.violation = VerdictAction::RejectBatch;
+    policy.admission.row = RowViolationDisposition::FailRun;
     policy.rows.rules = vec![RowRule::Domain {
         column: "name".to_owned(),
         allowed: vec!["missing".to_owned()],
@@ -1108,7 +1125,7 @@ fn reject_batch_contract_abort_prevents_packaged_manifest() {
 
     let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
 
-    assert!(error.to_string().contains("reject_batch"));
+    assert!(error.to_string().contains("reject_run"));
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     assert_ne!(reader.manifest().lifecycle.status, PackageStatus::Packaged);
 }

@@ -17,9 +17,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     CDF_VARIANT_SEMANTIC, ContractPolicy, DeclarativeExpression, DedupKeep, FieldCoercionDecision,
-    NestedDataPolicy, ObservedSchema, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
-    RedactionDecision, RowRule, SchemaChangeKind, SchemaEvolutionMode, VARIANT_COLUMN_NAME,
-    VerdictAction, compile_resource_validation_program, compile_validation_program,
+    FieldDisposition, NestedDataPolicy, ObservedSchema, RESIDUAL_ENCODING_METADATA_KEY,
+    RESIDUAL_ENCODING_NAME, RedactionDecision, RowRule, RowViolationDisposition,
+    VARIANT_COLUMN_NAME, compile_resource_validation_program, compile_validation_program,
     reconcile_schema,
 };
 use cdf_kernel::{
@@ -39,11 +39,10 @@ use cdf_kernel::{
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, RunPhase,
     RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
     ScanPlan, ScanPredicate, ScanRequest, SchemaBaselineReference, SchemaHash,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
-    SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TerminalSchemaObservationQuarantine,
-    TrustLevel, WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim,
-    WatermarkObservationContext, WatermarkPolicy, WatermarkValue, WriteDisposition, source_name,
-    with_semantic,
+    SchemaObservationFieldQuarantine, SchemaSnapshotReference, SchemaSource, ScopeKey,
+    SourcePosition, StreamEpochPolicy, TerminalSchemaObservationQuarantine, TrustLevel,
+    WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim, WatermarkObservationContext,
+    WatermarkPolicy, WatermarkValue, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataPayloadCatalog,

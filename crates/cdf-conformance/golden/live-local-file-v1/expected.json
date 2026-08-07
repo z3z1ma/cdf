@@ -75,7 +75,7 @@
         "sha256": "bd5ea7e1a608570d7e4ee524e8d004be18fd05f6793a0878eed8be4a3fae35b6"
       },
       {
-        "path": "schema/contract-evolution.json",
+        "path": "schema/admission-evidence.json",
         "byte_count": 559,
         "sha256": "e00b7e321f19255d8db64bb324f78b157967d55897d4e5ab1dd0b0f2317de4fd"
       },

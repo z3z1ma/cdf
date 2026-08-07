@@ -966,10 +966,11 @@ fn validate_partition(
 fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
+        SchemaSource::Active { schema_hash } => Ok(schema_hash.clone()),
         SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
         SchemaSource::Discover | SchemaSource::Hints { .. } | SchemaSource::Contract { .. } => {
             Err(CdfError::data(
-                "declarative REST execution requires a declared or discovered schema hash",
+                "declarative REST execution requires an active, declared, or discovered schema hash",
             ))
         }
     }

@@ -31,8 +31,8 @@ pub struct ContractPolicy {
     pub schema: SchemaPolicy,
     pub types: TypePolicy,
     pub rows: RowPolicy,
-    pub verdicts: VerdictPolicy,
-    pub quarantine: QuarantinePolicy,
+    pub admission: AdmissionPolicy,
+    pub evidence: EvidencePolicy,
     pub normalization: NormalizationPolicy,
     pub profiling: ProfilingPolicy,
     pub lineage: LineagePolicy,
@@ -44,13 +44,13 @@ pub struct ContractPolicy {
 }
 
 impl ContractPolicy {
-    pub fn evolve() -> Self {
+    fn base(admission: AdmissionPolicy) -> Self {
         Self {
-            schema: SchemaPolicy::evolve(),
+            schema: SchemaPolicy::default(),
             types: TypePolicy::strict_fidelity(),
             rows: RowPolicy::full(),
-            verdicts: VerdictPolicy::quarantine_on_violation(),
-            quarantine: QuarantinePolicy::enabled(),
+            admission,
+            evidence: EvidencePolicy::default(),
             normalization: NormalizationPolicy::default(),
             profiling: ProfilingPolicy::Sampled,
             lineage: LineagePolicy::Package,
@@ -59,13 +59,6 @@ impl ContractPolicy {
             retention: RetentionClass::PackageRetained,
             promotion: PromotionPolicy::default(),
             transforms: Vec::new(),
-        }
-    }
-
-    pub fn freeze() -> Self {
-        Self {
-            schema: SchemaPolicy::freeze(),
-            ..Self::evolve()
         }
     }
 
@@ -79,98 +72,124 @@ impl ContractPolicy {
     }
 
     fn experimental() -> Self {
-        let mut policy = Self::evolve();
-        policy.quarantine = QuarantinePolicy::disabled();
+        let mut policy = Self::base(AdmissionPolicy::experimental());
         policy.normalization.nested =
             NestedDataPolicy::VariantCapture(VariantColumnSpec::default());
         policy.profiling = ProfilingPolicy::Sampled;
         policy.retention = RetentionClass::Ephemeral;
-        policy.verdicts = VerdictPolicy::fail_on_violation();
         policy
     }
 
     fn governed() -> Self {
-        let mut policy = Self::evolve();
+        let mut policy = Self::base(AdmissionPolicy::governed());
         policy.schema.review_artifact_required = true;
         policy.rows.validation_depth = ValidationDepth::Full;
-        policy.quarantine = QuarantinePolicy::enabled();
+        policy.normalization.nested =
+            NestedDataPolicy::VariantCapture(VariantColumnSpec::default());
         policy.retention = RetentionClass::PackageRetained;
         policy
     }
 
     fn financial() -> Self {
-        let mut policy = Self::freeze();
+        let mut policy = Self::base(AdmissionPolicy::financial());
         policy.types = TypePolicy::strict_fidelity();
         policy.rows.validation_depth = ValidationDepth::Full;
         policy.lineage = LineagePolicy::Full;
         policy.receipts_required = true;
         policy.reconciliation_counts = true;
         policy.retention = RetentionClass::Long;
-        policy.quarantine = QuarantinePolicy::enabled();
         policy
     }
 
     fn serving() -> Self {
-        let mut policy = Self::freeze();
+        let mut policy = Self::base(AdmissionPolicy::governed());
         policy.rows.validation_depth = ValidationDepth::SampledFastPath {
             clean_runs_required: policy.promotion.clean_runs_required,
         };
         policy.rows.freshness_slo = true;
         policy.promotion.allow_sampled_fast_path = true;
         policy.promotion.demote_on_anomaly = true;
-        policy.quarantine = QuarantinePolicy::enabled();
+        policy.normalization.nested =
+            NestedDataPolicy::VariantCapture(VariantColumnSpec::default());
         policy
     }
 }
 
 impl Default for ContractPolicy {
     fn default() -> Self {
-        Self::evolve()
+        Self::governed()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaPolicy {
-    pub mode: SchemaEvolutionMode,
-    pub allow_new_table: bool,
-    pub allow_new_column: bool,
-    pub allow_type_widening: bool,
-    pub quarantine_type_narrowing: bool,
-    pub allow_unknown_fields: bool,
     pub review_artifact_required: bool,
 }
 
-impl SchemaPolicy {
-    pub fn evolve() -> Self {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmissionPolicy {
+    pub field: FieldDisposition,
+    pub row: RowViolationDisposition,
+    pub record: RecordViolationDisposition,
+    pub partition: PartitionViolationDisposition,
+}
+
+impl AdmissionPolicy {
+    pub fn experimental() -> Self {
         Self {
-            mode: SchemaEvolutionMode::Evolve,
-            allow_new_table: true,
-            allow_new_column: true,
-            allow_type_widening: true,
-            quarantine_type_narrowing: true,
-            allow_unknown_fields: true,
-            review_artifact_required: false,
+            field: FieldDisposition::CaptureVariant,
+            row: RowViolationDisposition::FailRun,
+            record: RecordViolationDisposition::FailRun,
+            partition: PartitionViolationDisposition::FailRun,
         }
     }
 
-    pub fn freeze() -> Self {
+    pub fn governed() -> Self {
         Self {
-            mode: SchemaEvolutionMode::Freeze,
-            allow_new_table: false,
-            allow_new_column: false,
-            allow_type_widening: false,
-            quarantine_type_narrowing: true,
-            allow_unknown_fields: false,
-            review_artifact_required: false,
+            field: FieldDisposition::CaptureVariant,
+            row: RowViolationDisposition::QuarantineRow,
+            record: RecordViolationDisposition::QuarantineRecord,
+            partition: PartitionViolationDisposition::QuarantinePartition,
+        }
+    }
+
+    pub fn financial() -> Self {
+        Self {
+            field: FieldDisposition::FailRun,
+            row: RowViolationDisposition::FailRun,
+            record: RecordViolationDisposition::FailRun,
+            partition: PartitionViolationDisposition::FailRun,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SchemaEvolutionMode {
-    Evolve,
-    Freeze,
+pub enum FieldDisposition {
+    CaptureVariant,
+    QuarantineRow,
+    FailRun,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowViolationDisposition {
+    QuarantineRow,
+    FailRun,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordViolationDisposition {
+    QuarantineRecord,
+    FailRun,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartitionViolationDisposition {
+    QuarantinePartition,
+    FailRun,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,58 +274,9 @@ pub enum DedupKeep {
     Fail,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerdictPolicy {
-    pub violation: VerdictAction,
-    pub fatal: VerdictAction,
-}
-
-impl VerdictPolicy {
-    pub fn quarantine_on_violation() -> Self {
-        Self {
-            violation: VerdictAction::Quarantine,
-            fatal: VerdictAction::RejectRun,
-        }
-    }
-
-    pub fn fail_on_violation() -> Self {
-        Self {
-            violation: VerdictAction::RejectBatch,
-            fatal: VerdictAction::RejectRun,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VerdictAction {
-    Admit,
-    AdmitAsVariant,
-    Quarantine,
-    RejectBatch,
-    RejectRun,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuarantinePolicy {
-    pub enabled: bool,
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidencePolicy {
     pub pii_redaction: PiiRedactionPolicy,
-}
-
-impl QuarantinePolicy {
-    pub fn enabled() -> Self {
-        Self {
-            enabled: true,
-            pii_redaction: PiiRedactionPolicy::default(),
-        }
-    }
-
-    pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            pii_redaction: PiiRedactionPolicy::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,7 +15,6 @@ mod canonical_arrow;
 mod checkpoint;
 mod config;
 mod content_reachability;
-mod contract;
 mod correction;
 mod destination;
 mod error;
@@ -61,7 +60,6 @@ pub use content_reachability::{
     ContentReclamationSnapshot, ContentRootIntent, ContentRootState,
     ExpiredContentPublicationClaim, ImmutableContentIdentity,
 };
-pub use contract::{ContractPolicy, RowDisposition, ValidationProgramRef};
 pub use correction::{
     CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
     DESTINATION_CORRECTION_CAPABILITIES_VERSION, DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
@@ -153,17 +151,17 @@ pub use resource::{
     ProcessedObservationOutcome, ProcessedObservationPosition, PushdownFidelity, PushedPredicate,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
     ScanPlan, ScanPredicate, ScanRequest, SchemaBaselineReference, SchemaObservationBinding,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaObservationScope,
-    SchemaSnapshotReference, SchemaSource, SortDirection, SourceBoundaryCapabilities,
-    SourceCopyClassification, SourceDiscoveryBinding, SourceExecutionLane, SourceIoMetrics,
-    SourceReadMode, SourceReplayRetention, SourceReplayRetentionStatus, SourceSemanticsHash,
-    SourceTransferMode, SourceTransferModeReport, SourceTransferReport,
-    TerminalSchemaObservationQuarantine, TrustLevel, TypePolicyAllowances, WriteDisposition,
-    aggregate_processed_observation_positions, bind_partition_schema_candidate,
-    bind_partition_schema_observation, derive_partition_schema_observation_binding,
-    discovery_manifest_from_metadata, insert_discovery_manifest_metadata,
-    partition_schema_observation_binding, partition_schema_observation_id,
-    validate_compiled_scan_intents, validate_scan_partition_observation_identities,
+    SchemaObservationFieldQuarantine, SchemaObservationScope, SchemaSnapshotReference,
+    SchemaSource, SortDirection, SourceBoundaryCapabilities, SourceCopyClassification,
+    SourceDiscoveryBinding, SourceExecutionLane, SourceIoMetrics, SourceReadMode,
+    SourceReplayRetention, SourceReplayRetentionStatus, SourceSemanticsHash, SourceTransferMode,
+    SourceTransferModeReport, SourceTransferReport, TerminalSchemaObservationQuarantine,
+    TrustLevel, TypePolicyAllowances, WriteDisposition, aggregate_processed_observation_positions,
+    bind_partition_schema_candidate, bind_partition_schema_observation,
+    derive_partition_schema_observation_binding, discovery_manifest_from_metadata,
+    insert_discovery_manifest_metadata, partition_schema_observation_binding,
+    partition_schema_observation_id, validate_compiled_scan_intents,
+    validate_scan_partition_observation_identities,
 };
 pub use retention::PayloadRetention;
 pub use run_event::{

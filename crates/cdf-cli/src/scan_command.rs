@@ -1,6 +1,6 @@
 mod render;
 
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, sync::Arc};
 
 use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
@@ -425,6 +425,31 @@ pub(crate) fn prepare_resource_schema_for_cli(
     artifact_root: &std::path::Path,
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
+    if let Some(active) =
+        crate::schema_authority::load_active(context, &resource.descriptor().resource_id)?
+    {
+        let active_schema = Arc::new(active.version.canonical_schema.to_arrow()?);
+        let prepared = resource.with_schema_source_and_schema(
+            cdf_kernel::SchemaSource::Active {
+                schema_hash: active.head.schema_hash.clone(),
+            },
+            active_schema,
+        );
+        let prepared = finalize_resource_query_for_cli(context, prepared)?;
+        let prepared_hash = cdf_kernel::canonical_arrow_schema_hash(prepared.schema().as_ref())?;
+        if prepared_hash != active.head.schema_hash {
+            return Err(CdfError::contract(format!(
+                "resource `{}` compiles to schema {} but active state authority is generation {} schema {}; run `cdf schema promote {}` to review the logical schema change",
+                resource.descriptor().resource_id,
+                prepared_hash,
+                active.head.generation,
+                active.head.schema_hash,
+                resource.descriptor().resource_id,
+            ))
+            .into());
+        }
+        return PreparedSchemaForCli::new(prepared, None, prepared_payloads, Vec::new());
+    }
     let source_plan = compile_source_plan_for_cli(resource)?;
     if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
         let prepared =
@@ -749,6 +774,7 @@ fn scan_report(
     let queryable = resource.as_queryable();
     let destination_plan =
         destination_plan_report(resolved, queryable, plan, presentation.command)?;
+    let output_schema = plan.output_arrow_schema()?;
     Ok(ScanPlanReport {
         human_command: presentation.command,
         human_destination_uri: presentation.destination_uri,
@@ -758,10 +784,23 @@ fn scan_report(
         resource_schema: resource_schema_report(
             queryable,
             &destination_plan.schema_hash,
-            &plan.validation_program,
+            output_schema.as_ref(),
             plan.effective_schema_evidence(),
         ),
         normalization: plan.validation_program.identifier_policy.clone(),
+        admission: AdmissionPlanReport {
+            dispositions: plan.validation_program.admission.clone(),
+            observation_strength: if presentation.schema_authority.status == "active" {
+                "runtime_stream"
+            } else {
+                "bounded_first_use_discovery"
+            },
+            wider_source_observation: plan.validation_program.admission.field
+                == cdf_contract::FieldDisposition::CaptureVariant
+                && plan.final_projection.is_some()
+                && plan.scan.request.projection.is_none(),
+            source_schema_migrations: 0,
+        },
         will_fetch: FetchReport {
             partition_count: plan.scan.partition_count()?,
             partitions: plan
@@ -1081,6 +1120,7 @@ pub(crate) struct ScanPlanReport {
     resource_id: String,
     resource_schema: ResourceSchemaReport,
     normalization: IdentifierPolicy,
+    admission: AdmissionPlanReport,
     will_fetch: FetchReport,
     pushdown: PushdownReport,
     destination: DestinationReport,
@@ -1097,6 +1137,14 @@ pub(crate) struct ScanPlanReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
     schema_authority: SchemaAuthorityReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct AdmissionPlanReport {
+    dispositions: cdf_contract::AdmissionPolicy,
+    observation_strength: &'static str,
+    wider_source_observation: bool,
+    source_schema_migrations: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1325,7 +1373,7 @@ impl DestinationPlanReport {
 fn resource_schema_report(
     resource: &dyn ResourceStream,
     schema_hash: &cdf_kernel::SchemaHash,
-    program: &cdf_contract::ValidationProgram,
+    output_schema: &arrow_schema::Schema,
     effective: Option<&cdf_engine::EffectiveSchemaPlanEvidence>,
 ) -> ResourceSchemaReport {
     let snapshot = resource.descriptor().schema_source.pinned_snapshot();
@@ -1342,13 +1390,11 @@ fn resource_schema_report(
         snapshot_metadata: snapshot
             .map(|snapshot| snapshot.metadata.clone())
             .unwrap_or_default(),
-        fields: resource
-            .schema()
+        fields: output_schema
             .fields()
             .iter()
-            .zip(&program.column_programs)
-            .map(|(field, column)| ResourceSchemaFieldReport {
-                name: column.output_name.clone(),
+            .map(|field| ResourceSchemaFieldReport {
+                name: field.name().clone(),
                 data_type: format!("{:?}", field.data_type()),
                 nullable: field.is_nullable(),
             })
@@ -1359,6 +1405,7 @@ fn resource_schema_report(
 fn schema_source_name(source: &SchemaSource) -> &'static str {
     match source {
         SchemaSource::Declared { .. } => "declared",
+        SchemaSource::Active { .. } => "active",
         SchemaSource::Discover => "discover",
         SchemaSource::Discovered { .. } => "discovered",
         SchemaSource::Hints {

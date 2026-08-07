@@ -5,10 +5,10 @@ use std::{
 
 use arrow_schema::Schema;
 use cdf_contract::{
-    CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, FieldCoercionDecision,
-    IdentifierPolicy, ResidualProgram, RowDispositionRule, SchemaChangeKind, SchemaCoercionPlan,
-    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction,
-    plan_schema_reconciliation_with_source_materializations,
+    AdmissionPolicy, CanonicalArrowField, CompiledExpressionPlan, ContractPolicy,
+    FieldCoercionDecision, FieldDisposition, IdentifierPolicy, PartitionViolationDisposition,
+    ResidualProgram, RowDispositionRule, SchemaCoercionPlan, TypePolicy, ValidationProgram,
+    VerdictSummary, plan_schema_reconciliation_with_source_materializations,
     reconcile_schema_with_source_materializations,
 };
 use cdf_kernel::{
@@ -16,7 +16,7 @@ use cdf_kernel::{
     EffectiveSchemaEvidence, EstimateSupport, ExecutionExtent, PartitionId,
     ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream, Result,
     RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaObservationBinding,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
+    SchemaObservationFieldQuarantine, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
 use cdf_package::{PackageManifestHeader, VerifiedPackage};
@@ -526,7 +526,7 @@ fn rebind_package_sink(operators: &mut [OperatorNode], package_id: &str) -> Resu
     Ok(())
 }
 
-pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 4;
+pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 5;
 pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
     "source_generation",
     "source_driver_and_codec",
@@ -567,12 +567,11 @@ pub struct CompiledSchemaAdmissionPlan {
     pub constraint_schema: CompiledArrowSchema,
     pub normalizer_version: String,
     pub identifier_policy: IdentifierPolicy,
+    pub admission: AdmissionPolicy,
     pub type_policy: TypePolicy,
     pub source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
-    pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub residual: Option<ResidualProgram>,
     pub row_dispositions: Vec<RowDispositionRule>,
-    pub control_critical_fields: Vec<String>,
     pub cache_key_fields: Vec<String>,
     pub contract_program_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,15 +587,6 @@ impl CompiledSchemaAdmissionPlan {
         type_policy: TypePolicy,
         source_materializations: Vec<cdf_kernel::SourceMaterializationRule>,
     ) -> Result<Self> {
-        let mut control_critical_fields = validation_program
-            .residual
-            .iter()
-            .flat_map(|residual| &residual.fields)
-            .filter(|field| field.control_critical)
-            .map(|field| field.source_name.clone())
-            .collect::<Vec<_>>();
-        control_critical_fields.sort();
-        control_critical_fields.dedup();
         let plan = Self {
             version: COMPILED_SCHEMA_ADMISSION_VERSION,
             baseline_schema_hash: authority.baseline_schema_hash.clone(),
@@ -607,12 +597,11 @@ impl CompiledSchemaAdmissionPlan {
             constraint_schema: CompiledArrowSchema::from_arrow(constraint_schema)?,
             normalizer_version: validation_program.normalizer_version.clone(),
             identifier_policy: validation_program.identifier_policy.clone(),
+            admission: validation_program.admission.clone(),
             type_policy,
             source_materializations,
-            schema_verdicts: validation_program.schema_verdicts.clone(),
             residual: validation_program.residual.clone(),
             row_dispositions: validation_program.row_dispositions.clone(),
-            control_critical_fields,
             cache_key_fields: SCHEMA_ADMISSION_CACHE_KEY_FIELDS
                 .into_iter()
                 .map(str::to_owned)
@@ -716,7 +705,7 @@ impl CompiledSchemaAdmissionPlan {
         Ok(plan)
     }
 
-    pub(crate) fn instantiate_or_quarantine(
+    pub fn instantiate_or_quarantine(
         &self,
         observation_id: &str,
         observed: &Schema,
@@ -735,7 +724,7 @@ impl CompiledSchemaAdmissionPlan {
             &self.type_policy,
             &self.source_materializations,
         )?;
-        if let Some(quarantine) = self.control_critical_missing_quarantine(
+        if let Some(quarantine) = self.missing_field_quarantine(
             observation_id,
             observed_schema_hash,
             observed,
@@ -750,12 +739,17 @@ impl CompiledSchemaAdmissionPlan {
             self.validate_materialized(observed, &report.plan)?;
             return Ok(CompiledSchemaAdmissionOutcome::Admitted(report.plan));
         }
-        let narrowing_verdict = self
-            .schema_verdicts
+        if let Some(error) = report
+            .errors
             .iter()
-            .find(|rule| rule.change == SchemaChangeKind::TypeNarrowing)
-            .map(|rule| &rule.verdict);
-        if narrowing_verdict != Some(&VerdictAction::Quarantine) {
+            .find(|error| self.field_disposition(&error.source_name) == FieldDisposition::FailRun)
+        {
+            return Err(CdfError::data(format!(
+                "field {:?} violates the active schema and its compiled disposition is fail_run: {}",
+                error.source_name, error.message
+            )));
+        }
+        if self.admission.partition != PartitionViolationDisposition::QuarantinePartition {
             return report
                 .into_result()
                 .map(|result| CompiledSchemaAdmissionOutcome::Admitted(result.plan));
@@ -795,30 +789,13 @@ impl CompiledSchemaAdmissionPlan {
                 "physical schema is incompatible with the fixed admission schema",
             )?);
         }
-        let evolve = self.schema_verdicts.iter().any(|rule| {
-            rule.change == SchemaChangeKind::TypeWidening && rule.verdict == VerdictAction::Admit
-        });
-        let (rule_id, policy, remediation) = if evolve {
-            (
-                "schema-observation:incompatible",
-                SchemaObservationPolicy::Evolve,
-                "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
-            )
-        } else {
-            (
-                "schema-observation:freeze-deviation",
-                SchemaObservationPolicy::Freeze,
-                "restore the pinned schema for this input, explicitly repin after review, or change the resource contract to evolve",
-            )
-        };
         Ok(CompiledSchemaAdmissionOutcome::Quarantined(Box::new(
             TerminalSchemaObservationQuarantine::new(
                 observation_id,
                 observed_schema_hash.clone(),
-                rule_id,
+                "schema-observation:incompatible-partition",
                 "schema_observation_quarantined",
-                policy,
-                remediation,
+                "publish a compatible source type, declare an allowed lossless coercion, or explicitly promote the active schema after review",
                 fields,
             )?,
         )))
@@ -834,11 +811,6 @@ impl CompiledSchemaAdmissionPlan {
         plan: &SchemaCoercionPlan,
     ) -> Result<()> {
         let constraint = self.constraint_schema.to_arrow()?;
-        let observed_hash = cdf_kernel::canonical_arrow_schema_hash(observed)?;
-        let formed_pinned_baseline = self
-            .baseline_projected_schema_hashes
-            .binary_search(&observed_hash)
-            .is_ok();
         let report = plan_schema_reconciliation_with_source_materializations(
             observed,
             constraint.as_ref(),
@@ -856,28 +828,16 @@ impl CompiledSchemaAdmissionPlan {
                 | FieldCoercionDecision::Rebound
                 | FieldCoercionDecision::SourceMaterializedExact => {}
                 FieldCoercionDecision::Missing
-                    if !self.control_critical_fields.contains(&field.source_name) => {}
+                    if self.field_disposition(&field.source_name) != FieldDisposition::FailRun => {}
                 FieldCoercionDecision::Missing => {
                     return Err(CdfError::data(format!(
-                        "control-critical field {:?} is missing from the physical observation",
+                        "field {:?} is missing from the physical observation and its compiled disposition is fail_run",
                         field.source_name
                     )));
                 }
-                FieldCoercionDecision::Widened
-                    if formed_pinned_baseline
-                        || self.schema_verdict(SchemaChangeKind::TypeWidening)?
-                            == &VerdictAction::Admit => {}
+                FieldCoercionDecision::Widened => {}
                 FieldCoercionDecision::Extra
-                    if matches!(
-                        self.schema_verdict(SchemaChangeKind::UnknownField)?,
-                        VerdictAction::Admit | VerdictAction::AdmitAsVariant
-                    ) => {}
-                FieldCoercionDecision::Widened => {
-                    return Err(CdfError::data(format!(
-                        "field {:?} requires a width coercion that the compiled schema-admission verdict does not admit",
-                        field.source_name
-                    )));
-                }
+                    if self.admission.field != FieldDisposition::FailRun => {}
                 FieldCoercionDecision::Extra => {
                     return Err(CdfError::data(format!(
                         "unknown field {:?} is rejected by the compiled schema-admission verdict",
@@ -941,7 +901,6 @@ impl CompiledSchemaAdmissionPlan {
             || expected.physical_schema_hash() != quarantine.physical_schema_hash()
             || expected.rule_id() != quarantine.rule_id()
             || expected.error_code() != quarantine.error_code()
-            || expected.policy() != quarantine.policy()
             || expected.remediation() != quarantine.remediation()
             || expected.fields() != quarantine.fields()
         {
@@ -1036,7 +995,7 @@ impl CompiledSchemaAdmissionPlan {
         }
     }
 
-    fn control_critical_missing_quarantine(
+    fn missing_field_quarantine(
         &self,
         observation_id: &str,
         physical_schema_hash: &SchemaHash,
@@ -1049,7 +1008,7 @@ impl CompiledSchemaAdmissionPlan {
             .iter()
             .filter(|field| {
                 field.decision == FieldCoercionDecision::Missing
-                    && self.control_critical_fields.contains(&field.source_name)
+                    && self.field_disposition(&field.source_name) == FieldDisposition::QuarantineRow
             })
             .map(|decision| {
                 let observed_field = observed
@@ -1074,7 +1033,7 @@ impl CompiledSchemaAdmissionPlan {
                     vec![decision.source_name.clone()],
                     observed_field,
                     effective_field,
-                    "control-critical field is missing from the physical observation",
+                    "required field is missing from the physical observation",
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1084,36 +1043,31 @@ impl CompiledSchemaAdmissionPlan {
         Ok(Some(TerminalSchemaObservationQuarantine::new(
             observation_id,
             physical_schema_hash.clone(),
-            "schema-observation:control-critical-missing",
-            "schema_control_field_missing",
-            SchemaObservationPolicy::Freeze,
-            "restore the required cursor/key field or publish the partition to quarantine for correction",
+            "schema-observation:required-field-missing",
+            "schema_required_field_missing",
+            "restore the required field or change its explicit row disposition",
             fields,
         )?))
     }
 
     pub(crate) fn captures_unknown_fields(&self) -> Result<bool> {
-        Ok(match self.schema_verdict(SchemaChangeKind::UnknownField)? {
-            VerdictAction::AdmitAsVariant => true,
-            VerdictAction::Admit => self
+        Ok(self.admission.field == FieldDisposition::CaptureVariant
+            && self
                 .residual
                 .as_ref()
                 .and_then(|residual| residual.capture.as_ref())
-                .is_some(),
-            _ => false,
-        })
+                .is_some())
     }
 
-    fn schema_verdict(&self, change: SchemaChangeKind) -> Result<&VerdictAction> {
-        self.schema_verdicts
-            .iter()
-            .find(|rule| rule.change == change)
-            .map(|rule| &rule.verdict)
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "compiled schema-admission program omitted its {change:?} verdict"
-                ))
+    fn field_disposition(&self, source_name: &str) -> FieldDisposition {
+        self.residual
+            .as_ref()
+            .and_then(|residual| {
+                residual.fields.iter().find(|field| {
+                    field.source_name == source_name || field.output_name == source_name
+                })
             })
+            .map_or(self.admission.field, |field| field.disposition)
     }
 
     pub fn validate_recorded(&self, validation_program: &ValidationProgram) -> Result<()> {
@@ -1301,7 +1255,7 @@ impl CompiledSchemaAdmissionPlan {
         }
         if self.normalizer_version != validation_program.normalizer_version
             || self.identifier_policy != validation_program.identifier_policy
-            || self.schema_verdicts != validation_program.schema_verdicts
+            || self.admission != validation_program.admission
             || self.residual != validation_program.residual
             || self.row_dispositions != validation_program.row_dispositions
             || self.contract_program_hash != cdf_runtime::artifact_hash(validation_program)?
@@ -1310,24 +1264,14 @@ impl CompiledSchemaAdmissionPlan {
                 "compiled schema-admission program does not match the validation program",
             ));
         }
-        let mut expected_control_fields = validation_program
-            .residual
-            .iter()
-            .flat_map(|residual| &residual.fields)
-            .filter(|field| field.control_critical)
-            .map(|field| field.source_name.clone())
-            .collect::<Vec<_>>();
-        expected_control_fields.sort();
-        expected_control_fields.dedup();
-        if self.control_critical_fields != expected_control_fields
-            || self.cache_key_fields
-                != SCHEMA_ADMISSION_CACHE_KEY_FIELDS
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
+        if self.cache_key_fields
+            != SCHEMA_ADMISSION_CACHE_KEY_FIELDS
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
         {
             return Err(CdfError::data(
-                "compiled schema-admission control fields or cache-key shape are invalid",
+                "compiled schema-admission cache-key shape is invalid",
             ));
         }
         if let Some(source) = &self.source {
@@ -1375,7 +1319,8 @@ fn project_baseline_observation(
     ))
 }
 
-pub(crate) enum CompiledSchemaAdmissionOutcome {
+#[derive(Debug)]
+pub enum CompiledSchemaAdmissionOutcome {
     Admitted(SchemaCoercionPlan),
     Quarantined(Box<TerminalSchemaObservationQuarantine>),
 }
@@ -1958,6 +1903,8 @@ pub struct EngineRunOutput {
     pub verification: VerifiedPackage,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
+    pub admission: AdmissionPolicy,
+    pub verdict_summary: VerdictSummary,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
 }
 
@@ -1967,6 +1914,8 @@ impl PartialEq for EngineRunOutput {
             && self.verification.package_hash() == other.verification.package_hash()
             && self.profile == other.profile
             && self.lineage == other.lineage
+            && self.admission == other.admission
+            && self.verdict_summary == other.verdict_summary
             && self.terminal_schema_quarantines == other.terminal_schema_quarantines
     }
 }
@@ -2013,7 +1962,7 @@ impl EngineRunOutput {
 }
 
 pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 2;
-pub const ENGINE_PARTITION_EVIDENCE_VERSION: u16 = 1;
+pub const ENGINE_PARTITION_EVIDENCE_VERSION: u16 = 2;
 
 /// Partition-local execution evidence published by an isolated worker as a referenced artifact.
 ///
@@ -2027,6 +1976,7 @@ pub struct EnginePartitionEvidence {
     pub canonical_partition_ordinal: u64,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
+    pub verdict_summary: VerdictSummary,
     pub segment_positions: Vec<EngineSegmentPosition>,
     pub processed_observations: Vec<ProcessedObservationPosition>,
     pub source_retries: Vec<cdf_runtime::SourceRetryEvidence>,

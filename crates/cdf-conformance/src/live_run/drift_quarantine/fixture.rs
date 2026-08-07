@@ -13,7 +13,8 @@ use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, CheckpointStore, PipelineId, QueryableResource,
-    Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey, TargetName, WriteDisposition,
+    Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey, TargetName, TrustLevel,
+    WriteDisposition,
 };
 use cdf_project::{
     ProjectRunReport, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
@@ -81,7 +82,7 @@ pub(super) fn run_scenario(
         identifier_policy.as_ref(),
     )?;
     let plan = resource.bind_plan(plan)?;
-    assert_frozen_contract_program(&plan);
+    assert_total_disposition_program(&plan);
 
     fs::create_dir_all(&spec.package_root)
         .map_err(|error| crate::conformance_private_io_error("create package root", error))?;
@@ -172,7 +173,7 @@ fn drift_quarantine_plan(
     package_id: &str,
     identifier_policy: Option<&IdentifierPolicy>,
 ) -> Result<EnginePlan> {
-    let mut policy = ContractPolicy::freeze();
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     if let Some(identifier_policy) = identifier_policy {
         policy.normalization.identifier = identifier_policy.clone();
     }
@@ -214,16 +215,12 @@ fn drift_quarantine_plan(
     )
 }
 
-fn assert_frozen_contract_program(plan: &EnginePlan) {
+fn assert_total_disposition_program(plan: &EnginePlan) {
     assert_eq!(plan.write_disposition, WriteDisposition::Merge);
-    assert!(plan.validation_program.schema_verdicts.iter().any(|rule| {
-        matches!(rule.change, cdf_contract::SchemaChangeKind::NewColumn)
-            && matches!(rule.verdict, cdf_contract::VerdictAction::RejectRun)
-    }));
-    assert!(plan.validation_program.schema_verdicts.iter().any(|rule| {
-        matches!(rule.change, cdf_contract::SchemaChangeKind::TypeNarrowing)
-            && matches!(rule.verdict, cdf_contract::VerdictAction::Quarantine)
-    }));
+    assert_eq!(
+        plan.validation_program.admission,
+        cdf_contract::AdmissionPolicy::governed()
+    );
     assert!(
         plan.validation_program
             .row_rules

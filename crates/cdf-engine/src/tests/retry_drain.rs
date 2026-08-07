@@ -870,6 +870,10 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             .expect("late-data evidence");
         assert_eq!(joined_evidence, evidence);
         let quarantine = collect_quarantine_records(&package);
+        assert_eq!(
+            second.output.verdict_summary.accepted_rows, second.output.profile.output_rows,
+            "accepted-row telemetry must describe rows that remain in the main package"
+        );
         match action {
             LateDataAction::Quarantine => {
                 assert_eq!(second.output.profile.output_rows, 0);

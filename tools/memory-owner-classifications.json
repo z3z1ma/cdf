@@ -163,7 +163,7 @@
     {
       "owner": "package control-artifact semantic models",
       "class": "metadata",
-      "boundary": "cdf-package verified identity, contract-evolution, and archive-fidelity readers",
+      "boundary": "cdf-package verified identity, schema-admission, and archive-fidelity readers",
       "bound_authority": "streamed identity/control bytes plus current artifact-contract semantic records; measured through 1 TiB package verification and settlement",
       "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
       "status": "measured"

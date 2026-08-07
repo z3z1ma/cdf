@@ -5,22 +5,20 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    CanonicalArrowType, ColumnProgram, NestedAction, PiiRedactionPolicy,
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RedactionDecision,
-    ResidualCandidateVerdict, ResidualFieldRef, ValidationProgram, encode_residual_json_v1,
+    CanonicalArrowType, ColumnProgram, FieldDisposition, NestedAction, PiiRedactionPolicy,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RedactionDecision, ResidualFieldRef,
+    ValidationProgram, encode_residual_json_v1,
 };
 use cdf_kernel::{BatchId, CdfError, Result, SchemaHash, source_name, with_source_name};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ContractEvolutionArtifact {
+pub(crate) struct SchemaAdmissionArtifact {
     pub(crate) version: u16,
     pub(crate) baseline_schema_hash: SchemaHash,
     pub(crate) effective_schema_hash: SchemaHash,
     pub(crate) variant_capture: Vec<VariantCaptureArtifact>,
     pub(crate) residual_capture: Option<ResidualCaptureArtifact>,
-    pub(crate) promotion_events: Vec<PromotionEventArtifact>,
-    pub(crate) implicit_promotion_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +27,7 @@ pub(crate) struct ResidualCaptureArtifact {
     variant_column: String,
     semantic: String,
     encoding: String,
-    default_verdict: ResidualCandidateVerdict,
+    default_disposition: FieldDisposition,
     pii_redaction: PiiRedactionPolicy,
 }
 
@@ -80,13 +78,6 @@ pub(crate) struct VariantCaptureArtifact {
     source_field: String,
     variant_column: String,
     semantic: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PromotionEventArtifact {
-    source_field: String,
-    target_field: String,
-    event_id: String,
 }
 
 struct CapturedVariantField {
@@ -306,12 +297,12 @@ fn residual_codec_error(error: cdf_contract::ResidualCodecError) -> CdfError {
     CdfError::data(format!("{}: {error}", error.code()))
 }
 
-pub(crate) fn contract_evolution_artifact_metadata(
+pub(crate) fn schema_admission_artifact_metadata(
     program: &ValidationProgram,
     baseline_schema_hash: SchemaHash,
     effective_schema_hash: SchemaHash,
     has_residual_decisions: bool,
-) -> Option<ContractEvolutionArtifact> {
+) -> Option<SchemaAdmissionArtifact> {
     let mut variant_capture = program
         .column_programs
         .iter()
@@ -337,7 +328,7 @@ pub(crate) fn contract_evolution_artifact_metadata(
                 variant_column: capture.variant_column.clone(),
                 semantic: capture.semantic.clone(),
                 encoding: capture.encoding.clone(),
-                default_verdict: residual.default_verdict,
+                default_disposition: residual.default_disposition,
                 pii_redaction: residual.pii_redaction.clone(),
             })
     });
@@ -353,14 +344,12 @@ pub(crate) fn contract_evolution_artifact_metadata(
             .then_with(|| left.semantic.cmp(&right.semantic))
     });
     variant_capture.dedup();
-    Some(ContractEvolutionArtifact {
+    Some(SchemaAdmissionArtifact {
         version: 1,
         baseline_schema_hash,
         effective_schema_hash,
         variant_capture,
         residual_capture,
-        promotion_events: Vec::new(),
-        implicit_promotion_count: 0,
     })
 }
 

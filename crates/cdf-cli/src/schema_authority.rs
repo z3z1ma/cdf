@@ -25,6 +25,46 @@ pub(crate) enum PreparedSchemaAuthority {
     },
 }
 
+pub(crate) struct ActiveSchemaAuthority {
+    pub(crate) head: SchemaHead,
+    pub(crate) version: SchemaVersion,
+}
+
+pub(crate) fn load_active(
+    context: &ProjectContext,
+    resource_id: &cdf_kernel::ResourceId,
+) -> Result<Option<ActiveSchemaAuthority>, CliError> {
+    let state_path = context.state_store_path()?;
+    let ownership = context.state_store_path_ownership();
+    let SqliteSchemaAuthorityState::Ready {
+        authority_domain_id,
+    } = SqliteSchemaAuthorityStore::inspect_state(&state_path, ownership)?
+    else {
+        return Ok(None);
+    };
+    let key = SchemaAuthorityKey::new(
+        authority_domain_id,
+        context.config.project.id.clone(),
+        EnvironmentName::new(context.environment.name.clone())?,
+        resource_id.clone(),
+    )?;
+    let store =
+        SqliteSchemaAuthorityStore::open_read_only_with_path_ownership(&state_path, ownership)?;
+    let Some(head) = store.head(&key)? else {
+        return Ok(None);
+    };
+    if !matches!(head.status, SchemaHeadStatus::Active) {
+        return Err(CdfError::contract(format!(
+            "schema authority for `{resource_id}` is being promoted; retry after promotion settles"
+        ))
+        .into());
+    }
+    let version = store
+        .version(&key, &head.schema_hash)?
+        .ok_or_else(|| CdfError::internal("active schema authority has no immutable version"))?;
+    Ok(Some(ActiveSchemaAuthority { head, version }))
+}
+
 impl PreparedSchemaAuthority {
     pub(crate) fn key(&self) -> &SchemaAuthorityKey {
         match self {

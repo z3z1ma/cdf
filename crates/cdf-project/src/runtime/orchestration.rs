@@ -1090,6 +1090,8 @@ async fn run_project_inner(
             receipt_source: replay_report.receipt_source,
             row_count,
             segment_count,
+            admission: output.output.admission.clone(),
+            verdict_summary: output.output.verdict_summary.clone(),
             file_manifest: manifest_plan.summary,
             terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
             runtime_scheduler: execution.services.scheduler_report()?,

@@ -118,6 +118,7 @@ pub(crate) struct RunCliReport {
     row_count: u64,
     byte_count: u64,
     segment_count: u64,
+    admission: RunAdmissionReport,
     elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
@@ -184,6 +185,7 @@ impl RunCliReport {
             row_count: report.row_count,
             byte_count,
             segment_count: report.segment_count,
+            admission: RunAdmissionReport::from_project(report),
             elapsed_ms,
             file_manifest: report
                 .file_manifest
@@ -235,6 +237,18 @@ impl RunCliReport {
         }
         if quarantine_count > 0 {
             summary = summary.row("quarantined files", quarantine_count.to_string());
+        }
+        if self.admission.accepted_with_residual_rows > 0 {
+            summary = summary.row(
+                "rows with residuals",
+                humanize_rows(self.admission.accepted_with_residual_rows),
+            );
+        }
+        if self.admission.quarantined_rows > 0 {
+            summary = summary.row(
+                "quarantined rows",
+                humanize_rows(self.admission.quarantined_rows),
+            );
         }
         let document = RenderDocument::new()
             .push(StatusLine::new(
@@ -386,7 +400,7 @@ impl RunCliReport {
                         KeyValuePanel::new("Schema Quarantine")
                             .row("file/observation", quarantine.observation_id().to_owned())
                             .row("rule", quarantine.rule_id().to_owned())
-                            .row("policy", format!("{:?}", quarantine.policy()))
+                            .row("disposition", "quarantine_partition")
                             .row("fields", fields)
                             .row("remediation", quarantine.remediation().to_owned()),
                     )
@@ -437,6 +451,30 @@ impl RunCliReport {
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunAdmissionReport {
+    dispositions: cdf_contract::AdmissionPolicy,
+    accepted_main_rows: u64,
+    accepted_with_residual_rows: u64,
+    quarantined_rows: u64,
+    failed_resource_count: u64,
+    terminal_quarantined_partitions: u64,
+}
+
+impl RunAdmissionReport {
+    fn from_project(report: &ProjectRunReport) -> Self {
+        Self {
+            dispositions: report.admission.clone(),
+            accepted_main_rows: report.verdict_summary.accepted_rows
+                - report.verdict_summary.accepted_with_residual_rows,
+            accepted_with_residual_rows: report.verdict_summary.accepted_with_residual_rows,
+            quarantined_rows: report.verdict_summary.quarantined_rows,
+            failed_resource_count: 0,
+            terminal_quarantined_partitions: report.terminal_schema_quarantines.len() as u64,
+        }
     }
 }
 
@@ -1353,6 +1391,14 @@ mod tests {
             row_count: 2,
             byte_count: 256,
             segment_count: 1,
+            admission: RunAdmissionReport {
+                dispositions: cdf_contract::ContractPolicy::default().admission,
+                accepted_main_rows: 2,
+                accepted_with_residual_rows: 0,
+                quarantined_rows: 0,
+                failed_resource_count: 0,
+                terminal_quarantined_partitions: 0,
+            },
             elapsed_ms: 1,
             file_manifest: None,
             terminal_schema_quarantines: Vec::new(),

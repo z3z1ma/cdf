@@ -61,20 +61,20 @@ pub use normalization::{
     normalize_schema,
 };
 pub use policy::{
-    CDF_VARIANT_SEMANTIC, ContractPolicy, DedupKeep, IdentifierCharset, IdentifierPolicy,
-    LineagePolicy, NORMALIZER_NAMECASE_V1, NestedDataPolicy, NormalizationPolicy,
-    PiiRedactionPolicy, ProfilingPolicy, PromotionPolicy, QuarantinePolicy, RedactionDecision,
-    RetentionClass, RowPolicy, RowRule, SchemaEvolutionMode, SchemaPolicy, TransformDescription,
-    TypePolicy, VARIANT_COLUMN_NAME, ValidationDepth, VariantColumnSpec, VerdictAction,
-    VerdictPolicy, identifier_policy_from_destination_rules, is_framework_variant_field,
+    AdmissionPolicy, CDF_VARIANT_SEMANTIC, ContractPolicy, DedupKeep, EvidencePolicy,
+    FieldDisposition, IdentifierCharset, IdentifierPolicy, LineagePolicy, NORMALIZER_NAMECASE_V1,
+    NestedDataPolicy, NormalizationPolicy, PartitionViolationDisposition, PiiRedactionPolicy,
+    ProfilingPolicy, PromotionPolicy, RecordViolationDisposition, RedactionDecision,
+    RetentionClass, RowPolicy, RowRule, RowViolationDisposition, SchemaPolicy,
+    TransformDescription, TypePolicy, VARIANT_COLUMN_NAME, ValidationDepth, VariantColumnSpec,
+    identifier_policy_from_destination_rules, is_framework_variant_field,
 };
 pub(crate) use program::NativeRowRule;
 pub use program::{
-    AnomalyFact, ColumnProgram, ColumnProgramStep, CompileWarning, DedupKeepProgram,
-    MissingColumnBehavior, NestedAction, ResidualCandidateVerdict, ResidualCaptureOutput,
-    ResidualFieldProgram, ResidualProgram, RowDispositionKind, RowDispositionRule, RowRuleProgram,
-    RuleDisposition, RuleOutcome, SchemaChangeKind, SchemaVerdictRule,
-    ValidationDepthTransitionEvent, ValidationProgram, ValidationTransitionTrigger,
+    AnomalyFact, ColumnProgram, ColumnProgramStep, CompileWarning, DedupKeepProgram, FieldRole,
+    MissingColumnBehavior, NestedAction, ResidualCaptureOutput, ResidualFieldProgram,
+    ResidualProgram, RowDispositionKind, RowDispositionRule, RowRuleProgram, RuleDisposition,
+    RuleOutcome, ValidationDepthTransitionEvent, ValidationProgram, ValidationTransitionTrigger,
 };
 pub use reconciliation::{
     FieldCoercion, FieldCoercionDecision, SCHEMA_COERCION_PLAN_METADATA_KEY, SchemaCoercionPlan,

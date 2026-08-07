@@ -761,7 +761,7 @@ pub(super) fn write_compiled_expression_artifacts(
 pub(super) fn artifact_expression_plan() -> EnginePlan {
     let schema = sample_batch(vec![], vec![]).schema();
     let mut program = compile_validation_program(
-        &ContractPolicy::evolve(),
+        &ContractPolicy::for_trust(TrustLevel::Governed),
         &ObservedSchema::from_arrow(schema.as_ref()),
     )
     .unwrap();
@@ -820,7 +820,7 @@ impl ArtifactPlanResource {
                 contract: None,
                 state_scope: ScopeKey::Resource,
                 freshness: None,
-                trust_level: TrustLevel::Experimental,
+                trust_level: TrustLevel::Governed,
             },
             schema,
         }

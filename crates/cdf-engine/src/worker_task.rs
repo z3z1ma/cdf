@@ -73,6 +73,7 @@ impl EnginePartitionEvidence {
             canonical_partition_ordinal,
             profile: output.output.profile.clone(),
             lineage,
+            verdict_summary: output.output.verdict_summary.clone(),
             segment_positions,
             processed_observations: output
                 .execution_evidence()
@@ -114,6 +115,11 @@ impl EnginePartitionEvidence {
         if !partition_matches {
             return Err(CdfError::contract(
                 "partition evidence does not match its portable task or canonical segments",
+            ));
+        }
+        if self.verdict_summary.accepted_with_residual_rows > self.verdict_summary.accepted_rows {
+            return Err(CdfError::contract(
+                "partition residual-row count exceeds its accepted-row count",
             ));
         }
         if self.terminal_schema_quarantines.is_empty() != self.schema_quarantine_evidence.is_none()

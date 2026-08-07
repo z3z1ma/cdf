@@ -6,14 +6,14 @@ use super::support::{
     OperatorNode, Ordering, PartitionId, PartitionPlan, Planner, Poll, ProptestConfig,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceStream, RetainedEngineRun,
     RngAlgorithm, RngSeed, RowRule, RunId, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
-    ScanPlan, ScanRequest, SchemaEvolutionMode, SchemaRef, SegmentEntry, SourcePosition,
-    StandaloneExecutionHost, StreamEpochPolicy, TempDir, TerminalSchemaObservationQuarantine,
-    TestCaseError, TestRunner, TrustLevel, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
-    WatermarkClaim, WatermarkObservationContext, WatermarkPolicy, WatermarkValue,
-    batch_for_partition, block_on, compile_validation_program, execute_to_package,
-    execute_to_package_with_run_id, execute_to_package_with_segment_positions_and_pre_finalize,
-    mock_compiled_source_plan, mock_unbounded_source_plan, plan_input, prop_assert_eq,
-    sample_batches, sample_schema, stream, terminal_file_position,
+    ScanPlan, ScanRequest, SchemaRef, SegmentEntry, SourcePosition, StandaloneExecutionHost,
+    StreamEpochPolicy, TempDir, TerminalSchemaObservationQuarantine, TestCaseError, TestRunner,
+    TrustLevel, WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim,
+    WatermarkObservationContext, WatermarkPolicy, WatermarkValue, batch_for_partition, block_on,
+    compile_validation_program, execute_to_package, execute_to_package_with_run_id,
+    execute_to_package_with_segment_positions_and_pre_finalize, mock_compiled_source_plan,
+    mock_unbounded_source_plan, plan_input, prop_assert_eq, sample_batches, sample_schema, stream,
+    terminal_file_position,
 };
 use super::support::{Result, read_package_segment};
 
@@ -196,7 +196,6 @@ fn fused_and_unfused_transform_modes_produce_identical_packages() {
     let resource = MockResource::tier_a(sample_batches());
     let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
-    policy.schema.mode = SchemaEvolutionMode::Evolve;
     policy.rows.rules = vec![RowRule::Domain {
         column: "name".to_owned(),
         allowed: vec!["two".to_owned(), "three".to_owned()],

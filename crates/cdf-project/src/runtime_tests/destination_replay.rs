@@ -464,62 +464,19 @@ pub(super) fn build_zero_segment_processed_package(
     ]));
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let artifact_plan = artifact_expression_plan();
-    let constraint = artifact_plan
+    let cdf_engine::CompiledSchemaAdmissionOutcome::Quarantined(quarantine) = artifact_plan
         .compiled_schema_admission
-        .constraint_schema
-        .to_arrow()
-        .unwrap();
-    let reconciliation = cdf_contract::plan_schema_reconciliation(
-        physical_schema.as_ref(),
-        constraint.as_ref(),
-        &artifact_plan.compiled_schema_admission.type_policy,
-    )
-    .unwrap();
-    assert!(!reconciliation.errors.is_empty());
-    let fields = reconciliation
-        .errors
-        .into_iter()
-        .map(|error| {
-            let observed = physical_schema
-                .fields()
-                .iter()
-                .find(|field| {
-                    cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name())
-                        == error.source_name
-                })
-                .map(|field| cdf_kernel::CanonicalArrowField::from_arrow(field.as_ref()))
-                .transpose()?;
-            let effective = constraint
-                .fields()
-                .iter()
-                .find(|field| {
-                    cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name())
-                        == error.source_name
-                })
-                .map(|field| cdf_kernel::CanonicalArrowField::from_arrow(field.as_ref()))
-                .transpose()?;
-            cdf_kernel::SchemaObservationFieldQuarantine::new_field_path(
-                vec![error.source_name],
-                observed,
-                effective,
-                error.message,
-            )
-        })
-        .collect::<Result<Vec<_>>>()
-        .unwrap();
-    let mut quarantine = cdf_kernel::TerminalSchemaObservationQuarantine::new(
-        "month-07.parquet",
-        physical_hash,
-        "schema-observation:incompatible",
-        "schema_observation_quarantined",
-        cdf_kernel::SchemaObservationPolicy::Evolve,
-        "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
-        fields,
-    )
-    .unwrap();
+        .instantiate_or_quarantine("month-07.parquet", physical_schema.as_ref(), &physical_hash)
+        .unwrap()
+    else {
+        panic!("incompatible ordinary fields must compile to partition quarantine");
+    };
+    let mut quarantine = *quarantine;
     quarantine
         .bind_source_position(state_delta.output_position.clone())
         .unwrap();
+    let physical_evidence =
+        cdf_engine::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref()).unwrap();
     builder
         .write_json_artifact(
             "quarantine/schema-observations.json",
@@ -542,11 +499,7 @@ pub(super) fn build_zero_segment_processed_package(
         &builder,
         false,
         true,
-        Some((
-            &quarantine,
-            cdf_engine::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())
-                .unwrap(),
-        )),
+        Some((&quarantine, physical_evidence)),
         false,
     );
     builder.finish().unwrap();

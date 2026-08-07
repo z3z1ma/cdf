@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-06
 Updated: 2026-08-06
 Parent: `.10x/tickets/2026-08-06-state-backed-schema-authority-program.md`
-Depends-On: `.10x/tickets/done/2026-08-06-s2-state-backed-preparation-portable-plan.md`, `.10x/tickets/2026-08-06-s3-schema-drift-dispositions.md`, `.10x/tickets/2026-08-06-s4-state-backed-promotion-settlement.md`
+Depends-On: `.10x/tickets/done/2026-08-06-s2-state-backed-preparation-portable-plan.md`, `.10x/tickets/done/2026-08-06-s3-schema-drift-dispositions.md`, `.10x/tickets/2026-08-06-s4-state-backed-promotion-settlement.md`
 
 # S5 delete lockfile product surface
 

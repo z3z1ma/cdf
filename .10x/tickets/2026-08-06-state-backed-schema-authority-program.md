@@ -25,7 +25,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
 3. **S3 — total drift dispositions.** Replace evolution/quarantine switches with typed field/row/
    record/partition actions, exact trust presets, field-role safety, variant/quarantine telemetry,
    and plan-visible disposition facts. Owner:
-   `.10x/tickets/2026-08-06-s3-schema-drift-dispositions.md`.
+   `.10x/tickets/done/2026-08-06-s3-schema-drift-dispositions.md`.
 4. **S4 — promotion settlement migration.** Implement generation-bound run settlement permits,
    fenced promotion head state, complete committed-frontier cutoff, historical residual correction,
    and state-atomic publication. Owner:
@@ -96,6 +96,10 @@ promotion, or schema export/import.
 - 2026-08-06: S2 closed with required stable project identity, state-bound selected preparation,
   one-pass/all-selected run establishment, exact compiled and portable artifact bindings, typed
   CLI authority facts, focused tests, and release sandbox proof. S4 remains gated only by S3.
+- 2026-08-06: S3 closed with total typed drift dispositions, compiler-derived safety roles,
+  immutable active heads, plan-visible variant/admission facts, exact disjoint run counts, durable
+  quarantine settlement, current source-adapter authority, focused conformance, and strict Clippy.
+  S4 is now dependency-unblocked.
 
 ## Blockers
 

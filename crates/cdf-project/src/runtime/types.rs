@@ -100,6 +100,8 @@ pub struct ProjectRunReport {
     pub receipt_source: ProjectReceiptSource,
     pub row_count: u64,
     pub segment_count: u64,
+    pub admission: cdf_contract::AdmissionPolicy,
+    pub verdict_summary: cdf_contract::VerdictSummary,
     pub file_manifest: Option<FileManifestRunSummary>,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,

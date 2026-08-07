@@ -61,13 +61,11 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         validation_program["promotion"]["clean_runs_required"],
         Value::from(1)
     );
-    assert!(
-        validation_program["schema_verdicts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|rule| rule["change"] == "type_narrowing" && rule["verdict"] == "quarantine")
+    assert_eq!(
+        validation_program["admission"]["partition"],
+        "quarantine_partition"
     );
+    assert_eq!(validation_program["admission"]["field"], "capture_variant");
 
     let mut profile = Vec::new();
     reader
@@ -119,11 +117,8 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         .unwrap();
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].source_row_ordinal, 2);
-    assert_eq!(
-        quarantine[0].rule_id,
-        "residual:event_type:control-critical"
-    );
-    assert_eq!(quarantine[0].error_code, "cdf.residual_control_critical");
+    assert_eq!(quarantine[0].rule_id, "residual:event_type:contract");
+    assert_eq!(quarantine[0].error_code, "cdf.residual_quarantine_row");
     assert!(matches!(
         quarantine[0].source_position,
         Some(SourcePosition::FileManifest(_))
@@ -284,11 +279,8 @@ pub(super) fn assert_postgres_quarantine_mirror(
         )
         .unwrap();
     assert_eq!(row.get::<_, i64>(0), 2);
-    assert_eq!(
-        row.get::<_, String>(1),
-        "residual:event_type:control-critical"
-    );
-    assert_eq!(row.get::<_, String>(2), "cdf.residual_control_critical");
+    assert_eq!(row.get::<_, String>(1), "residual:event_type:contract");
+    assert_eq!(row.get::<_, String>(2), "cdf.residual_quarantine_row");
     let observed = row.get::<_, String>(3);
     assert!(observed.contains(DRIFTED_EVENT_TYPE_OBSERVED));
 }
