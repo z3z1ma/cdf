@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-03
-Updated: 2026-08-04
+Updated: 2026-08-07
 
 # CDC, semantic, and SQL-project foundation program
 
@@ -29,6 +29,12 @@ fidelity in project records.
 
 The external review is reconciled—not copied—by
 `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`.
+
+On 2026-08-07 the user explicitly activated the remaining CDC/MySQL tranche: first-class MongoDB,
+Postgres, and MySQL CDC, ordinary MySQL source reads, reuse of the existing Postgres/MongoDB source
+crates instead of parallel CDC source kinds, and package cleanup suitable for indefinitely
+repeated execution. Current readiness is recorded in
+`.10x/research/2026-08-07-cdc-mysql-continuous-readiness.md`.
 
 ## Relationship to the active connector program
 
@@ -118,6 +124,10 @@ Depends-On: A2 and the relevant connector/destination capability spec.
 
 Depends-On: A2; each child may depend on A3 if shared destination proof is required.
 
+Current implementation placement is user-ratified: extend `cdf-source-postgres` and
+`cdf-source-mongodb`; create one `cdf-source-mysql` owning both finite table reads and binlog CDC.
+Do not register separate `postgres_cdc`, `mongodb_cdc`, or `mysql_cdc` source kinds.
+
 **A5. Resident supervision**
 
 - pause/resume/daemon/operator lifecycle over proven finite drain epochs;
@@ -159,6 +169,26 @@ Depends-On: B1 and semantic-registry stop-line C1 unless explicitly waived.
 
 Depends-On: semantic-registry stop-line C1 and its own ratified behavior; sequencing against B2 is
 chosen by actual shared dependency evidence.
+
+### Foundation lane G — continuous package retention
+
+**G1. Retention-aware committed-package collection**
+
+- consume the already-parsed environment/trust retention rules instead of permanently protecting
+  every committed package;
+- keep `cdf package gc` no-write by default and add an explicit execution intent using the same
+  plan;
+- tombstone heavy canonical package data only after verified destination receipt and committed
+  checkpoint authority, retaining the minimal manifest/hash/receipt evidence required by active
+  package and promotion specifications;
+- invoke the same bounded collector after successful drain-epoch checkpoint settlement so repeated
+  or resident execution cannot accumulate heavy package buffers forever;
+- report when collection removes the last local residual bytes available for schema promotion;
+- fail closed on corrupt, ambiguous, in-flight, recovery-required, or inside-retention artifacts.
+
+Depends-On: state-backed schema authority and promotion settlement (closed) but may execute before
+A1.5/A2. Exact execution flag and retention-boundary behavior await the compact ratification
+checkpoint below.
 
 ### Foundation lane C — Semantic types
 
@@ -345,6 +375,8 @@ Compiler:  C0 → C1 ─┐
              D0 → D2┘
 Hooks:      E0 + C1 + D1/D3 → E1
 MySQL:      B0 → B1 + C1 → B2/B3
+Retention: G1 (independent) ───────────────┐
+                                           └→ final CDC certificate
 ```
 
 This graph is explanatory, not authorization for parallel agents. The user has requested that the
@@ -461,6 +493,11 @@ deferred lanes are explicitly parked with owners. For a full close:
   upstream relations, and runtime DataFusion planning remain rejected;
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
+- Postgres and MongoDB CDC extend their existing source crates; one MySQL source crate owns both
+  ordinary reads and CDC, and no mode receives a separate source kind.
+- Packages are a durable pre-commit/recovery buffer, not an indefinitely retained primary store;
+  after receipt-gated checkpoint commit, heavy package bytes become eligible for the explicit
+  environment/trust retention policy and safe tombstoning.
 - source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
   MongoDB resume-token variant.
 - CDC emits complete after-images for insert/update and destination keys for delete; MySQL
@@ -487,7 +524,12 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- PostgreSQL/MySQL maximum single-transaction resource behavior;
+- whether the resolved host spill budget is the maximum PostgreSQL/MySQL single-transaction byte
+  authority, with a resource allowed only to lower it;
+- the first `cdc_apply` destination set and exact resource syntax for explicit hard/soft/ignore
+  delete application;
+- whether first-use CDC requires an integrated consistent snapshot, requires an explicit native
+  start position, or explicitly starts from the current source frontier;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
@@ -497,6 +539,14 @@ disposition/merge keys, semantics, execution policy, relational exclusions, iden
 diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
+
+- 2026-08-07: The user activated full CDC/MySQL delivery and emphasized indefinite execution plus
+  collection of already-settled package buffers. Current-source inspection confirmed A1 and the
+  compiler/state foundations are complete, while keyed effects, `cdc_apply`, log-source runtime,
+  MySQL, and retention-aware collection remain. Existing Postgres/MongoDB crates will be extended
+  and one MySQL crate will own both finite and CDC modes. Three behavior choices still change
+  source/destination/data-loss semantics and are held at a compact ratification checkpoint before
+  executable adapter tickets are opened.
 
 - 2026-08-04: The user challenged the undefined `source-driver catalog` phrase and the repeated
   source/resource identities visible in the sandbox project, then ratified the recommended
@@ -599,9 +649,11 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
 
 ## Blockers
 
-D3 has no semantic blockers and is ready for execution under its focused ticket. D1.5a and D2 are
-closed. E1 still requires its runtime ratification, and CDC A2 still requires the PostgreSQL/MySQL
-large-transaction policy. F0 is closed at `3487de68`.
+The compiler/state lanes are closed. CDC execution is blocked only on the three exact choices in
+`Unratified blockers`: one-transaction byte authority, initial `cdc_apply` destination/delete
+surface, and first-use CDC bootstrap. G1's collection mechanism also needs confirmation that
+retention expiry tombstones canonical package bytes automatically after checkpoint settlement.
+Hooks remain independently parked pending runtime ratification.
 
 ## Evidence
 
@@ -611,6 +663,8 @@ large-transaction policy. F0 is closed at `3487de68`.
 - Protocol A0 evidence is recorded in
   `.10x/research/2026-08-03-cdc-protocol-position-contract.md` with official PostgreSQL, MySQL, and
   MongoDB sources, exact proposed artifact fields/algebra, row-image consequences, and limits.
+- Current implementation/readiness evidence is recorded in
+  `.10x/research/2026-08-07-cdc-mysql-continuous-readiness.md`.
 - Implementation evidence pending ratification and child tickets.
 
 ## Review
