@@ -78,6 +78,35 @@ impl SqliteCheckpointStore {
         })
     }
 
+    pub fn is_initialized(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<bool> {
+        let path = path.as_ref();
+        if !database_path_exists(path, ownership)? {
+            return Ok(false);
+        }
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedReadOnly;
+        with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(true))
+                .map_err(sqlite_error)?;
+            match read_component_schema_version(&conn, CHECKPOINT_STORE_COMPONENT)? {
+                Some(CHECKPOINT_STORE_SCHEMA_VERSION) => {
+                    validate_schema_structure(&conn)?;
+                    Ok(true)
+                }
+                Some(version) => Err(unsupported_checkpoint_schema_version(version)),
+                None if sqlite_table_exists(&conn, "cdf_checkpoints")? => {
+                    Err(CdfError::internal(format!(
+                        "checkpoint store SQLite schema is unversioned; expected current version {CHECKPOINT_STORE_SCHEMA_VERSION}"
+                    )))
+                }
+                None => Ok(false),
+            }
+        })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let error_context = SqliteErrorContext::EphemeralWorkspace;
         let conn = with_sqlite_error_context(error_context, || {

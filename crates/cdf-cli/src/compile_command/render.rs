@@ -33,6 +33,12 @@ pub(super) fn document(report: &CompileReport) -> RenderDocument {
             CompileResourceStatus::Failed => (StatusKind::Error, "failed"),
         };
         let mut message = format!("{label} {}", resource.resource_id);
+        if let Some(authority) = &resource.schema_authority {
+            message.push_str(&format!(
+                " · {} schema generation {}",
+                authority.status, authority.generation
+            ));
+        }
         if let Some(error) = &resource.error {
             message.push_str(&format!(": {}", error.message));
         }

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use cdf_contract::NORMALIZER_NAMECASE_V1;
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result, SchemaSource};
+use cdf_kernel::{CdfError, ProjectId, Result, SchemaSource};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -12,6 +12,9 @@ use crate::{
 };
 
 pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
+    ProjectId::new(config.project.id.as_str()).map_err(|_| {
+        CdfError::contract("project.id must be a non-empty stable project identifier")
+    })?;
     if config.project.name.trim().is_empty() {
         return Err(CdfError::contract("project.name cannot be empty"));
     }

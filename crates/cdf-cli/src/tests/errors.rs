@@ -132,6 +132,7 @@ fn unknown_resource_json_omits_suggestions_without_inventory() {
         project.root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -166,6 +167,7 @@ fn unknown_destination_json_suggests_environment_or_uri_shape_without_secrets() 
         project.root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"

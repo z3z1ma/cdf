@@ -6,17 +6,19 @@ use std::{
 
 use cdf_kernel::{
     CdfError, LeaseAuthorityDomainId, MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, Result,
-    SchemaAuthorityEstablishment, SchemaAuthorityEvent, SchemaAuthorityEventKind,
-    SchemaAuthorityKey, SchemaAuthorityStore, SchemaHash, SchemaHead, SchemaHeadStatus,
-    SchemaPromotionFence, SchemaVersion, SchemaVersionProvenance, ScopeLeaseClock,
+    SchemaAuthorityCheck, SchemaAuthorityEstablishment, SchemaAuthorityEvent,
+    SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityStore, SchemaHash, SchemaHead,
+    SchemaHeadStatus, SchemaPromotionFence, SchemaVersion, SchemaVersionProvenance,
+    ScopeLeaseClock,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::{
     lease::{
         SystemScopeLeaseClock, assert_current_lease_at,
-        initialize_schema as initialize_lease_schema, read_authority_domain_id,
-        validate_schema_version as validate_lease_schema_version,
+        initialize_schema as initialize_lease_schema,
+        initialize_schema_with_domain as initialize_lease_schema_with_domain,
+        read_authority_domain_id, validate_schema_version as validate_lease_schema_version,
     },
     support::{
         SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
@@ -41,6 +43,17 @@ pub struct SqliteSchemaAuthorityStore {
     error_context: SqliteErrorContext,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SqliteSchemaAuthorityState {
+    Missing,
+    Uninitialized {
+        authority_domain_id: Option<LeaseAuthorityDomainId>,
+    },
+    Ready {
+        authority_domain_id: LeaseAuthorityDomainId,
+    },
+}
+
 impl SqliteSchemaAuthorityStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_clock_and_path_ownership(
@@ -55,6 +68,74 @@ impl SqliteSchemaAuthorityStore {
         ownership: StateStorePathOwnership,
     ) -> Result<Self> {
         Self::open_with_clock_and_path_ownership(path, Arc::new(SystemScopeLeaseClock), ownership)
+    }
+
+    pub fn open_with_authority_domain_and_path_ownership(
+        path: impl AsRef<Path>,
+        authority_domain_id: &LeaseAuthorityDomainId,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let open_path = prepare_managed_database_path(path.as_ref(), ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let (conn, observed_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            initialize_schema_with_domain(&conn, authority_domain_id)?;
+            let observed_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, observed_domain_id))
+        })?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            clock: Arc::new(SystemScopeLeaseClock),
+            authority_domain_id: observed_domain_id,
+            error_context,
+        })
+    }
+
+    pub fn inspect_state(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<SqliteSchemaAuthorityState> {
+        let path = path.as_ref();
+        if !database_path_exists(path, ownership)? {
+            return Ok(SqliteSchemaAuthorityState::Missing);
+        }
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedReadOnly;
+        with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(true))
+                .map_err(sqlite_error)?;
+            validate_lease_schema_version(&conn)?;
+            let lease_ready = sqlite_table_exists(&conn, "cdf_scope_lease_authority")?;
+            let authority_domain_id = lease_ready
+                .then(|| read_authority_domain_id(&conn))
+                .transpose()?;
+            match read_component_schema_version(&conn, SCHEMA_AUTHORITY_COMPONENT)? {
+                Some(SCHEMA_AUTHORITY_SCHEMA_VERSION) => {
+                    validate_schema_structure(&conn)?;
+                    let authority_domain_id = authority_domain_id.ok_or_else(|| {
+                        CdfError::internal(
+                            "schema authority state is initialized without a lease authority domain",
+                        )
+                    })?;
+                    Ok(SqliteSchemaAuthorityState::Ready {
+                        authority_domain_id,
+                    })
+                }
+                Some(version) => Err(unsupported_schema_version(version)),
+                None if sqlite_table_exists(&conn, "cdf_schema_heads")?
+                    || sqlite_table_exists(&conn, "cdf_schema_versions")?
+                    || sqlite_table_exists(&conn, "cdf_schema_authority_events")? =>
+                {
+                    Err(CdfError::internal(format!(
+                        "schema authority SQLite schema is unversioned; expected current version {SCHEMA_AUTHORITY_SCHEMA_VERSION}"
+                    )))
+                }
+                None => Ok(SqliteSchemaAuthorityState::Uninitialized {
+                    authority_domain_id,
+                }),
+            }
+        })
     }
 
     pub fn open_with_clock(
@@ -172,6 +253,7 @@ impl SqliteSchemaAuthorityStore {
 
     fn establish_batch(
         &self,
+        checks: Vec<SchemaAuthorityCheck>,
         establishments: Vec<SchemaAuthorityEstablishment>,
         fail_after_version_inserts: bool,
     ) -> Result<Vec<SchemaHead>> {
@@ -186,7 +268,7 @@ impl SqliteSchemaAuthorityStore {
                 )));
             }
         }
-        if establishments.is_empty() {
+        if establishments.is_empty() && checks.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -196,6 +278,47 @@ impl SqliteSchemaAuthorityStore {
             .map_err(sqlite_error)?;
         let mut results = Vec::with_capacity(establishments.len());
         let mut pending = Vec::new();
+
+        let mut checked_keys = BTreeSet::new();
+        for check in checks {
+            check.validate()?;
+            self.validate_key_domain(&check.key)?;
+            if !checked_keys.insert(check.key.clone()) {
+                return Err(CdfError::contract(format!(
+                    "schema authority batch repeats precondition for resource {} in environment {}",
+                    check.key.resource_id, check.key.environment
+                )));
+            }
+            let current = fetch_head(&tx, &check.key)?;
+            match (&check.precondition, current) {
+                (cdf_kernel::SchemaAuthorityPrecondition::Absent, None) => {
+                    if authority_has_any_version(&tx, &check.key)? {
+                        return Err(CdfError::internal(format!(
+                            "schema authority {} in environment {} has versions but no head",
+                            check.key.resource_id, check.key.environment
+                        )));
+                    }
+                }
+                (
+                    cdf_kernel::SchemaAuthorityPrecondition::Exact {
+                        generation,
+                        schema_hash,
+                    },
+                    Some(head),
+                ) if head.generation == *generation
+                    && head.schema_hash == *schema_hash
+                    && matches!(head.status, SchemaHeadStatus::Active) =>
+                {
+                    require_head_versions(&tx, &head)?;
+                }
+                _ => {
+                    return Err(CdfError::contract(format!(
+                        "schema authority for {} in environment {} changed after preparation; prepare the selected resources again",
+                        check.key.resource_id, check.key.environment
+                    )));
+                }
+            }
+        }
 
         for establishment in establishments {
             match fetch_head(&tx, &establishment.key)? {
@@ -262,7 +385,19 @@ impl SqliteSchemaAuthorityStore {
 }
 
 fn initialize_schema(conn: &Connection) -> Result<()> {
+    initialize_schema_with_domain(conn, &read_or_create_domain(conn)?)
+}
+
+fn read_or_create_domain(conn: &Connection) -> Result<LeaseAuthorityDomainId> {
     initialize_lease_schema(conn)?;
+    read_authority_domain_id(conn)
+}
+
+fn initialize_schema_with_domain(
+    conn: &Connection,
+    authority_domain_id: &LeaseAuthorityDomainId,
+) -> Result<()> {
+    initialize_lease_schema_with_domain(conn, Some(authority_domain_id))?;
     match read_component_schema_version(conn, SCHEMA_AUTHORITY_COMPONENT)? {
         Some(SCHEMA_AUTHORITY_SCHEMA_VERSION) => validate_schema_structure(conn)?,
         Some(version) => return Err(unsupported_schema_version(version)),
@@ -280,7 +415,7 @@ fn initialize_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
+        PRAGMA journal_mode = DELETE;
         PRAGMA synchronous = NORMAL;
 
         CREATE TABLE IF NOT EXISTS cdf_schema_versions (
@@ -928,6 +1063,11 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         let head = fetch_head(&conn, key)?;
         if let Some(head) = &head {
             require_head_versions(&conn, head)?;
+        } else if authority_has_any_version(&conn, key)? {
+            return Err(CdfError::internal(format!(
+                "schema authority {} in environment {} has versions but no head",
+                key.resource_id, key.environment
+            )));
         }
         Ok(head)
     }
@@ -946,7 +1086,15 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
         &self,
         establishments: Vec<SchemaAuthorityEstablishment>,
     ) -> Result<Vec<SchemaHead>> {
-        self.establish_batch(establishments, false)
+        self.establish_batch(Vec::new(), establishments, false)
+    }
+
+    fn establish_batch_checked(
+        &self,
+        checks: Vec<SchemaAuthorityCheck>,
+        establishments: Vec<SchemaAuthorityEstablishment>,
+    ) -> Result<Vec<SchemaHead>> {
+        self.establish_batch(checks, establishments, false)
     }
 
     fn begin_promotion(
@@ -1139,7 +1287,7 @@ impl SqliteSchemaAuthorityStore {
         &self,
         establishments: Vec<SchemaAuthorityEstablishment>,
     ) -> Result<Vec<SchemaHead>> {
-        self.establish_batch(establishments, true)
+        self.establish_batch(Vec::new(), establishments, true)
     }
 
     pub(crate) fn execute_for_test<P>(&self, sql: &str, params: P) -> rusqlite::Result<usize>

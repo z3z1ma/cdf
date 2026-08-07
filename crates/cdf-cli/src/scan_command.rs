@@ -139,6 +139,14 @@ pub(crate) fn plan(
             .as_deref()
             .unwrap_or(&config.project.default_environment),
     )?;
+    crate::schema_authority::reset_proposal_seed();
+    if let Some(path) = args.out.as_deref()
+        && let Ok(existing) = crate::portable_plan_command::load_artifact(path)
+        && existing.project_id == config.project.id
+        && existing.environment == environment.name
+    {
+        crate::schema_authority::seed_portable_proposals(&existing);
+    }
     let selection =
         cdf_project::resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
             .map_err(|error| crate::compile_command::resource_selection_error("cdf plan", error))?;
@@ -290,6 +298,7 @@ fn scan_one_with_portable(
         Some(execution),
         inspection_root.path(),
     )?;
+    let schema_authority = crate::schema_authority::prepare(&context, &prepared.compiled_resource)?;
     let resolved = resolve_scan_destination(
         destinations,
         &context,
@@ -321,9 +330,9 @@ fn scan_one_with_portable(
             crate::portable_plan_command::build_resource_material(
                 &context,
                 &prepared,
+                &schema_authority,
                 plan.clone(),
                 &resolved,
-                &target,
                 destination_uri,
                 inspection_root.path(),
             )
@@ -339,10 +348,11 @@ fn scan_one_with_portable(
                 .destination_uri
                 .as_deref()
                 .map(crate::render::redaction::redact_uri_userinfo),
+            schema_snapshot: prepared.schema_snapshot,
+            schema_authority: SchemaAuthorityReport::from_prepared(&schema_authority)?,
         },
         resolved,
         execution,
-        prepared.schema_snapshot,
     )?;
     Ok(PlannedResource { report, portable })
 }
@@ -629,21 +639,22 @@ pub(crate) fn planning_frontier_at(
     descriptor: &cdf_kernel::ResourceDescriptor,
     pipeline_id: &PipelineId,
 ) -> Result<Option<SourcePosition>, CliError> {
-    if !cdf_state_sqlite::database_path_exists(state_path, ownership)? {
+    if !cdf_state_sqlite::SqliteCheckpointStore::is_initialized(state_path, ownership)? {
         return Ok(None);
     }
-    let frontier =
-        cdf_state_sqlite::SqliteCheckpointStore::open_with_path_ownership(state_path, ownership)?
-            .head(
-                pipeline_id,
-                &descriptor.resource_id,
-                &descriptor.state_scope,
-            )?
-            .map(|checkpoint| checkpoint.delta.source_resume_position().clone())
-            // File resources already compute a changed/unchanged summary while binding their
-            // manifest in project orchestration. Until that summary is compiled into ScanPlan,
-            // preserve its single existing binding point instead of filtering the task set twice.
-            .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
+    let frontier = cdf_state_sqlite::SqliteCheckpointStore::open_read_only_with_path_ownership(
+        state_path, ownership,
+    )?
+    .head(
+        pipeline_id,
+        &descriptor.resource_id,
+        &descriptor.state_scope,
+    )?
+    .map(|checkpoint| checkpoint.delta.source_resume_position().clone())
+    // File resources already compute a changed/unchanged summary while binding their
+    // manifest in project orchestration. Until that summary is compiled into ScanPlan,
+    // preserve its single existing binding point instead of filtering the task set twice.
+    .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
     Ok(frontier)
 }
 
@@ -725,7 +736,6 @@ fn scan_report(
     presentation: ScanReportPresentation,
     resolved: EnvironmentDestination,
     execution: &cdf_runtime::ExecutionServices,
-    schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
     let source = resource.source_plan();
     let partition_count = plan.scan.partition_count()?;
@@ -797,7 +807,8 @@ fn scan_report(
         operator_graph: plan.operator_graph.clone(),
         scheduler,
         package_id: plan.package_id.clone(),
-        schema_snapshot,
+        schema_snapshot: presentation.schema_snapshot,
+        schema_authority: presentation.schema_authority,
     })
 }
 
@@ -1005,6 +1016,8 @@ mod render_tests {
 struct ScanReportPresentation {
     command: &'static str,
     destination_uri: Option<String>,
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
+    schema_authority: SchemaAuthorityReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1083,6 +1096,39 @@ pub(crate) struct ScanPlanReport {
     package_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
+    schema_authority: SchemaAuthorityReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct SchemaAuthorityReport {
+    status: String,
+    authority_domain_id: String,
+    project_id: String,
+    environment: String,
+    resource_id: String,
+    generation: u64,
+    schema_hash: String,
+    precondition: cdf_kernel::SchemaAuthorityPrecondition,
+    drift: &'static str,
+}
+
+impl SchemaAuthorityReport {
+    fn from_prepared(
+        prepared: &crate::schema_authority::PreparedSchemaAuthority,
+    ) -> Result<Self, CliError> {
+        let authority = prepared.compiled_authority()?;
+        Ok(Self {
+            status: prepared.status_name().to_owned(),
+            authority_domain_id: authority.key.authority_domain_id.to_string(),
+            project_id: authority.key.project_id.to_string(),
+            environment: authority.key.environment.to_string(),
+            resource_id: authority.key.resource_id.to_string(),
+            generation: authority.generation,
+            schema_hash: authority.schema_hash.to_string(),
+            precondition: prepared.precondition(),
+            drift: "none",
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

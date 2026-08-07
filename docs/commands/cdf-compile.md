@@ -3,7 +3,7 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Compile selected resources independently. Ordinary compile may establish missing first-use schema authority; --locked requires sufficient unchanged cdf.lock authority. Successful resources are retained when another resource fails.
+Compile selected resources independently. Ordinary compile may establish missing first-use schema authority; --locked requires existing unchanged state-backed schema authority. Successful resources are retained when another resource fails.
 
 Usage: cdf compile [OPTIONS] [RESOURCE_SELECTOR]...
 
@@ -19,7 +19,7 @@ Options:
           Suppress progress and non-primary success narration
 
       --locked
-          Require sufficient unchanged cdf.lock authority
+          Require existing unchanged state-backed schema authority
 
   -v, --verbose...
           Show evidence detail; repeat for diagnostics

@@ -1179,6 +1179,7 @@ dependencies = [
  "tempfile",
  "toml",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1749,6 +1750,7 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

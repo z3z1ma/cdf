@@ -2,14 +2,15 @@ use std::collections::BTreeSet;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use cdf_engine::EnginePlan;
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, Result, SourcePosition, TargetName};
+use cdf_kernel::{
+    CdfError, CheckpointId, PipelineId, ProjectId, Result, SchemaAuthorityKey,
+    SchemaAuthorityPrecondition, SchemaVersion, SchemaVersionProvenance, SourcePosition,
+    TargetName,
+};
 use cdf_runtime::DestinationRuntimeCapabilities;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    CdfLock, CompiledResourceArtifact, LockedResource, ProjectResourceSelection, lock_to_toml,
-    parse_lock,
-};
+use crate::{CompiledResourceArtifact, CompiledSchemaAuthority, ProjectResourceSelection};
 
 pub const PORTABLE_PLAN_VERSION: u16 = 1;
 pub const PORTABLE_PLAN_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -20,13 +21,11 @@ pub struct PortablePlanArtifact {
     pub version: u16,
     pub plan_hash: String,
     pub cdf_version: String,
+    pub project_id: ProjectId,
     pub project: String,
     pub environment: String,
     pub environment_binding_hash: String,
     pub selection: ProjectResourceSelection,
-    pub lock_precondition: PortableLockPrecondition,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposed_lock: Option<CdfLock>,
     pub failure_policy: PortablePlanFailurePolicy,
     pub required_host: PortableHostRequirements,
     pub resources: Vec<PortablePlanResource>,
@@ -36,22 +35,14 @@ pub struct PortablePlanArtifact {
 struct PortablePlanIdentity<'a> {
     version: u16,
     cdf_version: &'a str,
+    project_id: &'a ProjectId,
     project: &'a str,
     environment: &'a str,
     environment_binding_hash: &'a str,
     selection: &'a ProjectResourceSelection,
-    lock_precondition: &'a PortableLockPrecondition,
-    proposed_lock: &'a Option<CdfLock>,
     failure_policy: PortablePlanFailurePolicy,
     required_host: &'a PortableHostRequirements,
     resources: &'a [PortablePlanResource],
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PortableLockPrecondition {
-    Absent,
-    Present { content_sha256: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,21 +118,46 @@ impl PortableTaskSetArtifact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PortableSchemaAuthority {
-    Locked {
-        lock_binding: LockedResource,
+    Active {
+        authority: CompiledSchemaAuthority,
     },
     ProposedFirstUse {
-        lock_binding: LockedResource,
+        key: SchemaAuthorityKey,
+        version: Box<SchemaVersion>,
         artifacts: Vec<PortableInlineArtifact>,
     },
 }
 
 impl PortableSchemaAuthority {
-    pub fn lock_binding(&self) -> &LockedResource {
+    pub fn key(&self) -> &SchemaAuthorityKey {
         match self {
-            Self::Locked { lock_binding } | Self::ProposedFirstUse { lock_binding, .. } => {
-                lock_binding
-            }
+            Self::Active { authority } => &authority.key,
+            Self::ProposedFirstUse { key, .. } => key,
+        }
+    }
+
+    pub fn precondition(&self) -> SchemaAuthorityPrecondition {
+        match self {
+            Self::Active { authority } => authority.exact_precondition(),
+            Self::ProposedFirstUse { .. } => SchemaAuthorityPrecondition::Absent,
+        }
+    }
+
+    pub fn compiled_authority(&self) -> CompiledSchemaAuthority {
+        match self {
+            Self::Active { authority } => authority.clone(),
+            Self::ProposedFirstUse { key, version, .. } => CompiledSchemaAuthority {
+                key: key.clone(),
+                generation: 1,
+                schema_hash: version.schema_hash.clone(),
+            },
+        }
+    }
+
+    pub fn proposed_version(&self) -> Option<&SchemaVersion> {
+        match self {
+            Self::Active { .. } => None,
+            Self::ProposedFirstUse { version, .. } => Some(version.as_ref()),
         }
     }
 
@@ -151,7 +167,7 @@ impl PortableSchemaAuthority {
 
     pub fn inline_artifacts(&self) -> &[PortableInlineArtifact] {
         match self {
-            Self::Locked { .. } => &[],
+            Self::Active { .. } => &[],
             Self::ProposedFirstUse { artifacts, .. } => artifacts,
         }
     }
@@ -239,24 +255,22 @@ impl PortablePlanArtifact {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         cdf_version: impl Into<String>,
+        project_id: ProjectId,
         project: impl Into<String>,
         environment: impl Into<String>,
         environment_binding_hash: impl Into<String>,
         selection: ProjectResourceSelection,
-        lock_precondition: PortableLockPrecondition,
-        proposed_lock: Option<CdfLock>,
         resources: Vec<PortablePlanResource>,
     ) -> Result<Self> {
         let mut artifact = Self {
             version: PORTABLE_PLAN_VERSION,
             plan_hash: sha256(&[]),
             cdf_version: cdf_version.into(),
+            project_id,
             project: project.into(),
             environment: environment.into(),
             environment_binding_hash: environment_binding_hash.into(),
             selection,
-            lock_precondition,
-            proposed_lock,
             failure_policy: PortablePlanFailurePolicy::ContinueIndependent,
             required_host: PortableHostRequirements {
                 minimum_logical_cpu_slots: 1,
@@ -281,16 +295,11 @@ impl PortablePlanArtifact {
             "portable plan environment binding",
             &self.environment_binding_hash,
         )?;
+        ProjectId::new(self.project_id.as_str()).map(drop)?;
         if self.cdf_version.is_empty() || self.project.is_empty() || self.environment.is_empty() {
             return Err(CdfError::data(
                 "portable plan project, environment, and CDF version must be non-empty",
             ));
-        }
-        match &self.lock_precondition {
-            PortableLockPrecondition::Absent => {}
-            PortableLockPrecondition::Present { content_sha256 } => {
-                validate_sha256("portable plan lock precondition", content_sha256)?;
-            }
         }
         if self.required_host.minimum_logical_cpu_slots == 0
             || self.required_host.minimum_io_workers == 0
@@ -321,40 +330,25 @@ impl PortablePlanArtifact {
             ));
         }
         let mut inline_paths = BTreeSet::new();
+        let expected_domain = &self.resources[0].schema_authority.key().authority_domain_id;
         for resource in &self.resources {
             resource.validate()?;
+            let key = resource.schema_authority.key();
+            if &key.authority_domain_id != expected_domain
+                || key.project_id != self.project_id
+                || key.environment.as_str() != self.environment
+            {
+                return Err(CdfError::data(format!(
+                    "portable plan resource `{}` belongs to a different state domain, project, or environment",
+                    resource.resource_id
+                )));
+            }
             for artifact in resource.schema_authority.inline_artifacts() {
                 artifact.validate()?;
                 if !inline_paths.insert(artifact.path.as_str()) {
                     return Err(CdfError::data(format!(
                         "portable plan repeats inline artifact path `{}`",
                         artifact.path
-                    )));
-                }
-            }
-        }
-        let has_proposals = self
-            .resources
-            .iter()
-            .any(|resource| resource.schema_authority.is_proposed_first_use());
-        if has_proposals != self.proposed_lock.is_some() {
-            return Err(CdfError::data(
-                "portable plan proposed schema authority and proposed lock disagree",
-            ));
-        }
-        if let Some(lock) = &self.proposed_lock {
-            parse_lock(&lock_to_toml(lock)?)?;
-            for resource in self
-                .resources
-                .iter()
-                .filter(|resource| resource.schema_authority.is_proposed_first_use())
-            {
-                if lock.resources.get(&resource.resource_id)
-                    != Some(resource.schema_authority.lock_binding())
-                {
-                    return Err(CdfError::data(format!(
-                        "portable plan proposed lock differs from resource `{}` authority",
-                        resource.resource_id
                     )));
                 }
             }
@@ -384,12 +378,11 @@ impl PortablePlanArtifact {
         cdf_runtime::artifact_hash(&PortablePlanIdentity {
             version: self.version,
             cdf_version: &self.cdf_version,
+            project_id: &self.project_id,
             project: &self.project,
             environment: &self.environment,
             environment_binding_hash: &self.environment_binding_hash,
             selection: &self.selection,
-            lock_precondition: &self.lock_precondition,
-            proposed_lock: &self.proposed_lock,
             failure_policy: self.failure_policy,
             required_host: &self.required_host,
             resources: &self.resources,
@@ -401,18 +394,29 @@ impl PortablePlanResource {
     pub fn validate(&self) -> Result<()> {
         self.compiled_resource.validate()?;
         self.destination.validate()?;
+        self.schema_authority.key().validate()?;
+        self.schema_authority.precondition().validate()?;
+        if let Some(version) = self.schema_authority.proposed_version() {
+            version.validate()?;
+            if !matches!(version.provenance, SchemaVersionProvenance::FirstUse) {
+                return Err(CdfError::data(format!(
+                    "portable plan resource `{}` proposes a non-first-use schema version",
+                    self.resource_id
+                )));
+            }
+        }
         PipelineId::new(self.pipeline_id.as_str())?;
         CheckpointId::new(self.checkpoint_id.as_str())?;
         if self.resource_id != self.compiled_resource.resource.resource_id
             || self.resource_id != self.engine_plan.scan.request.resource_id.as_str()
-            || self.compiled_resource.resource.descriptor
-                != self.schema_authority.lock_binding().descriptor
+            || self.resource_id != self.schema_authority.key().resource_id.as_str()
+            || self.compiled_resource.schema_authority != self.schema_authority.compiled_authority()
             || self.compiled_source_plan_hash
                 != cdf_runtime::artifact_hash(&self.compiled_resource.resource.source_plan)?
             || self.engine_plan.initial_committed_frontier != self.input_checkpoint_head
         {
             return Err(CdfError::data(format!(
-                "portable plan resource `{}` has inconsistent compiled, source, checkpoint, or lock authority",
+                "portable plan resource `{}` has inconsistent compiled, source, checkpoint, or state authority",
                 self.resource_id
             )));
         }
@@ -434,18 +438,6 @@ impl PortablePlanResource {
                     self.resource_id
                 )));
             }
-        }
-        if self
-            .schema_authority
-            .lock_binding()
-            .compiled_artifact_hash
-            .as_deref()
-            != Some(self.compiled_resource.artifact_hash.as_str())
-        {
-            return Err(CdfError::data(format!(
-                "portable plan resource `{}` lock does not bind its compiled artifact",
-                self.resource_id
-            )));
         }
         if self.engine_plan.package_id.is_empty() {
             return Err(CdfError::data(format!(
@@ -473,14 +465,6 @@ pub fn parse_portable_plan(bytes: &[u8]) -> Result<PortablePlanArtifact> {
         return Err(CdfError::data("portable plan bytes are not canonical"));
     }
     Ok(artifact)
-}
-
-pub fn lock_precondition(bytes: Option<&[u8]>) -> PortableLockPrecondition {
-    bytes.map_or(PortableLockPrecondition::Absent, |bytes| {
-        PortableLockPrecondition::Present {
-            content_sha256: sha256(bytes),
-        }
-    })
 }
 
 fn validate_relative_artifact_path(path: &str) -> Result<()> {

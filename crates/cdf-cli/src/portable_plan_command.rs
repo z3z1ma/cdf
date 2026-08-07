@@ -1,15 +1,14 @@
 use std::{
-    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, TargetName};
+use cdf_kernel::{CdfError, CheckpointId, PipelineId};
 use cdf_project::{
-    CdfLock, LOCK_FILE_NAME, PortableDestinationBinding, PortableInlineArtifact,
-    PortablePlanArtifact, PortablePlanResource, PortableSchemaAuthority,
+    PortableDestinationBinding, PortableInlineArtifact, PortablePlanArtifact, PortablePlanResource,
+    PortableSchemaAuthority,
 };
 use serde::Serialize;
 
@@ -23,7 +22,6 @@ use crate::{
 
 pub(crate) struct PortablePlanResourceMaterial {
     pub(crate) resource: PortablePlanResource,
-    proposed_lock: Option<CdfLock>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -45,9 +43,9 @@ pub(crate) enum PortablePlanWriteStatus {
 pub(crate) fn build_resource_material(
     context: &ProjectContext,
     prepared: &PreparedRuntimeResourceForCli,
+    prepared_authority: &crate::schema_authority::PreparedSchemaAuthority,
     engine_plan: cdf_engine::EnginePlan,
     resolved: &EnvironmentDestination,
-    target: &TargetName,
     destination_uri: &str,
     artifact_root: &Path,
 ) -> Result<PortablePlanResourceMaterial, CliError> {
@@ -78,21 +76,27 @@ pub(crate) fn build_resource_material(
     let compilation = crate::compile_command::prepare_portable_compilation(
         context,
         &prepared.compiled_resource,
+        prepared_authority,
         &destination_id,
         sheet.clone(),
     )?;
-    let schema_authority = match compilation.proposed_lock.as_ref() {
-        Some(_) => PortableSchemaAuthority::ProposedFirstUse {
-            lock_binding: compilation.lock_binding,
-            artifacts: prepared
-                .schema_artifact_files
-                .iter()
-                .map(|(path, bytes)| PortableInlineArtifact::new(path, bytes.clone()))
-                .collect::<cdf_kernel::Result<Vec<_>>>()?,
-        },
-        None => PortableSchemaAuthority::Locked {
-            lock_binding: compilation.lock_binding,
-        },
+    let schema_authority = match prepared_authority {
+        crate::schema_authority::PreparedSchemaAuthority::Proposed { establishment } => {
+            PortableSchemaAuthority::ProposedFirstUse {
+                key: establishment.key.clone(),
+                version: Box::new(establishment.version.clone()),
+                artifacts: prepared
+                    .schema_artifact_files
+                    .iter()
+                    .map(|(path, bytes)| PortableInlineArtifact::new(path, bytes.clone()))
+                    .collect::<cdf_kernel::Result<Vec<_>>>()?,
+            }
+        }
+        crate::schema_authority::PreparedSchemaAuthority::Active { head } => {
+            PortableSchemaAuthority::Active {
+                authority: cdf_project::CompiledSchemaAuthority::from_head(head)?,
+            }
+        }
     };
     let source_plan_hash = cdf_runtime::artifact_hash(prepared.resource.source_plan())?;
     let destination = PortableDestinationBinding {
@@ -100,13 +104,13 @@ pub(crate) fn build_resource_material(
         configuration_hash: cdf_runtime::artifact_hash(&(
             destination_uri,
             &context.environment.destination_policy,
-            target,
+            resolved.destination.target(),
         ))?,
         destination_id,
         sheet_hash,
         sheet,
         runtime_capabilities: resolved.destination.runtime_capabilities(),
-        target: target.clone(),
+        target: resolved.destination.target().clone(),
     };
     let resource_id = prepared
         .compiled_resource
@@ -126,7 +130,6 @@ pub(crate) fn build_resource_material(
             pipeline_id: PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
             checkpoint_id: CheckpointId::new(format!("portable-plan-{resource_id}"))?,
         },
-        proposed_lock: compilation.proposed_lock,
     })
 }
 
@@ -137,59 +140,27 @@ pub(crate) fn build_artifact(
     selection: cdf_project::ProjectResourceSelection,
     materials: Vec<PortablePlanResourceMaterial>,
 ) -> Result<PortablePlanArtifact, CliError> {
-    let lock_bytes = read_optional_regular_file(&root.join(LOCK_FILE_NAME), "cdf.lock")?;
-    let current_lock = lock_bytes
-        .as_deref()
-        .map(|bytes| {
-            std::str::from_utf8(bytes)
-                .map_err(|error| CdfError::data(format!("cdf.lock is not UTF-8: {error}")))
-                .and_then(cdf_project::parse_lock)
-        })
-        .transpose()?;
-    let mut proposed_lock = None;
-    let mut resources = Vec::with_capacity(materials.len());
-    for material in materials {
-        let resource_id = material.resource.resource_id.clone();
-        let current_binding = current_lock
-            .as_ref()
-            .and_then(|lock| lock.resources.get(&resource_id));
-        match &material.resource.schema_authority {
-            PortableSchemaAuthority::Locked { .. } if current_binding.is_none() => {
-                return Err(replan_error(&resource_id, "its lock entry disappeared"));
-            }
-            PortableSchemaAuthority::ProposedFirstUse { .. } if current_binding.is_some() => {
-                return Err(replan_error(
-                    &resource_id,
-                    "a lock entry appeared during planning",
-                ));
-            }
-            _ => {}
-        }
+    let resources = materials
+        .into_iter()
+        .map(|material| material.resource)
+        .collect::<Vec<_>>();
+    preflight_state(root, environment, &resources)?;
+    for resource in &resources {
         cdf_project::validate_compiled_resource_artifact_current(
             root,
             config,
             environment,
-            &material.resource.compiled_resource,
-            current_binding,
+            &resource.compiled_resource,
+            &resource.schema_authority.compiled_authority(),
         )?;
-        if let Some(candidate) = material.proposed_lock {
-            validate_candidate_base(current_lock.as_ref(), &candidate, &resource_id)?;
-            let final_lock = proposed_lock.get_or_insert_with(|| candidate.clone());
-            final_lock.resources.insert(
-                resource_id.clone(),
-                candidate.resources[&resource_id].clone(),
-            );
-        }
-        resources.push(material.resource);
     }
     PortablePlanArtifact::new(
         env!("CARGO_PKG_VERSION"),
+        config.project.id.clone(),
         config.project.name.clone(),
         environment.name.clone(),
         cdf_project::effective_environment_binding_hash(environment)?,
         selection,
-        cdf_project::portable_plan_lock_precondition(lock_bytes.as_deref()),
-        proposed_lock,
         resources,
     )
     .map_err(Into::into)
@@ -230,128 +201,115 @@ pub(crate) fn load_artifact(path: &Path) -> Result<PortablePlanArtifact, CliErro
     cdf_project::parse_portable_plan(&bytes).map_err(Into::into)
 }
 
-pub(crate) fn current_lock_matches(
-    root: &Path,
-    precondition: &cdf_project::PortableLockPrecondition,
-) -> Result<Option<Vec<u8>>, CliError> {
-    let bytes = read_optional_regular_file(&root.join(LOCK_FILE_NAME), "cdf.lock")?;
-    let current = cdf_project::portable_plan_lock_precondition(bytes.as_deref());
-    if &current != precondition {
-        return Err(CdfError::contract(
-            "cdf.lock changed after the portable plan was created; run `cdf plan <selector> --out <path>` again",
-        )
-        .into());
-    }
-    Ok(bytes)
-}
-
-pub(crate) fn publish_proposed_authority(
+pub(crate) fn establish_portable_authority(
     context: &crate::context::ProjectCompilationContext,
     artifact: &PortablePlanArtifact,
 ) -> Result<bool, CliError> {
-    let Some(proposed_lock) = artifact.proposed_lock.as_ref() else {
-        return Ok(false);
-    };
-    let current_lock = current_lock_matches(&context.root, &artifact.lock_precondition)?;
-    let index_path = context
-        .root
-        .join(cdf_project::COMPILATION_INDEX_RELATIVE_PATH);
-    let current_index = read_optional_regular_file(&index_path, "compilation index")?;
-    let mut next_index = context.compilation.index.clone();
-    let mut writes = Vec::new();
-    let mut guards = BTreeMap::<String, Vec<u8>>::new();
-    for resource in artifact
+    preflight_state(&context.root, &context.environment, &artifact.resources)?;
+    let first = artifact
+        .resources
+        .first()
+        .ok_or_else(|| CdfError::data("portable plan must contain at least one resource"))?;
+    let domain = first.schema_authority.key().authority_domain_id.clone();
+    let store = cdf_state_sqlite::SqliteSchemaAuthorityStore::open_with_authority_domain_and_path_ownership(
+        context.state_store_path()?,
+        &domain,
+        context.state_store_path_ownership(),
+    )?;
+    let checks = artifact
         .resources
         .iter()
-        .filter(|resource| resource.schema_authority.is_proposed_first_use())
-    {
-        for inline in resource.schema_authority.inline_artifacts() {
-            writes.push(
-                cdf_project::ProjectFileWrite::new(
-                    &inline.path,
-                    inline.content.as_bytes(),
-                    cdf_project::ProjectFileExpectation::AbsentOrExact(
-                        inline.content.as_bytes().to_vec(),
-                    ),
-                )
-                .owner_only(),
-            );
-        }
-        let compiled_path = cdf_project::compiled_resource_artifact_path(
-            &resource.resource_id,
-            &resource.compiled_resource.artifact_hash,
-        )?;
-        let compiled_bytes = resource.compiled_resource.canonical_json_bytes()?;
-        writes.push(
-            cdf_project::ProjectFileWrite::new(
-                compiled_path,
-                compiled_bytes.clone(),
-                cdf_project::ProjectFileExpectation::AbsentOrExact(compiled_bytes),
+        .map(|resource| {
+            cdf_kernel::SchemaAuthorityCheck::new(
+                resource.schema_authority.key().clone(),
+                resource.schema_authority.precondition(),
             )
-            .owner_only(),
-        );
-        next_index.record_current(&resource.compiled_resource)?;
-        for input in &resource.compiled_resource.inputs {
-            if let cdf_project::ManifestInputLocation::ProjectRelativePath { path } =
-                &input.location
-            {
-                let bytes = fs::read(context.root.join(path)).map_err(|error| {
-                    project_authority_read_error(
-                        "read portable plan authored input guard",
-                        &context.root.join(path),
-                        error,
-                    )
-                })?;
-                guards.insert(path.clone(), bytes);
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    let proposals = artifact
+        .resources
+        .iter()
+        .filter_map(|resource| {
+            resource.schema_authority.proposed_version().map(|version| {
+                cdf_kernel::SchemaAuthorityEstablishment::new(
+                    resource.schema_authority.key().clone(),
+                    version.clone(),
+                )
+            })
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    let changed = !proposals.is_empty();
+    cdf_kernel::SchemaAuthorityStore::establish_batch_checked(&store, checks, proposals)?;
+    Ok(changed)
+}
+
+pub(crate) fn preflight_portable_authority(
+    context: &crate::context::ProjectCompilationContext,
+    artifact: &PortablePlanArtifact,
+) -> Result<(), CliError> {
+    preflight_state(&context.root, &context.environment, &artifact.resources)
+}
+
+fn preflight_state(
+    root: &Path,
+    environment: &cdf_project::EffectiveEnvironment,
+    resources: &[PortablePlanResource],
+) -> Result<(), CliError> {
+    use cdf_kernel::SchemaAuthorityStore as _;
+
+    let path = crate::context::sqlite_uri_path(root, &environment.state)?;
+    let ownership = crate::context::state_store_path_ownership(&environment.state);
+    let state = cdf_state_sqlite::SqliteSchemaAuthorityStore::inspect_state(&path, ownership)?;
+    let ready_store = match &state {
+        cdf_state_sqlite::SqliteSchemaAuthorityState::Ready { .. } => Some(
+            cdf_state_sqlite::SqliteSchemaAuthorityStore::open_read_only_with_path_ownership(
+                &path, ownership,
+            )?,
+        ),
+        _ => None,
+    };
+    for resource in resources {
+        let expected = &resource.schema_authority;
+        let observed_domain = match &state {
+            cdf_state_sqlite::SqliteSchemaAuthorityState::Missing => None,
+            cdf_state_sqlite::SqliteSchemaAuthorityState::Uninitialized {
+                authority_domain_id,
+            } => authority_domain_id.as_ref(),
+            cdf_state_sqlite::SqliteSchemaAuthorityState::Ready {
+                authority_domain_id,
+            } => Some(authority_domain_id),
+        };
+        if observed_domain.is_some_and(|domain| domain != &expected.key().authority_domain_id) {
+            return Err(replan_error(
+                &resource.resource_id,
+                "the state authority domain changed",
+            ));
+        }
+        let current = ready_store
+            .as_ref()
+            .map(|store| store.head(expected.key()))
+            .transpose()?
+            .flatten();
+        match (expected.precondition(), current) {
+            (cdf_kernel::SchemaAuthorityPrecondition::Absent, None) => {}
+            (
+                cdf_kernel::SchemaAuthorityPrecondition::Exact {
+                    generation,
+                    schema_hash,
+                },
+                Some(head),
+            ) if head.generation == generation
+                && head.schema_hash == schema_hash
+                && matches!(head.status, cdf_kernel::SchemaHeadStatus::Active) => {}
+            _ => {
+                return Err(replan_error(
+                    &resource.resource_id,
+                    "its state-backed schema authority changed",
+                ));
             }
         }
     }
-    let next_index_bytes = next_index.canonical_json_bytes()?;
-    writes.push(cdf_project::ProjectFileWrite::new(
-        cdf_project::COMPILATION_INDEX_RELATIVE_PATH,
-        next_index_bytes,
-        current_index.map_or(
-            cdf_project::ProjectFileExpectation::Absent,
-            cdf_project::ProjectFileExpectation::Exact,
-        ),
-    ));
-    let lock_bytes = cdf_project::lock_to_toml(proposed_lock)?.into_bytes();
-    writes.push(cdf_project::ProjectFileWrite::new(
-        cdf_project::LOCK_FILE_NAME,
-        lock_bytes,
-        current_lock.map_or(
-            cdf_project::ProjectFileExpectation::Absent,
-            cdf_project::ProjectFileExpectation::Exact,
-        ),
-    ));
-    let guards = guards
-        .into_iter()
-        .map(|(path, bytes)| cdf_project::ProjectFileGuard::exact(path, bytes))
-        .collect();
-    cdf_project::publish_project_files_transactionally_guarded(
-        &context.root,
-        cdf_project::LOCK_FILE_NAME,
-        guards,
-        writes,
-    )?;
-    Ok(true)
-}
-
-fn validate_candidate_base(
-    current: Option<&CdfLock>,
-    candidate: &CdfLock,
-    candidate_resource: &str,
-) -> Result<(), CliError> {
-    let mut base = candidate.clone();
-    base.resources.remove(candidate_resource);
-    match current {
-        Some(current) if &base == current => Ok(()),
-        None if base.resources.is_empty() => Ok(()),
-        _ => Err(replan_error(
-            candidate_resource,
-            "its proposed lock was built from different project authority",
-        )),
-    }
+    Ok(())
 }
 
 fn replan_error(resource_id: &str, reason: &str) -> CliError {

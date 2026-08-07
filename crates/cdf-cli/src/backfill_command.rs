@@ -13,7 +13,7 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput},
     progress::{CliProgressSink, ProgressDelivery, ProgressSnapshot, human_progress_sink},
-    project_run_resource::build_project_run_resource,
+    project_run_resource::prepare_runtime_resource_for_cli_with_artifact_root,
     render::redaction::redact_uri_userinfo,
     reports::{RunDestinationReport, WriteEffects},
     scan_command::segmentation_policy_from_tuning,
@@ -35,21 +35,30 @@ pub(crate) fn backfill(
         &args.resource_id,
         destinations,
     )?;
-    let resource = context.resource(&args.resource_id)?;
     let target = match args.target.clone() {
         Some(target) => TargetName::new(target).map_err(CliError::from)?,
         None => context.resource_target(&args.resource_id)?.clone(),
     };
-    let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
     let (host, services) = execution;
-    let run_resource = build_project_run_resource(
+    let inspection_root = tempfile::Builder::new()
+        .prefix("cdf-backfill-")
+        .tempdir()
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "create backfill preparation directory: {error}; check temporary-directory access and retry"
+            ))
+        })?;
+    let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
+        destinations,
         &context,
-        resource,
-        source_plan.clone(),
+        &args.resource_id,
+        false,
         Some(services),
-        cdf_runtime::PreparedSourcePayloads::default(),
+        inspection_root.path(),
     )?;
-    let source = run_resource.as_project_resource();
+    let schema_authority = crate::schema_authority::prepare(&context, &prepared.compiled_resource)?;
+    let source_plan = prepared.resource.source_plan().clone();
+    let source = prepared.resource.as_project_resource();
     let plan = plan_backfill(
         source.queryable(),
         &source_plan,
@@ -67,6 +76,7 @@ pub(crate) fn backfill(
         return CommandOutput::rendered("backfill", render::document(&report), report);
     }
 
+    crate::schema_authority::commit_one_idempotent(&context, &schema_authority)?;
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
     let mut progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);

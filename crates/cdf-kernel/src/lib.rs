@@ -173,10 +173,10 @@ pub use run_event::{
     RunProgressObservation, RunProgressObservationKind, RunProgressSink, SecretReference,
 };
 pub use schema_authority::{
-    MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, SchemaAuthorityEstablishment, SchemaAuthorityEvent,
-    SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityPrecondition,
-    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaPromotionFence, SchemaVersion,
-    SchemaVersionProvenance,
+    MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT, SchemaAuthorityCheck, SchemaAuthorityEstablishment,
+    SchemaAuthorityEvent, SchemaAuthorityEventKind, SchemaAuthorityKey,
+    SchemaAuthorityPrecondition, SchemaAuthorityStore, SchemaHead, SchemaHeadStatus,
+    SchemaPromotionFence, SchemaVersion, SchemaVersionProvenance,
 };
 pub use schema_fingerprint::canonical_arrow_schema_hash;
 pub use scope::{ScopeKey, ScopeKind};

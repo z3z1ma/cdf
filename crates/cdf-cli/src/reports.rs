@@ -108,6 +108,8 @@ pub(crate) struct RunCliReport {
     schema_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_authority: Option<RunSchemaAuthorityReport>,
     checkpoint_id: String,
     checkpoint: RunCheckpointReport,
     receipt_id: String,
@@ -136,6 +138,7 @@ impl RunCliReport {
         report: &ProjectRunReport,
         destination: RunDestinationReport,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
+        schema_authority: Option<RunSchemaAuthorityReport>,
         memory: RunMemoryReport,
     ) -> Self {
         let receipt_source_kind = destination.receipt_source_kind;
@@ -169,6 +172,7 @@ impl RunCliReport {
             package_status: report.package_status.as_str().to_owned(),
             schema_hash: report.checkpoint.delta.schema_hash.to_string(),
             schema_snapshot,
+            schema_authority,
             checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
             checkpoint: RunCheckpointReport::from_checkpoint(&report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
@@ -289,6 +293,17 @@ impl RunCliReport {
             } else {
                 document
             }
+        } else {
+            document
+        };
+        let document = if let Some(authority) = &self.schema_authority {
+            document.blank_line().push_verbose(
+                KeyValuePanel::new("Schema Authority")
+                    .row("status", authority.status)
+                    .row("generation", authority.generation.to_string())
+                    .row("hash", authority.schema_hash.clone())
+                    .row("drift", authority.drift),
+            )
         } else {
             document
         };
@@ -434,6 +449,19 @@ fn source_transfer_mode_name(mode: cdf_kernel::SourceTransferMode) -> &'static s
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RunSchemaAuthorityReport {
+    pub(crate) status: &'static str,
+    pub(crate) authority_domain_id: String,
+    pub(crate) project_id: String,
+    pub(crate) environment: String,
+    pub(crate) resource_id: String,
+    pub(crate) generation: u64,
+    pub(crate) schema_hash: String,
+    pub(crate) prepared_precondition: cdf_kernel::SchemaAuthorityPrecondition,
+    pub(crate) drift: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct RunNoOpCliReport {
     command: &'static str,
     run_id: String,
@@ -447,6 +475,8 @@ pub(crate) struct RunNoOpCliReport {
     schema_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_authority: Option<RunSchemaAuthorityReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
     row_count: u64,
@@ -467,6 +497,7 @@ impl RunNoOpCliReport {
         pipeline_id: String,
         destination: RunDestinationReport,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
+        schema_authority: Option<RunSchemaAuthorityReport>,
         memory: RunMemoryReport,
     ) -> Self {
         Self {
@@ -485,6 +516,7 @@ impl RunNoOpCliReport {
                 .as_ref()
                 .map(|checkpoint| checkpoint.delta.schema_hash.to_string()),
             schema_snapshot,
+            schema_authority,
             file_manifest: report
                 .file_manifest
                 .as_ref()
@@ -1287,6 +1319,7 @@ mod tests {
             package_status: "checkpointed".to_owned(),
             schema_hash: "sha256:schema".to_owned(),
             schema_snapshot: None,
+            schema_authority: None,
             checkpoint_id: "checkpoint-redacted".to_owned(),
             checkpoint: RunCheckpointReport {
                 checkpoint_id: "checkpoint-redacted".to_owned(),

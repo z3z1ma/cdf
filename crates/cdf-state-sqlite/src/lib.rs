@@ -19,7 +19,7 @@ pub use content_reachability::SqliteContentReachabilityStore;
 pub use in_memory::InMemoryCheckpointStore;
 pub use lease::{InMemoryScopeLeaseStore, SqliteScopeLeaseStore};
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
-pub use schema_authority::SqliteSchemaAuthorityStore;
+pub use schema_authority::{SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore};
 pub use settlement::SqlitePromotionSettlementStore;
 pub use sqlite::SqliteCheckpointStore;
 pub use support::{

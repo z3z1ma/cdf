@@ -366,6 +366,7 @@ fn write_s5_project(root: &Path, base_url: &str, secret: &str) {
         format!(
             r#"
 [project]
+id = "test-project"
 name = "rest_discovery_conformance"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -413,6 +414,7 @@ fn write_s7_append_project(root: &Path) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "keyless_append_conformance"
 default_environment = "dev"
 normalizer = "namecase-v1"

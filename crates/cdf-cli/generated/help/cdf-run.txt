@@ -14,7 +14,7 @@ Options:
       --package <DIR>                 Package directory
       --progress <WHEN>               Progress policy: auto, always, or never [possible values: auto, always, never]
       --resume [<RUN_ID>]             Resume interrupted run authority; omit RUN_ID only when exactly one run is recoverable
-      --locked                        Require sufficient unchanged cdf.lock authority
+      --locked                        Require existing unchanged state-backed schema authority
       --unicode <WHEN>                Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>         Process memory budget, e.g. 4GiB or 512MiB
       --to <DEST>                     Destination URI or cursor upper bound, as shown in usage

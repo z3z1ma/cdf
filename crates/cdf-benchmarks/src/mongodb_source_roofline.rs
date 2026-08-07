@@ -393,6 +393,7 @@ fn compile_resource(
     let project_toml = format!(
         r#"
 [project]
+id = "test-project"
 name = "mongodb_source_roofline"
 default_environment = "dev"
 normalizer = "namecase-v1"

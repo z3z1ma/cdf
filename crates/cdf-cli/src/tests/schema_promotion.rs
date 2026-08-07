@@ -1342,7 +1342,7 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
 }
 
 #[test]
-fn compile_postgres_catalog_updates_lock_without_secret_leak() {
+fn compile_postgres_catalog_establishes_state_without_secret_leak() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -1359,7 +1359,6 @@ fn compile_postgres_catalog_updates_lock_without_secret_leak() {
         .unwrap();
 
     let project = TestProject::new();
-    write_minimal_lockfile(&project);
     let source_dsn =
         postgres
             .url
@@ -1382,16 +1381,14 @@ fn compile_postgres_catalog_updates_lock_without_secret_leak() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
     assert_secret_absent(&result, "compile-secret");
-    let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
-    assert!(!lock_text.contains(&source_dsn));
-    assert!(!lock_text.contains("compile-secret"));
-    assert!(
-        parse_lock(&lock_text)
-            .unwrap()
-            .resources
-            .get("warehouse.orders")
-            .unwrap()
-            .schema_snapshot
-            .is_some()
+    assert_generated_artifacts_exclude(&project.root, &source_dsn);
+    assert_generated_artifacts_exclude(&project.root, "compile-secret");
+    assert!(project.root.join(".cdf/state.db").is_file());
+    assert!(project.root.join(".cdf/manifest.json").is_file());
+    assert!(!project.root.join("cdf.lock").exists());
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["resources"][0]["schema_authority"]["status"],
+        "established"
     );
 }

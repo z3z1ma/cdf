@@ -109,6 +109,7 @@ fn one_resource(resource: &CompiledResource) -> Result<()> {
 fn project_toml() -> String {
     format!(
         r#"[project]
+id = "test-project"
 name = "postgres_run_matrix"
 default_environment = "dev"
 normalizer = "namecase-v1"

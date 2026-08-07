@@ -573,6 +573,7 @@ impl DemoProject {
         format!(
             r#"
 [project]
+id = "test-project"
 name = "{PROJECT_NAME}"
 default_environment = "dev"
 normalizer = "namecase-v1"

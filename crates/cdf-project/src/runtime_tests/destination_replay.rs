@@ -1642,6 +1642,7 @@ fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_
     let lock_config = parse_cdf_toml(
         r#"
 [project]
+id = "test-project"
 name = "quasar-driver-lock"
 default_environment = "dev"
 normalizer = "namecase-v1"

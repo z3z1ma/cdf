@@ -67,6 +67,7 @@ fn write_project(project: &TestProject) {
         project.root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cli_env_test"
 default_environment = "dev"
 normalizer = "namecase-v1"

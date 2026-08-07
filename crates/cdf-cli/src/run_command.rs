@@ -45,6 +45,7 @@ use crate::{
     },
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
+        RunSchemaAuthorityReport,
     },
     scan_command::{build_engine_plan_for_resource, planning_frontier, planning_frontier_at},
 };
@@ -110,6 +111,7 @@ pub(crate) fn run(
             error_catalog::RUN_ARGUMENT,
         ));
     }
+    crate::schema_authority::reset_proposal_seed();
     if args.selectors.len() == 1 && looks_like_adhoc_location(&args.selectors[0])? {
         if !args.exclude.is_empty() {
             return Err(CliError::usage_with(
@@ -124,7 +126,6 @@ pub(crate) fn run(
             services,
             destinations,
             true,
-            true,
         )?;
         return execute_prepared(cli, prepared, host, progress_delivery);
     }
@@ -136,46 +137,28 @@ pub(crate) fn run(
     let mut prepared_runs = Vec::with_capacity(selection.resources.len());
     for selected in &selection.resources {
         let resource_id = selected.resource_id.to_string();
-        let prepared = if args.locked {
-            crate::compile_command::prepare_selected_resource(
-                cli,
-                selected,
-                true,
-                destinations,
-                services,
-            )
-            .and_then(|()| {
-                prepare_single(
-                    cli,
-                    resource_id.clone(),
-                    args.clone(),
-                    services,
-                    destinations,
-                    false,
-                    false,
-                )
-            })
-        } else {
-            prepare_single(
-                cli,
-                resource_id.clone(),
-                args.clone(),
-                services,
-                destinations,
-                false,
-                true,
-            )
-            .and_then(|prepared| {
-                crate::compile_command::prepare_selected_resource(
-                    cli,
-                    selected,
-                    false,
-                    destinations,
-                    services,
-                )
-                .map(|()| prepared)
-            })
-        };
+        let prepared = prepare_single(
+            cli,
+            resource_id.clone(),
+            args.clone(),
+            services,
+            destinations,
+            false,
+        )
+        .and_then(|prepared| {
+            if args.locked
+                && prepared
+                    .schema_authority
+                    .as_ref()
+                    .is_some_and(|authority| authority.proposal().is_some())
+            {
+                return Err(CdfError::contract(format!(
+                    "resource `{resource_id}` has no established state-backed schema authority; run `cdf compile {resource_id}` first"
+                ))
+                .into());
+            }
+            Ok(prepared)
+        });
         match prepared {
             Ok(prepared) => prepared_runs.push((resource_id, prepared)),
             Err(error) => outcomes.push(RunResourceOutcome::PreparationFailed {
@@ -193,6 +176,23 @@ pub(crate) fn run(
         outcomes.sort_by(|left, right| left.resource_id().cmp(right.resource_id()));
         return run_batch_output(selection.selection, outcomes, Vec::new(), None, None);
     }
+
+    let state_store_path = prepared_runs
+        .first()
+        .map(|(_, prepared)| prepared.state_store_path.clone())
+        .ok_or_else(|| CdfError::internal("selected run preparation produced no resources"))?;
+    let state_store_path_ownership = prepared_runs[0].1.state_store_path_ownership;
+    let authorities = prepared_runs
+        .iter()
+        .map(|(resource_id, prepared)| {
+            prepared.schema_authority.clone().ok_or_else(|| {
+                CdfError::internal(format!(
+                    "selected project resource `{resource_id}` has no prepared schema authority"
+                ))
+            })
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    crate::schema_authority::commit_at(state_store_path, state_store_path_ownership, &authorities)?;
 
     let mut documents = Vec::with_capacity(prepared_runs.len());
     let mut buffered_progress = None;
@@ -240,7 +240,7 @@ fn run_portable_plan(
     let artifact = crate::portable_plan_command::load_artifact(path)?;
     let context = ProjectCompilationContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     validate_portable_plan_environment(&context, &artifact, services)?;
-    crate::portable_plan_command::current_lock_matches(&context.root, &artifact.lock_precondition)?;
+    crate::portable_plan_command::preflight_portable_authority(&context, &artifact)?;
     let mut prepared_runs = Vec::with_capacity(artifact.resources.len());
     for planned in &artifact.resources {
         prepared_runs.push((
@@ -249,7 +249,7 @@ fn run_portable_plan(
         ));
     }
     let authority_written =
-        crate::portable_plan_command::publish_proposed_authority(&context, &artifact)?;
+        crate::portable_plan_command::establish_portable_authority(&context, &artifact)?;
     let mut outcomes = Vec::with_capacity(prepared_runs.len());
     let mut documents = Vec::with_capacity(prepared_runs.len());
     let mut buffered_progress = None;
@@ -285,7 +285,7 @@ fn run_portable_plan(
             plan_hash: artifact.plan_hash,
             preflight: "passed",
             first_use_authority: if authority_written {
-                "published"
+                "established"
             } else {
                 "unchanged"
             },
@@ -300,6 +300,7 @@ fn validate_portable_plan_environment(
 ) -> Result<(), CliError> {
     let host = services.capabilities();
     if artifact.cdf_version != env!("CARGO_PKG_VERSION")
+        || artifact.project_id != context.compilation.config.project.id
         || artifact.project != context.compilation.config.project.name
         || artifact.environment != context.environment.name
         || artifact.environment_binding_hash
@@ -322,42 +323,6 @@ fn validate_portable_plan_environment(
         ))
         .into());
     }
-    if let Some(proposed) = &artifact.proposed_lock {
-        let mut expected =
-            context
-                .compilation
-                .lock
-                .clone()
-                .unwrap_or_else(|| cdf_project::CdfLock {
-                    version: cdf_project::LOCKFILE_VERSION,
-                    project: cdf_project::ProjectLock {
-                        name: context.compilation.config.project.name.clone(),
-                        default_environment: context
-                            .compilation
-                            .config
-                            .project
-                            .default_environment
-                            .clone(),
-                    },
-                    resources: Default::default(),
-                });
-        for resource in artifact
-            .resources
-            .iter()
-            .filter(|resource| resource.schema_authority.is_proposed_first_use())
-        {
-            expected.resources.insert(
-                resource.resource_id.clone(),
-                resource.schema_authority.lock_binding().clone(),
-            );
-        }
-        if &expected != proposed {
-            return Err(CdfError::data(
-                "portable plan proposed lock contains authority outside its exact selected first-use resources",
-            )
-            .into());
-        }
-    }
     Ok(())
 }
 
@@ -370,36 +335,12 @@ fn prepare_portable_resource(
     services: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<PreparedRun, CliError> {
-    let current_binding = context
-        .compilation
-        .lock
-        .as_ref()
-        .and_then(|lock| lock.resources.get(&planned.resource_id));
-    match &planned.schema_authority {
-        cdf_project::PortableSchemaAuthority::Locked { lock_binding }
-            if current_binding != Some(lock_binding) =>
-        {
-            return Err(portable_replan_error(
-                &planned.resource_id,
-                "locked schema authority changed",
-            ));
-        }
-        cdf_project::PortableSchemaAuthority::ProposedFirstUse { .. }
-            if current_binding.is_some() =>
-        {
-            return Err(portable_replan_error(
-                &planned.resource_id,
-                "schema authority was pinned after planning",
-            ));
-        }
-        _ => {}
-    }
     cdf_project::validate_compiled_resource_artifact_current(
         &context.root,
         &context.compilation.config,
         &context.environment,
         &planned.compiled_resource,
-        current_binding,
+        &planned.schema_authority.compiled_authority(),
     )?;
     let sources = crate::source_registry::builtin_source_registry()?;
     sources
@@ -479,19 +420,16 @@ fn prepare_portable_resource(
     let destination_report =
         RunDestinationReport::from_project(&destination_description, resolved.destination.target());
     let schema_snapshot = if planned.schema_authority.is_proposed_first_use() {
-        planned
-            .schema_authority
-            .lock_binding()
-            .schema_snapshot
-            .as_ref()
-            .map(|snapshot| crate::reports::SchemaSnapshotActionReport {
+        planned.schema_authority.proposed_version().map(|version| {
+            crate::reports::SchemaSnapshotActionReport {
                 outcome: "added",
-                schema_hash: snapshot.schema_hash.to_string(),
-                path: snapshot.path.clone(),
-                snapshot_written: true,
-                lockfile_written: true,
+                schema_hash: version.schema_hash.to_string(),
+                path: "state schema authority".to_owned(),
+                snapshot_written: false,
+                lockfile_written: false,
                 discovery: None,
-            })
+            }
+        })
     } else {
         None
     };
@@ -515,6 +453,16 @@ fn prepare_portable_resource(
             schema_snapshot,
             schema_artifact_files: Vec::new(),
         },
+        schema_authority: None,
+        schema_authority_report: Some(run_schema_authority_report(
+            &planned.schema_authority.compiled_authority(),
+            planned.schema_authority.precondition(),
+            if planned.schema_authority.is_proposed_first_use() {
+                "established"
+            } else {
+                "active"
+            },
+        )),
         state_store_path,
         state_store_path_ownership,
         destination: resolved.destination,
@@ -672,11 +620,31 @@ fn portable_replan_error(resource_id: &str, reason: &str) -> CliError {
     .into()
 }
 
+fn run_schema_authority_report(
+    authority: &cdf_project::CompiledSchemaAuthority,
+    prepared_precondition: cdf_kernel::SchemaAuthorityPrecondition,
+    status: &'static str,
+) -> RunSchemaAuthorityReport {
+    RunSchemaAuthorityReport {
+        status,
+        authority_domain_id: authority.key.authority_domain_id.to_string(),
+        project_id: authority.key.project_id.to_string(),
+        environment: authority.key.environment.to_string(),
+        resource_id: authority.key.resource_id.to_string(),
+        generation: authority.generation,
+        schema_hash: authority.schema_hash.to_string(),
+        prepared_precondition,
+        drift: "none",
+    }
+}
+
 struct PreparedRun {
     package_root: std::path::PathBuf,
     explicit: ResolvedRunArgs,
     run_services: cdf_runtime::ExecutionServices,
     prepared: PreparedRuntimeResourceForCli,
+    schema_authority: Option<crate::schema_authority::PreparedSchemaAuthority>,
+    schema_authority_report: Option<RunSchemaAuthorityReport>,
     state_store_path: std::path::PathBuf,
     state_store_path_ownership: cdf_state_sqlite::StateStorePathOwnership,
     destination: cdf_project::ResolvedProjectDestination,
@@ -696,7 +664,6 @@ fn prepare_single(
     services: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
     adhoc_mode: bool,
-    commit_schema: bool,
 ) -> Result<PreparedRun, CliError> {
     let explain_memory = args.explain_memory;
     let mut context = if adhoc_mode {
@@ -743,9 +710,29 @@ fn prepare_single(
         destinations,
         &context,
         &explicit.resource_id,
-        commit_schema,
+        false,
         Some(&run_services),
     )?;
+    let schema_authority = if adhoc.is_some() {
+        None
+    } else {
+        Some(crate::schema_authority::prepare(
+            &context,
+            &prepared.compiled_resource,
+        )?)
+    };
+    let schema_authority_report = match schema_authority.as_ref() {
+        Some(authority) => Some(run_schema_authority_report(
+            &authority.compiled_authority()?,
+            authority.precondition(),
+            if authority.proposal().is_some() {
+                "established"
+            } else {
+                "active"
+            },
+        )),
+        None => None,
+    };
     let state_store_path = context.state_store_path()?;
     let state_store_path_ownership = context.state_store_path_ownership();
     let package_root = context.package_root();
@@ -799,6 +786,8 @@ fn prepare_single(
         explicit,
         run_services,
         prepared,
+        schema_authority,
+        schema_authority_report,
         state_store_path,
         state_store_path_ownership,
         destination,
@@ -823,6 +812,8 @@ fn execute_prepared(
         explicit,
         run_services,
         prepared,
+        schema_authority: _schema_authority,
+        schema_authority_report,
         state_store_path,
         state_store_path_ownership,
         destination,
@@ -878,6 +869,7 @@ fn execute_prepared(
                 &report,
                 destination_report,
                 prepared.schema_snapshot,
+                schema_authority_report.clone(),
                 memory,
             );
             if let Some(adhoc) = adhoc {
@@ -902,6 +894,7 @@ fn execute_prepared(
                 explicit.pipeline_id.to_string(),
                 destination_report,
                 prepared.schema_snapshot,
+                schema_authority_report,
                 memory,
             );
             if let Some(adhoc) = adhoc {

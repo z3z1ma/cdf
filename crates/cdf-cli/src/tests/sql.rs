@@ -109,7 +109,7 @@ fn sql_read_only_query_does_not_create_local_artifacts() {
 }
 
 #[test]
-fn compile_publishes_independent_artifact_index_and_locked_rebuild() {
+fn compile_publishes_state_bound_artifact_index_and_locked_rebuild() {
     let project = TestProject::new();
     let prepared = run([
         "cdf",
@@ -136,8 +136,9 @@ fn compile_publishes_independent_artifact_index_and_locked_rebuild() {
         .unwrap();
     assert!(project.root.join(artifact_path).is_file());
 
-    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
+    let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
     let index_before = fs::read(project.root.join(".cdf/manifest.json")).unwrap();
+    fs::write(project.root.join("cdf.lock"), "not legacy authority").unwrap();
     let locked = run([
         "cdf",
         "--json",
@@ -153,8 +154,8 @@ fn compile_publishes_independent_artifact_index_and_locked_rebuild() {
         locked.stdout, locked.stderr
     );
     assert_eq!(
-        fs::read(project.root.join("cdf.lock")).unwrap(),
-        lock_before
+        fs::read(project.root.join(".cdf/state.db")).unwrap(),
+        state_before
     );
     assert_eq!(
         fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
@@ -349,7 +350,7 @@ fn unscoped_compile_marks_deleted_known_resources_absent() {
 }
 
 #[test]
-fn locked_compile_reports_missing_selected_authority_and_indexes_failure() {
+fn locked_compile_reports_missing_selected_authority_without_cache_publication() {
     let project = TestProject::new();
     let result = run([
         "cdf",
@@ -365,7 +366,8 @@ fn locked_compile_reports_missing_selected_authority_and_indexes_failure() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["counts"]["failed"], 1);
     assert_eq!(json["result"]["resources"][0]["error"]["kind"], "contract");
-    assert!(project.root.join(".cdf/manifest.json").is_file());
+    assert!(!project.root.join(".cdf/manifest.json").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join("cdf.lock").exists());
 }
 
@@ -409,6 +411,7 @@ fn compile_preserves_per_resource_data_and_auth_diagnostics() {
         auth_project.root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -464,11 +467,13 @@ fn compile_discovers_only_selected_source_and_publishes_schema_authority() {
     assert_eq!(json["result"]["resources"][0]["discovered_schema"], true);
     assert!(project.root.join(".cdf/schemas").is_dir());
     assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(project.root.join(".cdf/state.db").is_file());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
-
-    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    assert!(lock.resources["local.events"].schema_snapshot.is_some());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert_eq!(
+        json["result"]["resources"][0]["schema_authority"]["status"],
+        "established"
+    );
 }
 
 #[test]

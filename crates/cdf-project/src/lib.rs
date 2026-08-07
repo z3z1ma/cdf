@@ -98,8 +98,8 @@ pub use compilation::{
     COMPILATION_INDEX_RELATIVE_PATH, COMPILED_RESOURCE_ARTIFACT_VERSION,
     COMPILED_RESOURCE_DIRECTORY, CompilationArtifactReference, CompilationDiagnostic,
     CompilationIndex, CompilationIndexEntry, CompilationSnapshot, CompilationStatus,
-    CompiledResourceArtifact, CompiledResourceArtifactRequest, compile_resource_artifact,
-    compiled_resource_artifact_path, effective_environment_binding_hash,
+    CompiledResourceArtifact, CompiledResourceArtifactRequest, CompiledSchemaAuthority,
+    compile_resource_artifact, compiled_resource_artifact_path, effective_environment_binding_hash,
     hydrate_compiled_resource_artifact, load_compilation_snapshot, parse_compilation_index,
     parse_compiled_resource_artifact, validate_compilation_index_authority,
     validate_compiled_resource_artifact_current,
@@ -157,10 +157,9 @@ pub use observation_cache::{
 };
 pub use portable_plan::{
     PORTABLE_PLAN_MAX_BYTES, PORTABLE_PLAN_VERSION, PortableDestinationBinding,
-    PortableHostRequirements, PortableInlineArtifact, PortableLockPrecondition,
-    PortablePlanArtifact, PortablePlanFailurePolicy, PortablePlanResource, PortableSchemaAuthority,
-    PortableTaskSetArtifact, lock_precondition as portable_plan_lock_precondition,
-    parse_portable_plan, sha256 as portable_plan_sha256,
+    PortableHostRequirements, PortableInlineArtifact, PortablePlanArtifact,
+    PortablePlanFailurePolicy, PortablePlanResource, PortableSchemaAuthority,
+    PortableTaskSetArtifact, parse_portable_plan, sha256 as portable_plan_sha256,
 };
 pub use project_files::{
     ProjectFileExpectation, ProjectFileGuard, ProjectFileTransactionReport, ProjectFileWrite,

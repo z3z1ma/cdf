@@ -147,24 +147,6 @@ pub(crate) fn prepare_runtime_resource_for_cli_with_artifact_root(
     })
 }
 
-pub(crate) fn build_project_run_resource(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    source_plan: cdf_runtime::CompiledSourcePlan,
-    execution: Option<&cdf_runtime::ExecutionServices>,
-    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
-) -> Result<CliProjectRunSource, CliError> {
-    let artifact_root = context.root.clone();
-    build_project_run_resource_with_artifact_root(
-        context,
-        resource,
-        source_plan,
-        execution,
-        prepared_payloads,
-        &artifact_root,
-    )
-}
-
 fn build_project_run_resource_with_artifact_root(
     context: &ProjectContext,
     resource: &CompiledResource,

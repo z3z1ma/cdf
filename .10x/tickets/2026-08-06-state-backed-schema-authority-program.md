@@ -21,7 +21,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
 2. **S2 — preparation and portable-plan cutover.** Add stable project id, move selected
    plan/compile/run and derived artifacts to state bindings, implement all-selected first-use CAS,
    and replace portable lock preconditions with per-resource state preconditions. Owner:
-   `.10x/tickets/2026-08-06-s2-state-backed-preparation-portable-plan.md`.
+   `.10x/tickets/done/2026-08-06-s2-state-backed-preparation-portable-plan.md`.
 3. **S3 — total drift dispositions.** Replace evolution/quarantine switches with typed field/row/
    record/partition actions, exact trust presets, field-role safety, variant/quarantine telemetry,
    and plan-visible disposition facts. Owner:
@@ -93,6 +93,9 @@ promotion, or schema export/import.
 - 2026-08-06: S1 closed with backend-neutral authority contracts, the current-only SQLite store,
   reusable conformance, 76/76 SQLite tests, and strict affected-package Clippy. S2 and S3 are now
   dependency-unblocked; S4 still depends on both.
+- 2026-08-06: S2 closed with required stable project identity, state-bound selected preparation,
+  one-pass/all-selected run establishment, exact compiled and portable artifact bindings, typed
+  CLI authority facts, focused tests, and release sandbox proof. S4 remains gated only by S3.
 
 ## Blockers
 

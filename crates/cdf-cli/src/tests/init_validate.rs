@@ -94,8 +94,17 @@ fn init_name_sets_project_name_and_json_fields() {
     assert_eq!(json["result"]["root"], target_string);
     assert_eq!(json["result"]["project_name"], "warehouse-core");
     assert_eq!(json["result"]["force"], false);
+    let project_text = fs::read_to_string(target.join("cdf.toml")).unwrap();
+    let config = cdf_project::parse_cdf_toml(&project_text).unwrap();
+    uuid::Uuid::parse_str(config.project.id.as_str()).expect("init project id must be a UUID");
+    let without_id = project_text
+        .lines()
+        .filter(|line| !line.starts_with("id = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
     assert_eq!(
-        fs::read_to_string(target.join("cdf.toml")).unwrap(),
+        without_id,
         concat!(
             "[project]\n",
             "name = \"warehouse-core\"\n",
@@ -112,6 +121,28 @@ fn init_name_sets_project_name_and_json_fields() {
             "root = \"data\"\n",
         )
     );
+}
+
+#[test]
+fn validate_rejects_missing_or_blank_stable_project_id_without_state_access() {
+    for (case, replacement) in [("missing", ""), ("blank", "id = \"   \"\n")] {
+        let project = TestProject::new();
+        let path = project.root.join("cdf.toml");
+        let config = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            config.replace("id = \"test-project\"\n", replacement),
+        )
+        .unwrap();
+
+        let result = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
+
+        assert_ne!(result.exit_code, 0, "case {case}");
+        assert!(!project.root.join(".cdf/state.db").exists());
+        let json = stderr_or_stdout_json(&result.stderr);
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("project.id") || message.contains("missing field `id`"));
+    }
 }
 
 #[test]

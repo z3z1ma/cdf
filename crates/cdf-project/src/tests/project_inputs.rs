@@ -12,6 +12,7 @@ fn project_config(body: &str) -> ProjectConfig {
     toml::from_str(&format!(
         r#"
 [project]
+id = "test-project"
 name = "input_authority"
 default_environment = "dev"
 normalizer = "namecase-v1"

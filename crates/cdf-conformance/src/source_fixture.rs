@@ -127,6 +127,7 @@ pub(crate) fn compile_local_file_project_resource(
     })?;
     let project_toml = format!(
         r#"[project]
+id = "test-project"
 name = "{project_name}"
 default_environment = "dev"
 normalizer = "namecase-v1"

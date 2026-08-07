@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt};
 
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, ProjectId, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +48,7 @@ impl ProjectConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectMetadata {
+    pub id: ProjectId,
     pub name: String,
     pub default_environment: String,
     pub normalizer: String,

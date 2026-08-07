@@ -6,7 +6,7 @@ cdf\-compile \- Prepare independently verified compiled resource artifacts
 .SH SYNOPSIS
 \fBcdf compile\fR [\fB\-\-exclude\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-locked\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_SELECTOR\fR]
 .SH DESCRIPTION
-Compile selected resources independently. Ordinary compile may establish missing first\-use schema authority; \-\-locked requires sufficient unchanged cdf.lock authority. Successful resources are retained when another resource fails.
+Compile selected resources independently. Ordinary compile may establish missing first\-use schema authority; \-\-locked requires existing unchanged state\-backed schema authority. Successful resources are retained when another resource fails.
 .SH OPTIONS
 .TP
 \fB\-\-exclude\fR \fI<RESOURCE_GLOB>\fR
@@ -16,7 +16,7 @@ Exclude resources matching this glob; may be repeated
 Suppress progress and non\-primary success narration
 .TP
 \fB\-\-locked\fR
-Require sufficient unchanged cdf.lock authority
+Require existing unchanged state\-backed schema authority
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics

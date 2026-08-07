@@ -108,6 +108,13 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
             "schema fields",
             report.resource_schema.fields.len().to_string(),
         )
+        .row(
+            "schema authority",
+            format!(
+                "{} · generation {}",
+                report.schema_authority.status, report.schema_authority.generation
+            ),
+        )
         .row("migrations", migrations.to_string());
     let mut document = RenderDocument::new()
         .push(StatusLine::new(

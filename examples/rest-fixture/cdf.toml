@@ -1,4 +1,5 @@
 [project]
+id = "test-project"
 name = "rest_fixture_example"
 default_environment = "dev"
 normalizer = "namecase-v1"

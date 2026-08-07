@@ -175,6 +175,7 @@ impl cdf_runtime::SourceDriver for ProjectReferenceTestDriver {
 
 pub(crate) const BOOK_PROJECT: &str = r#"
 [project]
+id = "test-project"
 name = "acme_data"
 default_environment = "dev"
 normalizer = "namecase-v1"

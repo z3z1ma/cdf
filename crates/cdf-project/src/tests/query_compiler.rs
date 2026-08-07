@@ -13,6 +13,7 @@ fn project(root: &TempDir, sql: &str, extra_source: &str) -> ProjectConfig {
     toml::from_str(&format!(
         r#"
 [project]
+id = "test-project"
 name = "query_project"
 default_environment = "dev"
 normalizer = "namecase-v1"

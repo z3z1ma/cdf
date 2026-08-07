@@ -976,6 +976,7 @@ pub(super) fn write_http_discover_project(root: &Path, source_extra: &str) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "http_files"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1014,6 +1015,7 @@ pub(super) fn write_http_external_mock_project(root: &Path) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "external_remote"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1049,6 +1051,7 @@ pub(super) fn write_object_store_discover_project(root: &Path) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cloud_files"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1084,6 +1087,7 @@ pub(super) fn write_object_store_ndjson_discover_project(root: &Path) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "cloud_events"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1243,6 +1247,7 @@ pub(super) fn write_discover_project(root: &Path, format: &str, glob: &str) {
         root.join("cdf.toml"),
         r#"
 [project]
+id = "test-project"
 name = "files"
 default_environment = "dev"
 normalizer = "namecase-v1"

@@ -5,15 +5,17 @@ use std::{
     path::{Component, Path},
 };
 
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{
+    CdfError, Result, SchemaAuthorityKey, SchemaAuthorityPrecondition, SchemaHash, SchemaHead,
+};
 use cdf_semantic::SemanticCatalog;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     CdfLock, CompiledArtifactInput, CompiledProjectResource, EffectiveEnvironment, LOCK_FILE_NAME,
-    LockedResource, ManifestDiagnostic, ManifestLineageEdge, ManifestSemanticDefinition,
-    ManifestSemanticSource, PROJECT_FILE_NAME, ProjectConfig, lock_to_toml,
+    ManifestDiagnostic, ManifestLineageEdge, ManifestSemanticDefinition, ManifestSemanticSource,
+    PROJECT_FILE_NAME, ProjectConfig, lock_to_toml,
     manifest::{
         ProjectCompilationMode, ProjectManifestCompileRequest, compile_project_manifest,
         validate_compiled_artifact_sections, validate_compiled_artifact_security,
@@ -40,7 +42,7 @@ pub struct CompiledResourceArtifact {
     pub environment: String,
     pub environment_binding_hash: String,
     pub compiler_version: String,
-    pub lock_binding: LockedResource,
+    pub schema_authority: CompiledSchemaAuthority,
     pub inputs: Vec<CompiledArtifactInput>,
     pub resource: crate::ManifestResource,
     pub semantics: Vec<ManifestSemanticDefinition>,
@@ -55,7 +57,7 @@ struct ArtifactIdentity<'a> {
     environment: &'a str,
     environment_binding_hash: &'a str,
     compiler_version: &'a str,
-    lock_binding: &'a LockedResource,
+    schema_authority: &'a CompiledSchemaAuthority,
     inputs: &'a [CompiledArtifactInput],
     resource: &'a crate::ManifestResource,
     semantics: &'a [ManifestSemanticDefinition],
@@ -67,12 +69,50 @@ pub struct CompiledResourceArtifactRequest<'a> {
     pub config: &'a ProjectConfig,
     pub environment: &'a EffectiveEnvironment,
     pub lock: &'a CdfLock,
+    pub schema_authority: CompiledSchemaAuthority,
     pub resource: &'a CompiledProjectResource,
     pub authored_inputs: Vec<CompiledArtifactInput>,
     pub semantic_catalog: &'a SemanticCatalog,
     pub semantic_sources: BTreeMap<String, ManifestSemanticSource>,
     pub selected_destination_id: &'a str,
     pub diagnostics: Vec<ManifestDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledSchemaAuthority {
+    pub key: SchemaAuthorityKey,
+    pub generation: u64,
+    pub schema_hash: SchemaHash,
+}
+
+impl CompiledSchemaAuthority {
+    pub fn from_head(head: &SchemaHead) -> Result<Self> {
+        head.validate()?;
+        let authority = Self {
+            key: head.key.clone(),
+            generation: head.generation,
+            schema_hash: head.schema_hash.clone(),
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.key.validate()?;
+        SchemaAuthorityPrecondition::Exact {
+            generation: self.generation,
+            schema_hash: self.schema_hash.clone(),
+        }
+        .validate()
+    }
+
+    pub fn exact_precondition(&self) -> SchemaAuthorityPrecondition {
+        SchemaAuthorityPrecondition::Exact {
+            generation: self.generation,
+            schema_hash: self.schema_hash.clone(),
+        }
+    }
 }
 
 pub fn compile_resource_artifact(
@@ -120,7 +160,7 @@ pub fn compile_resource_artifact(
         environment: manifest.header.environment,
         environment_binding_hash: manifest.header.environment_binding_hash.as_str().to_owned(),
         compiler_version: manifest.header.compiler_version,
-        lock_binding: locked,
+        schema_authority: request.schema_authority,
         inputs: manifest.inputs,
         resource: resource.clone(),
         semantics: manifest.semantics,
@@ -145,21 +185,12 @@ impl CompiledResourceArtifact {
             "compiled resource environment binding",
             &self.environment_binding_hash,
         )?;
-        if self.lock_binding.compiled_artifact_hash.is_some() {
-            return Err(CdfError::data(
-                "compiled resource artifact lock binding contains its own artifact hash",
-            ));
-        }
-        if self.resource.resource_id != self.lock_binding.descriptor.resource_id.as_str()
-            || self.resource.descriptor != self.lock_binding.descriptor
-            || self.resource.capabilities != self.lock_binding.capabilities
-            || self.resource.output_schema != self.lock_binding.schema
-            || self.resource.output_schema_hash.as_str()
-                != self.lock_binding.schema_hash.as_deref().unwrap_or_default()
-            || self.resource.source_binding != self.lock_binding.compiler.source
+        self.schema_authority.validate()?;
+        if self.resource.resource_id != self.schema_authority.key.resource_id.as_str()
+            || self.resource.output_schema_hash != self.schema_authority.schema_hash
         {
             return Err(CdfError::data(format!(
-                "compiled resource artifact `{}` differs from its independent lock authority",
+                "compiled resource artifact `{}` differs from its exact state schema authority",
                 self.resource.resource_id
             )));
         }
@@ -208,7 +239,7 @@ impl CompiledResourceArtifact {
             environment: &self.environment,
             environment_binding_hash: &self.environment_binding_hash,
             compiler_version: &self.compiler_version,
-            lock_binding: &self.lock_binding,
+            schema_authority: &self.schema_authority,
             inputs: &self.inputs,
             resource: &self.resource,
             semantics: &self.semantics,
@@ -594,7 +625,7 @@ pub fn load_compilation_snapshot(
             .collect::<Vec<_>>();
         for resource_id in current_ids {
             let entry = index.resources[&resource_id].clone();
-            match load_current_artifact(root, &config, &environment, lock.as_ref(), &entry) {
+            match load_current_artifact(root, &config, &environment, &entry) {
                 Ok(artifact) => {
                     artifacts.insert(resource_id, artifact);
                 }
@@ -643,7 +674,6 @@ fn load_current_artifact(
     root: &Path,
     config: &ProjectConfig,
     environment: &EffectiveEnvironment,
-    lock: Option<&CdfLock>,
     entry: &CompilationIndexEntry,
 ) -> Result<CompiledResourceArtifact> {
     let reference = entry.artifact.as_ref().ok_or_else(|| {
@@ -666,16 +696,7 @@ fn load_current_artifact(
             entry.resource_id
         )));
     }
-    let locked = lock
-        .and_then(|lock| lock.resources.get(&entry.resource_id))
-        .ok_or_else(|| CdfError::data("compiled artifact has no matching lock authority"))?;
-    validate_compiled_resource_artifact_current(
-        root,
-        config,
-        environment,
-        &artifact,
-        Some(locked),
-    )?;
+    validate_compiled_resource_artifact_inputs_current(root, config, environment, &artifact)?;
     Ok(artifact)
 }
 
@@ -684,7 +705,24 @@ pub fn validate_compiled_resource_artifact_current(
     config: &ProjectConfig,
     environment: &EffectiveEnvironment,
     artifact: &CompiledResourceArtifact,
-    locked: Option<&LockedResource>,
+    schema_authority: &CompiledSchemaAuthority,
+) -> Result<()> {
+    validate_compiled_resource_artifact_inputs_current(root, config, environment, artifact)?;
+    schema_authority.validate()?;
+    if &artifact.schema_authority != schema_authority {
+        return Err(CdfError::data(format!(
+            "compiled artifact for `{}` differs from current state schema authority",
+            artifact.resource.resource_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_compiled_resource_artifact_inputs_current(
+    root: &Path,
+    config: &ProjectConfig,
+    environment: &EffectiveEnvironment,
+    artifact: &CompiledResourceArtifact,
 ) -> Result<()> {
     artifact.validate()?;
     if artifact.project_name != config.project.name
@@ -702,8 +740,7 @@ pub fn validate_compiled_resource_artifact_current(
         &environment.name,
         &configured.configured_source,
     )?;
-    if artifact.lock_binding.compiler.normalizer != config.project.normalizer
-        || configured.source_type != current.source_type
+    if configured.source_type != current.source_type
         || configured.base_configuration_hash != current.base_hash
         || configured.overlay_configuration_hash != current.overlay_hash
         || configured.effective_configuration_hash != current.effective_hash
@@ -712,22 +749,6 @@ pub fn validate_compiled_resource_artifact_current(
             "compiled artifact for `{}` is stale for its selected project configuration",
             artifact.resource.resource_id
         )));
-    }
-    if let Some(locked) = locked {
-        let mut expected_binding = locked.clone();
-        if expected_binding.compiled_artifact_hash.as_deref()
-            != Some(artifact.artifact_hash.as_str())
-        {
-            return Err(CdfError::data(
-                "compiled artifact hash differs from cdf.lock authority",
-            ));
-        }
-        expected_binding.compiled_artifact_hash = None;
-        if artifact.lock_binding != expected_binding {
-            return Err(CdfError::data(
-                "compiled artifact binding differs from cdf.lock authority",
-            ));
-        }
     }
     let authored = read_required_file(
         &root.join(&artifact.resource.origin.relative_path),
@@ -958,6 +979,7 @@ mod tests {
         let config = parse_cdf_toml(
             r#"
 [project]
+id = "test-project"
 name = "index_test"
 default_environment = "dev"
 normalizer = "namecase-v1"

@@ -182,7 +182,7 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand compile" -l locked -d 'Require sufficient unchanged cdf.lock authority'
+complete -c cdf -n "__fish_cdf_using_subcommand compile" -l locked -d 'Require existing unchanged state-backed schema authority'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand compile" -s h -l help -d 'Print help (see more with \'--help\')'
@@ -283,7 +283,7 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
-complete -c cdf -n "__fish_cdf_using_subcommand run" -l locked -d 'Require sufficient unchanged cdf.lock authority'
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l locked -d 'Require existing unchanged state-backed schema authority'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l stats-profile -d 'Write the typed statistics profile artifact'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l explain-memory -d 'Include memory-ledger detail in the run report'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l loop -d 'Continue polling for work'

@@ -6,7 +6,7 @@ use cdf_semantic::SemanticCatalog;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    COMPILATION_INDEX_RELATIVE_PATH, LOCK_FILE_NAME, ProjectConfig, ProjectResourceSelection,
+    COMPILATION_INDEX_RELATIVE_PATH, ProjectConfig, ProjectResourceSelection,
     ProjectResourceSelectionResolution,
     internal::validate_environment_uri_fields,
     load_compilation_snapshot,
@@ -266,8 +266,7 @@ pub fn validate_project_static(
                 "resource SQL and configured-source references".to_owned(),
                 "closed source and resource option schemas".to_owned(),
                 "secret-reference syntax".to_owned(),
-                "locally present lock, compilation-index, and resource-artifact integrity"
-                    .to_owned(),
+                "locally present compilation-index and resource-artifact integrity".to_owned(),
             ],
             skipped: vec![
                 "secret resolution and environment-value lookup".to_owned(),
@@ -280,7 +279,6 @@ pub fn validate_project_static(
 
 struct LocalAuthority {
     artifacts: std::collections::BTreeMap<String, crate::CompiledResourceArtifact>,
-    lock_present: bool,
     index_present: bool,
     valid: bool,
 }
@@ -294,7 +292,7 @@ impl LocalAuthority {
         config: &ProjectConfig,
         environment: &str,
     ) -> LocalAuthorityStatus {
-        if !self.lock_present || !self.index_present {
+        if !self.index_present {
             return LocalAuthorityStatus::Missing;
         }
         let Some(content_hash) = content_hash else {
@@ -303,7 +301,6 @@ impl LocalAuthority {
         let current = self.artifacts.get(resource_id).is_some_and(|artifact| {
             artifact.project_name == config.project.name
                 && artifact.environment == environment
-                && artifact.lock_binding.compiler.normalizer == config.project.normalizer
                 && artifact.resource.origin.relative_path == path
                 && artifact.resource.origin.authored_content_hash == content_hash
         });
@@ -320,7 +317,6 @@ fn load_local_authority(
     environment: &str,
     diagnostics: &mut Vec<ProjectStaticValidationDiagnostic>,
 ) -> LocalAuthority {
-    let lock_present = project_root.join(LOCK_FILE_NAME).exists();
     let index_present = project_root.join(COMPILATION_INDEX_RELATIVE_PATH).exists();
     match load_compilation_snapshot(project_root, Some(environment)) {
         Ok(snapshot) => {
@@ -342,7 +338,6 @@ fn load_local_authority(
             }
             LocalAuthority {
                 artifacts: snapshot.artifacts,
-                lock_present,
                 index_present,
                 valid,
             }
@@ -351,7 +346,6 @@ fn load_local_authority(
             diagnostics.push(global_error("CDF-VALIDATE-COMPILATION", error));
             LocalAuthority {
                 artifacts: std::collections::BTreeMap::new(),
-                lock_present,
                 index_present,
                 valid: false,
             }

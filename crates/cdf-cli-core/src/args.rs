@@ -1123,7 +1123,7 @@ pub fn cli_command() -> ClapCommand {
         .subcommand(
             cmd("compile")
                 .about("Prepare independently verified compiled resource artifacts")
-                .long_about("Compile selected resources independently. Ordinary compile may establish missing first-use schema authority; --locked requires sufficient unchanged cdf.lock authority. Successful resources are retained when another resource fails.")
+                .long_about("Compile selected resources independently. Ordinary compile may establish missing first-use schema authority; --locked requires existing unchanged state-backed schema authority. Successful resources are retained when another resource fails.")
                 .after_help("Examples:\n  cdf compile local.events\n  cdf compile 'warehouse.*' --exclude warehouse.experimental\n  cdf compile --locked")
                 .arg(values_arg("selectors").value_name("RESOURCE_SELECTOR"))
                 .arg(append_option("exclude", "exclude", "RESOURCE_GLOB"))
@@ -1482,7 +1482,7 @@ fn option_help(long: &str) -> &'static str {
         "out" => "Write the command's canonical artifact without replacing terminal output",
         "plan" => "Execute a canonical portable plan artifact",
         "dry-run" => "Show the proposed change without writing it",
-        "locked" => "Require sufficient unchanged cdf.lock authority",
+        "locked" => "Require existing unchanged state-backed schema authority",
         "execute" => "Apply the planned operation",
         "force" => "Replace an existing artifact when safe",
         "scope" => "Checkpoint scope entry as key=value; may be repeated",

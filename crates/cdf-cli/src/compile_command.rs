@@ -6,11 +6,10 @@ use cdf_kernel::{CdfError, ErrorKind};
 use cdf_project::{
     COMPILATION_INDEX_RELATIVE_PATH, CompilationDiagnostic, CompilationIndex,
     CompiledArtifactInput, CompiledProjectResource, CompiledResourceArtifactRequest,
-    LOCK_FILE_NAME, ManifestInputKind, ManifestSemanticSource, PROJECT_FILE_NAME,
-    ProjectFileExpectation, ProjectFileGuard, ProjectFileWrite, ProjectResourcePath,
-    ProjectResourceSelectionError, bind_compiled_resource_artifact, compile_resource_artifact,
-    compiled_resource_artifact_path, finalize_query_project_resource, lock_to_toml, parse_cdf_toml,
-    parse_compilation_index, publish_project_files_transactionally_guarded,
+    ManifestInputKind, ManifestSemanticSource, PROJECT_FILE_NAME, ProjectFileExpectation,
+    ProjectFileGuard, ProjectFileWrite, ProjectResourcePath, ProjectResourceSelectionError,
+    compile_resource_artifact, compiled_resource_artifact_path, finalize_query_project_resource,
+    parse_cdf_toml, parse_compilation_index, publish_project_files_transactionally_guarded,
     resolve_project_resource_selection, upsert_compiled_resource_in_lockfile,
     validate_compilation_index_authority,
 };
@@ -43,6 +42,7 @@ pub(crate) fn compile(
     let selection = resolve_project_resource_selection(&root, &args.selectors, &args.exclude)
         .map_err(|error| resource_selection_error("cdf compile", error))?;
     let (_, execution) = crate::commands::default_services(cli)?;
+    crate::schema_authority::reset_proposal_seed();
     let mut results = Vec::with_capacity(selection.resources.len());
 
     for selected in &selection.resources {
@@ -50,14 +50,16 @@ pub(crate) fn compile(
         match result {
             Ok(success) => results.push(success),
             Err(error) => {
-                let _ = record_failed_index_entry(
-                    &root,
-                    &config,
-                    &environment,
-                    selected,
-                    &project_bytes,
-                    &error,
-                );
+                if !args.locked {
+                    let _ = record_failed_index_entry(
+                        &root,
+                        &config,
+                        &environment,
+                        selected,
+                        &project_bytes,
+                        &error,
+                    );
+                }
                 results.push(CompileResourceReport {
                     resource_id: selected.resource_id.to_string(),
                     path: selected.relative_path.clone(),
@@ -65,6 +67,7 @@ pub(crate) fn compile(
                     artifact_path: None,
                     artifact_hash: None,
                     discovered_schema: false,
+                    schema_authority: None,
                     error: Some(CompileResourceError {
                         code: error.code,
                         kind: error_kind_name(&error.kind).to_owned(),
@@ -132,28 +135,9 @@ fn compile_one(
         destinations,
     )?;
     let mut entry = compiled_entry(&context, selected.resource_id.as_str())?;
-    let had_lock_binding = context
-        .lock
-        .as_ref()
-        .is_some_and(|lock| lock.resources.contains_key(selected.resource_id.as_str()));
-    if locked_only && !had_lock_binding {
-        return Err(CdfError::contract(format!(
-            "resource `{}` has no locked compilation authority; run `cdf compile {}` first",
-            selected.resource_id, selected.resource_id
-        ))
-        .into());
-    }
-
     let mut schema_files = BTreeMap::new();
     let mut discovered_schema = false;
     if entry.resource.schema().fields().is_empty() {
-        if locked_only {
-            return Err(CdfError::contract(format!(
-                "resource `{}` has no locked schema; run `cdf compile {}` first",
-                selected.resource_id, selected.resource_id
-            ))
-            .into());
-        }
         let artifacts = crate::schema_command::discover_artifacts_for_cli(
             &context,
             &entry.resource,
@@ -188,28 +172,28 @@ fn compile_one(
             &context,
             &context.environment.destination,
         )?;
-    let mut new_lock = if locked_only {
-        let mut lock = context.lock.clone().expect("locked binding checked");
-        lock.resources
-            .get_mut(selected.resource_id.as_str())
-            .expect("locked binding checked")
-            .compiled_artifact_hash = None;
-        lock
-    } else {
-        upsert_compiled_resource_in_lockfile(
-            &context.config,
-            context.lock.as_ref(),
-            &destination_artifacts,
-            &entry.resource,
-            &context.semantic_catalog,
-        )?
-    };
+    let compiler_lock = upsert_compiled_resource_in_lockfile(
+        &context.config,
+        None,
+        &destination_artifacts,
+        &entry.resource,
+        &context.semantic_catalog,
+    )?;
+    let schema_authority = crate::schema_authority::prepare(&context, &entry.resource)?;
+    if locked_only && schema_authority.proposal().is_some() {
+        return Err(CdfError::contract(format!(
+            "resource `{}` has no established state-backed schema authority; run `cdf compile {}` first",
+            selected.resource_id, selected.resource_id
+        ))
+        .into());
+    }
 
     let authored = captured_authored_inputs(&entry)?;
     let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
-        lock: &new_lock,
+        lock: &compiler_lock,
+        schema_authority: schema_authority.compiled_authority()?,
         resource: &entry,
         authored_inputs: authored
             .iter()
@@ -220,38 +204,11 @@ fn compile_one(
         selected_destination_id: &destination_id,
         diagnostics: Vec::new(),
     })?;
-    if locked_only {
-        let expected_hash = context.lock.as_ref().and_then(|lock| {
-            lock.resources
-                .get(selected.resource_id.as_str())
-                .and_then(|resource| resource.compiled_artifact_hash.as_deref())
-        });
-        if expected_hash != Some(artifact.artifact_hash.as_str()) {
-            return Err(CdfError::contract(format!(
-                "resource `{}` no longer matches its locked compiled artifact; run `cdf compile {}`",
-                selected.resource_id, selected.resource_id
-            ))
-            .into());
-        }
-        new_lock = context.lock.clone().expect("locked binding checked");
-    } else {
-        bind_compiled_resource_artifact(
-            &mut new_lock,
-            selected.resource_id.as_str(),
-            artifact.artifact_hash.clone(),
-        )?;
-    }
+    let compiled_authority = schema_authority.compiled_authority()?;
     let artifact_path =
         compiled_resource_artifact_path(selected.resource_id.as_str(), &artifact.artifact_hash)?;
-    publish_success(
-        &context,
-        &new_lock,
-        &artifact,
-        &artifact_path,
-        schema_files,
-        &authored,
-        locked_only,
-    )?;
+    publish_success(&context, &artifact, &artifact_path, schema_files, &authored)?;
+    crate::schema_authority::commit_one_idempotent(&context, &schema_authority)?;
     Ok(CompileResourceReport {
         resource_id: selected.resource_id.to_string(),
         path: selected.relative_path.clone(),
@@ -259,29 +216,27 @@ fn compile_one(
         artifact_path: Some(artifact_path),
         artifact_hash: Some(artifact.artifact_hash),
         discovered_schema,
+        schema_authority: Some(CompileSchemaAuthorityReport {
+            status: if schema_authority.proposal().is_some() {
+                "established"
+            } else {
+                "active"
+            },
+            generation: compiled_authority.generation,
+            schema_hash: compiled_authority.schema_hash.to_string(),
+        }),
         error: None,
     })
 }
 
-pub(crate) fn prepare_selected_resource(
-    cli: &Cli,
-    selected: &ProjectResourcePath,
-    locked_only: bool,
-    destinations: &cdf_runtime::DestinationRegistry,
-    execution: &cdf_runtime::ExecutionServices,
-) -> Result<(), CliError> {
-    compile_one(cli, selected, locked_only, destinations, execution).map(|_| ())
-}
-
 pub(crate) struct PortableCompilationMaterial {
     pub(crate) artifact: cdf_project::CompiledResourceArtifact,
-    pub(crate) lock_binding: cdf_project::LockedResource,
-    pub(crate) proposed_lock: Option<cdf_project::CdfLock>,
 }
 
 pub(crate) fn prepare_portable_compilation(
     context: &ProjectContext,
     resource: &cdf_declarative::CompiledResource,
+    schema_authority: &crate::schema_authority::PreparedSchemaAuthority,
     destination_id: &str,
     destination_sheet: cdf_kernel::DestinationSheetArtifact,
 ) -> Result<PortableCompilationMaterial, CliError> {
@@ -289,9 +244,9 @@ pub(crate) fn prepare_portable_compilation(
     let mut entry = compiled_entry(context, resource_id)?;
     entry.resource = resource.clone();
     entry.query.relational_plan = resource.relational_expression_plan().cloned();
-    let mut next_lock = upsert_compiled_resource_in_lockfile(
+    let compiler_lock = upsert_compiled_resource_in_lockfile(
         &context.config,
-        context.lock.as_ref(),
+        None,
         std::slice::from_ref(&destination_sheet),
         resource,
         &context.semantic_catalog,
@@ -300,7 +255,8 @@ pub(crate) fn prepare_portable_compilation(
     let artifact = compile_resource_artifact(CompiledResourceArtifactRequest {
         config: &context.config,
         environment: &context.environment,
-        lock: &next_lock,
+        lock: &compiler_lock,
+        schema_authority: schema_authority.compiled_authority()?,
         resource: &entry,
         authored_inputs: authored
             .iter()
@@ -311,44 +267,7 @@ pub(crate) fn prepare_portable_compilation(
         selected_destination_id: destination_id,
         diagnostics: Vec::new(),
     })?;
-    let current = context
-        .lock
-        .as_ref()
-        .and_then(|lock| lock.resources.get(resource_id));
-    if let Some(current) = current {
-        if current.compiled_artifact_hash.as_deref() != Some(artifact.artifact_hash.as_str()) {
-            return Err(CdfError::contract(format!(
-                "resource `{resource_id}` changed after its locked compilation; run `cdf compile {resource_id}` before exporting a portable plan"
-            ))
-            .into());
-        }
-        let mut expected = current.clone();
-        expected.compiled_artifact_hash = None;
-        if expected != artifact.lock_binding {
-            return Err(CdfError::contract(format!(
-                "resource `{resource_id}` no longer matches its locked portable authority; run `cdf compile {resource_id}`"
-            ))
-            .into());
-        }
-        return Ok(PortableCompilationMaterial {
-            artifact,
-            lock_binding: current.clone(),
-            proposed_lock: None,
-        });
-    }
-    bind_compiled_resource_artifact(&mut next_lock, resource_id, artifact.artifact_hash.clone())?;
-    let lock_binding = next_lock
-        .resources
-        .get(resource_id)
-        .cloned()
-        .ok_or_else(|| {
-            CdfError::internal("portable compilation lost its proposed resource lock binding")
-        })?;
-    Ok(PortableCompilationMaterial {
-        artifact,
-        lock_binding,
-        proposed_lock: Some(next_lock),
-    })
+    Ok(PortableCompilationMaterial { artifact })
 }
 
 fn compiled_entry(
@@ -399,12 +318,10 @@ fn captured_input(
 
 fn publish_success(
     context: &ProjectContext,
-    new_lock: &cdf_project::CdfLock,
     artifact: &cdf_project::CompiledResourceArtifact,
     artifact_path: &str,
     schema_files: BTreeMap<String, Vec<u8>>,
     authored: &[CapturedInput],
-    locked_only: bool,
 ) -> Result<(), CliError> {
     let prior_index_bytes = optional_file_bytes(
         &context.root.join(COMPILATION_INDEX_RELATIVE_PATH),
@@ -447,20 +364,6 @@ fn publish_success(
         )
         .owner_only(),
     );
-    let final_target = if locked_only {
-        COMPILATION_INDEX_RELATIVE_PATH
-    } else {
-        let prior_lock = context
-            .lock_authority
-            .as_ref()
-            .map(|authority| authority.bytes.clone());
-        writes.push(ProjectFileWrite::new(
-            LOCK_FILE_NAME,
-            lock_to_toml(new_lock)?.into_bytes(),
-            expectation(prior_lock),
-        ));
-        LOCK_FILE_NAME
-    };
     let mut guards = vec![ProjectFileGuard::exact(
         PROJECT_FILE_NAME,
         context.project_bytes.clone(),
@@ -470,7 +373,12 @@ fn publish_success(
             .iter()
             .map(|input| ProjectFileGuard::exact(&input.path, input.bytes.clone())),
     );
-    publish_project_files_transactionally_guarded(&context.root, final_target, guards, writes)?;
+    publish_project_files_transactionally_guarded(
+        &context.root,
+        COMPILATION_INDEX_RELATIVE_PATH,
+        guards,
+        writes,
+    )?;
     Ok(())
 }
 
@@ -682,7 +590,15 @@ pub(super) struct CompileResourceReport {
     pub artifact_path: Option<String>,
     pub artifact_hash: Option<String>,
     pub discovered_schema: bool,
+    pub schema_authority: Option<CompileSchemaAuthorityReport>,
     pub error: Option<CompileResourceError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct CompileSchemaAuthorityReport {
+    pub status: &'static str,
+    pub generation: u64,
+    pub schema_hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

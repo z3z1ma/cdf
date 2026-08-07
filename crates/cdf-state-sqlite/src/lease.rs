@@ -429,6 +429,13 @@ impl ScopeLeaseStore for SqliteScopeLeaseStore {
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
+    initialize_schema_with_domain(conn, None)
+}
+
+pub(crate) fn initialize_schema_with_domain(
+    conn: &Connection,
+    expected_domain: Option<&LeaseAuthorityDomainId>,
+) -> Result<()> {
     validate_schema_version(conn)?;
     ensure_schema_version_table(conn)?;
     conn.execute_batch(
@@ -446,11 +453,34 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             domain_id TEXT NOT NULL UNIQUE
         );
-        INSERT OR IGNORE INTO cdf_scope_lease_authority (singleton, domain_id)
-        VALUES (1, 'lease-' || lower(hex(randomblob(16))));
         ",
     )
     .map_err(sqlite_error)?;
+    match expected_domain {
+        Some(domain) => {
+            LeaseAuthorityDomainId::new(domain.as_str()).map(drop)?;
+            conn.execute(
+                "INSERT OR IGNORE INTO cdf_scope_lease_authority (singleton, domain_id) VALUES (1, ?)",
+                params![domain.as_str()],
+            )
+            .map_err(sqlite_error)?;
+        }
+        None => {
+            conn.execute(
+                "INSERT OR IGNORE INTO cdf_scope_lease_authority (singleton, domain_id) VALUES (1, 'lease-' || lower(hex(randomblob(16))))",
+                [],
+            )
+            .map_err(sqlite_error)?;
+        }
+    }
+    if let Some(expected) = expected_domain {
+        let current = read_authority_domain_id(conn)?;
+        if &current != expected {
+            return Err(CdfError::contract(format!(
+                "state authority domain is {current}, not the planned domain {expected}"
+            )));
+        }
+    }
     write_component_schema_version(conn, SCOPE_LEASE_COMPONENT, SCOPE_LEASE_SCHEMA_VERSION)
 }
 

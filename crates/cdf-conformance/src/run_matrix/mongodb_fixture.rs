@@ -414,6 +414,7 @@ fn one_resource(resource: &CompiledResource) -> Result<()> {
 fn project_toml(endpoint: &str) -> String {
     format!(
         r#"[project]
+id = "test-project"
 name = "mongodb_run_matrix"
 default_environment = "dev"
 normalizer = "namecase-v1"

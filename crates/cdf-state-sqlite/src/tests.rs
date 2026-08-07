@@ -2785,6 +2785,24 @@ fn sqlite_schema_authority_detects_missing_version_behind_head() {
 }
 
 #[test]
+fn sqlite_schema_authority_detects_versions_without_a_head() {
+    let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
+    let establishment =
+        first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
+    store.establish_if_absent(establishment.clone()).unwrap();
+    store
+        .execute_for_test(
+            "DELETE FROM cdf_schema_heads WHERE resource_id = ?",
+            [establishment.key.resource_id.as_str()],
+        )
+        .unwrap();
+
+    let error = store.head(&establishment.key).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("has versions but no head"));
+}
+
+#[test]
 fn sqlite_schema_authority_records_and_requires_current_schema_version() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("schema-version.db");

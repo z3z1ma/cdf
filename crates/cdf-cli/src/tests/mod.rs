@@ -109,6 +109,7 @@ fn test_destination_registry() -> cdf_runtime::DestinationRegistry {
 
 const PROJECT: &str = r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1717,6 +1718,7 @@ fn write_secret_project(
         format!(
             r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -1751,6 +1753,7 @@ fn write_rest_project(project: &TestProject, destination: &str, base_url: &str, 
         format!(
             r#"
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 normalizer = "namecase-v1"
@@ -2023,6 +2026,7 @@ fn write_minimal_lockfile(project: &TestProject) {
 version = 3
 
 [project]
+id = "test-project"
 name = "cli_test"
 default_environment = "dev"
 

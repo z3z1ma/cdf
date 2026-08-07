@@ -1,9 +1,10 @@
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
     CanonicalArrowSchema, EnvironmentName, LeaseAuthorityDomainId, LeaseOwnerId, ProjectId,
-    PromotionId, ResourceId, SchemaAuthorityEstablishment, SchemaAuthorityEventKind,
-    SchemaAuthorityKey, SchemaAuthorityStore, SchemaHeadStatus, SchemaPromotionFence,
-    SchemaVersion, SchemaVersionProvenance, ScopeLeaseStore,
+    PromotionId, ResourceId, SchemaAuthorityCheck, SchemaAuthorityEstablishment,
+    SchemaAuthorityEventKind, SchemaAuthorityKey, SchemaAuthorityPrecondition,
+    SchemaAuthorityStore, SchemaHeadStatus, SchemaPromotionFence, SchemaVersion,
+    SchemaVersionProvenance, ScopeLeaseStore,
 };
 
 pub fn assert_schema_authority_store_send_sync<S: SchemaAuthorityStore + Send + Sync>() {}
@@ -17,6 +18,7 @@ where
     assert_schema_authority_store_send_sync::<S>();
     assert_first_use_is_exact_and_idempotent(&fresh_store().0);
     assert_batch_is_all_or_none(&fresh_store().0);
+    assert_checked_batch_fences_all_selected_resources(&fresh_store().0);
     assert_key_isolation_and_bounded_history(&fresh_store().0);
     let (first, _) = fresh_store();
     let (second, _) = fresh_store();
@@ -118,6 +120,51 @@ fn assert_batch_is_all_or_none<S: SchemaAuthorityStore>(store: &S) {
     assert_eq!(heads.len(), 2);
     assert!(store.head(&absent.key).unwrap().is_some());
     assert!(store.head(&second.key).unwrap().is_some());
+}
+
+fn assert_checked_batch_fences_all_selected_resources<S: SchemaAuthorityStore>(store: &S) {
+    let active = first_use_schema_authority_establishment(store, "dev", "active", "id");
+    let active_head = store.establish_if_absent(active).unwrap();
+    let proposed = first_use_schema_authority_establishment(store, "dev", "proposed", "id");
+    store
+        .establish_batch_checked(
+            vec![
+                SchemaAuthorityCheck::new(
+                    active_head.key.clone(),
+                    active_head.exact_precondition(),
+                )
+                .unwrap(),
+                SchemaAuthorityCheck::new(
+                    proposed.key.clone(),
+                    SchemaAuthorityPrecondition::Absent,
+                )
+                .unwrap(),
+            ],
+            vec![proposed.clone()],
+        )
+        .unwrap();
+
+    let blocked = first_use_schema_authority_establishment(store, "dev", "blocked", "id");
+    let stale = SchemaAuthorityPrecondition::Exact {
+        generation: active_head.generation + 1,
+        schema_hash: active_head.schema_hash.clone(),
+    };
+    assert!(
+        store
+            .establish_batch_checked(
+                vec![
+                    SchemaAuthorityCheck::new(active_head.key.clone(), stale).unwrap(),
+                    SchemaAuthorityCheck::new(
+                        blocked.key.clone(),
+                        SchemaAuthorityPrecondition::Absent,
+                    )
+                    .unwrap(),
+                ],
+                vec![blocked.clone()],
+            )
+            .is_err()
+    );
+    assert!(store.head(&blocked.key).unwrap().is_none());
 }
 
 fn assert_key_isolation_and_bounded_history<S: SchemaAuthorityStore>(store: &S) {

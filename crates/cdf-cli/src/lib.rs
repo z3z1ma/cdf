@@ -29,6 +29,7 @@ mod run_command;
 mod run_recovery;
 mod runtime_budget;
 mod scan_command;
+mod schema_authority;
 mod schema_command;
 mod source_registry;
 mod sql_command;

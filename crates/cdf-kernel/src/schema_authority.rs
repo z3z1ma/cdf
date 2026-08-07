@@ -234,6 +234,25 @@ pub enum SchemaAuthorityPrecondition {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaAuthorityCheck {
+    pub key: SchemaAuthorityKey,
+    pub precondition: SchemaAuthorityPrecondition,
+}
+
+impl SchemaAuthorityCheck {
+    pub fn new(key: SchemaAuthorityKey, precondition: SchemaAuthorityPrecondition) -> Result<Self> {
+        key.validate()?;
+        precondition.validate()?;
+        Ok(Self { key, precondition })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        Self::new(self.key.clone(), self.precondition.clone()).map(drop)
+    }
+}
+
 impl SchemaAuthorityPrecondition {
     pub fn validate(&self) -> Result<()> {
         match self {
@@ -422,6 +441,12 @@ pub trait SchemaAuthorityStore: Send + Sync {
 
     fn establish_batch_if_absent(
         &self,
+        establishments: Vec<SchemaAuthorityEstablishment>,
+    ) -> Result<Vec<SchemaHead>>;
+
+    fn establish_batch_checked(
+        &self,
+        checks: Vec<SchemaAuthorityCheck>,
         establishments: Vec<SchemaAuthorityEstablishment>,
     ) -> Result<Vec<SchemaHead>>;
 

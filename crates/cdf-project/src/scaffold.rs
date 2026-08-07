@@ -131,8 +131,10 @@ fn default_project_name(root: &Path) -> String {
 fn project_scaffold(name: &str) -> Result<String> {
     let name =
         serde_json::to_string(name).map_err(|error| CdfError::internal(error.to_string()))?;
+    let project_id = uuid::Uuid::new_v4();
     Ok(format!(
         r#"[project]
+id = "{project_id}"
 name = {name}
 default_environment = "dev"
 normalizer = "namecase-v1"

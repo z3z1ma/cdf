@@ -57,7 +57,7 @@ fn plan_out_writes_canonical_artifact_and_preserves_terminal_report() {
 }
 
 #[test]
-fn portable_plan_runs_after_whole_plan_preflight_and_publishes_first_use_authority() {
+fn portable_plan_runs_after_whole_plan_preflight_and_establishes_first_use_authority() {
     let project = TestProject::new();
     let plan_path = project.root.join("portable-plan.json");
     let planned = run_dynamic(vec![
@@ -93,10 +93,11 @@ fn portable_plan_runs_after_whole_plan_preflight_and_publishes_first_use_authori
     assert_eq!(json["result"]["portable_plan"]["preflight"], "passed");
     assert_eq!(
         json["result"]["portable_plan"]["first_use_authority"],
-        "published"
+        "established"
     );
-    assert!(project.root.join("cdf.lock").is_file());
-    assert!(project.root.join(".cdf/manifest.json").is_file());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/manifest.json").exists());
+    assert!(project.root.join(".cdf/state.db").is_file());
     assert!(project.root.join(".cdf/packages").is_dir());
     assert!(project.root.join(".cdf/dev.duckdb").is_file());
 }
@@ -289,6 +290,11 @@ fn run_preparation_failure_creates_no_package_for_any_selected_resource() {
         !project.root.join(".cdf/packages").exists(),
         "the all-selected preparation barrier must precede package creation"
     );
+    assert!(
+        !project.root.join(".cdf/state.db").exists(),
+        "a failed selection must not establish any first-use schema authority"
+    );
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["counts"]["completed"], 0);
     assert_eq!(json["result"]["counts"]["failed"], 1);
@@ -585,6 +591,7 @@ fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
     let table = seed_ordered_cursor_table(&postgres, "backfill_dry_plan_orders", "(1, 5)");
     let project = TestProject::new();
     let source_dsn = write_pinned_postgres_project_with_secret(&project, &postgres, &table);
+    let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
 
     let result = run([
         "cdf",
@@ -606,7 +613,10 @@ fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
     assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
+    assert_eq!(
+        fs::read(project.root.join(".cdf/state.db")).unwrap(),
+        state_before
+    );
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "backfill");

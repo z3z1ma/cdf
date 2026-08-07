@@ -351,9 +351,6 @@ impl ProjectContext {
             &semantic_catalog,
             &selection,
         )?;
-        let (lock, lock_authority) = load_lock(root)?;
-        let entries =
-            hydrate_and_finalize_query_resources(root, entries, lock.as_ref(), &semantic_catalog)?;
         let (resources, resource_queries) = entries
             .into_iter()
             .map(|entry| (entry.resource, entry.query))
@@ -366,8 +363,10 @@ impl ProjectContext {
             resources,
             resource_queries,
             adhoc_resource_ids: BTreeSet::new(),
-            lock,
-            lock_authority,
+            // Selected current-model commands resolve schema authority from state during
+            // preparation. A dormant legacy lock must neither hydrate nor invalidate them.
+            lock: None,
+            lock_authority: None,
             semantic_catalog,
         })
     }
@@ -832,7 +831,7 @@ pub(crate) fn project_authority_read_error(
     }
 }
 
-fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
+pub(crate) fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
     uri.strip_prefix("sqlite://")
         .map(|path| absolute_under_root(root, path))
         .ok_or_else(|| {
@@ -842,7 +841,7 @@ fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
         })
 }
 
-fn state_store_path_ownership(uri: &str) -> cdf_state_sqlite::StateStorePathOwnership {
+pub(crate) fn state_store_path_ownership(uri: &str) -> cdf_state_sqlite::StateStorePathOwnership {
     if uri == "sqlite://.cdf/state.db" {
         cdf_state_sqlite::StateStorePathOwnership::CdfManaged
     } else {
