@@ -1,71 +1,123 @@
 Status: active
-Created: 2026-07-08
-Updated: 2026-07-10
+Created: 2026-08-06
+Updated: 2026-08-06
+Supersedes: `.10x/specs/superseded/data-onramp-schema-intelligence-lockfile.md`
 
-# Data onramp schema intelligence
+# Data-onramp schema intelligence under state authority
 
-## Purpose and scope
+## Purpose
 
-This specification governs P2 schema discovery, schema snapshots, hints, declared-schema constraints, reconciliation, widening/coercion, and the declarative Arrow type vocabulary. It refines `.10x/specs/resource-authoring-planning-batches.md` and `.10x/specs/types-contracts-normalization.md` for `VISION.md` Chapters 7, 8, 11, and 19.
+This specification governs declared schema, hints, bounded discovery, canonical Arrow versions,
+physical reconciliation, coercion, and declarative type vocabulary. Active logical schema
+authority is state-backed under `.10x/decisions/state-backed-schema-authority.md`; source
+observation never advances it implicitly.
 
-## Behavior
+## Authored modes
 
-Resources MUST support three schema modes: declared, hints, and discover. Discover mode MUST produce a pinned schema snapshot before package-producing execution. Hints mode MUST run discovery and apply user hints as constraints or projection, not as a competing physical truth.
+Resources support authored `declared`, `hints`, and `discover` modes:
 
-Tier-0 selects an explicit non-default mode with `schema_mode = "declared|hints|discover"`. Omitted mode remains backward compatible: a schema block means declared and no schema block means discover. `hints` requires a schema block, compiles that block's hash as hint authority, discovers physical reality, reconciles it through the shared type policy, and pins the reconciled snapshot while retaining `SchemaSource::Hints` identity. Explicit discover with a schema block is invalid because hints is the unambiguous form.
+- `declared` supplies the logical schema intent directly and validates observations against it;
+- `hints` discovers physical reality and applies user fields as constraints/projection;
+- `discover` has no authored field list and requires bounded observation for first use.
 
-Schema snapshots MUST be Arrow schemas with metadata, serialized at `.cdf/schemas/<resource>@<hash>.json`, referenced from `cdf.lock`, and stamped into plan/package evidence. Snapshot hashes MUST be deterministic for unchanged source content and unchanged CDF schema serialization.
+`schema_mode = "declared|hints|discover"` is explicit. Hints requires a schema block. Discover with
+a schema block is invalid. Omitted mode may be resolved from the current authored grammar only if
+that grammar's active spec declares the default; this specification does not add a compatibility
+fallback.
 
-Discovery probes MUST be bounded and source-specific:
+Before package-producing execution, every mode MUST resolve to one immutable canonical Arrow
+schema version and one total admission program. With absent state authority, plan may propose it
+and compile/run may establish it. With active authority, authored/current observations are evidence
+against that exact version and cannot rewrite it.
 
-- Parquet: footer/schema metadata through ranged reads when remote.
-- Arrow IPC: schema block.
-- CSV, JSON, NDJSON: bounded sampling. JSON-family probes MUST stop at the first of 4,096 records or 8 MiB of admitted input by default, record configured and observed coverage, and MUST NOT represent sampled evidence as exhaustive row conformance.
-- SQL: catalogs such as `information_schema`.
-- REST: one recorded sample page plus declared cursor policy.
+## Version and evidence
 
-File discovery MUST be resource-level rather than single-file-only. A Parquet or Arrow IPC file resource whose glob or remote enumeration resolves multiple files MUST support discovery and pinning without requiring the operator to narrow the source. Per-format footer/schema-block/sampling probes MUST feed one discovery-set aggregation abstraction so later file formats do not reinvent aggregation semantics. The pinned result MUST represent the aggregate resource schema and durable provenance for the matched discovery set; incompatible per-file schemas MUST become named contract verdicts rather than an ambiguity rejection or unclassified crash. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` governs exhaustive binary aggregation, metadata conflicts, pin/effective/manifest authority, quarantine advancement, and executor budgets.
+An immutable schema version contains the complete canonical Arrow schema with field/schema
+metadata, content hash, predecessor when promoted, provenance, and optional bounded discovery
+evidence reference. State owns versions and active heads. `.cdf/schemas/` may cache verified
+canonical copies but is never authority.
 
-For Parquet and Arrow IPC, discovery MUST probe every matched footer/schema block by default. Explicit sampled file coverage is permitted only under `.10x/specs/schema-discovery-and-stream-admission.md`; it must never activate implicitly or claim content-exhaustive row conformance. Aggregation MUST use equality or the ratified lossless widening lattice recursively; missing compatible fields become nullable and materialize typed nulls. Initial all-file metadata pinning MUST fail with a complete per-file report when the selected set is incompatible; sampled-file pinning requires the selected sample to aggregate compatibly. Reserved CDF metadata is regenerated; identical non-reserved metadata is retained; conflicts are recorded per file.
+Plan/package evidence distinguishes:
 
-Discovery evidence MUST distinguish the immutable baseline snapshot hash, the current verdict-bearing effective schema hash, and the content-addressed discovery-manifest hash. Ordinary commands MUST verify and hydrate the baseline before any file-source observation. Existing pins remain immutable until explicit `cdf schema pin`; `evolve` MAY derive a recorded effective output schema against that baseline, while `freeze` MUST keep the baseline effective and quarantine deviations. File listing/probing for execution MUST NOT be reported or persisted as a pin refresh.
+- active/proposed logical schema version and head generation;
+- compiled output Arrow schema after projection/normalization/framework fields;
+- discovery-manifest hash and coverage;
+- physical observation hashes/type provenance;
+- exact coercion/admission program identity.
 
-Binary discovery defaults to 64 MiB metadata per file, 128 MiB total in-flight metadata, and 8 concurrent probes per executor. These values MUST be configurable through executor options and serialized into discovery evidence. Exceeding a resolved budget MUST fail explicitly and MUST NOT activate sampling, change an explicit sample, or substitute candidates.
+Schema and structural fingerprints use the existing canonical recursive encoding, never display
+strings or delimiter concatenation.
 
-Discovery MUST NOT silently mutate a pinned schema during run. Drift against a pinned snapshot is a contract event that admits, widens, variant-captures, quarantines, or rejects according to policy.
+## Bounded discovery
 
-Schema reconciliation MUST be centralized. Format readers MUST feed observed physical schema facts into one reconciliation stage. Declared schemas and hints constrain, project, and annotate observed schema; they do not replace reality.
+Discovery is source-specific and bounded:
 
-Automatic widening MUST be lossless and recorded in the validation program. Lossy casts require `allow_lossy_mapping`. String parsing into dates, timestamps, decimals, or other semantic types is opt-in through `coerce_types`; default inference of decimal-looking strings remains `utf8` plus suggestion.
+- Parquet: footer/schema metadata through ranged reads when remote;
+- Arrow IPC: schema block;
+- CSV/JSON/NDJSON: bounded content sampling, with JSON-family defaults capped at the first 4,096
+  records or 8 MiB admitted input;
+- SQL: adapter-owned catalogs;
+- REST: one bounded sample page plus declared cursor policy.
 
-Tier-0 resources MAY declare `types = { coerce_types = <bool>, allow_lossy_mapping = <bool> }`. Both allowances MUST default to `false`, MUST compile into resource runtime policy and the serialized validation program, and MUST apply identically in discovery reconciliation, deep validation, preview, plan, and run.
+File resources discover at resource-set grain. Binary formats probe every matched metadata block by
+default; explicit sampled file coverage follows
+`.10x/specs/schema-discovery-and-stream-admission.md`. Aggregation uses equality or the ratified
+lossless recursive widening lattice for the proposed first-use version. Missing compatible fields
+become nullable. Incompatible candidates produce complete named verdicts.
 
-Row-local mismatches found by sampled JSON-family probes that the governing contract can quarantine MUST be represented as warning verdicts rather than compiler failures. Runtime contract evaluation remains authoritative for all rows and MUST preserve quarantined or residual values as evidence.
+Binary metadata defaults remain 64 MiB per file, 128 MiB total in-flight, and eight concurrent
+probes per executor, configurable and serialized. Exceeding a bound fails; it never silently
+activates sampling or substitutes candidates.
 
-Declarative field types MUST cover Arrow's closed vocabulary from `VISION.md` Chapter 7, including decimal128/256 with precision and scale, nested list/struct/map, all integer widths, floats, date/time/timestamp/duration, utf8/binary large variants, and nullability/source metadata.
+## Reconciliation and drift
 
-## CLI/API surface
+Format/source adapters emit observed physical facts into the shared reconciliation stage. Declared
+schemas and hints constrain/project/annotate reality; they do not replace observation. Lossless
+coercion is compiled and evidenced. Lossy mappings require explicit `allow_lossy_mapping`; parsing
+text into semantic temporal/decimal types requires explicit `coerce_types`.
 
-`cdf schema discover <resource>` MUST probe and print the discovered schema without package or destination writes.
+For first use, compatible observations may be aggregated into one proposed baseline. After an
+active head exists, no observation may change typed output. It follows
+`.10x/specs/schema-drift-dispositions.md`: lossless coerce, typed null, variant, quarantine, or fail.
 
-`cdf schema pin <resource>` MUST write or refresh the schema snapshot and render the diff.
+Row-local mismatches found during bounded JSON-family discovery are proposal evidence. Under active
+authority they receive the same compiled run-time disposition as in-stream observations; discovery
+does not become permission to admit a new typed field.
 
-`cdf schema show <resource>` MUST render the pinned snapshot.
+## CLI behavior
 
-`cdf schema diff <resource>` MUST compare pinned and newly discovered schemas, including normalizer-version changes where relevant.
+- `cdf discover source` inventories adapter-owned upstream candidates and may generate resources;
+- `cdf discover resource` observes selected authored resources without establishing authority;
+- `cdf schema show` reads active state authority;
+- `cdf schema diff` performs fresh bounded comparison without writes;
+- plan proposes first use without writes;
+- compile/run may establish absent authority under their command contracts;
+- only `cdf schema promote --execute` advances an established version.
 
-`cdf plan` and `cdf run` MAY auto-pin an unpinned discover resource on first use. Auto-pin is a recorded artifact action and MUST be visible in human and JSON output.
+There is no schema pin/discover command and no auto-evolving output mode.
+
+## Type vocabulary
+
+Declarative fields cover the closed current Arrow vocabulary, including decimal128/256 precision
+and scale, nested list/struct/map, integer widths, floats, date/time/timestamp/duration, UTF-8/binary
+large variants, nullability, and source metadata. Values round-trip through authored grammar,
+generated schema, state version, compiled plan, package evidence, and destination mapping.
 
 ## Acceptance criteria
 
-- An HTTPS Parquet resource can plan/run with zero typed schema fields by pinning a footer-discovered snapshot.
-- A REST resource without a declared schema can run after bounded plan-time discovery and snapshot pinning.
-- The widening lattice has property tests proving value preservation and composition for supported widenings.
-- Decimal and nested declarative types round-trip through TOML/YAML parsing, JSON Schema generation, plan evidence, and package schema evidence.
-- Physical type provenance is preserved in field metadata after reconciliation.
-- Multi-file Parquet and Arrow IPC file discovery pin deterministic aggregate schemas and discovery-set identities without reading row data or narrowing the glob to one file.
-- Discovery behavior and artifacts remain executor-neutral and can be reused by standalone, container, or distributed workers without CLI/local-filesystem semantics becoming correctness dependencies.
+- Declared/hints/discover resources resolve to deterministic canonical first-use proposals.
+- HTTPS Parquet and REST resources can establish first-use state authority from bounded evidence.
+- Multi-file Parquet/IPC aggregation is deterministic and avoids row-data reads.
+- Sampling artifacts record both coverage axes and never overclaim exhaustiveness.
+- Widening property tests prove value preservation/composition for permitted proposal coercions.
+- Decimal/nested types round-trip across every current artifact boundary.
+- Active-authority drift never changes the head or destination schema and follows total dispositions.
+- Discovery remains executor-neutral and source-specific behavior stays behind adapter contracts.
 
 ## Explicit exclusions
 
-This spec does not define file listing, transport credentials, destination type mapping tables, or CLI rendering layout.
+- lockfiles or project-file schema authority;
+- automatic established-schema widening;
+- destination mappings as logical authority;
+- unbounded probing, implicit sampling, or source-specific branches in generic orchestration;
+- nested promotion or schema export/import.

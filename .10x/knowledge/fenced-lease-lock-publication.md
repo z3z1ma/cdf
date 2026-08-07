@@ -1,21 +1,33 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-08-06
 
-# Fenced leases and lockfile publication
+# Fenced leases and state-backed schema publication
 
-Lease expiry time is store authority. Public lease operations must not accept an executor-supplied current timestamp: a caller could advance time and seize an otherwise live lease. Production stores own their clock; deterministic conformance injects a controllable clock behind the store.
+Lease expiry time is store authority. Public lease operations never accept an executor-supplied
+current timestamp: a caller could advance time and seize a live lease. Production stores own their
+clock; deterministic conformance injects a controllable clock behind the store.
 
-Fencing tokens are monotonically increasing per scope and persist across store reopen. A guarded mutation validates the current unexpired owner/token immediately before publication; a stale owner never publishes even if it prepared bytes while its lease was live.
+Fencing tokens increase monotonically per scope and persist across reopen. They are meaningful only
+inside the stable authority-domain id that issued them. A token from another SQLite/Postgres store
+is incomparable and must be rejected, even if its integer happens to match.
 
-Exact byte/hash comparison is not atomic by itself. Every CDF writer of the same authority file must share one mutation guard from prior-authority validation through atomic install and directory sync. Both ordinary writes and compare-and-swap use:
+Schema versions are immutable. Schema-head mutation is a state transaction that validates exact
+authority key, prior generation/hash, active owner/token, and version existence at the same
+consistency boundary that writes the next head/history event. A caller-side `assert_current` is
+useful diagnosis, never publication authority.
 
-1. exact expected authority or no-clobber creation precondition;
-2. same-filesystem temporary bytes;
-3. file sync;
-4. final authority/fence validation;
-5. atomic install;
-6. parent-directory sync where supported;
-7. deterministic temporary cleanup.
+First-use batch establishment validates every proposed absent key and creates every version/head in
+one transaction. One conflict writes none. Repeating an identical proposal is idempotent only when
+the existing version is byte-identical and every requested key matches; a different proposal fails.
 
-Advisory coordination cannot control non-cooperating editors or external processes. Capability reporting must state that boundary rather than claim universal filesystem CAS. Remote/distributed stores implement the same kernel lease contract with store-authoritative time and their own transactional publication primitive.
+Promotion additionally requires a settlement barrier. Ordinary runs hold a short renewable
+generation-bound permit only across destination mutation, receipt verification, and checkpoint
+commit. Promotion fences new permits, drains or expires existing ones, establishes the complete old
+generation cutoff, settles corrections, and atomically publishes the next head plus publication
+event. An expired or stale executor cannot commit an old generation after publication.
+
+The former filesystem lockfile CAS procedure is historical and no longer governs product schema
+authority. Generic project-file publication still uses temporary bytes, sync, exact expectations,
+atomic install, and cleanup where authored/generated multi-file writes require it, but no project
+file is the schema commit point.

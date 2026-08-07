@@ -12,7 +12,7 @@ Review the implementation of `cdf contract freeze` and `cdf contract test` over 
 
 ## Assumptions Tested
 
-- `cdf.lock` is the correct project-local contract snapshot registry for this slice, per `.10x/decisions/contract-freeze-lockfile-registry.md`.
+- `cdf.lock` is the correct project-local contract snapshot registry for this slice, per `.10x/decisions/superseded/contract-freeze-lockfile-registry.md`.
 - The optional `contract` argument is a resource-id selector, not an independent contract-file name.
 - The CLI should delegate snapshot semantics to `cdf-project`, not implement ad hoc hashing in `cdf-cli`.
 - `contract show` must remain project-free.

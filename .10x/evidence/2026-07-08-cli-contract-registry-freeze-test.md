@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md, .10x/decisions/contract-freeze-lockfile-registry.md, .10x/specs/project-cli-observability-security.md, .10x/specs/types-contracts-normalization.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md, .10x/decisions/superseded/contract-freeze-lockfile-registry.md, .10x/specs/project-cli-observability-security.md, .10x/specs/types-contracts-normalization.md
 
 # CLI contract registry freeze/test evidence
 
@@ -21,7 +21,7 @@ Implementation files inspected and changed:
 - `crates/cdf-project/src/lockfile.rs`
 - `crates/cdf-project/src/internal.rs`
 - `crates/cdf-project/src/tests.rs`
-- `.10x/decisions/contract-freeze-lockfile-registry.md`
+- `.10x/decisions/superseded/contract-freeze-lockfile-registry.md`
 
 Verification commands run from `/Users/alexanderbut/code_projects/personal/firn`:
 

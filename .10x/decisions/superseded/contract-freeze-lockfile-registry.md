@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-08-06
+Superseded-By: `.10x/decisions/state-backed-schema-authority.md`
 
 # Contract freeze lockfile registry
 

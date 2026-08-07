@@ -26,7 +26,7 @@ The end-to-end Parquet regression pins a one-file `int32` baseline, records exac
 - `cargo machete --with-metadata --skip-target-dir`: no unused dependencies.
 - `cargo semver-checks check-release -p cdf-kernel --baseline-rev HEAD`: 196/196 passed.
 - `cargo semver-checks check-release -p cdf-contract --baseline-rev HEAD`: 196/196 passed.
-- `cargo semver-checks check-release -p cdf-engine --baseline-rev HEAD`: 195/196; the sole finding is the intentional `EnginePlan` non-exhaustive migration recorded in `.10x/decisions/effective-schema-runtime-authority.md`.
+- `cargo semver-checks check-release -p cdf-engine --baseline-rev HEAD`: 195/196; the sole finding is the intentional `EnginePlan` non-exhaustive migration recorded in `.10x/decisions/superseded/effective-schema-runtime-authority.md`.
 - `cargo semver-checks check-release -p cdf-project --baseline-rev HEAD`: 195/196; the sole finding is the intentional `ResourceSchemaDiscoveryArtifacts` non-exhaustive migration recorded in the same decision.
 
 Focused tests cover delimiter-safe/map-order-independent fingerprints; nested child name/nullability/metadata sensitivity; non-observable pinned resources remaining source-free; repeated partitions sharing one observation; limit early termination; immutable-baseline evolve; freeze/A10e boundary; nullable missing fields; empty input attestation; package verification; tamper rejection; and source-free replay.

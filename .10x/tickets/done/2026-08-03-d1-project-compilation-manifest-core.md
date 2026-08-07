@@ -46,7 +46,7 @@ authority, reachable semantic snapshot binding, and crash-safe `.cdf/manifest.js
 ## References
 
 - `.10x/specs/project-compilation-manifest.md`
-- `.10x/decisions/project-manifest-path-compile-and-query-policy.md`
+- `.10x/decisions/superseded/project-manifest-path-compile-and-query-policy.md`
 - `.10x/research/2026-08-03-project-compiler-authority-inventory.md`
 - `.10x/skills/audit-project-file-publication/SKILL.md`
 - `.10x/knowledge/project-file-publication-recovery.md`

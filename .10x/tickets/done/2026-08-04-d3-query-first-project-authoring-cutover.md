@@ -144,7 +144,7 @@ retired public authority rather than wrapping them.
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/specs/project-compilation-manifest.md`
-- `.10x/decisions/project-manifest-path-compile-and-query-policy.md`
+- `.10x/decisions/superseded/project-manifest-path-compile-and-query-policy.md`
 - `.10x/knowledge/project-file-publication-recovery.md`
 - `.10x/skills/audit-project-file-publication/SKILL.md`
 - `.10x/decisions/datafusion-deterministic-scalar-closure.md`

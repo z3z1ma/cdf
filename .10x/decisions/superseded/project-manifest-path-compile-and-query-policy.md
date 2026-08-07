@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-06
+Superseded-By: `.10x/decisions/state-backed-schema-authority.md`
 
 # Project manifest path, compilation, and query policy
 

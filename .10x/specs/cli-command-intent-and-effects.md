@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-06
 
 # CLI command intent, scope, and effects
 
@@ -51,8 +51,8 @@ It validates:
   envelope, configured-source binding, and reachable local semantic references;
 - registered driver identity and closed source/resource option schemas through pure schema
   validation only;
-- parse/hash/security integrity of locally present lock, compiled resource artifacts, and project
-  index, while treating absent generated authority as status.
+- parse/hash/security integrity of locally present compiled resource artifacts and project index,
+  while treating absent generated authority as status and never opening the state backend.
 
 It reports project path plus counts for environments, configured sources, authored/selected/valid/
 invalid resources, warnings/errors, and current/stale/missing generated authority. It attempts all
@@ -101,8 +101,8 @@ has an `author` ceiling, with bounded `observe` work permitted only against that
 - Successful add writes only the required `[sources.<name>]` entry, explicit secret reference/private
   secret state allowed by existing policy, and one thin resource whose projection enumerates the
   discovered top-level columns for immediate editing. `SELECT *` is permitted only as an explicit
-  reported fallback when the bounded location probe cannot return schema fields. Add does not pin
-  the observed schema, compile, write `cdf.lock`, or publish a project index.
+  reported fallback when the bounded location probe cannot return schema fields. Add does not
+  establish state-backed schema authority, compile, or publish a project index.
 - `--dry-run` runs the same proposal/preflight and writes nothing. It reports exact proposed effects.
 - The next action is `cdf plan <resource-id>`, never compile/refresh/pin folklore.
 
@@ -146,6 +146,17 @@ Backfill and other resource execution commands use resource selectors and the sa
 preparation barrier as run. Preview is bounded `observe`; status and inspect remain read-only over
 their named authority. None may hide an effectful repair behind a read-only command name.
 
+## Schema and contract authority surfaces
+
+`cdf schema show|diff|promote` is the only schema lifecycle surface. Show reads the active state
+version, diff observes bounded drift without writes, and promote is dry-plan by default with exact
+`--execute` authority. `cdf inspect lock`, `cdf contract freeze`, and lock-backed `cdf contract
+test` do not exist. `cdf contract show` remains a static project-free policy rendering command.
+
+Compile and resource run may establish absent state authority; their `--locked` flag requires an
+existing active head. Neither may advance an established head. Reports name state authority and
+actual first-use effects rather than lockfile writes.
+
 ## Acceptance scenarios
 
 1. Validate succeeds identically with required environment variables unset and with networking
@@ -155,7 +166,7 @@ their named authority. None may hide an effectful repair behind a read-only comm
 3. Bare doctor checks only local runtime; resource doctor for one resource resolves/contacts only
    its reachable authorities; `doctor all` is the sole whole-project probe.
 4. Add creates one thin resource with an explicit discovered top-level projection and source
-   proposal without lock/compiled artifacts, then points to plan. An unrelated invalid resource or
+   proposal without schema authority/compiled artifacts, then points to plan. An unrelated invalid resource or
    missing secret does not block it; a star projection is an explicit schema-unavailable fallback.
 5. `run --package` succeeds when authored project SQL is broken and source credentials are absent,
    because package authority is sufficient.
@@ -179,7 +190,7 @@ their named authority. None may hide an effectful repair behind a read-only comm
 
 - automatic repair by validate or doctor;
 - source/destination contact from validate;
-- hidden schema pin/compile from add or discovery generation;
+- hidden schema-authority establishment or compile from add or discovery generation;
 - package execution from mutable project SQL instead of package authority;
 - compatibility aliases or parsers for removed command forms;
 - a generic selector language spanning resources, configured sources, packages, runs, and

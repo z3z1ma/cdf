@@ -209,7 +209,7 @@ on 2026-08-04 after the user ratified the complete query-first D3 handoff. Curre
 `.10x/specs/project-source-resource-layout.md`. The original inventory remains historical evidence.
 Manifest policy remains closed by
 `.10x/research/2026-08-03-project-compiler-authority-inventory.md`,
-`.10x/decisions/project-manifest-path-compile-and-query-policy.md`, and
+`.10x/decisions/superseded/project-manifest-path-compile-and-query-policy.md`, and
 the active manifest spec. Postgres policy cleanup owner:
 `.10x/tickets/done/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`.
 

@@ -48,7 +48,7 @@ SQLite catalog. Update scaffold/docs/generated CLI artifacts and focused command
 ## References
 
 - `.10x/specs/project-compilation-manifest.md`
-- `.10x/decisions/project-manifest-path-compile-and-query-policy.md`
+- `.10x/decisions/superseded/project-manifest-path-compile-and-query-policy.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/skills/audit-project-file-publication/SKILL.md`
 - `.10x/skills/audit-cli-report-authority/SKILL.md`

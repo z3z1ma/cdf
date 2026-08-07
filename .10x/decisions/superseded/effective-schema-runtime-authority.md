@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-08-06
+Superseded-By: `.10x/decisions/state-backed-schema-authority.md`
 
 # Effective schema runtime authority is plan-level and source-neutral
 
