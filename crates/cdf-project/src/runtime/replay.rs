@@ -2293,6 +2293,7 @@ fn commit_package_through_staged_ingress(
         let segments = reader.verified_canonical_segment_object_stream_with(verified)?;
         let mut acknowledge = |identity: &cdf_runtime::StagedSegmentIdentity| {
             let segment_ack = SegmentAck {
+                kind: identity.kind,
                 segment_id: identity.segment_id.clone(),
                 row_count: identity.row_count,
                 byte_count: identity.byte_count,
@@ -2402,6 +2403,7 @@ fn finalize_active_staged_ingress(
         }
         for identity in &active.staged {
             let ack = SegmentAck {
+                kind: identity.kind,
                 segment_id: identity.segment_id.clone(),
                 row_count: identity.row_count,
                 byte_count: identity.byte_count,
@@ -2992,6 +2994,7 @@ mod stream_admission_replay_tests {
 
     fn state_segment(id: &str, rows: u64) -> StateSegment {
         StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new(id).unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::FileManifest(FileManifest {
@@ -3005,6 +3008,7 @@ mod stream_admission_replay_tests {
 
     fn acknowledgement(id: &str, rows: u64) -> SegmentAck {
         SegmentAck {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new(id).unwrap(),
             row_count: rows,
             byte_count: 200,

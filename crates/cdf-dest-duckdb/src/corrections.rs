@@ -612,6 +612,7 @@ fn correction_counts(request: &DestinationCorrectionCommitRequest) -> CommitCoun
 fn mirror_request(request: &DestinationCorrectionCommitRequest) -> DestinationCommitRequest {
     DestinationCommitRequest {
         package_hash: request.correction_package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(request.new_schema_hash().clone()),
         target: request.target.clone(),
         disposition: request.resource_disposition.clone(),
         segments: request.segments.clone(),

@@ -269,6 +269,7 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         },
     });
     let segment = StateSegment {
+        kind: PackageSegmentKind::Row,
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -303,6 +304,7 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("package-sha256").unwrap(),
+        content: PackageContentAuthority::rows(SchemaHash::new("schema-sha256").unwrap()),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         segments: vec![segment],
     };
@@ -311,7 +313,9 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("orders").unwrap(),
         package_hash: PackageHash::new("package-sha256").unwrap(),
+        content: delta.content.clone(),
         segment_acks: vec![SegmentAck {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new("segment-1").unwrap(),
             row_count: 3,
             byte_count: 24,
@@ -365,6 +369,7 @@ fn sample_destination_sheet() -> DestinationSheet {
 fn sample_destination_commit_request(delta: &StateDelta) -> DestinationCommitRequest {
     DestinationCommitRequest {
         package_hash: delta.package_hash.clone(),
+        content: delta.content.clone(),
         target: TargetName::new("orders").unwrap(),
         disposition: WriteDisposition::Merge,
         segments: delta.segments.clone(),
@@ -501,6 +506,7 @@ impl CommitSession for FakeCommitSession {
                 )));
             }
             let ack = SegmentAck {
+                kind: segment.state.kind,
                 segment_id: segment.state.segment_id,
                 row_count: segment.state.row_count,
                 byte_count: segment.state.byte_count,
@@ -533,6 +539,7 @@ impl CommitSession for FakeCommitSession {
             destination: self.destination,
             target: self.request.target,
             package_hash: self.request.package_hash,
+            content: self.request.content,
             segment_acks: self.accepted_segments,
             disposition: self.plan.disposition,
             idempotency_token: self.request.idempotency_token,
@@ -580,6 +587,7 @@ fn commit_session_api_writes_segments_and_finalizes_to_durable_receipt() {
     assert_eq!(
         ack,
         SegmentAck {
+            kind: segment.kind,
             segment_id: segment.segment_id,
             row_count: segment.row_count,
             byte_count: segment.byte_count,
@@ -871,6 +879,7 @@ fn correction_request_rejects_two_paths_for_one_output_field() {
         TargetName::new("orders").unwrap(),
         WriteDisposition::Append,
         vec![StateSegment {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
@@ -898,6 +907,7 @@ fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() 
         TargetName::new("orders").unwrap(),
         WriteDisposition::Append,
         vec![StateSegment {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
@@ -947,6 +957,7 @@ fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() 
         destination: DestinationId::new("parquet").unwrap(),
         target: request.target.clone(),
         package_hash: request.correction_package_hash.clone(),
+        content: PackageContentAuthority::rows(request.new_schema_hash().clone()),
         segment_acks: request.segment_acks(),
         disposition: request.resource_disposition.clone(),
         idempotency_token: request.idempotency_token.clone(),
@@ -1252,6 +1263,7 @@ fn artifact_values_serde_round_trip() {
         },
     });
     let segment = StateSegment {
+        kind: PackageSegmentKind::Row,
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: descriptor.state_scope.clone(),
         output_position: output_position.clone(),
@@ -1272,6 +1284,7 @@ fn artifact_values_serde_round_trip() {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("package-sha256").unwrap(),
+        content: PackageContentAuthority::rows(SchemaHash::new("schema-sha256").unwrap()),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         segments: vec![segment],
     };
@@ -1280,7 +1293,9 @@ fn artifact_values_serde_round_trip() {
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("orders").unwrap(),
         package_hash: PackageHash::new("package-sha256").unwrap(),
+        content: delta.content.clone(),
         segment_acks: vec![SegmentAck {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new("segment-1").unwrap(),
             row_count: 3,
             byte_count: 24,
@@ -1452,7 +1467,7 @@ fn schema_source_modes_serde_round_trip() {
 #[test]
 fn checkpoint_contract_values_serde_round_trip() {
     let (delta, receipt) = sample_state_delta_and_receipt();
-    assert_eq!(CHECKPOINT_STATE_VERSION, 2);
+    assert_eq!(CHECKPOINT_STATE_VERSION, 3);
     assert_eq!(CheckpointStatus::Committed.as_str(), "committed");
     assert_eq!(
         CheckpointStatus::parse("rewound").unwrap(),

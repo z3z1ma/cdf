@@ -441,6 +441,7 @@ fn run_cdf_worker(
     let package = Arc::new(RooflinePackage {
         hash: inputs.destination_commit.package_hash.as_str().to_owned(),
         entry: SegmentEntry {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: state.segment_id.clone(),
             path: "data/segment-1.arrow".to_owned(),
             package_row_ord_start: 0,
@@ -768,6 +769,7 @@ fn direct_commit_artifacts(
         &inputs.destination_commit,
         &plan,
         vec![SegmentAck {
+            kind: state.kind,
             segment_id: state.segment_id.clone(),
             row_count: state.row_count,
             byte_count: state.byte_count,
@@ -847,6 +849,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
         value: CursorValue::I64(i64::try_from(rows)?),
     });
     let state = StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new("segment-1")?,
         scope: ScopeKey::Resource,
         output_position: output_position.clone(),
@@ -855,6 +858,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
     };
     let destination_commit = DestinationCommitRequest {
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         target: TargetName::new("events")?,
         disposition: WriteDisposition::Append,
         segments: vec![state.clone()],
@@ -877,6 +881,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
                 late_data_carryover: Vec::new(),
                 source_continuation: None,
                 package_hash,
+                content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
                 schema_hash: schema_hash.clone(),
                 segments: vec![state.clone()],
             },

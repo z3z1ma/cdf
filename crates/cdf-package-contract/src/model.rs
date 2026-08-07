@@ -1,7 +1,7 @@
-use cdf_kernel::{CdfError, Result, SegmentId};
+use cdf_kernel::{CdfError, PackageContentAuthority, PackageSegmentKind, Result, SegmentId};
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_VERSION: u16 = 3;
+pub const MANIFEST_VERSION: u16 = 4;
 pub const MANIFEST_FILE: &str = "manifest.json";
 pub const TRACE_FILE: &str = "trace.jsonl";
 pub const RECEIPTS_FILE: &str = "destination/receipts.json";
@@ -33,6 +33,7 @@ pub struct ManifestIdentity {
     pub manifest_version: u16,
     pub package_id: String,
     pub layout: Vec<String>,
+    pub content: PackageContentAuthority,
     pub files: Vec<FileEntry>,
     pub segments: Vec<SegmentEntry>,
 }
@@ -46,6 +47,7 @@ pub struct FileEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentEntry {
+    pub kind: PackageSegmentKind,
     pub segment_id: SegmentId,
     pub path: String,
     pub package_row_ord_start: u64,

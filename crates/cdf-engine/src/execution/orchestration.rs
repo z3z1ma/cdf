@@ -1957,6 +1957,7 @@ struct PreparedKernelOutput {
 }
 
 struct OutputWriteState<'a> {
+    kind: cdf_kernel::PackageSegmentKind,
     profile: &'a mut ExecutionProfile,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     phase_measurements: &'a mut PhaseMeasurements,
@@ -1980,6 +1981,7 @@ struct SegmentOutputSink<'a, 'b> {
 
 struct SegmentEncodeWork {
     ordinal: u64,
+    kind: cdf_kernel::PackageSegmentKind,
     segment_id: cdf_kernel::SegmentId,
     package_row_ord_start: u64,
     partition_ordinal: u64,
@@ -2137,6 +2139,7 @@ impl SegmentEncodeQueue {
         match &mut self.mode {
             SegmentEncodeMode::Inline => {
                 let encoded = self.encoder.encode(
+                    work.kind,
                     work.segment_id.clone(),
                     work.package_row_ord_start,
                     &work.batches,
@@ -2167,6 +2170,7 @@ impl SegmentEncodeQueue {
                             let encoded =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     encoder.encode(
+                                        work.kind,
                                         work.segment_id.clone(),
                                         work.package_row_ord_start,
                                         &work.batches,
@@ -2265,6 +2269,7 @@ impl SegmentEncodeQueue {
             let write = builder.register_encoded_segment(write)?;
             let SegmentEncodeWork {
                 ordinal: _,
+                kind: _,
                 segment_id: _,
                 package_row_ord_start: _,
                 partition_ordinal,
@@ -3513,9 +3518,17 @@ where
         ExecutionExtent::Bounded { .. } | ExecutionExtent::Resident { .. } => None,
     };
 
+    let initial_content = initial_package_content(plan)?;
+    let package_segment_kind = match plan.write_disposition {
+        WriteDisposition::Append | WriteDisposition::Replace => cdf_kernel::PackageSegmentKind::Row,
+        WriteDisposition::Merge | WriteDisposition::CdcApply => {
+            cdf_kernel::PackageSegmentKind::Upsert
+        }
+    };
     let builder = PackageBuilder::create(
         package_dir,
         plan.package_id.clone(),
+        initial_content,
         package_builder_resources(options.services.as_ref())?,
     )?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -3598,9 +3611,17 @@ where
         }
         _ => ResidualDecisionAccumulator::Memory(Vec::new()),
     };
-    let apply_package_dedup = validation_program.has_exact_row_dedup_rule()
-        || (plan.write_disposition == WriteDisposition::Merge
-            && validation_program.has_keyed_dedup_rule());
+    let package_dedup_rule = if matches!(
+        plan.write_disposition,
+        WriteDisposition::Merge | WriteDisposition::CdcApply
+    ) {
+        Some(effective_keyed_effect_rule(plan)?)
+    } else if validation_program.has_exact_row_dedup_rule() {
+        package_dedup_rule(&validation_program)?
+    } else {
+        None
+    };
+    let apply_package_dedup = package_dedup_rule.is_some();
     if apply_package_dedup
         && late_data_policy
             .as_ref()
@@ -3622,9 +3643,6 @@ where
             .services
             .as_ref()
             .map(|services| -> Result<_> {
-                let rule = package_dedup_rule(&validation_program)?.ok_or_else(|| {
-                    CdfError::internal("package dedup was selected without a compiled rule")
-                })?;
                 let index = crate::dedup_spill::ExternalDedupIndex::create(
                     builder.package_dir().join(".dedup-spill"),
                     services.spill(),
@@ -3634,7 +3652,7 @@ where
                     builder.package_dir().join(".dedup-payload"),
                     services.spill(),
                 )?;
-                Ok((rule, index, payload))
+                Ok((index, payload))
             })
             .transpose()?
     } else {
@@ -3815,8 +3833,12 @@ where
                     .ok_or_else(|| CdfError::data("late-data carryover memory count overflow"))?;
 
                 if apply_package_dedup {
-                    if let Some((rule, index, payload)) = &mut external_dedup {
-                        index.push_owned_keys(encode_package_dedup_keys(
+                    if let Some((index, payload)) = &mut external_dedup {
+                        let rule = package_dedup_rule.as_ref().ok_or_else(|| {
+                            CdfError::internal("package dedup rule is absent")
+                        })?;
+                        index.push_owned_keys(encode_effect_keys(
+                            plan,
                             &validation_program,
                             rule,
                             &batch,
@@ -3846,6 +3868,7 @@ where
                         Some(carryover_frontier.clone()),
                         &mut carryover_assembler,
                         &mut OutputWriteState {
+                            kind: package_segment_kind,
                             profile: &mut profile,
                             segment_positions: &mut segment_positions,
                             phase_measurements: &mut phase_measurements,
@@ -3884,6 +3907,7 @@ where
             persist_canonical_segments(
                 carryover_assembler.finish()?,
                 &mut OutputWriteState {
+                    kind: package_segment_kind,
                     profile: &mut profile,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
@@ -4963,8 +4987,12 @@ where
                         validation_input_bytes,
                         validation_output_bytes,
                     );
-                    if let Some((rule, index, payload)) = &mut external_dedup {
-                        index.push_owned_keys(encode_package_dedup_keys(
+                    if let Some((index, payload)) = &mut external_dedup {
+                        let rule = package_dedup_rule.as_ref().ok_or_else(|| {
+                            CdfError::internal("package dedup rule is absent")
+                        })?;
+                        index.push_owned_keys(encode_effect_keys(
+                            plan,
                             &validation_program,
                             rule,
                             &output,
@@ -5000,6 +5028,7 @@ where
                     batch_output_position,
                     &mut segment_assembler,
                     &mut OutputWriteState {
+                        kind: package_segment_kind,
                         profile: &mut profile,
                         segment_positions: &mut segment_positions,
                         phase_measurements: &mut phase_measurements,
@@ -5023,6 +5052,7 @@ where
             persist_canonical_segments(
                 segment_assembler.finish()?,
                 &mut OutputWriteState {
+                    kind: package_segment_kind,
                     profile: &mut profile,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
@@ -5168,14 +5198,20 @@ where
         return Ok(());
     }
 
+    let mut keyed_reduction = None;
     if apply_package_dedup {
-        apply_dedup_and_write_pending_batches(
+        let rule = package_dedup_rule.as_ref().ok_or_else(|| {
+            CdfError::internal("package dedup was selected without a compiled rule")
+        })?;
+        let summary = apply_dedup_and_write_pending_batches(
             &builder,
             &validation_program,
+            rule,
             pending_dedup_batches,
             external_dedup.take(),
             &segmentation_policy,
             &mut OutputWriteState {
+                kind: package_segment_kind,
                 profile: &mut profile,
                 segment_positions: &mut segment_positions,
                 phase_measurements: &mut phase_measurements,
@@ -5194,11 +5230,18 @@ where
                 durable: &mut durable_segment_observer,
             },
         )?;
+        if matches!(
+            plan.write_disposition,
+            WriteDisposition::Merge | WriteDisposition::CdcApply
+        ) {
+            keyed_reduction = Some(keyed_reduction_authority(rule, &summary, plan)?);
+        }
     }
 
     segment_queue.finish(
         &builder,
         &mut OutputWriteState {
+            kind: package_segment_kind,
             profile: &mut profile,
             segment_positions: &mut segment_positions,
             phase_measurements: &mut phase_measurements,
@@ -5213,6 +5256,9 @@ where
         },
         &mut durable_segment_observer,
     )?;
+    if let Some(reduction) = keyed_reduction {
+        builder.set_content_authority(keyed_package_content(plan, reduction)?)?;
+    }
     for (partition_ordinal, partition, completion) in &completion_positions {
         enrich_segment_positions_with_completion(
             &mut segment_positions,
@@ -5920,22 +5966,22 @@ fn prepare_package_artifacts(
 fn apply_dedup_and_write_pending_batches(
     builder: &PackageBuilder,
     program: &ValidationProgram,
+    rule: &cdf_contract::PackageDedupRuleSpec,
     pending: Vec<PendingDedupBatch>,
     external: Option<(
-        cdf_contract::PackageDedupRuleSpec,
         crate::dedup_spill::ExternalDedupIndex,
         crate::dedup_spill::DedupPayloadSpool,
     )>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
     sink: &mut SegmentOutputSink<'_, '_>,
-) -> Result<()> {
+) -> Result<cdf_contract::DedupSummary> {
     let validation_started = state.phase_measurements.start();
     let pending_input_bytes = pending
         .iter()
         .map(|batch| batch.output.get_array_memory_size() as u64)
         .sum();
-    if let Some((rule, index, payload)) = external {
+    if let Some((index, payload)) = external {
         let validation_input_bytes = payload.input_bytes;
         let mut decisions = index.finish(rule.keep.clone())?;
         if let Some(memory) = state.memory {
@@ -6010,35 +6056,35 @@ fn apply_dedup_and_write_pending_batches(
             persist_canonical_segments(assembler.finish()?, state, sink)?;
         }
         let shard_count = provenance.finish(builder)?;
-        write_dedup_summary_v3(
-            builder,
-            cdf_contract::DedupSummary {
-                rule_id: rule.rule_id,
-                keys: rule.keys,
-                keep: rule.keep,
-                input_rows: decisions.summary.input_rows,
-                output_rows: decisions.summary.output_rows,
-                duplicate_key_count: decisions.summary.duplicate_key_count,
-                dropped_row_count: decisions.summary.dropped_row_count,
-                dropped_rows: Vec::new(),
-            },
-            shard_count,
-        )?;
+        let summary = cdf_contract::DedupSummary {
+            rule_id: rule.rule_id.clone(),
+            keys: rule.keys.clone(),
+            keep: rule.keep.clone(),
+            input_rows: decisions.summary.input_rows,
+            output_rows: decisions.summary.output_rows,
+            duplicate_key_count: decisions.summary.duplicate_key_count,
+            dropped_row_count: decisions.summary.dropped_row_count,
+            dropped_rows: Vec::new(),
+        };
+        write_dedup_summary_v3(builder, summary.clone(), shard_count)?;
         state.phase_measurements.add(
             RunPhase::ValidationNormalization,
             elapsed_ns(validation_started, "package dedup")?,
             validation_input_bytes,
             validation_input_bytes,
         );
-        return Ok(());
+        return Ok(summary);
     }
     let validation_input_bytes = pending_input_bytes;
     let accepted = pending
         .iter()
         .map(|batch| batch.output.clone())
         .collect::<Vec<_>>();
-    let dedup = evaluate_package_order_dedup(program, &accepted)?
-        .ok_or_else(|| CdfError::internal("package dedup was selected without an evaluation"))?;
+    let dedup = evaluate_package_order_dedup(program, &accepted)?.ok_or_else(|| {
+        CdfError::contract(
+            "keyed effect reduction requires execution services when no authored dedup rule is present",
+        )
+    })?;
     let mut provenance = DedupProvenanceSink::new();
     for dropped in &dedup.summary.dropped_rows {
         provenance.push(
@@ -6092,7 +6138,199 @@ fn apply_dedup_and_write_pending_batches(
     if let Some((_, mut assembler)) = assembler {
         persist_canonical_segments(assembler.finish()?, state, sink)?;
     }
-    Ok(())
+    Ok(dedup.summary)
+}
+
+fn initial_package_content(plan: &EnginePlan) -> Result<cdf_kernel::PackageContentAuthority> {
+    match plan.write_disposition {
+        WriteDisposition::Append | WriteDisposition::Replace => Ok(
+            cdf_kernel::PackageContentAuthority::rows(plan.output_schema.arrow_schema_hash.clone()),
+        ),
+        WriteDisposition::Merge => {
+            let rule = effective_keyed_effect_rule(plan)?;
+            keyed_package_content(
+                plan,
+                keyed_reduction_authority(&rule, &empty_dedup_summary(&rule), plan)?,
+            )
+        }
+        WriteDisposition::CdcApply => Err(CdfError::contract(
+            "cdc_apply execution requires compiled source-protocol effect-order authority",
+        )),
+    }
+}
+
+fn encode_effect_keys(
+    plan: &EnginePlan,
+    program: &ValidationProgram,
+    rule: &cdf_contract::PackageDedupRuleSpec,
+    batch: &RecordBatch,
+) -> Result<Vec<Vec<u8>>> {
+    if matches!(
+        plan.write_disposition,
+        WriteDisposition::Merge | WriteDisposition::CdcApply
+    ) {
+        for key in &plan.effect_key {
+            let matches = batch
+                .schema()
+                .fields()
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| field.name() == key)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let [index] = matches.as_slice() else {
+                return Err(CdfError::data(format!(
+                    "effect key field `{key}` must resolve to exactly one package output field"
+                )));
+            };
+            if batch.column(*index).null_count() != 0 {
+                return Err(CdfError::data(format!(
+                    "effect key field `{key}` contains null values"
+                )));
+            }
+        }
+    }
+    encode_package_dedup_keys(program, rule, batch)
+}
+
+fn effective_keyed_effect_rule(plan: &EnginePlan) -> Result<cdf_contract::PackageDedupRuleSpec> {
+    if let Some(rule) = package_dedup_rule(&plan.validation_program)? {
+        return Ok(rule);
+    }
+    Ok(cdf_contract::PackageDedupRuleSpec {
+        rule_id: "cdf-keyed-effect-unique".to_owned(),
+        keys: plan.effect_key.clone(),
+        keep: match plan.write_disposition {
+            WriteDisposition::Merge => cdf_contract::DedupKeepProgram::Fail,
+            WriteDisposition::CdcApply => cdf_contract::DedupKeepProgram::Last,
+            WriteDisposition::Append | WriteDisposition::Replace => {
+                return Err(CdfError::internal(
+                    "ordinary-row disposition requested a keyed-effect rule",
+                ));
+            }
+        },
+    })
+}
+
+fn empty_dedup_summary(rule: &cdf_contract::PackageDedupRuleSpec) -> cdf_contract::DedupSummary {
+    cdf_contract::DedupSummary {
+        rule_id: rule.rule_id.clone(),
+        keys: rule.keys.clone(),
+        keep: rule.keep.clone(),
+        input_rows: 0,
+        output_rows: 0,
+        duplicate_key_count: 0,
+        dropped_row_count: 0,
+        dropped_rows: Vec::new(),
+    }
+}
+
+fn keyed_package_content(
+    plan: &EnginePlan,
+    reduction: cdf_kernel::KeyedEffectReductionAuthority,
+) -> Result<cdf_kernel::PackageContentAuthority> {
+    let (key, delete_schema_hash) = keyed_effect_key_authority(plan)?;
+    let content = cdf_kernel::PackageContentAuthority::KeyedChanges {
+        logical_schema_hash: plan.output_schema.arrow_schema_hash.clone(),
+        upsert_schema_hash: plan.output_schema.arrow_schema_hash.clone(),
+        delete_schema_hash,
+        key,
+        reduction,
+        deletion_capture: cdf_kernel::DeletionCaptureAuthority::unsupported(format!(
+            "sha256:{:x}",
+            Sha256::digest(b"cdf-source-deletion-capture-unsupported-v1")
+        )),
+        delete_application: cdf_kernel::DeleteApplicationAuthority::NotApplicable,
+    };
+    content.validate()?;
+    Ok(content)
+}
+
+fn keyed_effect_key_authority(
+    plan: &EnginePlan,
+) -> Result<(cdf_kernel::KeyAuthority, cdf_kernel::SchemaHash)> {
+    if plan.effect_key.is_empty() {
+        return Err(CdfError::contract(
+            "merge and cdc_apply require a nonempty ordered effect key",
+        ));
+    }
+    let output = plan.output_schema.to_arrow()?;
+    let mut indices = Vec::with_capacity(plan.effect_key.len());
+    for key in &plan.effect_key {
+        let matches = output
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.name() == key)
+            .collect::<Vec<_>>();
+        let [(index, field)] = matches.as_slice() else {
+            return Err(CdfError::contract(format!(
+                "effect key field `{key}` must resolve to exactly one normalized output field"
+            )));
+        };
+        if field.is_nullable() {
+            return Err(CdfError::contract(format!(
+                "effect key field `{key}` must be non-nullable"
+            )));
+        }
+        indices.push(*index);
+    }
+    let key_schema = output.project(&indices).map_err(CdfError::from)?;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&key_schema)?;
+    Ok((
+        cdf_kernel::KeyAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            fields: plan.effect_key.clone(),
+            encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+            schema_hash: schema_hash.clone(),
+        },
+        schema_hash,
+    ))
+}
+
+fn keyed_reduction_authority(
+    rule: &cdf_contract::PackageDedupRuleSpec,
+    summary: &cdf_contract::DedupSummary,
+    plan: &EnginePlan,
+) -> Result<cdf_kernel::KeyedEffectReductionAuthority> {
+    if summary.keys != plan.effect_key {
+        return Err(CdfError::contract(
+            "keyed-effect reduction key does not match the compiled resource effect key",
+        ));
+    }
+    let (winner, input_order) = match rule.keep {
+        cdf_contract::DedupKeepProgram::Fail => (
+            cdf_kernel::KeyedEffectWinnerPolicy::Fail,
+            cdf_kernel::KeyedEffectInputOrder::Unordered,
+        ),
+        cdf_contract::DedupKeepProgram::First => (
+            cdf_kernel::KeyedEffectWinnerPolicy::First,
+            cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 },
+        ),
+        cdf_contract::DedupKeepProgram::Last => (
+            cdf_kernel::KeyedEffectWinnerPolicy::Last,
+            cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 },
+        ),
+    };
+    let reduction = cdf_kernel::KeyedEffectReductionAuthority {
+        version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+        winner,
+        input_order,
+        input: cdf_kernel::KeyedEffectCounts {
+            upserts: summary.input_rows,
+            deletes: 0,
+        },
+        duplicate_key_count: summary.duplicate_key_count,
+        surviving: cdf_kernel::KeyedEffectCounts {
+            upserts: summary.output_rows,
+            deletes: 0,
+        },
+        provenance_format: "parquet".to_owned(),
+        provenance_version: cdf_package_contract::DEDUP_PROVENANCE_VERSION,
+    };
+    let (key, _) = keyed_effect_key_authority(plan)?;
+    reduction.validate(&key)?;
+    Ok(reduction)
 }
 
 fn write_dedup_summary_v3(
@@ -6825,6 +7063,7 @@ fn persist_canonical_segments(
         sink.queue.submit(
             SegmentEncodeWork {
                 ordinal: 0,
+                kind: state.kind,
                 segment_id,
                 package_row_ord_start,
                 partition_ordinal,
@@ -8476,6 +8715,7 @@ pub fn assemble_isolated_worker_package(
     let builder = PackageBuilder::create(
         package_dir,
         plan.package_id.clone(),
+        cdf_kernel::PackageContentAuthority::rows(plan.output_schema.arrow_schema_hash.clone()),
         cdf_package::PackageBuilderResources::shared(services.memory(), services.spill())?,
     )?;
     let mut package_row_ord_start = 0_u64;
@@ -8484,6 +8724,7 @@ pub fn assemble_isolated_worker_package(
             .read_canonical_segment(&reference, resources.disk_bytes, resources.memory_bytes)?
             .into_bytes();
         builder.import_canonical_segment(
+            cdf_kernel::PackageSegmentKind::Row,
             segment_id,
             package_row_ord_start,
             row_count,
@@ -9090,6 +9331,9 @@ mod transform_kernel_tests {
         let builder = PackageBuilder::create(
             temp.path(),
             "quarantine-budget",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("quarantine-budget-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -9131,6 +9375,9 @@ mod transform_kernel_tests {
         let builder = PackageBuilder::create(
             temp.path(),
             "dense-quarantine-budget",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("dense-quarantine-budget-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -9192,6 +9439,9 @@ mod transform_kernel_tests {
         let builder = PackageBuilder::create(
             temp.path(),
             "dense-quarantine-rss",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("dense-quarantine-rss-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )

@@ -275,9 +275,10 @@ pub(crate) fn state_delta_from_run(
         head,
         |visitor| output.output.for_each_identity_segment(visitor),
     )?;
-    Ok(preimage.into_state_delta(PackageHash::new(
-        output.output.manifest.package_hash.clone(),
-    )?))
+    Ok(preimage.into_state_delta(
+        PackageHash::new(output.output.manifest.package_hash.clone())?,
+        output.output.manifest.identity.content.clone(),
+    ))
 }
 
 struct StateDeltaRunDraft<'a> {
@@ -325,6 +326,7 @@ fn state_delta_preimage_from_run_draft(
                 ))
             })?;
         state_segments.push(StateSegment {
+            kind: segment.kind,
             segment_id: segment.segment_id,
             scope: scope.clone(),
             output_position,

@@ -301,6 +301,7 @@ fn logical_batch(ids: Vec<i64>, names: Vec<&str>) -> RecordBatch {
 
 fn state_segment(rows: u64) -> StateSegment {
     StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: ScopeKey::Resource,
         output_position: SourcePosition::Cursor(CursorPosition {
@@ -338,11 +339,13 @@ fn test_plan(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         schema_hash: schema_hash.clone(),
         segments: vec![segment.clone()],
     };
     plan_sqlite_load(SqliteLoadPlanInput {
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         target: SqliteIdentifier::user("events").unwrap(),
         disposition,
@@ -500,6 +503,7 @@ fn start_session_with_execution(
     let package = Arc::new(TestPackage {
         hash: hash.to_owned(),
         entries: vec![SegmentEntry {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: state.segment_id.clone(),
             path: "data/segment-1.arrow".to_owned(),
             package_row_ord_start: 0,

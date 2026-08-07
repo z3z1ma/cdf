@@ -24,6 +24,7 @@ pub struct ReceiptDraft {
 
 #[derive(Clone, Debug)]
 struct ExpectedReceiptSegment {
+    kind: cdf_kernel::PackageSegmentKind,
     segment_id: cdf_kernel::SegmentId,
     row_count: u64,
     byte_count: u64,
@@ -45,6 +46,7 @@ impl ReceiptDraft {
             .segments
             .iter()
             .map(|segment| ExpectedReceiptSegment {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,
@@ -56,6 +58,7 @@ impl ReceiptDraft {
                 destination,
                 target: request.target.clone(),
                 package_hash: request.package_hash.clone(),
+                content: request.content.clone(),
                 segment_acks,
                 disposition: request.disposition.clone(),
                 idempotency_token: request.idempotency_token.clone(),
@@ -83,6 +86,7 @@ impl ReceiptDraft {
         let expected_segments = segment_acks
             .iter()
             .map(|segment| ExpectedReceiptSegment {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,
@@ -94,6 +98,9 @@ impl ReceiptDraft {
                 destination,
                 target: request.target.clone(),
                 package_hash: request.correction_package_hash.clone(),
+                content: cdf_kernel::PackageContentAuthority::rows(
+                    request.new_schema_hash().clone(),
+                ),
                 segment_acks,
                 disposition: request.resource_disposition.clone(),
                 idempotency_token: request.idempotency_token.clone(),
@@ -116,6 +123,12 @@ impl ReceiptDraft {
 }
 
 fn validate_ordinary_plan(request: &DestinationCommitRequest, plan: &CommitPlan) -> Result<()> {
+    request.content.validate_segment_rows(
+        request
+            .segments
+            .iter()
+            .map(|segment| (&segment.kind, segment.row_count)),
+    )?;
     if plan.target != request.target || plan.disposition != request.disposition {
         return Err(CdfError::contract(
             "ordinary receipt request does not match its typed commit plan",
@@ -148,6 +161,13 @@ fn validate_correction_plan(
 }
 
 fn validate_receipt(receipt: &Receipt, expected_segments: &[ExpectedReceiptSegment]) -> Result<()> {
+    receipt.content.validate()?;
+    receipt.content.validate_segment_rows(
+        receipt
+            .segment_acks
+            .iter()
+            .map(|ack| (&ack.kind, ack.row_count)),
+    )?;
     if receipt.committed_at_ms < 0 {
         return Err(CdfError::contract(
             "receipt committed_at_ms must be a nonnegative Unix timestamp",
@@ -188,12 +208,13 @@ fn validate_receipt(receipt: &Receipt, expected_segments: &[ExpectedReceiptSegme
     let mut segment_ids = BTreeSet::new();
     for (ack, expected) in receipt.segment_acks.iter().zip(expected_segments) {
         if !segment_ids.insert(&ack.segment_id)
+            || ack.kind != expected.kind
             || ack.segment_id != expected.segment_id
             || ack.row_count != expected.row_count
             || ack.byte_count != expected.byte_count
         {
             return Err(CdfError::contract(
-                "receipt segment acknowledgements must uniquely preserve typed request order, identity, row count, and byte count",
+                "receipt segment acknowledgements must uniquely preserve typed request order, effect kind, identity, row count, and byte count",
             ));
         }
     }
@@ -237,6 +258,7 @@ mod tests {
 
     fn segment() -> StateSegment {
         StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("segment-1").unwrap(),
             scope: cdf_kernel::ScopeKey::Resource,
             output_position: cdf_kernel::SourcePosition::Cursor(cdf_kernel::CursorPosition {
@@ -247,6 +269,10 @@ mod tests {
             row_count: 7,
             byte_count: 70,
         }
+    }
+
+    fn content() -> cdf_kernel::PackageContentAuthority {
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema").unwrap())
     }
 
     fn evidence(parameters: BTreeMap<String, String>) -> ReceiptEvidence {
@@ -307,6 +333,7 @@ mod tests {
     fn ordinary_draft_maps_typed_request_fields() {
         let request = DestinationCommitRequest {
             package_hash: PackageHash::new("package").unwrap(),
+            content: content(),
             target: TargetName::new("main.events").unwrap(),
             disposition: WriteDisposition::Append,
             segments: vec![segment()],
@@ -318,6 +345,7 @@ mod tests {
             &request,
             &ordinary_plan(&request),
             vec![SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("segment-1").unwrap(),
                 row_count: 7,
                 byte_count: 70,
@@ -344,7 +372,12 @@ mod tests {
                 "destination": "test",
                 "target": "main.events",
                 "package_hash": "package",
+                "content": {
+                    "kind": "rows",
+                    "logical_schema_hash": "schema"
+                },
                 "segment_acks": [{
+                    "kind": "row",
                     "segment_id": "segment-1",
                     "row_count": 7,
                     "byte_count": 70
@@ -440,6 +473,7 @@ mod tests {
     fn finalizer_rejects_verify_parameter_drift() {
         let request = DestinationCommitRequest {
             package_hash: PackageHash::new("package").unwrap(),
+            content: content(),
             target: TargetName::new("main.events").unwrap(),
             disposition: WriteDisposition::Append,
             segments: vec![segment()],
@@ -451,6 +485,7 @@ mod tests {
             &request,
             &ordinary_plan(&request),
             vec![SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("segment-1").unwrap(),
                 row_count: 7,
                 byte_count: 70,
@@ -472,6 +507,7 @@ mod tests {
     fn ordinary_draft_uses_exact_typed_plan_migrations() {
         let request = DestinationCommitRequest {
             package_hash: PackageHash::new("package").unwrap(),
+            content: content(),
             target: TargetName::new("main.events").unwrap(),
             disposition: WriteDisposition::Append,
             segments: vec![segment()],
@@ -488,6 +524,7 @@ mod tests {
             &request,
             &plan,
             vec![SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("segment-1").unwrap(),
                 row_count: 7,
                 byte_count: 70,
@@ -506,6 +543,7 @@ mod tests {
     fn draft_rejects_plan_drift_and_incomplete_migration_authority() {
         let request = DestinationCommitRequest {
             package_hash: PackageHash::new("package").unwrap(),
+            content: content(),
             target: TargetName::new("main.events").unwrap(),
             disposition: WriteDisposition::Append,
             segments: vec![segment()],
@@ -536,6 +574,7 @@ mod tests {
             &request,
             &incomplete_plan,
             vec![SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("segment-1").unwrap(),
                 row_count: 7,
                 byte_count: 70,
@@ -553,6 +592,7 @@ mod tests {
     fn finalizer_rejects_segment_byte_count_drift() {
         let request = DestinationCommitRequest {
             package_hash: PackageHash::new("package").unwrap(),
+            content: content(),
             target: TargetName::new("main.events").unwrap(),
             disposition: WriteDisposition::Append,
             segments: vec![segment()],
@@ -564,6 +604,7 @@ mod tests {
             &request,
             &ordinary_plan(&request),
             vec![SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("segment-1").unwrap(),
                 row_count: 7,
                 byte_count: 69,

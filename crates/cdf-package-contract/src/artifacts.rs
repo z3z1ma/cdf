@@ -1,6 +1,6 @@
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId,
+    DestinationCommitRequest, IdempotencyToken, PackageContentAuthority, PackageHash, PipelineId,
     ProcessedObservationPosition, ResourceId, Result, SchemaAuthorityKey, SchemaHash, SchemaHead,
     ScopeKey, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
     aggregate_processed_observation_positions,
@@ -13,7 +13,7 @@ use crate::model::SegmentEntry;
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
-pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 3;
+pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 4;
 pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const SCHEMA_ADMISSION_PROGRAM_FILE: &str = "plan/schema-admission-program.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
@@ -246,7 +246,11 @@ impl StateDeltaPreimage {
         Ok(())
     }
 
-    pub fn into_state_delta(self, package_hash: PackageHash) -> StateDelta {
+    pub fn into_state_delta(
+        self,
+        package_hash: PackageHash,
+        content: PackageContentAuthority,
+    ) -> StateDelta {
         StateDelta {
             checkpoint_id: self.checkpoint_id,
             pipeline_id: self.pipeline_id,
@@ -261,6 +265,7 @@ impl StateDeltaPreimage {
             late_data_carryover: self.late_data_carryover,
             source_continuation: self.source_continuation,
             package_hash,
+            content,
             schema_hash: self.schema_hash,
             segments: self.segments,
         }
@@ -271,6 +276,7 @@ impl StateDeltaPreimage {
 #[serde(deny_unknown_fields)]
 pub struct DestinationCommitPlanPreimage {
     pub version: u16,
+    pub content: PackageContentAuthority,
     pub target: TargetName,
     pub disposition: WriteDisposition,
     pub merge_keys: Vec<String>,
@@ -287,8 +293,25 @@ impl DestinationCommitPlanPreimage {
         merge_keys: Vec<String>,
         schema_hash: SchemaHash,
     ) -> Self {
+        Self::package_hash_token_with_content(
+            PackageContentAuthority::rows(schema_hash.clone()),
+            target,
+            disposition,
+            merge_keys,
+            schema_hash,
+        )
+    }
+
+    pub fn package_hash_token_with_content(
+        content: PackageContentAuthority,
+        target: TargetName,
+        disposition: WriteDisposition,
+        merge_keys: Vec<String>,
+        schema_hash: SchemaHash,
+    ) -> Self {
         Self {
             version: DESTINATION_COMMIT_PLAN_VERSION,
+            content,
             target,
             disposition,
             merge_keys,
@@ -312,6 +335,7 @@ impl DestinationCommitPlanPreimage {
         match self.idempotency_token_source {
             IdempotencyTokenSource::PackageHash => Ok(DestinationCommitRequest {
                 package_hash: package_hash.clone(),
+                content: self.content.clone(),
                 target: self.target.clone(),
                 disposition: self.disposition.clone(),
                 segments,
@@ -327,6 +351,7 @@ impl DestinationCommitPlanPreimage {
                 self.version,
             )));
         }
+        self.content.validate()?;
         Ok(())
     }
 }
@@ -388,6 +413,12 @@ impl PackageReplayInputs {
                 commit_plan.schema_hash, state_delta.schema_hash
             )));
         }
+        commit_plan.content.validate_segment_rows(
+            state_delta
+                .segments
+                .iter()
+                .map(|segment| (&segment.kind, segment.row_count)),
+        )?;
         validate_package_segments(package_segments, &state_delta.segments, processed.as_ref())?;
         if let Some(processed) = &processed {
             processed.validate()?;
@@ -411,7 +442,8 @@ impl PackageReplayInputs {
         let destination_policy = commit_plan.destination_policy.clone();
         let destination_commit =
             commit_plan.commit_request(package_hash.clone(), state_delta.segments.clone())?;
-        let state_delta = state_delta.into_state_delta(package_hash);
+        let content = commit_plan.content.clone();
+        let state_delta = state_delta.into_state_delta(package_hash, content);
         Ok(Self {
             input_checkpoint,
             state_delta,
@@ -496,10 +528,15 @@ where
                 state_segment.segment_id,
             )));
         };
-        if package_segment.segment_id != state_segment.segment_id {
+        if package_segment.kind != state_segment.kind
+            || package_segment.segment_id != state_segment.segment_id
+        {
             return Err(CdfError::data(format!(
-                "state delta segment {} does not match canonical package segment {}",
-                state_segment.segment_id, package_segment.segment_id
+                "state delta segment {:?}/{} does not match canonical package segment {:?}/{}",
+                state_segment.kind,
+                state_segment.segment_id,
+                package_segment.kind,
+                package_segment.segment_id,
             )));
         }
         if package_segment.row_count != state_segment.row_count

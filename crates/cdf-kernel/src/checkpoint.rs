@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    PartitionWatermarkState, WatermarkClaim,
+    PackageContentAuthority, PackageSegmentKind, PartitionWatermarkState, WatermarkClaim,
     destination::{CommitCounts, MigrationRecord, SegmentAck, TransactionMetadata, VerifyClause},
     error::{CdfError, Result},
     ids::{
@@ -43,12 +43,14 @@ pub struct StateDelta {
     /// that distinction in the checkpoint instead of relying on command-local executor state.
     pub source_continuation: Option<SourcePosition>,
     pub package_hash: PackageHash,
+    pub content: PackageContentAuthority,
     pub schema_hash: SchemaHash,
     pub segments: Vec<StateSegment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateSegment {
+    pub kind: PackageSegmentKind,
     pub segment_id: SegmentId,
     pub scope: ScopeKey,
     pub output_position: SourcePosition,
@@ -56,7 +58,7 @@ pub struct StateSegment {
     pub byte_count: u64,
 }
 
-pub const CHECKPOINT_STATE_VERSION: u16 = 2;
+pub const CHECKPOINT_STATE_VERSION: u16 = 3;
 
 impl StateDelta {
     /// Exact source restart authority, or the aggregate output when that position is sufficient.
@@ -86,6 +88,12 @@ impl StateDelta {
         if let Some(position) = &self.source_continuation {
             position.validate()?;
         }
+        self.content.validate()?;
+        self.content.validate_segment_rows(
+            self.segments
+                .iter()
+                .map(|segment| (&segment.kind, segment.row_count)),
+        )?;
         for segment in &self.segments {
             segment.output_position.validate()?;
         }
@@ -296,6 +304,7 @@ pub struct Receipt {
     pub destination: DestinationId,
     pub target: TargetName,
     pub package_hash: PackageHash,
+    pub content: PackageContentAuthority,
     pub segment_acks: Vec<SegmentAck>,
     pub disposition: WriteDisposition,
     pub idempotency_token: IdempotencyToken,
@@ -309,18 +318,21 @@ pub struct Receipt {
 
 impl Receipt {
     pub fn covers_state_delta(&self, delta: &StateDelta) -> bool {
-        if self.package_hash != delta.package_hash || self.schema_hash != delta.schema_hash {
+        if self.package_hash != delta.package_hash
+            || self.content != delta.content
+            || self.schema_hash != delta.schema_hash
+        {
             return false;
         }
-        let acked_segments: BTreeSet<&SegmentId> = self
+        let acked_segments: BTreeSet<(&SegmentId, PackageSegmentKind)> = self
             .segment_acks
             .iter()
-            .map(|ack| &ack.segment_id)
+            .map(|ack| (&ack.segment_id, ack.kind))
             .collect();
         delta
             .segments
             .iter()
-            .all(|segment| acked_segments.contains(&segment.segment_id))
+            .all(|segment| acked_segments.contains(&(&segment.segment_id, segment.kind)))
     }
 }
 

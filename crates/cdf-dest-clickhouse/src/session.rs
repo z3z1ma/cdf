@@ -267,6 +267,7 @@ impl ClickHouseCommitSession {
                     }
                 }
                 acknowledgements.push(SegmentAck {
+                    kind: expected_segment.state.kind,
                     segment_id,
                     row_count: expected_segment.state.row_count,
                     byte_count: expected_segment.state.byte_count,

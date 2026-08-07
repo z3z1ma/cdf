@@ -340,6 +340,7 @@ pub(super) fn build_package_with_options_and_scan_tamper(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new(SCHEMA_HASH).unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -364,6 +365,7 @@ pub(super) fn build_package_with_options_and_scan_tamper(
     .unwrap();
     let segment = builder
         .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
             cdf_kernel::SegmentId::new("seg-000001").unwrap(),
             0,
             &batches,
@@ -398,6 +400,7 @@ pub(super) fn build_zero_segment_processed_package(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new(SCHEMA_HASH).unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -688,10 +691,12 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
             destination: self.destination.sheet.destination.clone(),
             target: binding.commit().target.clone(),
             package_hash: binding.commit().package_hash.clone(),
+            content: binding.commit().content.clone(),
             segment_acks: self
                 .accepted
                 .iter()
                 .map(|item| SegmentAck {
+                    kind: item.kind,
                     segment_id: item.segment_id.clone(),
                     row_count: item.row_count,
                     byte_count: item.byte_count,

@@ -47,10 +47,14 @@ impl ResourceDescriptor {
         validate_schema_source(&self.schema_source)?;
         validate_resource_fields("primary key", &self.primary_key)?;
         validate_resource_fields("merge key", &self.merge_key)?;
-        if self.write_disposition == WriteDisposition::Merge && self.merge_key.is_empty() {
+        if matches!(
+            self.write_disposition,
+            WriteDisposition::Merge | WriteDisposition::CdcApply
+        ) && self.merge_key.is_empty()
+        {
             return Err(CdfError::contract(format!(
-                "resource `{}` uses merge disposition without a merge key",
-                self.resource_id
+                "resource `{}` uses {:?} disposition without a merge key",
+                self.resource_id, self.write_disposition
             )));
         }
         if self.deduplication.is_some() && self.write_disposition != WriteDisposition::Append {

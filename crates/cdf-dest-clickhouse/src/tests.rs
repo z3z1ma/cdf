@@ -116,6 +116,9 @@ fn merge_plan_requires_non_nullable_keys_and_binds_mode_into_identity() {
     let package_hash = PackageHash::new("12".repeat(32)).unwrap();
     let request = DestinationCommitRequest {
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-clickhouse-merge").unwrap(),
+        ),
         target: cdf_kernel::TargetName::new("events").unwrap(),
         disposition: WriteDisposition::Merge,
         segments: Vec::new(),
@@ -143,6 +146,9 @@ fn merge_plan(
     ]);
     plan_clickhouse_load(ClickHouseLoadPlanInput {
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-clickhouse-merge").unwrap(),
+        ),
         idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         target: crate::identifier::ClickHouseIdentifier::user("events").unwrap(),
         disposition: WriteDisposition::Merge,
@@ -681,6 +687,7 @@ fn live_request(
 ) {
     let rows = u64::try_from(batch.num_rows()).unwrap();
     let state = StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: ScopeKey::Resource,
         output_position: SourcePosition::Cursor(CursorPosition {
@@ -694,6 +701,9 @@ fn live_request(
     let package_hash = PackageHash::new(hash).unwrap();
     let plan = plan_clickhouse_load(ClickHouseLoadPlanInput {
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-clickhouse-live").unwrap(),
+        ),
         idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         target: crate::identifier::ClickHouseIdentifier::user(target).unwrap(),
         disposition: disposition.clone(),

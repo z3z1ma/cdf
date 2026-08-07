@@ -1584,6 +1584,9 @@ mod tests {
         let baseline = cdf_package::PackageBuilder::create(
             root.path().join("baseline"),
             "baseline",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("segmentation-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -1597,6 +1600,7 @@ mod tests {
             .unwrap();
             baseline
                 .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
                     SegmentId::new(format!("baseline-{ordinal:08}")).unwrap(),
                     package_row_ord_start,
                     &canonical,
@@ -1619,6 +1623,9 @@ mod tests {
         let canonical = cdf_package::PackageBuilder::create(
             root.path().join("canonical"),
             "canonical",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("segmentation-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -1632,7 +1639,12 @@ mod tests {
             )
             .unwrap();
             canonical
-                .write_segment(segment.segment_id, package_row_ord_start, &batches)
+                .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
+                    segment.segment_id,
+                    package_row_ord_start,
+                    &batches,
+                )
                 .unwrap();
             package_row_ord_start += row_count;
         }

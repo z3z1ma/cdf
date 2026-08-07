@@ -80,6 +80,7 @@ pub fn build_prepared_orders_golden_package(
     let builder = PackageBuilder::create(
         &spec.package_dir,
         spec.package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-prepared-orders-v1")?),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)?,
     )?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -110,7 +111,12 @@ pub fn build_prepared_orders_golden_package(
     builder.write_lineage_artifact("batches.parquet", b"lineage-prepared-orders-v1")?;
     builder.append_trace_event(&BTreeMap::from([("event", "prepared-orders-v1")]))?;
     let batch = cdf_package_contract::append_package_row_ord(vec![prepared_orders_batch()?], 0)?;
-    let segment = builder.write_segment(SegmentId::new("seg-000001")?, 0, &batch)?;
+    let segment = builder.write_segment(
+        cdf_kernel::PackageSegmentKind::Row,
+        SegmentId::new("seg-000001")?,
+        0,
+        &batch,
+    )?;
     write_prepared_orders_state_commit_artifacts(&builder, segment)?;
     builder.finish_with_status(spec.status)?;
 
@@ -395,6 +401,7 @@ fn write_prepared_orders_state_commit_artifacts(
         value: CursorValue::I64(3),
     });
     let segments = vec![StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id,
         scope: scope.clone(),
         output_position: output_position.clone(),

@@ -83,6 +83,7 @@ pub(crate) fn plan_sqlite_load(input: SqliteLoadPlanInput) -> Result<SqliteLoadP
     Ok(SqliteLoadPlan {
         kernel,
         package_hash: input.package_hash,
+        content: input.content,
         idempotency_token: input.idempotency_token,
         schema_hash: input.schema_hash,
         segments: input.segments,

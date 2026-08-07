@@ -98,6 +98,7 @@ pub fn plan_postgres_load(
     Ok(PostgresLoadPlan {
         kernel,
         package_hash: input.package_hash,
+        content: input.content,
         idempotency_token: input.idempotency_token,
         schema_hash: input.schema_hash,
         segments: input.segments,
@@ -150,6 +151,7 @@ pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Re
 
     let request = DestinationCommitRequest {
         package_hash: plan.package_hash.clone(),
+        content: plan.content.clone(),
         target: plan.kernel.target.clone(),
         disposition: plan.kernel.disposition.clone(),
         segments: plan_segments_in_receipt_order(plan),

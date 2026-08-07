@@ -135,9 +135,13 @@ where
 pub fn representative_commit_request(disposition: WriteDisposition) -> DestinationCommitRequest {
     DestinationCommitRequest {
         package_hash: PackageHash::new("sha256:destination-conformance").unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            cdf_kernel::SchemaHash::new("destination-conformance-schema").unwrap(),
+        ),
         target: TargetName::new("orders").unwrap(),
         disposition,
         segments: vec![StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-000001").unwrap(),
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new("p0").unwrap(),

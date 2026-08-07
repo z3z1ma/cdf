@@ -1394,13 +1394,16 @@ fn structurally_verified_package_receipts(
         .segments
         .iter()
         .map(|segment| cdf_kernel::SegmentAck {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             row_count: segment.row_count,
             byte_count: segment.byte_count,
         })
         .collect::<Vec<_>>();
     let expected_token = cdf_kernel::IdempotencyToken::new(package_hash.as_str())?;
-    let concrete_delta = delta.clone().into_state_delta(package_hash.clone());
+    let concrete_delta = delta
+        .clone()
+        .into_state_delta(package_hash.clone(), commit.content.clone());
     let mut seen = BTreeSet::new();
     for receipt in &receipts {
         if !seen.insert((
@@ -1408,6 +1411,7 @@ fn structurally_verified_package_receipts(
             receipt.target.clone(),
             receipt.receipt_id.clone(),
         )) || receipt.package_hash != *package_hash
+            || receipt.content != commit.content
             || receipt.target != commit.target
             || receipt.disposition != commit.disposition
             || receipt.idempotency_token != expected_token
@@ -3193,6 +3197,9 @@ mod tests {
         let builder = cdf_package::PackageBuilder::create(
             &package_dir,
             "archived",
+            cdf_kernel::PackageContentAuthority::rows(
+                SchemaHash::new("sha256:old-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -3250,6 +3257,9 @@ mod tests {
                 destination: DestinationId::new("warehouse").unwrap(),
                 target: TargetName::new("archived_target").unwrap(),
                 package_hash: package_hash.clone(),
+                content: cdf_kernel::PackageContentAuthority::rows(
+                    SchemaHash::new("sha256:old-schema").unwrap(),
+                ),
                 segment_acks: Vec::new(),
                 disposition: WriteDisposition::Append,
                 idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
@@ -3933,6 +3943,7 @@ mod tests {
         let builder = cdf_package::PackageBuilder::create(
             &package_dir,
             package_id,
+            cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("sha256:schema").unwrap()),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -3958,7 +3969,12 @@ mod tests {
         .unwrap();
         let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
         let segment = builder
-            .write_segment(SegmentId::new("segment-1").unwrap(), 0, &batch)
+            .write_segment(
+                cdf_kernel::PackageSegmentKind::Row,
+                SegmentId::new("segment-1").unwrap(),
+                0,
+                &batch,
+            )
             .unwrap();
         let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
             version: cdf_kernel::SOURCE_POSITION_VERSION,
@@ -3974,6 +3990,7 @@ mod tests {
             metadata_generation: "sha256:metadata-v42".to_owned(),
         }));
         let state_segment = cdf_kernel::StateSegment {
+            kind: segment.kind,
             segment_id: segment.segment_id,
             scope: ScopeKey::Resource,
             output_position: output_position.clone(),
@@ -4021,7 +4038,9 @@ mod tests {
                     destination: DestinationId::new("warehouse").unwrap(),
                     target: TargetName::new("events").unwrap(),
                     package_hash: package_hash.clone(),
+                    content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
                     segment_acks: vec![cdf_kernel::SegmentAck {
+                        kind: state_segment.kind,
                         segment_id: state_segment.segment_id,
                         row_count: state_segment.row_count,
                         byte_count: state_segment.byte_count,

@@ -10,6 +10,7 @@ use crate::identifiers::{PostgresColumn, PostgresExistingTable};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresLoadPlanInput {
     pub package_hash: PackageHash,
+    pub content: cdf_kernel::PackageContentAuthority,
     pub idempotency_token: IdempotencyToken,
     pub target: PostgresTarget,
     pub disposition: WriteDisposition,
@@ -26,6 +27,7 @@ pub struct PostgresLoadPlanInput {
 pub struct PostgresLoadPlan {
     pub kernel: CommitPlan,
     pub package_hash: PackageHash,
+    pub content: cdf_kernel::PackageContentAuthority,
     pub idempotency_token: IdempotencyToken,
     pub schema_hash: SchemaHash,
     pub segments: Vec<StateSegment>,

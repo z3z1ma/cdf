@@ -384,6 +384,7 @@ fn segment_acks(manifest: &ParquetObjectManifest) -> Result<Vec<SegmentAck>> {
         .flat_map(|object| object.segments.iter())
         .map(|segment| {
             Ok(SegmentAck {
+                kind: segment.kind,
                 segment_id: cdf_kernel::SegmentId::new(segment.segment_id.clone())?,
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,

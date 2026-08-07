@@ -1,4 +1,4 @@
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, PackageContentAuthority, Result};
 use cdf_package_contract::{
     FileEntry, LifecycleState, MANIFEST_VERSION, ManifestIdentity, PackageManifest, PackageStatus,
     SegmentEntry, SignatureSlot,
@@ -29,6 +29,7 @@ pub fn manifest_identity_hash(identity: &ManifestIdentity) -> Result<String> {
 pub(crate) fn manifest_identity_hash_streaming(
     package_id: &str,
     layout: &[String],
+    content: &PackageContentAuthority,
     visit_files: &mut FileEntrySource<'_>,
     visit_segments: &mut SegmentEntrySource<'_>,
 ) -> Result<String> {
@@ -36,6 +37,7 @@ pub(crate) fn manifest_identity_hash_streaming(
     write_manifest_identity_canonical_streaming(
         package_id,
         layout,
+        content,
         visit_files,
         visit_segments,
         &mut writer,
@@ -46,6 +48,7 @@ pub(crate) fn manifest_identity_hash_streaming(
 pub(crate) fn write_package_manifest_canonical_streaming<W: Write>(
     package_id: &str,
     layout: &[String],
+    content: &PackageContentAuthority,
     package_hash: &str,
     status: PackageStatus,
     visit_files: &mut FileEntrySource<'_>,
@@ -56,6 +59,7 @@ pub(crate) fn write_package_manifest_canonical_streaming<W: Write>(
     write_manifest_identity_canonical_streaming(
         package_id,
         layout,
+        content,
         visit_files,
         visit_segments,
         writer,
@@ -105,7 +109,9 @@ fn write_manifest_identity_canonical<W: Write>(
     identity: &ManifestIdentity,
     writer: &mut W,
 ) -> Result<()> {
-    write_bytes(writer, b"{\"files\":[")?;
+    write_bytes(writer, b"{\"content\":")?;
+    write_value(writer, &identity.content)?;
+    write_bytes(writer, b",\"files\":[")?;
     for (index, entry) in identity.files.iter().enumerate() {
         if index > 0 {
             write_bytes(writer, b",")?;
@@ -136,11 +142,14 @@ fn write_manifest_identity_canonical<W: Write>(
 fn write_manifest_identity_canonical_streaming<W: Write>(
     package_id: &str,
     layout: &[String],
+    content: &PackageContentAuthority,
     visit_files: &mut FileEntrySource<'_>,
     visit_segments: &mut SegmentEntrySource<'_>,
     writer: &mut W,
 ) -> Result<()> {
-    write_bytes(writer, b"{\"files\":[")?;
+    write_bytes(writer, b"{\"content\":")?;
+    write_value(writer, content)?;
+    write_bytes(writer, b",\"files\":[")?;
     let mut first = true;
     visit_files(&mut |entry| {
         if !first {
@@ -185,6 +194,8 @@ fn write_file_entry<W: Write>(writer: &mut W, entry: &FileEntry) -> Result<()> {
 fn write_segment_entry<W: Write>(writer: &mut W, entry: &SegmentEntry) -> Result<()> {
     write_bytes(writer, b"{\"byte_count\":")?;
     write_display(writer, entry.byte_count)?;
+    write_bytes(writer, b",\"kind\":")?;
+    write_value(writer, &entry.kind)?;
     write_bytes(writer, b",\"package_row_ord_start\":")?;
     write_display(writer, entry.package_row_ord_start)?;
     write_bytes(writer, b",\"path\":")?;
@@ -349,6 +360,9 @@ mod tests {
                 manifest_version: MANIFEST_VERSION,
                 package_id: "typed-writer".to_owned(),
                 layout: Vec::new(),
+                content: cdf_kernel::PackageContentAuthority::rows(
+                    cdf_kernel::SchemaHash::new("schema-typed-writer").unwrap(),
+                ),
                 files: Vec::new(),
                 segments: Vec::new(),
             },
@@ -383,6 +397,9 @@ mod tests {
             manifest_version: MANIFEST_VERSION,
             package_id: "million-entry".to_owned(),
             layout: vec!["data/".to_owned()],
+            content: cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("schema-million-entry").unwrap(),
+            ),
             files,
             segments: Vec::new(),
         };

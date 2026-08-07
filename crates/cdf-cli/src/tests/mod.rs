@@ -70,6 +70,9 @@ macro_rules! package_builder {
         PackageBuilder::create(
             $path,
             $package_id,
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("cli-test-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -1166,10 +1169,16 @@ fn write_schema_promote_package_fixture_for_target_with_commit_and_residual(
     );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batch,
+        )
         .unwrap();
     let output_position = schema_promote_fixture_position();
     let state_segment = StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id.clone(),
         scope: ScopeKey::Resource,
         output_position: output_position.clone(),
@@ -1507,7 +1516,9 @@ fn rebuild_correction_package_semantically(
     .unwrap();
     let segment_id = state.segments[0].segment_id.clone();
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
-    let segment = builder.write_segment(segment_id, 0, &batch).unwrap();
+    let segment = builder
+        .write_segment(cdf_kernel::PackageSegmentKind::Row, segment_id, 0, &batch)
+        .unwrap();
     state.segments[0].row_count = segment.row_count;
     state.segments[0].byte_count = segment.byte_count;
     builder
@@ -1654,8 +1665,12 @@ fn status_delta(pipeline_id: &str, checkpoint_id: &str, package_hash: &str) -> S
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-status-1").unwrap(),
+        ),
         schema_hash: SchemaHash::new("schema-status-1").unwrap(),
         segments: vec![StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-status-1").unwrap(),
             scope: ScopeKey::Resource,
             output_position,
@@ -1671,7 +1686,11 @@ fn status_receipt(package_hash: &str, receipt_id: &str, committed_at_ms: i64) ->
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("events").unwrap(),
         package_hash: PackageHash::new(package_hash).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-status-1").unwrap(),
+        ),
         segment_acks: vec![SegmentAck {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-status-1").unwrap(),
             row_count: 1,
             byte_count: 8,
@@ -2094,7 +2113,12 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     let builder = package_builder!(&package_dir, "pkg-sql-1").unwrap();
     let batch = cdf_package_contract::append_package_row_ord(vec![sample_sql_batch()], 0).unwrap();
     builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batch,
+        )
         .unwrap();
     let manifest = builder
         .finish_with_status(PackageStatus::Checkpointed)
@@ -2132,7 +2156,12 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let entry = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batch,
+        )
         .unwrap();
     let output_position = doctor_output_position(42);
     let segment = doctor_state_segment(&entry, output_position.clone());
@@ -2210,6 +2239,7 @@ fn doctor_output_position(value: i64) -> SourcePosition {
 
 fn doctor_state_segment(entry: &SegmentEntry, output_position: SourcePosition) -> StateSegment {
     StateSegment {
+        kind: entry.kind,
         segment_id: entry.segment_id.clone(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -2250,7 +2280,10 @@ fn doctor_delta(
 ) -> StateDelta {
     let mut segment = segment.clone();
     segment.output_position = output_position.clone();
-    doctor_delta_preimage(output_position, segment).into_state_delta(package_hash.clone())
+    doctor_delta_preimage(output_position, segment).into_state_delta(
+        package_hash.clone(),
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-doctor-1").unwrap()),
+    )
 }
 
 fn sample_sql_delta(package_hash: &str) -> StateDelta {
@@ -2273,8 +2306,12 @@ fn sample_sql_delta(package_hash: &str) -> StateDelta {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-sql-1").unwrap(),
+        ),
         schema_hash: SchemaHash::new("schema-sql-1").unwrap(),
         segments: vec![StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-000001").unwrap(),
             scope: ScopeKey::Resource,
             output_position,
@@ -2290,7 +2327,11 @@ fn sample_sql_receipt(package_hash: &str) -> Receipt {
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("events").unwrap(),
         package_hash: PackageHash::new(package_hash).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-sql-1").unwrap(),
+        ),
         segment_acks: vec![SegmentAck {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-000001").unwrap(),
             row_count: 3,
             byte_count: 30,
@@ -2466,7 +2507,12 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
     .unwrap();
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batch,
+        )
         .unwrap();
     builder.finish_with_status(PackageStatus::Packaged).unwrap();
     package_dir
@@ -2508,7 +2554,12 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
     .unwrap();
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batch,
+        )
         .unwrap();
     let output_position = SourcePosition::Cursor(CursorPosition {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
@@ -2518,6 +2569,7 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
     let scope = ScopeKey::Resource;
     builder.write_input_checkpoint_artifact(&None).unwrap();
     let state_segment = StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id,
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -2561,7 +2613,9 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
             destination: DestinationId::new("duckdb").unwrap(),
             target: TargetName::new("events").unwrap(),
             package_hash: package_hash.clone(),
+            content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
             segment_acks: vec![SegmentAck {
+                kind: state_segment.kind,
                 segment_id: state_segment.segment_id,
                 row_count: state_segment.row_count,
                 byte_count: state_segment.byte_count,

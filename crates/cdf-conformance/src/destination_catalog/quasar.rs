@@ -313,6 +313,7 @@ impl CommitSession for QuasarCommitSession {
                 payload.write_batch(&batch.batch)?;
             }
             let acknowledgement = SegmentAck {
+                kind: expected.kind,
                 segment_id: expected.segment_id.clone(),
                 row_count: expected.row_count,
                 byte_count: expected.byte_count,
@@ -346,6 +347,7 @@ impl CommitSession for QuasarCommitSession {
             destination: DestinationId::new("quasar")?,
             target: self.request.target.clone(),
             package_hash: self.request.package_hash.clone(),
+            content: self.request.content.clone(),
             segment_acks: self.acknowledgements,
             disposition: self.request.disposition.clone(),
             idempotency_token: self.request.idempotency_token.clone(),
@@ -749,6 +751,7 @@ mod tests {
             destination: DestinationId::new("quasar").unwrap(),
             target: request.target,
             package_hash: request.package_hash,
+            content: request.content,
             segment_acks: Vec::new(),
             disposition: request.disposition,
             idempotency_token: cdf_kernel::IdempotencyToken::new(token).unwrap(),

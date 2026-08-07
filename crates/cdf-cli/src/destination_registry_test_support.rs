@@ -395,6 +395,7 @@ impl CommitSession for QuasarCommitSession {
                 ));
             }
             let acknowledgement = SegmentAck {
+                kind: expected.kind,
                 segment_id: expected.segment_id.clone(),
                 row_count: expected.row_count,
                 byte_count: expected.byte_count,
@@ -424,6 +425,7 @@ impl CommitSession for QuasarCommitSession {
             destination: DestinationId::new(SCHEME)?,
             target: self.request.target.clone(),
             package_hash: self.request.package_hash.clone(),
+            content: self.request.content.clone(),
             segment_acks: self.acknowledgements,
             disposition: self.request.disposition.clone(),
             idempotency_token: self.request.idempotency_token.clone(),

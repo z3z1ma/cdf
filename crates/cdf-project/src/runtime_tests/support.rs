@@ -571,6 +571,7 @@ pub(super) fn build_package_with_carryover(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new(SCHEMA_HASH).unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -602,6 +603,7 @@ pub(super) fn build_package_with_carryover(
     .unwrap();
     let segment = builder
         .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
             cdf_kernel::SegmentId::new("seg-000001").unwrap(),
             0,
             &batches,
@@ -866,6 +868,7 @@ pub(super) fn write_state_commit_artifacts(
     let scope = scope();
     let output_position = position(3);
     let segments = vec![StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id.clone(),
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -953,12 +956,14 @@ pub(super) fn delta(manifest: &PackageManifest, checkpoint_id: &str) -> StateDel
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        content: manifest.identity.content.clone(),
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: manifest
             .identity
             .segments
             .iter()
             .map(|segment| StateSegment {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 scope: scope.clone(),
                 output_position: output_position.clone(),
@@ -1145,6 +1150,7 @@ impl CommitSession for MockCommitSession<'_> {
                 return Err(CdfError::data("mock segment state mismatch"));
             }
             let ack = SegmentAck {
+                kind: expected.kind,
                 segment_id: expected.segment_id.clone(),
                 row_count: expected.row_count,
                 byte_count: expected.byte_count,
@@ -1181,6 +1187,7 @@ impl CommitSession for MockCommitSession<'_> {
             destination: self.destination.sheet.destination.clone(),
             target: self.request.target.clone(),
             package_hash: self.request.package_hash.clone(),
+            content: self.request.content.clone(),
             segment_acks: self.acks,
             disposition: self.request.disposition.clone(),
             idempotency_token: self.request.idempotency_token.clone(),

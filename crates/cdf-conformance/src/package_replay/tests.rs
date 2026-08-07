@@ -590,11 +590,13 @@ fn fake_receipt(case: &PreparedPackageReplayCase) -> Receipt {
         destination: DestinationId::new("duckdb").unwrap(),
         target: case.target.clone(),
         package_hash: PackageHash::new(case.delta.package_hash.as_str()).unwrap(),
+        content: case.delta.content.clone(),
         segment_acks: case
             .delta
             .segments
             .iter()
             .map(|segment| SegmentAck {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,

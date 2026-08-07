@@ -4,6 +4,7 @@ use arrow_array::RecordBatch;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    PackageContentAuthority, PackageSegmentKind,
     checkpoint::{Receipt, StateSegment},
     correction::{
         CorrectionCommitSession, DestinationCorrectionCommitPlan,
@@ -109,6 +110,7 @@ impl Iterator for CommitBatchIterator {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentAck {
+    pub kind: PackageSegmentKind,
     pub segment_id: SegmentId,
     pub row_count: u64,
     pub byte_count: u64,
@@ -207,6 +209,7 @@ pub struct ConcurrencyLimit {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationCommitRequest {
     pub package_hash: PackageHash,
+    pub content: PackageContentAuthority,
     pub target: TargetName,
     pub disposition: WriteDisposition,
     pub segments: Vec<StateSegment>,

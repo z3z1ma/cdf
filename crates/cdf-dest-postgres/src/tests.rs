@@ -29,6 +29,7 @@ fn columns() -> Vec<PostgresColumn> {
 
 fn segment(id: &str, rows: u64) -> StateSegment {
     StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(id).unwrap(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -65,11 +66,17 @@ fn input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("sha256:abcdef0123456789").unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("sha256:schema").unwrap(),
+        ),
         schema_hash: SchemaHash::new("sha256:schema").unwrap(),
         segments: segments.clone(),
     };
     PostgresLoadPlanInput {
         package_hash: PackageHash::new("sha256:abcdef0123456789").unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("sha256:schema").unwrap(),
+        ),
         idempotency_token: IdempotencyToken::new("sha256:abcdef0123456789").unwrap(),
         target: PostgresTarget::parse("raw.orders").unwrap(),
         disposition,

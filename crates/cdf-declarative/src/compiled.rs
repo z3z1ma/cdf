@@ -939,13 +939,14 @@ fn compile_merge_key(
     write_disposition: &WriteDisposition,
 ) -> Result<Vec<String>> {
     match write_disposition {
-        WriteDisposition::Merge => match &resource.merge_key {
+        WriteDisposition::Merge | WriteDisposition::CdcApply => match &resource.merge_key {
             Some(keys) if !keys.is_empty() => Ok(keys.clone()),
             _ => Err(CdfError::contract(format!(
-                "resource `{resource_id}` declares write_disposition = \"merge\" but is missing merge_key; add `merge_key = [...]` or use `write_disposition = \"append\"`"
+                "resource `{resource_id}` declares write_disposition = {:?} but is missing merge_key; add `merge_key = [...]` or use `write_disposition = \"append\"`",
+                write_disposition
             ))),
         },
-        WriteDisposition::Append | WriteDisposition::Replace | WriteDisposition::CdcApply => {
+        WriteDisposition::Append | WriteDisposition::Replace => {
             Ok(resource.merge_key.clone().unwrap_or_default())
         }
     }

@@ -16,11 +16,11 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
     CommitSegment, CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition,
-    IdempotencyToken, PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
-    ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, Result, SchemaHash, ScopeKey,
-    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
-    TableSnapshotSelector, TargetName, VerifyClause, WriteDisposition,
-    aggregate_processed_observation_positions,
+    IdempotencyToken, PackageContentAuthority, PackageHash, PackageSegmentKind, PartitionId,
+    PipelineId, ProcessedObservationOutcome, ProcessedObservationPosition, Receipt, ReceiptId,
+    ResourceId, Result, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause,
+    WriteDisposition, aggregate_processed_observation_positions,
 };
 use cdf_memory::{
     ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
@@ -34,6 +34,7 @@ macro_rules! package_builder {
         PackageBuilder::create(
             $path,
             $package_id,
+            PackageContentAuthority::rows(SchemaHash::new("schema-package-test").unwrap()),
             PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024).unwrap(),
         )
     };
@@ -197,6 +198,7 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
     let encoder = builder.segment_encoder();
     let second = encoder
         .encode(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000002").unwrap(),
             3,
             &[canonical_batch(sample_batch(), 3)],
@@ -205,6 +207,7 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
         .unwrap();
     let first = encoder
         .encode(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &[canonical_batch(sample_batch(), 0)],
@@ -236,6 +239,7 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
     assert!(error.message.contains("stop visiting"));
     let third = encoder
         .encode(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000003").unwrap(),
             6,
             &[canonical_batch(sample_batch(), 6)],
@@ -283,7 +287,12 @@ fn imported_canonical_segment_preserves_native_package_identity() {
 
     let direct = package_builder!(&direct_root, "pkg-import-equivalence").unwrap();
     let direct_segment = direct
-        .write_segment(segment_id.clone(), 0, std::slice::from_ref(&batch))
+        .write_segment(
+            PackageSegmentKind::Row,
+            segment_id.clone(),
+            0,
+            std::slice::from_ref(&batch),
+        )
         .unwrap();
     let direct_manifest = direct.finish().unwrap();
 
@@ -296,7 +305,7 @@ fn imported_canonical_segment_preserves_native_package_identity() {
     .unwrap();
     let imported = package_builder!(&imported_root, "pkg-import-equivalence").unwrap();
     let imported_segment = imported
-        .import_canonical_segment(segment_id, 0, 3, &encoded)
+        .import_canonical_segment(PackageSegmentKind::Row, segment_id, 0, 3, &encoded)
         .unwrap()
         .segment;
     let imported_manifest = imported.finish().unwrap();
@@ -311,7 +320,13 @@ fn imported_canonical_segment_preserves_native_package_identity() {
     .unwrap();
     assert!(
         invalid
-            .import_canonical_segment(SegmentId::new("seg-invalid").unwrap(), 1, 3, &encoded)
+            .import_canonical_segment(
+                PackageSegmentKind::Row,
+                SegmentId::new("seg-invalid").unwrap(),
+                1,
+                3,
+                &encoded,
+            )
             .unwrap_err()
             .message
             .contains("ordinal")
@@ -331,6 +346,7 @@ fn unpublished_segment_encoding_is_rolled_back_on_drop() {
     let encoded = builder
         .segment_encoder()
         .encode(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-unregistered").unwrap(),
             0,
             &[canonical_batch(sample_batch(), 0)],
@@ -395,7 +411,12 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
         .unwrap();
     profile.finish().unwrap();
     builder
-        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .write_segment(
+            PackageSegmentKind::Row,
+            segment_id,
+            0,
+            &[canonical_batch(batch, 0)],
+        )
         .unwrap();
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
@@ -519,6 +540,7 @@ fn verified_package_statistics_are_conservatively_absent_without_profile() {
         .unwrap();
     builder
         .write_segment(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &[canonical_batch(batch, 0)],
@@ -565,7 +587,12 @@ fn verified_package_statistics_reject_aggregate_drift_from_segments() {
         .unwrap();
     profile.finish().unwrap();
     builder
-        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .write_segment(
+            PackageSegmentKind::Row,
+            segment_id,
+            0,
+            &[canonical_batch(batch, 0)],
+        )
         .unwrap();
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
@@ -606,7 +633,12 @@ fn statistics_profile_stream_rejects_schema_drift_and_omitted_manifest_segments(
         .unwrap();
     profile.finish().unwrap();
     builder
-        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .write_segment(
+            PackageSegmentKind::Row,
+            segment_id,
+            0,
+            &[canonical_batch(batch, 0)],
+        )
         .unwrap();
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(schema_drift.path()).unwrap();
@@ -650,10 +682,20 @@ fn statistics_profile_stream_rejects_schema_drift_and_omitted_manifest_segments(
         .unwrap();
     profile.finish().unwrap();
     builder
-        .write_segment(first, 0, &[canonical_batch(batch.clone(), 0)])
+        .write_segment(
+            PackageSegmentKind::Row,
+            first,
+            0,
+            &[canonical_batch(batch.clone(), 0)],
+        )
         .unwrap();
     builder
-        .write_segment(second, 3, &[canonical_batch(batch, 3)])
+        .write_segment(
+            PackageSegmentKind::Row,
+            second,
+            3,
+            &[canonical_batch(batch, 3)],
+        )
         .unwrap();
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(omitted.path()).unwrap();
@@ -824,6 +866,7 @@ fn build_fixture(package_dir: &Path) -> PackageManifest {
         .unwrap();
     let segment = builder
         .write_segment(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &[canonical_batch(sample_batch(), 0)],
@@ -844,6 +887,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         value: CursorValue::I64(3),
     });
     let segments = vec![StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id,
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -884,6 +928,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
 
 fn state_segment_for_entry(segment: &SegmentEntry, byte_count: u64) -> StateSegment {
     StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id.clone(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -930,6 +975,7 @@ fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
         .unwrap();
     builder
         .write_segment(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &[canonical_batch(
@@ -940,6 +986,7 @@ fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
         .unwrap();
     builder
         .write_segment(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000002").unwrap(),
             2,
             &[canonical_batch(
@@ -958,7 +1005,9 @@ fn sample_receipt(package_hash: &str) -> Receipt {
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("orders").unwrap(),
         package_hash: PackageHash::new(package_hash.to_owned()).unwrap(),
+        content: PackageContentAuthority::rows(SchemaHash::new("schema-fixture").unwrap()),
         segment_acks: vec![SegmentAck {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-000001").unwrap(),
             row_count: 3,
             byte_count: 0,
@@ -1308,7 +1357,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:c4df63873afca90a31155d24efbdc385a35fc2695375a3a69e696b9ecc283d72"
+        "sha256:aaa5745d2c5797cbfc53f7a2a4ae2059b03154629ed36adde214065b7e21f21a"
     );
 }
 
@@ -1702,6 +1751,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         PackageHash::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .unwrap();
     let segment = SegmentEntry {
+        kind: PackageSegmentKind::Row,
         segment_id: SegmentId::new("seg-000001").unwrap(),
         path: "data/seg-000001.arrow".to_owned(),
         package_row_ord_start: 0,
@@ -1735,6 +1785,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: vec![StateSegment {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new("p0").unwrap(),
@@ -1771,6 +1822,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: package_hash.clone(),
+            content: PackageContentAuthority::rows(SchemaHash::new("schema-fixture").unwrap()),
             schema_hash: SchemaHash::new("schema-fixture").unwrap(),
             segments: state_delta.segments.clone(),
         },
@@ -1798,6 +1850,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
     );
 
     let second_segment = SegmentEntry {
+        kind: PackageSegmentKind::Row,
         segment_id: SegmentId::new("seg-000002").unwrap(),
         path: "data/seg-000002.arrow".to_owned(),
         package_row_ord_start: segment.row_count,
@@ -2643,6 +2696,7 @@ fn archive_transcode_accepts_arrow_time_types_supported_by_arrow_rs() {
         RecordBatch::try_new(schema, vec![Arc::new(Time32SecondArray::from(vec![1]))]).unwrap();
     builder
         .write_segment(
+            PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &[canonical_batch(batch, 0)],

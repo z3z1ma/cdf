@@ -824,6 +824,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 .accepted
                 .iter()
                 .map(|identity| SegmentAck {
+                    kind: identity.kind,
                     segment_id: identity.segment_id.clone(),
                     row_count: identity.row_count,
                     byte_count: identity.byte_count,
@@ -922,6 +923,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             .accepted
             .iter()
             .map(|identity| SegmentAck {
+                kind: identity.kind,
                 segment_id: identity.segment_id.clone(),
                 row_count: identity.row_count,
                 byte_count: identity.byte_count,

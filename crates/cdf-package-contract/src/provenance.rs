@@ -250,10 +250,11 @@ pub fn strip_package_row_ord(batch: RecordBatch) -> Result<RecordBatch> {
 mod tests {
     use super::*;
     use arrow_array::Int64Array;
-    use cdf_kernel::SegmentId;
+    use cdf_kernel::{PackageSegmentKind, SegmentId};
 
     fn segment(id: &str, start: u64, rows: u64) -> SegmentEntry {
         SegmentEntry {
+            kind: PackageSegmentKind::Row,
             segment_id: SegmentId::new(id).unwrap(),
             path: format!("data/{id}.arrow"),
             package_row_ord_start: start,

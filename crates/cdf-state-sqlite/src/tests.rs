@@ -155,6 +155,7 @@ fn delta_for(
     package_hash: &str,
 ) -> StateDelta {
     let segment = StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(format!("{checkpoint_id}-segment")).unwrap(),
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -175,6 +176,9 @@ fn delta_for(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new("schema-sha256").unwrap(),
+        ),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         segments: vec![segment],
     }
@@ -186,10 +190,12 @@ fn receipt(delta: &StateDelta) -> Receipt {
         destination: DestinationId::new("local-test").unwrap(),
         target: TargetName::new("orders").unwrap(),
         package_hash: delta.package_hash.clone(),
+        content: delta.content.clone(),
         segment_acks: delta
             .segments
             .iter()
             .map(|segment| SegmentAck {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,

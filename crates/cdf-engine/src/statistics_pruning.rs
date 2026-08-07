@@ -1052,6 +1052,9 @@ mod tests {
         let builder = PackageBuilder::create(
             root,
             "pkg-pruning-consumer",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("pruning-schema").unwrap(),
+            ),
             PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024).unwrap(),
         )
         .unwrap();
@@ -1092,6 +1095,7 @@ mod tests {
                 cdf_package_contract::append_package_row_ord(vec![batch], start).unwrap();
             builder
                 .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
                     SegmentId::new(format!("segment-{ordinal}")).unwrap(),
                     start,
                     &canonical,

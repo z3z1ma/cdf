@@ -711,6 +711,7 @@ fn build_package(
     let builder = PackageBuilder::create(
         root,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -728,6 +729,7 @@ fn build_package(
                 .unwrap();
         builder
             .write_segment(
+                cdf_kernel::PackageSegmentKind::Row,
                 SegmentId::new(segment_id).unwrap(),
                 package_row_ord_start,
                 &batch,
@@ -757,6 +759,7 @@ fn write_replay_artifacts(
     let segments = entries
         .iter()
         .map(|entry| StateSegment {
+            kind: entry.kind,
             segment_id: entry.segment_id.clone(),
             scope: scope(),
             output_position: position(10),
@@ -780,6 +783,7 @@ fn write_replay_artifacts(
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: PackageHash::new("sha256:fixture-parent").unwrap(),
+            content: cdf_kernel::PackageContentAuthority::rows(schema_hash()),
             schema_hash: schema_hash(),
             segments: Vec::new(),
         },
@@ -838,6 +842,7 @@ fn build_replay_package(
     let builder = PackageBuilder::create(
         root,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -857,6 +862,7 @@ fn build_replay_package(
         entries.push(
             builder
                 .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
                     SegmentId::new(segment_id).unwrap(),
                     package_row_ord_start,
                     &batch,
@@ -882,6 +888,7 @@ fn build_replay_package_with_parent(
     let builder = PackageBuilder::create(
         root,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -901,6 +908,7 @@ fn build_replay_package_with_parent(
         entries.push(
             builder
                 .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
                     SegmentId::new(segment_id).unwrap(),
                     package_row_ord_start,
                     &batch,
@@ -994,6 +1002,7 @@ fn state_segments(manifest: &PackageManifest) -> Vec<StateSegment> {
         .segments
         .iter()
         .map(|segment| StateSegment {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             scope: scope(),
             output_position: position(10),
@@ -1018,6 +1027,7 @@ fn state_delta(manifest: &PackageManifest, checkpoint: &str) -> StateDelta {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        content: manifest.identity.content.clone(),
         schema_hash: schema_hash(),
         segments: state_segments(manifest),
     }
@@ -1086,6 +1096,7 @@ fn load_input(
         .unwrap();
     PostgresLoadPlanInput {
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        content: manifest.identity.content.clone(),
         idempotency_token: IdempotencyToken::new(manifest.package_hash.clone()).unwrap(),
         target: env.target(table),
         disposition,
@@ -1111,6 +1122,7 @@ fn commit(env: &LivePostgres, package_dir: &Path, table: &str) -> LiveCommitObse
 fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> DestinationCommitRequest {
     DestinationCommitRequest {
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        content: manifest.identity.content.clone(),
         target: plan.kernel.target.clone(),
         disposition: plan.kernel.disposition.clone(),
         segments: state_segments(manifest),
@@ -1460,6 +1472,7 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
     let builder = PackageBuilder::create(
         package_dir.path(),
         "pkg-live-quarantine-mirror",
+        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -1484,6 +1497,7 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
         .unwrap();
     let segment = builder
         .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
             SegmentId::new("seg-000001").unwrap(),
             0,
             &cdf_package_contract::append_package_row_ord(vec![batch(&[(1, Some("ada"))])], 0)
@@ -1954,6 +1968,7 @@ fn live_rollback_after_direct_copy_leaves_no_target_or_mirror_partial_commit() {
     );
     rollback_plan.target_ddl = target_migrations(&PostgresLoadPlanInput {
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        content: manifest.identity.content.clone(),
         idempotency_token: IdempotencyToken::new(manifest.package_hash.clone()).unwrap(),
         target: target.clone(),
         disposition: WriteDisposition::Append,

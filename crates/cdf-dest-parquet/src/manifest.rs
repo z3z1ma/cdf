@@ -34,6 +34,7 @@ pub struct ParquetObjectEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParquetObjectSegmentEntry {
+    pub kind: cdf_kernel::PackageSegmentKind,
     pub segment_id: String,
     pub package_row_ord_start: u64,
     pub row_offset: u64,

@@ -97,6 +97,9 @@ impl SettlementFixture {
         let builder = PackageBuilder::create(
             &package_dir,
             "settlement-model",
+            cdf_kernel::PackageContentAuthority::rows(
+                SchemaHash::new(format!("sha256:{}", "11".repeat(32))).map_err(test_failure)?,
+            ),
             PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .map_err(test_failure)?,
         )
@@ -122,6 +125,7 @@ impl SettlementFixture {
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: package_hash.clone(),
+            content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
             schema_hash: schema_hash.clone(),
             segments: Vec::new(),
         };
@@ -407,6 +411,7 @@ fn receipt(
         destination: DestinationId::new("settlement-model-destination").map_err(test_failure)?,
         target,
         idempotency_token: IdempotencyToken::new(package_hash.as_str()).map_err(test_failure)?,
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         package_hash,
         segment_acks: Vec::new(),
         disposition,

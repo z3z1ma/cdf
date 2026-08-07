@@ -941,6 +941,7 @@ fn verify_source_package_receipts(
         .segments
         .iter()
         .map(|segment| cdf_kernel::SegmentAck {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             row_count: segment.row_count,
             byte_count: segment.byte_count,
@@ -1341,6 +1342,7 @@ fn build_correction_package(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(artifact.new_schema_hash.clone()),
         cdf_package::PackageBuilderResources::shared(
             execution_services.memory(),
             execution_services.spill(),
@@ -1384,9 +1386,14 @@ fn build_correction_package(
         Vec::new()
     } else {
         let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
-        let segment =
-            builder.write_segment(cdf_kernel::SegmentId::new("correction-000001")?, 0, &batch)?;
+        let segment = builder.write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            cdf_kernel::SegmentId::new("correction-000001")?,
+            0,
+            &batch,
+        )?;
         vec![StateSegment {
+            kind: segment.kind,
             segment_id: segment.segment_id,
             scope: scope.clone(),
             output_position: output_position.clone(),
@@ -2513,6 +2520,9 @@ mod tests {
         PackageBuilder::create(
             &original,
             "source-package",
+            cdf_kernel::PackageContentAuthority::rows(
+                cdf_kernel::SchemaHash::new("source-package-schema").unwrap(),
+            ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )

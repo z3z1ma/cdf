@@ -131,6 +131,7 @@ pub struct PackageArchiveFidelityReport {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ArchiveSegmentMetadata {
+    pub kind: cdf_kernel::PackageSegmentKind,
     pub segment_id: String,
     pub source_path: String,
     pub source_byte_count: u64,
@@ -322,6 +323,7 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
             let parquet_byte_count = u64::try_from(parquet_bytes.len())
                 .map_err(|_| CdfError::data("archive Parquet byte count exceeds u64"))?;
             let record = ArchiveSegmentMetadata {
+                kind: entry.kind,
                 segment_id: entry.segment_id.as_str().to_owned(),
                 source_path: entry.path.clone(),
                 source_byte_count: entry.byte_count,
@@ -627,10 +629,10 @@ fn verify_archive_segment_record(
     source: &cdf_package_contract::SegmentEntry,
     record: &ArchiveSegmentMetadata,
 ) -> Result<()> {
-    if record.segment_id != source.segment_id.as_str() {
+    if record.kind != source.kind || record.segment_id != source.segment_id.as_str() {
         return Err(archive_verification_failure(format!(
-            "archive metadata segment {} does not match manifest segment {}",
-            record.segment_id, source.segment_id
+            "archive metadata segment {:?}/{} does not match manifest segment {:?}/{}",
+            record.kind, record.segment_id, source.kind, source.segment_id
         )));
     }
     let expected_path = archive_segment_path(source.segment_id.as_str())?;

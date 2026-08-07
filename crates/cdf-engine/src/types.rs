@@ -66,6 +66,8 @@ pub struct EnginePlan {
     pub schema_admission_program: ValidationProgram,
     pub execution_extent: ExecutionExtent,
     pub write_disposition: WriteDisposition,
+    /// Ordered normalized key authority for merge/CDC package effects.
+    pub effect_key: Vec<String>,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
     pub output_schema: CompiledArrowSchema,

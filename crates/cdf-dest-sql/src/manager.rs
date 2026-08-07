@@ -460,13 +460,18 @@ mod tests {
             destination: cdf_kernel::DestinationId::new("test").unwrap(),
             target: TargetName::new("orders").unwrap(),
             package_hash: PackageHash::new("package-1").unwrap(),
+            content: cdf_kernel::PackageContentAuthority::rows(
+                SchemaHash::new("schema-1").unwrap(),
+            ),
             segment_acks: vec![
                 SegmentAck {
+                    kind: cdf_kernel::PackageSegmentKind::Row,
                     segment_id: SegmentId::new("z-segment").unwrap(),
                     row_count: 1,
                     byte_count: 10,
                 },
                 SegmentAck {
+                    kind: cdf_kernel::PackageSegmentKind::Row,
                     segment_id: SegmentId::new("a-segment").unwrap(),
                     row_count: 1,
                     byte_count: 20,
@@ -514,9 +519,11 @@ mod tests {
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: receipt.package_hash.clone(),
+            content: receipt.content.clone(),
             schema_hash: receipt.schema_hash.clone(),
             segments: vec![
                 StateSegment {
+                    kind: cdf_kernel::PackageSegmentKind::Row,
                     segment_id: SegmentId::new("z-segment").unwrap(),
                     scope: ScopeKey::Resource,
                     output_position: cdf_kernel::SourcePosition::Cursor(CursorPosition {
@@ -528,6 +535,7 @@ mod tests {
                     byte_count: 10,
                 },
                 StateSegment {
+                    kind: cdf_kernel::PackageSegmentKind::Row,
                     segment_id: SegmentId::new("a-segment").unwrap(),
                     scope: ScopeKey::Resource,
                     output_position: cdf_kernel::SourcePosition::Cursor(CursorPosition {

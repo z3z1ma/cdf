@@ -66,6 +66,7 @@ pub(crate) fn plan_clickhouse_load(input: ClickHouseLoadPlanInput) -> Result<Cli
     Ok(ClickHouseLoadPlan {
         kernel,
         package_hash: input.package_hash,
+        content: input.content,
         idempotency_token: input.idempotency_token,
         schema_hash: input.schema_hash,
         segments: input.segments,

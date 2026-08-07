@@ -1729,6 +1729,7 @@ fn build_archive_input_fixture(
     let builder = PackageBuilder::create(
         &package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         cdf_package::PackageBuilderResources::standalone(64 * 1024 * 1024, 1024 * 1024 * 1024)?,
     )?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -1746,7 +1747,12 @@ fn build_archive_input_fixture(
     )?;
     builder.write_runtime_arrow_schema(schema.as_ref())?;
     let batches = cdf_package_contract::append_package_row_ord(batches, 0)?;
-    let segment = builder.write_segment(SegmentId::new("seg-000001")?, 0, &batches)?;
+    let segment = builder.write_segment(
+        cdf_kernel::PackageSegmentKind::Row,
+        SegmentId::new("seg-000001")?,
+        0,
+        &batches,
+    )?;
     let scope = ScopeKey::Resource;
     let output_position = SourcePosition::Cursor(CursorPosition {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
@@ -1754,6 +1760,7 @@ fn build_archive_input_fixture(
         value: CursorValue::I64((spec.rows - 1) as i64),
     });
     let state_segments = vec![StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id.clone(),
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -1838,6 +1845,7 @@ fn build_replay_package_fixture(
                 )));
             }
             state_segments.push(StateSegment {
+                kind: segment.kind,
                 segment_id: segment.segment_id,
                 scope: ScopeKey::Resource,
                 output_position: output_position.clone(),

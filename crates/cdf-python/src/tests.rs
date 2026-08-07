@@ -1780,6 +1780,7 @@ fn checkpoint_fixture(
     output_position: SourcePosition,
 ) -> Checkpoint {
     let segment = StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(format!("{checkpoint_id}-segment")).unwrap(),
         scope: scope.clone(),
         output_position: output_position.clone(),
@@ -1800,6 +1801,9 @@ fn checkpoint_fixture(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(format!("{checkpoint_id}-package")).unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(
+            SchemaHash::new(format!("{checkpoint_id}-schema")).unwrap(),
+        ),
         schema_hash: SchemaHash::new(format!("{checkpoint_id}-schema")).unwrap(),
         segments: vec![segment],
     };

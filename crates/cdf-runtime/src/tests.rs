@@ -173,6 +173,7 @@ impl CommitSession for MockFinalizedSession {
                 ));
             }
             let ack = SegmentAck {
+                kind: state.kind,
                 segment_id: state.segment_id,
                 row_count: state.row_count,
                 byte_count: package_byte_count,
@@ -197,6 +198,7 @@ impl CommitSession for MockFinalizedSession {
             destination: self.destination_id,
             target: self.request.target,
             package_hash: self.request.package_hash,
+            content: self.request.content,
             segment_acks: self.acknowledgements.clone(),
             disposition: self.request.disposition,
             idempotency_token: self.request.idempotency_token,
@@ -439,9 +441,11 @@ impl StagedIngressSession for MockStagedSession {
             destination: self.request.binding().destination_id.clone(),
             target: binding.commit().target.clone(),
             package_hash: binding.commit().package_hash.clone(),
+            content: binding.commit().content.clone(),
             segment_acks: accepted
                 .iter()
                 .map(|identity| SegmentAck {
+                    kind: identity.kind,
                     segment_id: identity.segment_id.clone(),
                     row_count: identity.row_count,
                     byte_count: identity.byte_count,
@@ -2148,6 +2152,7 @@ fn final_binding_requires_exact_ordered_staged_identities() {
         execution_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
+            content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
             target: target.clone(),
             disposition: WriteDisposition::Append,
             segments: Vec::new(),
@@ -2358,6 +2363,7 @@ fn staged_identity(
     schema_hash: SchemaHash,
 ) -> StagedSegmentIdentity {
     StagedSegmentIdentity {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(segment_id).unwrap(),
         sha256: format!("sha256:{segment_id}"),
         package_row_ord_start: u64::from(ordinal),
@@ -2919,6 +2925,7 @@ fn test_final_binding(
         execution_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
+            content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
             target: target.clone(),
             disposition: WriteDisposition::Append,
             segments: Vec::new(),

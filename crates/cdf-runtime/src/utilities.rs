@@ -36,6 +36,7 @@ pub fn commit_request(
 ) -> Result<DestinationCommitRequest> {
     Ok(DestinationCommitRequest {
         package_hash: delta.package_hash.clone(),
+        content: delta.content.clone(),
         target,
         disposition,
         segments: delta.segments.clone(),

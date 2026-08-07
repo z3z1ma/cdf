@@ -670,7 +670,7 @@ fn sqlite_host_error(error: &rusqlite::Error) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
-    use cdf_kernel::SegmentId;
+    use cdf_kernel::{PackageSegmentKind, SegmentId};
     use cdf_memory::{DeterministicMemoryCoordinator, FixedSpillBudget};
 
     use super::*;
@@ -722,6 +722,7 @@ mod tests {
         for ordinal in [8, 0, 4] {
             index
                 .insert_segment(&SegmentEntry {
+                    kind: PackageSegmentKind::Row,
                     segment_id: SegmentId::new(format!("segment-{ordinal}")).unwrap(),
                     path: format!("data/segment-{ordinal}.arrow"),
                     package_row_ord_start: ordinal,

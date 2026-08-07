@@ -152,6 +152,30 @@ pub(super) fn destinations_document(report: &InspectDestinationsReport) -> Rende
 
 pub(super) fn package_document(report: &InspectPackageReport) -> RenderDocument {
     let manifest = &report.manifest;
+    let (content_kind, effect_summary) = match &manifest.identity.content {
+        cdf_kernel::PackageContentAuthority::Rows { .. } => ("rows", "ordinary rows".to_owned()),
+        cdf_kernel::PackageContentAuthority::KeyedChanges {
+            key,
+            reduction,
+            deletion_capture,
+            delete_application,
+            ..
+        } => (
+            "keyed_changes",
+            format!(
+                "{} key(s) · {} upsert(s) · {} delete(s) · capture {} · apply {:?}",
+                key.fields.len(),
+                reduction.surviving.upserts,
+                reduction.surviving.deletes,
+                if deletion_capture.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                delete_application,
+            ),
+        ),
+    };
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
@@ -168,6 +192,8 @@ pub(super) fn package_document(report: &InspectPackageReport) -> RenderDocument 
                 .row("package", manifest.identity.package_id.to_string())
                 .row("hash", manifest.package_hash.to_string())
                 .row("status", manifest.lifecycle.status.as_str().to_owned())
+                .row("content", content_kind)
+                .row("effects", effect_summary)
                 .row("files", manifest.identity.files.len().to_string())
                 .row("segments", manifest.identity.segments.len().to_string()),
         )

@@ -23,6 +23,7 @@ pub(crate) fn segment_acks(plan: &ClickHouseLoadPlan) -> Vec<SegmentAck> {
     plan.segments
         .iter()
         .map(|segment| SegmentAck {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             row_count: segment.row_count,
             byte_count: segment.byte_count,
@@ -38,6 +39,7 @@ pub(crate) fn build_receipt(
 ) -> Result<Receipt> {
     let request = DestinationCommitRequest {
         package_hash: plan.package_hash.clone(),
+        content: plan.content.clone(),
         target: plan.kernel.target.clone(),
         disposition: plan.kernel.disposition.clone(),
         segments: plan.segments.clone(),

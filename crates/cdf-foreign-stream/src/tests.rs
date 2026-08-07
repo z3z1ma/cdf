@@ -10,7 +10,8 @@ use std::{
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    Batch, BatchId, CdfError, PartitionId, ResourceId, Result, SchemaHash, SegmentId,
+    Batch, BatchId, CdfError, PackageContentAuthority, PackageSegmentKind, PartitionId, ResourceId,
+    Result, SchemaHash, SegmentId,
 };
 use cdf_package::PackageBuilder;
 use futures_core::Stream;
@@ -132,6 +133,7 @@ fn mock_stream_reaches_package_segments_without_whole_stream_collection() {
     let builder = PackageBuilder::create(
         temp.path(),
         "foreign-mock-package",
+        PackageContentAuthority::rows(SchemaHash::new("foreign-mock-schema").unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -148,6 +150,7 @@ fn mock_stream_reaches_package_segments_without_whole_stream_collection() {
                 .unwrap();
         builder
             .write_segment(
+                PackageSegmentKind::Row,
                 SegmentId::new(format!("seg-{segment_count:06}")).unwrap(),
                 package_row_ord_start,
                 &record_batch,

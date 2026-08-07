@@ -245,6 +245,7 @@ fn load_plan_input(
     }
     Ok(SqliteLoadPlanInput {
         package_hash: inputs.state_delta.package_hash.clone(),
+        content: inputs.destination_commit.content.clone(),
         idempotency_token: inputs.destination_commit.idempotency_token.clone(),
         target,
         disposition: inputs.destination_commit.disposition.clone(),

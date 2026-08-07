@@ -785,6 +785,7 @@ fn validate_package_segment<'a>(
     Ok((
         expected,
         SegmentAck {
+            kind: expected.state.kind,
             segment_id: expected.state.segment_id.clone(),
             row_count: expected.state.row_count,
             byte_count: expected.state.byte_count,

@@ -986,6 +986,9 @@ pub(super) fn engine_output_with_positions_and_checkpoint_eligibility(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(
+            cdf_kernel::SchemaHash::new("engine-output-schema").unwrap(),
+        ),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -1003,6 +1006,7 @@ pub(super) fn engine_output_with_positions_and_checkpoint_eligibility(
         .unwrap();
         let segment = builder
             .write_segment(
+                cdf_kernel::PackageSegmentKind::Row,
                 SegmentId::new(format!("seg-{:06}", index + 1)).unwrap(),
                 package_row_ord_start,
                 &batches,

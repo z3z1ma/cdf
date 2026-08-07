@@ -21,6 +21,7 @@ pub(crate) fn plan_segment_acks(plan: &PostgresLoadPlan) -> Vec<SegmentAck> {
     plan_segments_in_receipt_order(plan)
         .iter()
         .map(|segment| SegmentAck {
+            kind: segment.kind,
             segment_id: segment.segment_id.clone(),
             row_count: segment.row_count,
             byte_count: segment.byte_count,

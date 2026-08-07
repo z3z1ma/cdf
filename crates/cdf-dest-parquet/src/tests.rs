@@ -92,6 +92,7 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
     let segment = || {
         CommitSegment::new(
             StateSegment {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("roofline-segment").unwrap(),
                 scope: ScopeKey::Resource,
                 output_position: SourcePosition::Cursor(CursorPosition {
@@ -345,6 +346,7 @@ fn correction_request(original_package_hash: &PackageHash) -> DestinationCorrect
         TargetName::new("orders").unwrap(),
         WriteDisposition::Append,
         vec![StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-correction").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {
@@ -403,6 +405,7 @@ fn build_package<S: AsRef<str>>(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-v1").unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -433,6 +436,7 @@ fn build_package<S: AsRef<str>>(
         let batches = canonical_batches(batches, package_row_ord_start);
         builder
             .write_segment(
+                cdf_kernel::PackageSegmentKind::Row,
                 SegmentId::new(segment_id.as_ref()).unwrap(),
                 package_row_ord_start,
                 &batches,
@@ -464,6 +468,9 @@ fn request(
     ParquetCommitRequest {
         commit: DestinationCommitRequest {
             package_hash: built.hash.clone(),
+            content: cdf_kernel::PackageContentAuthority::rows(
+                SchemaHash::new("schema-v1").unwrap(),
+            ),
             target: TargetName::new("orders").unwrap(),
             disposition,
             segments: built.segments.iter().map(state_segment).collect(),
@@ -475,6 +482,7 @@ fn request(
 
 fn state_segment(segment: &SegmentEntry) -> StateSegment {
     StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id.clone(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -522,6 +530,7 @@ fn replay_inputs(request: &ParquetCommitRequest) -> PackageReplayInputs {
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: request.commit.package_hash.clone(),
+            content: request.commit.content.clone(),
             schema_hash: request.schema_hash.clone(),
             segments: request.commit.segments.clone(),
         },
@@ -1254,6 +1263,9 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
     assert!(
         dest.plan_commit(&DestinationCommitRequest {
             package_hash: PackageHash::new("sha256:test").unwrap(),
+            content: cdf_kernel::PackageContentAuthority::rows(
+                SchemaHash::new("schema-v1").unwrap(),
+            ),
             target: TargetName::new("orders").unwrap(),
             disposition: WriteDisposition::Merge,
             segments: Vec::new(),
@@ -2098,11 +2110,13 @@ fn staged_segment_ingress_preserves_manifest_segment_order() {
         receipt.segment_acks,
         vec![
             SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("seg-000001").unwrap(),
                 row_count: 2,
                 byte_count: 32,
             },
             SegmentAck {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("seg-000002").unwrap(),
                 row_count: 1,
                 byte_count: 16,
@@ -2857,6 +2871,7 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
     let batch = sample_batch(vec![1, 2], vec![Some("left"), Some("right")]);
     let segment = CommitSegment::new(
         StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: SegmentId::new("seg-low-memory").unwrap(),
             scope: ScopeKey::Resource,
             output_position: SourcePosition::Cursor(CursorPosition {

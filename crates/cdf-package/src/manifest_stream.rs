@@ -336,6 +336,7 @@ pub struct ManifestIdentityHeader {
     pub manifest_version: u16,
     pub package_id: String,
     pub layout: Vec<String>,
+    pub content: cdf_kernel::PackageContentAuthority,
     pub file_count: u64,
     pub file_bytes: u64,
     pub segment_count: u64,
@@ -355,6 +356,7 @@ pub fn visit_package_manifest(
     let mut file_count = 0_u64;
     let mut file_bytes = 0_u64;
     let mut segment_count = 0_u64;
+    let mut segment_rows = std::collections::BTreeMap::new();
     let parsed = {
         let mut counted_file_visitor = |entry: FileEntry| {
             file_count = file_count
@@ -366,6 +368,10 @@ pub fn visit_package_manifest(
             file_visitor(entry)
         };
         let mut counted_segment_visitor = |entry: SegmentEntry| {
+            let rows = segment_rows.entry(entry.kind).or_insert(0_u64);
+            *rows = rows
+                .checked_add(entry.row_count)
+                .ok_or_else(|| CdfError::data("package manifest effect count overflowed u64"))?;
             segment_count = segment_count
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("package manifest segment count overflowed u64"))?;
@@ -394,6 +400,10 @@ pub fn visit_package_manifest(
             header.manifest_version, header.identity.manifest_version
         )));
     }
+    header
+        .identity
+        .content
+        .validate_segment_rows(segment_rows.iter().map(|(kind, rows)| (kind, *rows)))?;
     Ok(header)
 }
 
@@ -526,6 +536,7 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
         A: MapAccess<'de>,
     {
         let mut files = None;
+        let mut content = None;
         let mut layout = None;
         let mut manifest_version = None;
         let mut package_id = None;
@@ -533,6 +544,10 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
 
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
+                "content" => {
+                    require_absent(&content, "content")?;
+                    content = Some(map.next_value()?);
+                }
                 "files" => {
                     require_absent(&files, "files")?;
                     map.next_value_seed(EntrySequenceSeed::<FileEntry> {
@@ -573,6 +588,7 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
             manifest_version: required(manifest_version, "manifest_version")?,
             package_id: required(package_id, "package_id")?,
             layout: required(layout, "layout")?,
+            content: required(content, "content")?,
             file_count: 0,
             file_bytes: 0,
             segment_count: 0,
@@ -658,6 +674,7 @@ const MANIFEST_FIELDS: &[&str] = &[
     "signature",
 ];
 const IDENTITY_FIELDS: &[&str] = &[
+    "content",
     "files",
     "layout",
     "manifest_version",
@@ -665,8 +682,7 @@ const IDENTITY_FIELDS: &[&str] = &[
     "segments",
 ];
 
-const FILES_ARRAY_PREFIX: &[u8] = b"\"identity\":{\"files\":[";
-const IDENTITY_ARRAY_ANCHOR: &[u8] = FILES_ARRAY_PREFIX;
+const FILES_ARRAY_PREFIX: &[u8] = b"\"files\":[";
 const SEGMENTS_ARRAY_PREFIX: &[u8] = b"\"segments\":[";
 const MAX_CANONICAL_FILE_ENTRY_BYTES: usize = 1024 * 1024;
 const MAX_CANONICAL_SEGMENT_ENTRY_BYTES: usize = 4096;
@@ -872,7 +888,7 @@ impl<R: Read> ManifestSegmentStream<R> {
     pub fn new(reader: R) -> Self {
         Self(CanonicalManifestArrayStream::new(
             reader,
-            Some(IDENTITY_ARRAY_ANCHOR),
+            None,
             SEGMENTS_ARRAY_PREFIX,
             "segments",
             MAX_CANONICAL_SEGMENT_ENTRY_BYTES,
@@ -981,6 +997,9 @@ mod tests {
                 manifest_version: MANIFEST_VERSION,
                 package_id: "pkg-stream".to_owned(),
                 layout: vec!["data/".to_owned()],
+                content: cdf_kernel::PackageContentAuthority::rows(
+                    cdf_kernel::SchemaHash::new("schema-stream").unwrap(),
+                ),
                 files: vec![
                     FileEntry {
                         path: "data/000.arrow".to_owned(),
@@ -994,6 +1013,7 @@ mod tests {
                     },
                 ],
                 segments: vec![SegmentEntry {
+                    kind: cdf_kernel::PackageSegmentKind::Row,
                     segment_id: SegmentId::new("segment-00000000000000000000").unwrap(),
                     path: "data/000.arrow".to_owned(),
                     package_row_ord_start: 0,

@@ -1179,6 +1179,34 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     assert_eq!(output.profile.output_rows, 3);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        key,
+        reduction,
+        deletion_capture,
+        delete_application,
+        ..
+    } = &reader.manifest().identity.content
+    else {
+        panic!("merge package must carry keyed-change content authority");
+    };
+    assert_eq!(key.fields, vec!["id"]);
+    assert_eq!(reduction.input.upserts, 4);
+    assert_eq!(reduction.surviving.upserts, 3);
+    assert_eq!(reduction.duplicate_key_count, 1);
+    assert_eq!(
+        deletion_capture.support,
+        cdf_kernel::DeletionCaptureSupport::Unsupported
+    );
+    assert_eq!(
+        delete_application,
+        &cdf_kernel::DeleteApplicationAuthority::NotApplicable
+    );
+    assert!(
+        output
+            .identity_segments()
+            .iter()
+            .all(|segment| segment.kind == cdf_kernel::PackageSegmentKind::Upsert)
+    );
     let segment = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&segment[0], "id"), vec![2, 1, 3]);
     assert_eq!(

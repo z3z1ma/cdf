@@ -96,11 +96,13 @@ fn destination_planning_inputs(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         schema_hash: schema_hash.clone(),
         segments: vec![segment],
     };
     let destination_commit = DestinationCommitRequest {
         package_hash,
+        content: state_delta.content.clone(),
         target: target.clone(),
         disposition: resource.descriptor().write_disposition.clone(),
         segments: state_delta.segments.clone(),
@@ -121,6 +123,7 @@ fn synthetic_segment(resource: &dyn ResourceStream) -> Result<StateSegment> {
         blob_sha256: EMPTY_SHA256.to_owned(),
     });
     Ok(StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(PLAN_PREVIEW_SEGMENT_ID)?,
         scope: resource.descriptor().state_scope.clone(),
         output_position: position,

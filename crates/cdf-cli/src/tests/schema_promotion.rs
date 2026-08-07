@@ -1266,10 +1266,10 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
     let package_dir = project.root.join(".cdf/packages/pkg-promote-source");
     let reader = PackageReader::open(&package_dir).unwrap();
     let package_hash = PackageHash::new(reader.manifest().package_hash.clone()).unwrap();
-    let delta = reader
-        .state_delta_preimage()
-        .unwrap()
-        .into_state_delta(package_hash.clone());
+    let delta = reader.state_delta_preimage().unwrap().into_state_delta(
+        package_hash.clone(),
+        reader.manifest().identity.content.clone(),
+    );
     let segment = &delta.segments[0];
     let batches = reader
         .verified_canonical_segment_stream(test_execution_services().memory(), 128 * 1024 * 1024)
@@ -1329,8 +1329,10 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
             receipt_id: ReceiptId::new("receipt-postgres-promotion-source").unwrap(),
             destination: DestinationId::new("postgres").unwrap(),
             target: TargetName::new(target.clone()).unwrap(),
-            package_hash: package_hash.clone(),
-            segment_acks: vec![SegmentAck {
+        package_hash: package_hash.clone(),
+        content: delta.content.clone(),
+        segment_acks: vec![SegmentAck {
+            kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,

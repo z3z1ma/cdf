@@ -72,6 +72,7 @@ impl std::fmt::Debug for ClickHouseDestination {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ClickHouseLoadPlanInput {
     pub(crate) package_hash: PackageHash,
+    pub(crate) content: cdf_kernel::PackageContentAuthority,
     pub(crate) idempotency_token: IdempotencyToken,
     pub(crate) target: ClickHouseIdentifier,
     pub(crate) disposition: cdf_kernel::WriteDisposition,
@@ -88,6 +89,7 @@ pub(crate) struct ClickHouseLoadPlanInput {
 pub(crate) struct ClickHouseLoadPlan {
     pub(crate) kernel: CommitPlan,
     pub(crate) package_hash: PackageHash,
+    pub(crate) content: cdf_kernel::PackageContentAuthority,
     pub(crate) idempotency_token: IdempotencyToken,
     pub(crate) schema_hash: SchemaHash,
     pub(crate) segments: Vec<StateSegment>,

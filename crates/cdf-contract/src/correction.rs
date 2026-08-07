@@ -125,6 +125,7 @@ mod tests {
             TargetName::new("orders").unwrap(),
             WriteDisposition::Append,
             vec![StateSegment {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new("seg-correction").unwrap(),
                 scope: ScopeKey::Resource,
                 output_position: SourcePosition::Cursor(CursorPosition {

@@ -409,6 +409,7 @@ fn postgres_preflight_delta(
 ) -> Result<StateDelta> {
     let descriptor = resource.descriptor();
     let segment = StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: cdf_kernel::SegmentId::new("seg-postgres-preflight")?,
         scope: descriptor.state_scope.clone(),
         output_position: SourcePosition::Cursor(CursorPosition {
@@ -433,6 +434,7 @@ fn postgres_preflight_delta(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("sha256:postgres-preflight")?,
+        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
         schema_hash: schema_hash.clone(),
         segments: vec![segment],
     })
@@ -447,6 +449,7 @@ fn load_plan_input_from_artifacts(
     validate_replay_target(&target, &inputs.destination_commit.target)?;
     Ok(PostgresLoadPlanInput {
         package_hash: inputs.state_delta.package_hash.clone(),
+        content: inputs.destination_commit.content.clone(),
         idempotency_token: inputs.destination_commit.idempotency_token.clone(),
         target,
         disposition: inputs.destination_commit.disposition.clone(),

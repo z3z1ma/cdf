@@ -252,16 +252,23 @@ pub(crate) fn create_layout(package_dir: &Path) -> Result<()> {
 
 pub(crate) fn build_manifest(
     package_id: String,
+    content: cdf_kernel::PackageContentAuthority,
     files: Vec<FileEntry>,
     segments: Vec<SegmentEntry>,
     status: PackageStatus,
 ) -> Result<PackageManifest> {
     validate_manifest_identity_paths(&files)?;
     cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
+    content.validate_segment_rows(
+        segments
+            .iter()
+            .map(|segment| (&segment.kind, segment.row_count)),
+    )?;
     let identity = ManifestIdentity {
         manifest_version: MANIFEST_VERSION,
         package_id,
         layout: package_layout(),
+        content,
         files,
         segments,
     };

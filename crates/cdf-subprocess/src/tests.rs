@@ -175,6 +175,9 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
     let package = cdf_package::PackageBuilder::create(
         temp.path().join("package"),
         "pkg-subprocess",
+        cdf_kernel::PackageContentAuthority::rows(
+            cdf_kernel::SchemaHash::new("subprocess-schema").unwrap(),
+        ),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -185,7 +188,12 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         .collect::<Vec<_>>();
     let batches = cdf_package_contract::append_package_row_ord(batches, 0).unwrap();
     package
-        .write_segment(SegmentId::new("seg-subprocess").unwrap(), 0, &batches)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-subprocess").unwrap(),
+            0,
+            &batches,
+        )
         .unwrap();
     package.finish().unwrap();
     cdf_package::PackageReader::open(temp.path().join("package"))
@@ -1405,12 +1413,20 @@ async fn airbyte_protocol_streams_selected_rows_and_packages_for_replay() {
     let package = cdf_package::PackageBuilder::create(
         &package_dir,
         "pkg-protocol",
+        cdf_kernel::PackageContentAuthority::rows(
+            cdf_kernel::SchemaHash::new("protocol-schema").unwrap(),
+        ),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
     .unwrap();
     package
-        .write_segment(SegmentId::new("seg-protocol-0").unwrap(), 0, &batches)
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Row,
+            SegmentId::new("seg-protocol-0").unwrap(),
+            0,
+            &batches,
+        )
         .unwrap();
     package.finish().unwrap();
     let reader = cdf_package::PackageReader::open(&package_dir).unwrap();

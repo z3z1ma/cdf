@@ -853,6 +853,7 @@ impl DestinationCorrectionCommitRequest {
         self.segments
             .iter()
             .map(|segment| SegmentAck {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 row_count: segment.row_count,
                 byte_count: segment.byte_count,

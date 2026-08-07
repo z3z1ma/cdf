@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
+use cdf_kernel::{
+    CdfError, Checkpoint, PackageContentAuthority, PackageSegmentKind, Result, SegmentId,
+};
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, FileEntry,
     MANIFEST_FILE, PackageStatus, QuarantineRecord, STATE_INPUT_CHECKPOINT_FILE,
@@ -40,6 +42,7 @@ pub struct PackageBuilder {
     package_dir: PathBuf,
     package_root: Arc<PackageRoot>,
     package_id: String,
+    content: Mutex<PackageContentAuthority>,
     draft_index: Arc<Mutex<PackageDraftIndex>>,
     trace: Mutex<HashingWriter<std::fs::File>>,
 }
@@ -63,6 +66,7 @@ pub struct PackageSegmentEncoder {
 }
 
 pub struct EncodedPackageSegment {
+    kind: PackageSegmentKind,
     segment_id: SegmentId,
     relative_path: String,
     package_row_ord_start: u64,
@@ -93,6 +97,7 @@ impl EncodedPackageSegment {
 impl PackageSegmentEncoder {
     pub fn encode(
         &self,
+        kind: PackageSegmentKind,
         segment_id: SegmentId,
         package_row_ord_start: u64,
         batches: &[RecordBatch],
@@ -140,6 +145,7 @@ impl PackageSegmentEncoder {
             )));
         }
         Ok(EncodedPackageSegment {
+            kind,
             segment_id,
             relative_path,
             package_row_ord_start,
@@ -249,6 +255,7 @@ impl PackageBuilder {
     pub fn create(
         package_dir: impl AsRef<Path>,
         package_id: impl Into<String>,
+        content: PackageContentAuthority,
         resources: PackageBuilderResources,
     ) -> Result<Self> {
         let package_dir = package_dir.as_ref().to_path_buf();
@@ -262,12 +269,14 @@ impl PackageBuilder {
                 package_dir.join(MANIFEST_FILE).display()
             )));
         }
+        content.validate()?;
 
         create_layout(&package_dir)?;
         let package_dir = fs::canonicalize(&package_dir)
             .map_err(|error| io_error("canonicalize package directory", error))?;
         let manifest = build_manifest(
             package_id.clone(),
+            content.clone(),
             collect_identity_file_entries(&package_dir)?,
             Vec::new(),
             PackageStatus::Planned,
@@ -290,6 +299,7 @@ impl PackageBuilder {
             package_dir,
             package_root,
             package_id,
+            content: Mutex::new(content),
             draft_index: Arc::new(Mutex::new(draft_index)),
             trace: Mutex::new(HashingWriter::new(trace)),
         })
@@ -297,6 +307,16 @@ impl PackageBuilder {
 
     pub fn package_dir(&self) -> &Path {
         &self.package_dir
+    }
+
+    pub fn set_content_authority(&self, content: PackageContentAuthority) -> Result<()> {
+        content.validate()?;
+        *self
+            .content
+            .lock()
+            .map_err(|_| CdfError::internal("package content authority lock is poisoned"))? =
+            content;
+        Ok(())
     }
 
     /// Discards an owner-private package construction directory before it becomes an artifact.
@@ -328,6 +348,7 @@ impl PackageBuilder {
     /// the same durable receipt/segment-draft boundary as locally encoded segments.
     pub fn import_canonical_segment(
         &self,
+        kind: PackageSegmentKind,
         segment_id: SegmentId,
         package_row_ord_start: u64,
         row_count: u64,
@@ -357,6 +378,7 @@ impl PackageBuilder {
         let receipt = write_canonical_segment_ipc_bytes(&path, bytes)?;
         Ok(self
             .register_encoded_segment(EncodedPackageSegment {
+                kind,
                 segment_id,
                 relative_path,
                 package_row_ord_start,
@@ -665,34 +687,41 @@ impl PackageBuilder {
 
     pub fn write_segment(
         &self,
+        kind: PackageSegmentKind,
         segment_id: SegmentId,
         package_row_ord_start: u64,
         batches: &[RecordBatch],
     ) -> Result<SegmentEntry> {
         Ok(self
-            .write_segment_inner(segment_id, package_row_ord_start, batches, false)?
+            .write_segment_inner(kind, segment_id, package_row_ord_start, batches, false)?
             .segment)
     }
 
     pub fn write_segment_with_metrics(
         &self,
+        kind: PackageSegmentKind,
         segment_id: SegmentId,
         package_row_ord_start: u64,
         batches: &[RecordBatch],
     ) -> Result<SegmentWriteMetrics> {
-        self.write_segment_inner(segment_id, package_row_ord_start, batches, true)
+        self.write_segment_inner(kind, segment_id, package_row_ord_start, batches, true)
     }
 
     fn write_segment_inner(
         &self,
+        kind: PackageSegmentKind,
         segment_id: SegmentId,
         package_row_ord_start: u64,
         batches: &[RecordBatch],
         measure: bool,
     ) -> Result<SegmentWriteMetrics> {
-        let encoded =
-            self.segment_encoder()
-                .encode(segment_id, package_row_ord_start, batches, measure)?;
+        let encoded = self.segment_encoder().encode(
+            kind,
+            segment_id,
+            package_row_ord_start,
+            batches,
+            measure,
+        )?;
         Ok(self.register_encoded_segment(encoded)?.metrics)
     }
 
@@ -724,6 +753,7 @@ impl PackageBuilder {
         // than deleting a file already named by durable package evidence.
         encoded.unpublished_path = None;
         let segment = SegmentEntry {
+            kind: encoded.kind,
             segment_id: encoded.segment_id.clone(),
             path: encoded.relative_path.clone(),
             package_row_ord_start: encoded.package_row_ord_start,
@@ -886,10 +916,22 @@ impl PackageBuilder {
                 "package draft segment count changed during finalization",
             ));
         }
+        let content = self
+            .content
+            .lock()
+            .map_err(|_| CdfError::internal("package content authority lock is poisoned"))?
+            .clone();
+        let mut segment_rows = Vec::new();
+        draft_index.visit_segments(&mut |segment| {
+            segment_rows.push((segment.kind, segment.row_count));
+            Ok(())
+        })?;
+        content.validate_segment_rows(segment_rows.iter().map(|(kind, rows)| (kind, *rows)))?;
         let layout = package_layout();
         let package_hash = manifest_identity_hash_streaming(
             &self.package_id,
             &layout,
+            &content,
             &mut |visitor| draft_index.visit_files(visitor),
             &mut |visitor| draft_index.visit_segments(visitor),
         )?;
@@ -901,6 +943,7 @@ impl PackageBuilder {
         write_package_manifest_canonical_streaming(
             &self.package_id,
             &layout,
+            &content,
             &package_hash,
             status,
             &mut |visitor| draft_index.visit_files(visitor),

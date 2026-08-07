@@ -238,6 +238,7 @@ impl StagingCleanupCandidate {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedSegmentIdentity {
+    pub kind: cdf_kernel::PackageSegmentKind,
     pub segment_id: SegmentId,
     pub sha256: String,
     pub package_row_ord_start: u64,
@@ -264,6 +265,7 @@ impl StagedSegmentIdentity {
             )));
         }
         Ok(Self {
+            kind: entry.kind,
             segment_id: entry.segment_id.clone(),
             sha256: entry.sha256.clone(),
             package_row_ord_start: entry.package_row_ord_start,

@@ -440,6 +440,7 @@ impl CommitSession for SqliteCommitSession {
                 });
             }
             acknowledgements.push(SegmentAck {
+                kind: expected.state.kind,
                 segment_id: expected.state.segment_id.clone(),
                 row_count: expected.state.row_count,
                 byte_count: expected.state.byte_count,

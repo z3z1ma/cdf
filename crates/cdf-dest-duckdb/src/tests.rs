@@ -259,6 +259,7 @@ fn build_package_segments_for_commit_with_statistics(
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-v1").unwrap()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -288,7 +289,12 @@ fn build_package_segments_for_commit_with_statistics(
                 .unwrap();
         entries.push(
             builder
-                .write_segment(segment_id.clone(), package_row_ord_start, &canonical)
+                .write_segment(
+                    cdf_kernel::PackageSegmentKind::Row,
+                    segment_id.clone(),
+                    package_row_ord_start,
+                    &canonical,
+                )
                 .unwrap(),
         );
         if emit_statistics {
@@ -414,6 +420,7 @@ fn write_current_state_artifacts(
     let segments = entries
         .iter()
         .map(|entry| StateSegment {
+            kind: entry.kind,
             segment_id: entry.segment_id.clone(),
             scope: scope.clone(),
             output_position: output_position.clone(),
@@ -477,6 +484,7 @@ fn state_segment(rows: u64) -> StateSegment {
 
 fn state_segment_for(segment_id: &str, rows: u64, cursor: i64) -> StateSegment {
     StateSegment {
+        kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(segment_id).unwrap(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -909,6 +917,7 @@ fn staged_ingress_retains_no_segment_count_file_handles() {
     let requests = (0..SEGMENTS)
         .map(|ordinal| {
             let entry = SegmentEntry {
+                kind: cdf_kernel::PackageSegmentKind::Row,
                 segment_id: SegmentId::new(format!("segment-{ordinal:08}")).unwrap(),
                 path: format!("data/segment-{ordinal:08}.arrow"),
                 package_row_ord_start: u64::from(ordinal),
@@ -1331,6 +1340,7 @@ fn staged_segment_ingress_returns_verifiable_receipt_and_exact_provenance() {
             .segments
             .iter()
             .map(|state| SegmentAck {
+                kind: state.kind,
                 segment_id: state.segment_id.clone(),
                 row_count: state.row_count,
                 byte_count: state.byte_count,
@@ -2075,6 +2085,7 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
     );
     let incompatible_empty_request = DestinationCommitRequest {
         package_hash: PackageHash::new("package-empty-incompatible").unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-v1").unwrap()),
         target: TargetName::new("orders").unwrap(),
         disposition: WriteDisposition::Append,
         segments: Vec::new(),
@@ -2130,6 +2141,7 @@ fn zero_data_plan_still_rejects_reserved_user_schema_fields() {
     let destination = destination(&temp.path().join("local.duckdb"));
     let request = DestinationCommitRequest {
         package_hash: PackageHash::new("package-empty").unwrap(),
+        content: cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-v1").unwrap()),
         target: TargetName::new("orders").unwrap(),
         disposition: WriteDisposition::Append,
         segments: Vec::new(),

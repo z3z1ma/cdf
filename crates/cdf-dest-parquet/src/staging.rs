@@ -706,6 +706,7 @@ impl StagedParquetObject {
                     )));
                 }
                 segments.push(ParquetObjectSegmentEntry {
+                    kind: identity.kind,
                     segment_id: identity.segment_id.as_str().to_owned(),
                     package_row_ord_start: identity.package_row_ord_start,
                     row_offset,

@@ -83,8 +83,10 @@ fn publish_replay_fixture_schema_v2(project: &TestProject) {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),
+        content: cdf_kernel::PackageContentAuthority::rows(proposed.schema_hash.clone()),
         schema_hash: proposed.schema_hash.clone(),
         segments: vec![StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id: segment_id.clone(),
             scope: fence.lease.scope.clone(),
             output_position,
@@ -92,13 +94,15 @@ fn publish_replay_fixture_schema_v2(project: &TestProject) {
             byte_count: 8,
         }],
     };
-    CheckpointStore::propose(&store, delta).unwrap();
+    CheckpointStore::propose(&store, delta.clone()).unwrap();
     let receipt = Receipt {
         receipt_id: ReceiptId::new("receipt-schema-v2-correction").unwrap(),
         destination: target.destination_id.clone(),
         target: target.target.clone(),
         package_hash: package_hash.clone(),
+        content: delta.content.clone(),
         segment_acks: vec![SegmentAck {
+            kind: cdf_kernel::PackageSegmentKind::Row,
             segment_id,
             row_count: 1,
             byte_count: 8,

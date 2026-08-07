@@ -17,6 +17,7 @@ mod config;
 mod content_reachability;
 mod correction;
 mod destination;
+mod effect;
 mod error;
 mod execution_extent;
 mod expression;
@@ -83,6 +84,13 @@ pub use destination::{
     DestinationCommitRequest, DestinationProtocol, DestinationSheet, IdempotencySupport,
     IdentifierRules, MigrationRecord, ReceiptVerification, SegmentAck, TransactionMetadata,
     TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
+};
+pub use effect::{
+    DEDUP_KEY_ENCODING_VERSION, DeleteApplicationAuthority, DeleteApplicationPolicy,
+    DeletionCaptureAuthority, DeletionCaptureSupport, KEYED_EFFECT_AUTHORITY_VERSION,
+    KEYED_EFFECT_ORDER_VERSION, KeyAuthority, KeyedEffectCounts, KeyedEffectInputOrder,
+    KeyedEffectReductionAuthority, KeyedEffectWinnerPolicy, PackageContentAuthority,
+    PackageSegmentKind,
 };
 pub use error::{CdfError, ErrorKind, Result, embedded_cdf_error, is_filesystem_loop};
 pub use execution_extent::{

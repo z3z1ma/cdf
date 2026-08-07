@@ -30,6 +30,7 @@ pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter"
 
 struct PlanFinishContext {
     write_disposition: WriteDisposition,
+    effect_key: Vec<String>,
     projection_pushed: bool,
     limit_pushed: bool,
     estimate_support: EstimateSupport,
@@ -101,6 +102,7 @@ impl Planner {
             scan,
             input,
             PlanFinishContext {
+                effect_key: resource.descriptor().merge_key.clone(),
                 write_disposition,
                 projection_pushed: false,
                 limit_pushed: false,
@@ -195,6 +197,7 @@ impl Planner {
             scan,
             input,
             PlanFinishContext {
+                effect_key: resource.descriptor().merge_key.clone(),
                 write_disposition,
                 projection_pushed: !has_relational_plan
                     && resource.capabilities().projection == CapabilitySupport::Supported,
@@ -374,6 +377,7 @@ impl Planner {
             schema_admission_program: finish.schema_admission_program,
             execution_extent: input.execution_extent,
             write_disposition: finish.write_disposition,
+            effect_key: finish.effect_key,
             validation_program,
             schema_authority: finish.schema_authority,
             output_schema: finish.output_schema,

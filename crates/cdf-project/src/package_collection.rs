@@ -723,6 +723,7 @@ mod tests {
         cdf_package::PackageBuilder::create(
             path,
             package_id,
+            cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema").unwrap()),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
         )
@@ -748,6 +749,7 @@ mod tests {
             late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: PackageHash::new(package_hash).unwrap(),
+            content: cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema").unwrap()),
             schema_hash: SchemaHash::new("schema").unwrap(),
             segments: Vec::new(),
         };
@@ -756,6 +758,7 @@ mod tests {
             destination: DestinationId::new("duckdb").unwrap(),
             target: TargetName::new("target").unwrap(),
             package_hash: delta.package_hash.clone(),
+            content: delta.content.clone(),
             segment_acks: Vec::new(),
             disposition: WriteDisposition::Append,
             idempotency_token: IdempotencyToken::new(format!("token-{committed_at_ms}")).unwrap(),

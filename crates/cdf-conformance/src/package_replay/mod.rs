@@ -92,6 +92,7 @@ impl PreparedPackageFixture {
             .segments
             .iter()
             .map(|segment| StateSegment {
+                kind: segment.kind,
                 segment_id: segment.segment_id.clone(),
                 scope: scope.clone(),
                 output_position: output_position.clone(),
@@ -174,6 +175,7 @@ pub fn build_prepared_package_fixture(
     let builder = PackageBuilder::create(
         &spec.package_dir,
         spec.package_id.clone(),
+        cdf_kernel::PackageContentAuthority::rows(spec.schema_hash.clone()),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)?,
     )?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -187,7 +189,12 @@ pub fn build_prepared_package_fixture(
         &BTreeMap::from([("schema_hash", spec.schema_hash.as_str())]),
     )?;
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
-    let segment = builder.write_segment(spec.segment_id.clone(), 0, &batch)?;
+    let segment = builder.write_segment(
+        cdf_kernel::PackageSegmentKind::Row,
+        spec.segment_id.clone(),
+        0,
+        &batch,
+    )?;
     write_stream_admission_artifacts(
         &builder,
         &admission,
@@ -764,6 +771,7 @@ fn write_prepared_state_commit_artifacts(
     };
     let output_position = prepared_output_position();
     let segments = vec![StateSegment {
+        kind: segment.kind,
         segment_id: segment.segment_id,
         scope: scope.clone(),
         output_position: output_position.clone(),
