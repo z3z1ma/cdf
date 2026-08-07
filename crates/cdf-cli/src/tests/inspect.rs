@@ -352,6 +352,7 @@ fn inspect_run_human_render_redacts_uri_userinfo_in_artifact_paths() {
 fn inspect_run_reports_duplicate_replay_status() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
+    let authority_state = fs::read(project.root.join(".cdf/state.db")).unwrap();
     let first = replay_package_command(
         &project,
         &package_dir,
@@ -359,6 +360,7 @@ fn inspect_run_reports_duplicate_replay_status() {
     );
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
     remove_state_store(&project);
+    fs::write(project.root.join(".cdf/state.db"), authority_state).unwrap();
 
     let second = replay_package_command(
         &project,

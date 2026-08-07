@@ -48,6 +48,25 @@ fn resource_file_parses_ordered_metadata_envelope() {
 }
 
 #[test]
+fn resource_file_accepts_every_current_trust_preset() {
+    for (authored, expected) in [
+        ("EXPERIMENTAL", TrustPreset::Experimental),
+        ("GOVERNED", TrustPreset::Governed),
+        ("FINANCIAL", TrustPreset::Financial),
+        ("SERVING", TrustPreset::Serving),
+    ] {
+        let parsed = parse_resource_file(
+            &format!(
+                "RESOURCE\nTRUST {authored}\nAS\nSELECT * FROM upstream(source => 'warehouse')"
+            ),
+            "cdf/analytics/orders.cdf.sql",
+        )
+        .unwrap();
+        assert_eq!(parsed.envelope.trust.unwrap().value, expected);
+    }
+}
+
+#[test]
 fn resource_file_parses_complete_drain_policy() {
     let parsed = parse_resource_file(
         "RESOURCE\nEXECUTION DRAIN (\n CHECKPOINT ROWS 100000,\n PACKAGE BYTES 67108864,\n UNTIL DURATION MILLISECONDS 60000,\n WATERMARK DISABLED,\n LATE DATA QUARANTINE,\n SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION\n)\nAS SELECT * FROM upstream(source => 'events', table => 'activity')",

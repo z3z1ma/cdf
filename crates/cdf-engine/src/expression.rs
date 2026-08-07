@@ -182,7 +182,13 @@ pub fn compile_relational_expression_plan(
                             projection.name
                         ))
                     })?;
-                    Ok(field.as_ref().clone().with_name(&projection.name))
+                    let mut field = field.as_ref().clone().with_name(&projection.name);
+                    if field.name() != input_schema.field(index).name() {
+                        let mut metadata = field.metadata().clone();
+                        metadata.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
+                        field = field.with_metadata(metadata);
+                    }
+                    Ok(field)
                 } else {
                     Ok(Field::new(
                         &projection.name,

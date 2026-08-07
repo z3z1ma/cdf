@@ -7,7 +7,7 @@ use cdf_kernel::{CdfError, PHYSICAL_TYPE_METADATA_KEY, Result};
 
 use crate::variant_capture::normalize_batch;
 
-pub(crate) fn compile_output_schema(
+pub fn compile_logical_output_schema(
     resource_schema: &Schema,
     program: &ValidationProgram,
     final_projection: Option<&[String]>,

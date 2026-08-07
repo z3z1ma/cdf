@@ -830,10 +830,11 @@ pub(super) fn assert_bad_reuse_head_rejected(
     ))
     .unwrap_err();
 
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("injected checkpoint commit failure")
+        message.contains("is not the exact reusable proposal")
+            || message.contains("unexpected propose"),
+        "{error}"
     );
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
 }
@@ -955,7 +956,7 @@ impl CheckpointStore for HeadOnlyCommitFailingStore {
     }
 
     fn commit(&self, _checkpoint_id: &CheckpointId, _receipt: Receipt) -> Result<Checkpoint> {
-        Err(CdfError::internal("injected checkpoint commit failure"))
+        Err(CdfError::internal("unexpected commit"))
     }
 
     fn abandon(&self, _checkpoint_id: &CheckpointId) -> Result<Checkpoint> {
@@ -1991,7 +1992,7 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
     assert_eq!(counters.prepare_count(), 0);
     assert_eq!(counters.bind_count(), 0);
     assert_eq!(destination.write_count(), 0);
-    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    assert_eq!(package_status(&package_dir), PackageStatus::Packaged);
     let history = store
         .history(
             &inputs.state_delta.pipeline_id,
@@ -2661,7 +2662,7 @@ fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
     assert!(error.to_string().contains("stop after checkpoint proposal"));
     assert!(!db_path.exists());
     assert!(package_receipts(&package_dir).is_empty());
-    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    assert_eq!(package_status(&package_dir), PackageStatus::Packaged);
     assert_no_head(&store, &delta);
     let history = store
         .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)

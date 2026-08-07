@@ -218,6 +218,24 @@ fn active_schema_hash(project: &TestProject, resource_id: &str) -> String {
     .to_string()
 }
 
+fn active_schema_authority(
+    project: &TestProject,
+    resource_id: &str,
+) -> crate::schema_authority::ActiveSchemaAuthority {
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
+    crate::schema_authority::load_active(
+        &context,
+        &ResourceId::new(resource_id.to_owned()).unwrap(),
+    )
+    .unwrap()
+    .expect("compiled resource must establish active schema authority")
+}
+
 fn assert_no_preview_writes(project: &TestProject) {
     assert!(
         !project.root.join(".cdf/packages").exists(),
@@ -627,7 +645,10 @@ fn seed_quasar_resume_receipt_before_checkpoint(
     remove_package_receipts(package_dir);
     let inputs = reader.replay_inputs().unwrap();
     let target = inputs.destination_commit.target.clone();
-    let execution = test_execution_services();
+    let operational = context::ProjectOperationalContext::load(Some(&project.root), None).unwrap();
+    let execution = operational
+        .execution_with_package_schema_authority(&test_execution_services(), &inputs)
+        .unwrap();
     let resolution =
         cdf_runtime::DestinationResolutionContext::for_project_run(&project.root, &target)
             .with_environment_name("dev")
@@ -641,7 +662,9 @@ fn seed_quasar_resume_receipt_before_checkpoint(
     };
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.to_path_buf(),
-        destination: ResolvedProjectDestination::new(destination, target),
+        destination: ResolvedProjectDestination::new(destination, target)
+            .with_bound_execution_services(execution)
+            .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: Some(&stop_after_receipt),
     })
@@ -746,10 +769,24 @@ fn assert_no_replay_mutation(
     status: PackageStatus,
     local_destination_path: Option<&Path>,
 ) {
-    assert!(
-        !project.root.join(".cdf/state.db").exists(),
-        "rejected replay must not create checkpoint state"
-    );
+    let state = Connection::open(project.root.join(".cdf/state.db")).unwrap();
+    for table in ["cdf_checkpoints", "cdf_runs"] {
+        let exists: bool = state
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if exists {
+            let count: i64 = state
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "rejected replay must not write {table}");
+        }
+    }
     assert_eq!(package_receipt_count(package_dir), receipt_count);
     assert_eq!(package_status(package_dir), status);
     if let Some(path) = local_destination_path {
@@ -1004,6 +1041,22 @@ fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str
     );
 }
 
+fn write_schema_promote_package_fixture_without_residual(
+    project: &TestProject,
+    package_id: &str,
+    schema_hash: &str,
+) {
+    write_schema_promote_package_fixture_for_target_with_commit_and_residual(
+        project,
+        package_id,
+        "events",
+        schema_hash,
+        true,
+        false,
+        WriteDisposition::Append,
+    );
+}
+
 fn write_schema_promote_package_fixture_for_target(
     project: &TestProject,
     package_id: &str,
@@ -1026,23 +1079,60 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     schema_hash: &str,
     commit_duckdb: bool,
 ) {
+    write_schema_promote_package_fixture_for_target_with_commit_and_residual(
+        project,
+        package_id,
+        target_name,
+        schema_hash,
+        commit_duckdb,
+        true,
+        WriteDisposition::Append,
+    );
+}
+
+fn write_schema_promote_replace_package_fixture(
+    project: &TestProject,
+    package_id: &str,
+    schema_hash: &str,
+    include_residual: bool,
+) {
+    write_schema_promote_package_fixture_for_target_with_commit_and_residual(
+        project,
+        package_id,
+        "events",
+        schema_hash,
+        true,
+        include_residual,
+        WriteDisposition::Replace,
+    );
+}
+
+fn write_schema_promote_package_fixture_for_target_with_commit_and_residual(
+    project: &TestProject,
+    package_id: &str,
+    target_name: &str,
+    schema_hash: &str,
+    commit_duckdb: bool,
+    include_residual: bool,
+    disposition: WriteDisposition,
+) {
     let package_dir = project.root.join(".cdf/packages").join(package_id);
     fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
     let scores = Int64Array::from_iter_values([10_i64, 20_i64]);
-    let residuals = (0..scores.len())
-        .map(|row| {
-            String::from_utf8(
-                cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
-                    ["score"],
-                    &scores,
-                    row,
-                )
-                .unwrap()])
-                .unwrap(),
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>();
+    let residuals =
+        (0..scores.len())
+            .map(|row| {
+                include_residual.then(|| {
+                    String::from_utf8(
+                        cdf_contract::encode_residual_json_v1([
+                            cdf_contract::ResidualFieldRef::new(["score"], &scores, row).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
     let mut variant = cdf_kernel::with_semantic(
         Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
         &cdf_contract::CDF_VARIANT_SEMANTIC.parse().unwrap(),
@@ -1072,6 +1162,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         schema_hash,
         batch.num_rows() as u64,
         schema_promote_fixture_position(),
+        disposition.clone(),
     );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
@@ -1109,7 +1200,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     builder
         .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
             TargetName::new(target_name).unwrap(),
-            WriteDisposition::Append,
+            disposition,
             Vec::new(),
             SchemaHash::new(schema_hash).unwrap(),
         ))
@@ -1149,6 +1240,7 @@ fn write_current_replay_artifacts(
     schema_hash: &str,
     row_count: u64,
     output_position: SourcePosition,
+    disposition: WriteDisposition,
 ) {
     let mut program = cdf_contract::compile_validation_program(
         &cdf_contract::ContractPolicy::for_trust(TrustLevel::Governed),
@@ -1254,7 +1346,7 @@ fn write_current_replay_artifacts(
             cdf_package_contract::PROCESSED_OBSERVATIONS_FILE,
             &cdf_package_contract::ProcessedObservationEvidenceArtifact::new(
                 None,
-                WriteDisposition::Append,
+                disposition,
                 vec![
                     cdf_kernel::ProcessedObservationPosition::new(
                         "cli-current-fixture",
@@ -1441,34 +1533,6 @@ fn write_empty_vendor_parquet(path: &Path) {
     let batch = RecordBatch::new_empty(schema);
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
     fs::write(path, bytes).unwrap();
-}
-
-fn single_schema_snapshot_path(project: &TestProject) -> String {
-    let entries = schema_snapshot_paths(project);
-    assert_eq!(entries.len(), 1);
-    entries[0].clone()
-}
-
-fn schema_snapshot_paths(project: &TestProject) -> Vec<String> {
-    let mut entries = fs::read_dir(project.root.join(".cdf/schemas"))
-        .unwrap()
-        .map(|entry| {
-            entry
-                .unwrap()
-                .path()
-                .strip_prefix(&project.root)
-                .unwrap()
-                .to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "/")
-        })
-        .collect::<Vec<_>>();
-    entries.retain(|path| !path.ends_with(".discovery.json"));
-    entries.sort();
-    entries
-}
-
-fn read_snapshot_json(project: &TestProject, relative_path: &str) -> Value {
-    serde_json::from_str(&fs::read_to_string(project.root.join(relative_path)).unwrap()).unwrap()
 }
 
 fn write_resource_glob(project: &TestProject, glob: &str) {
@@ -2064,6 +2128,7 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
         "schema-doctor-1",
         batch.num_rows() as u64,
         doctor_output_position(42),
+        WriteDisposition::Append,
     );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let entry = builder

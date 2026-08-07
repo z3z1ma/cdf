@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-08-06
 Updated: 2026-08-06
 
@@ -36,7 +36,7 @@ drift dispositions, fenced promotion settlement, and no compatibility or dual-au
    `.10x/tickets/done/2026-08-06-s5-delete-lockfile-product-surface.md`.
 6. **S6 — integration and release certificate.** Run the one broad closure barrier, release-binary
    sandbox journeys, current-only sweep, and final review. Owner:
-   `.10x/tickets/2026-08-06-s6-state-schema-integration-certificate.md`.
+   `.10x/tickets/done/2026-08-06-s6-state-schema-integration-certificate.md`.
 
 S1 is first. S2 and S3 may proceed independently after S1. S4 depends on S1, S2, and S3. S5
 depends on S2–S4 so deletion cannot strand a live authority path. S6 depends on every prior child.
@@ -108,19 +108,33 @@ promotion, or schema export/import.
   aligned with active state authority, state-backed schema show/diff, neutral crash-safe project
   publication retained, generated/public docs refreshed, and focused strict quality checks green.
   S6 is now dependency-unblocked for the single broad certificate and independent review.
+- 2026-08-06: S6 closed after the broad integration barrier, publishable bundled release build,
+  disposable release sandbox journeys, current-only sweep, and the one independent red-team
+  review. Its two significant findings were repaired with focused source/output-authority and
+  typed replace-supersession regressions. Every child is now closed.
 
 ## Blockers
 
-None. Children remain dependency-gated by the graph above.
+None. All six children are closed.
 
 ## Evidence
 
-Pending child execution.
+S1–S6 evidence establishes backend-neutral immutable schema heads, SQLite CAS/history/fencing,
+state-bound preparation and portable plans, total drift dispositions, fenced promotion settlement,
+complete lockfile deletion, release-binary sandbox behavior, focused post-review regressions, and
+strict affected-package quality checks. The S6 ticket records the broad-suite result and its honest
+post-repair limit.
 
 ## Review
 
-Pending child and final integration review under the then-current coordination policy.
+Pass. The sole final independent review's two significant findings were resolved; no critical or
+significant finding remains open. Residual distributed/Postgres-state testing is outside this
+SQLite-only program.
 
 ## Retrospective
 
-Pending program closure.
+The program succeeded by replacing the overloaded filesystem lock with smaller state, compiled
+artifact, package, and destination authorities rather than moving the old object wholesale. The
+most important integration lesson is to keep logical output, source admission, and destination
+installation schemas explicitly distinct, including in derived-cache hydration and zero-effect
+promotion settlement.

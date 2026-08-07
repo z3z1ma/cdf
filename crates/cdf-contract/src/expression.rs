@@ -409,7 +409,14 @@ impl RelationalExpressionPlan {
             validate_scalar_columns(&projection.expression, &input)?;
             let metadata_matches = match &projection.expression.root.expression {
                 cdf_kernel::ScalarExpressionKind::Column { index, .. } => {
-                    output_metadata_matches(field.metadata(), input.field(*index).metadata())
+                    let input_field = input.field(*index);
+                    if field.name() == input_field.name() {
+                        output_metadata_matches(field.metadata(), input_field.metadata())
+                    } else {
+                        let mut expected = input_field.metadata().clone();
+                        expected.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
+                        output_metadata_matches(field.metadata(), &expected)
+                    }
                 }
                 _ => output_metadata_matches(field.metadata(), &HashMap::new()),
             };

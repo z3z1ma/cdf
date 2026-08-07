@@ -756,11 +756,13 @@ pub fn hydrate_compiled_resource_artifact(
         manifest.source_plan.clone(),
         manifest.execution_extent.clone(),
     )?
-    .with_relational_expression_plan(manifest.relational_plan.clone())?;
+    .with_relational_expression_plan(manifest.relational_plan.clone())?
+    .with_logical_schema_source(manifest.descriptor.schema_source.clone())?;
     if resource.descriptor() != &manifest.descriptor
         || resource.capabilities() != &manifest.capabilities
         || resource.execution_extent() != &manifest.execution_extent
-        || resource.schema().as_ref() != &manifest.output_schema.to_arrow()?
+        || cdf_kernel::CanonicalArrowSchema::from_arrow(resource.schema().as_ref())?
+            != manifest.relational_plan.output_schema
     {
         return Err(CdfError::data(format!(
             "compiled artifact for `{}` does not hydrate to its recorded resource authority",

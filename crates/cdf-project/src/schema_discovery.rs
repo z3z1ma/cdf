@@ -721,11 +721,6 @@ fn discover_registered_resource_schema(
     let normalized = effective_schema;
     let normalized = Arc::new(normalized);
     let metadata = registered_snapshot_metadata(plan)?;
-    let effective = SchemaSnapshotArtifact::new(
-        &resource.descriptor().resource_id,
-        normalized.as_ref(),
-        metadata.clone(),
-    )?;
     let manifest_candidates = candidates
         .iter()
         .map(|candidate| {
@@ -763,10 +758,11 @@ fn discover_registered_resource_schema(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(normalized.as_ref())?;
     let effective_schema_identity = options
         .runtime_baseline()
-        .map(|baseline| baseline.effective_schema_identity(&effective.schema_hash))
-        .unwrap_or_else(|| effective.schema_hash.clone());
+        .map(|baseline| baseline.effective_schema_identity(&observed_schema_hash))
+        .unwrap_or(observed_schema_hash);
     let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
         resource_id: resource.descriptor().resource_id.to_string(),
         baseline_schema_hash,
@@ -1525,7 +1521,7 @@ pub fn compile_discovered_schema_artifacts(
         SchemaBaselineReference::Pinned {
             snapshot: artifacts.discovery.snapshot.reference.clone(),
         },
-        artifacts.discovery.snapshot.reference.schema_hash.clone(),
+        runtime.evidence.effective_schema_hash.clone(),
         runtime.evidence.discovery_manifest.clone(),
         runtime.evidence.observations.clone(),
     )?;

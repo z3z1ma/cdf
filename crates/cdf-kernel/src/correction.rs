@@ -468,6 +468,41 @@ pub fn correction_operations_digest(
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
+pub fn correction_authority_digest(
+    fields: &[DestinationCorrectionFieldAuthority],
+    superseded_packages: &[DestinationSupersededPackageEvidence],
+    operations: &[DestinationCorrectionOperation],
+) -> Result<String> {
+    if superseded_packages.is_empty() {
+        return correction_operations_digest(operations);
+    }
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Authority<'a> {
+        fields: &'a [DestinationCorrectionFieldAuthority],
+        superseded_packages: &'a [DestinationSupersededPackageEvidence],
+        operation_digest: Option<String>,
+    }
+    let mut fields = fields.to_vec();
+    fields.sort_by(|left, right| left.promoted_path.cmp(&right.promoted_path));
+    let mut superseded_packages = superseded_packages.to_vec();
+    superseded_packages.sort_by(|left, right| left.package_hash.cmp(&right.package_hash));
+    let operation_digest = (!operations.is_empty())
+        .then(|| correction_operations_digest(operations))
+        .transpose()?;
+    let bytes = serde_json::to_vec(&Authority {
+        fields: &fields,
+        superseded_packages: &superseded_packages,
+        operation_digest,
+    })
+    .map_err(|error| {
+        CdfError::internal(format!(
+            "serialize destination correction authority: {error}"
+        ))
+    })?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
 impl DestinationCorrectionOperation {
     pub fn validate_structure(&self) -> Result<()> {
         self.correction.request.validate()?;
@@ -493,11 +528,61 @@ impl DestinationCorrectionOperation {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DestinationCorrectionFieldAuthority {
+    pub promoted_path: String,
+    pub output_field: CanonicalArrowField,
+}
+
+impl DestinationCorrectionFieldAuthority {
+    pub fn validate(&self) -> Result<()> {
+        if !self.promoted_path.starts_with('/') {
+            return Err(CdfError::contract(
+                "destination correction field path must be a non-root JSON pointer beginning with `/`",
+            ));
+        }
+        if self.output_field.name.trim().is_empty() || !self.output_field.nullable {
+            return Err(CdfError::contract(
+                "destination correction output fields must be named and nullable",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationSupersededPackageEvidence {
+    pub package_hash: PackageHash,
+    pub operation_count: u64,
+    pub operation_digest: String,
+}
+
+impl DestinationSupersededPackageEvidence {
+    pub fn validate(&self) -> Result<()> {
+        PackageHash::new(self.package_hash.as_str()).map(drop)?;
+        SchemaHash::new(self.operation_digest.as_str()).map(drop)?;
+        if self.operation_count == 0 {
+            return Err(CdfError::contract(
+                "superseded correction package evidence requires at least one proven absent operation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DestinationCorrectionCommitRequest {
     pub correction_package_hash: PackageHash,
     pub idempotency_token: IdempotencyToken,
     pub target: TargetName,
     pub resource_disposition: WriteDisposition,
+    pub promotion_id: PromotionId,
+    pub old_schema_hash: SchemaHash,
+    pub new_schema_hash: SchemaHash,
+    pub strategy: CorrectionStrategy,
+    pub fields: Vec<DestinationCorrectionFieldAuthority>,
+    pub superseded_packages: Vec<DestinationSupersededPackageEvidence>,
     pub segments: Vec<StateSegment>,
     pub operations_digest: String,
     pub corrections: Vec<DestinationCorrectionOperation>,
@@ -512,12 +597,67 @@ impl DestinationCorrectionCommitRequest {
         segments: Vec<StateSegment>,
         corrections: Vec<DestinationCorrectionOperation>,
     ) -> Result<Self> {
-        let operations_digest = correction_operations_digest(&corrections)?;
+        let first = corrections.first().ok_or_else(|| {
+            CdfError::contract(
+                "destination correction construction requires an operation or explicit supersession authority",
+            )
+        })?;
+        let request = &first.correction.request;
+        let mut fields = corrections
+            .iter()
+            .map(|operation| DestinationCorrectionFieldAuthority {
+                promoted_path: operation.correction.request.promoted_path.clone(),
+                output_field: operation.output_field.clone(),
+            })
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.promoted_path.cmp(&right.promoted_path));
+        fields.dedup();
+        Self::new_with_authority(
+            correction_package_hash,
+            idempotency_token,
+            target,
+            resource_disposition,
+            request.promotion_id.clone(),
+            request.old_schema_hash.clone(),
+            request.new_schema_hash.clone(),
+            request.selected_strategy,
+            fields,
+            Vec::new(),
+            segments,
+            corrections,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_authority(
+        correction_package_hash: PackageHash,
+        idempotency_token: IdempotencyToken,
+        target: TargetName,
+        resource_disposition: WriteDisposition,
+        promotion_id: PromotionId,
+        old_schema_hash: SchemaHash,
+        new_schema_hash: SchemaHash,
+        strategy: CorrectionStrategy,
+        mut fields: Vec<DestinationCorrectionFieldAuthority>,
+        mut superseded_packages: Vec<DestinationSupersededPackageEvidence>,
+        segments: Vec<StateSegment>,
+        corrections: Vec<DestinationCorrectionOperation>,
+    ) -> Result<Self> {
+        fields.sort_by(|left, right| left.promoted_path.cmp(&right.promoted_path));
+        superseded_packages.sort_by(|left, right| left.package_hash.cmp(&right.package_hash));
+        let operations_digest =
+            correction_authority_digest(&fields, &superseded_packages, &corrections)?;
         let request = Self {
             correction_package_hash,
             idempotency_token,
             target,
             resource_disposition,
+            promotion_id,
+            old_schema_hash,
+            new_schema_hash,
+            strategy,
+            fields,
+            superseded_packages,
             segments,
             operations_digest,
             corrections,
@@ -527,12 +667,18 @@ impl DestinationCorrectionCommitRequest {
     }
 
     pub fn validate_structure(&self) -> Result<()> {
-        if self.corrections.is_empty() {
+        if self.fields.is_empty()
+            || (self.corrections.is_empty() && self.superseded_packages.is_empty())
+        {
             return Err(CdfError::contract(
-                "destination correction commit requires at least one correction operation",
+                "destination correction commit requires promoted fields and either operations or superseded-package evidence",
             ));
         }
-        let computed_digest = correction_operations_digest(&self.corrections)?;
+        let computed_digest = correction_authority_digest(
+            &self.fields,
+            &self.superseded_packages,
+            &self.corrections,
+        )?;
         if self.operations_digest != computed_digest {
             return Err(CdfError::contract(format!(
                 "destination correction operations digest {} does not match computed {}",
@@ -540,7 +686,42 @@ impl DestinationCorrectionCommitRequest {
             )));
         }
 
-        let first = &self.corrections[0].correction.request;
+        let mut field_paths = BTreeSet::new();
+        let mut field_names = std::collections::BTreeMap::new();
+        for field in &self.fields {
+            field.validate()?;
+            if !field_paths.insert(field.promoted_path.as_str()) {
+                return Err(CdfError::contract(
+                    "destination correction fields must have unique promoted paths",
+                ));
+            }
+            if let Some(existing_path) = field_names.insert(
+                field.output_field.name.as_str(),
+                field.promoted_path.as_str(),
+            ) {
+                return Err(CdfError::contract(format!(
+                    "destination correction output field {:?} maps from conflicting promoted paths {:?} and {:?}",
+                    field.output_field.name, existing_path, field.promoted_path
+                )));
+            }
+        }
+        let mut superseded_packages = BTreeSet::new();
+        for evidence in &self.superseded_packages {
+            evidence.validate()?;
+            if !superseded_packages.insert(&evidence.package_hash) {
+                return Err(CdfError::contract(
+                    "destination correction superseded-package evidence must be unique",
+                ));
+            }
+        }
+        if !self.superseded_packages.is_empty()
+            && (self.resource_disposition != WriteDisposition::Replace
+                || self.strategy != CorrectionStrategy::InPlaceUpdate)
+        {
+            return Err(CdfError::contract(
+                "superseded-package correction evidence is valid only for replace in-place correction",
+            ));
+        }
         let mut segment_ids = BTreeSet::new();
         let mut segment_rows = 0_u64;
         for segment in &self.segments {
@@ -564,18 +745,28 @@ impl DestinationCorrectionCommitRequest {
         let mut operations = BTreeSet::new();
         let mut fields = std::collections::BTreeMap::new();
         let mut field_names = std::collections::BTreeMap::new();
+        let mut operation_packages = BTreeSet::new();
         for operation in &self.corrections {
             operation.validate_structure()?;
             let request = &operation.correction.request;
-            if request.promotion_id != first.promotion_id
-                || request.old_schema_hash != first.old_schema_hash
-                || request.new_schema_hash != first.new_schema_hash
-                || request.selected_strategy != first.selected_strategy
+            if request.promotion_id != self.promotion_id
+                || request.old_schema_hash != self.old_schema_hash
+                || request.new_schema_hash != self.new_schema_hash
+                || request.selected_strategy != self.strategy
             {
                 return Err(CdfError::contract(
                     "destination correction commit must contain one promotion, schema transition, and strategy",
                 ));
             }
+            if !self.fields.iter().any(|field| {
+                field.promoted_path == request.promoted_path
+                    && field.output_field == operation.output_field
+            }) {
+                return Err(CdfError::contract(
+                    "destination correction operation is absent from promoted-field authority",
+                ));
+            }
+            operation_packages.insert(&request.original_row.original_package_hash);
             if !operations.insert((request.original_row.clone(), request.promoted_path.clone())) {
                 return Err(CdfError::contract(format!(
                     "destination correction commit repeats address/path operation {} {} {} {:?}",
@@ -606,6 +797,14 @@ impl DestinationCorrectionCommitRequest {
                 )));
             }
         }
+        if operation_packages
+            .iter()
+            .any(|package| superseded_packages.contains(package))
+        {
+            return Err(CdfError::contract(
+                "destination correction package cannot be both executable and superseded",
+            ));
+        }
         Ok(())
     }
 
@@ -627,19 +826,19 @@ impl DestinationCorrectionCommitRequest {
     }
 
     pub fn promotion_id(&self) -> &PromotionId {
-        &self.corrections[0].correction.request.promotion_id
+        &self.promotion_id
     }
 
     pub fn old_schema_hash(&self) -> &SchemaHash {
-        &self.corrections[0].correction.request.old_schema_hash
+        &self.old_schema_hash
     }
 
     pub fn new_schema_hash(&self) -> &SchemaHash {
-        &self.corrections[0].correction.request.new_schema_hash
+        &self.new_schema_hash
     }
 
     pub fn strategy(&self) -> CorrectionStrategy {
-        self.corrections[0].correction.request.selected_strategy
+        self.strategy
     }
 
     pub fn addressed_row_count(&self) -> u64 {

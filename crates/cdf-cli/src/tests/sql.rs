@@ -83,11 +83,10 @@ fn sql_human_output_is_concise_for_scheduler_logs() {
 }
 
 #[test]
-fn sql_read_only_query_does_not_create_local_artifacts() {
+fn sql_read_only_query_does_not_change_local_artifacts() {
     let project = TestProject::new();
     compile_test_project(&project);
-    let state_path = project.root.join(".cdf/state.db");
-    let package_root = project.root.join(".cdf/packages");
+    let before = project_tree_snapshot(&project.root);
     let result = run([
         "cdf",
         "--json",
@@ -101,11 +100,7 @@ fn sql_read_only_query_does_not_create_local_artifacts() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["columns"], json!(["checkpoint_count"]));
     assert_eq!(json["result"]["rows"][0][0], 0);
-    assert!(!state_path.exists(), "sql must not create the state DB");
-    assert!(
-        !package_root.exists(),
-        "sql must not create the package root"
-    );
+    assert_project_tree_unchanged(&project.root, &before);
 }
 
 #[test]
@@ -136,8 +131,7 @@ fn compile_publishes_state_bound_artifact_index_and_locked_rebuild() {
         .unwrap();
     assert!(project.root.join(artifact_path).is_file());
 
-    let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
-    let index_before = fs::read(project.root.join(".cdf/manifest.json")).unwrap();
+    let authority_before = active_schema_authority(&project, "local.events");
     let locked = run([
         "cdf",
         "--json",
@@ -152,14 +146,9 @@ fn compile_publishes_state_bound_artifact_index_and_locked_rebuild() {
         "stdout: {}\nstderr: {}",
         locked.stdout, locked.stderr
     );
-    assert_eq!(
-        fs::read(project.root.join(".cdf/state.db")).unwrap(),
-        state_before
-    );
-    assert_eq!(
-        fs::read(project.root.join(".cdf/manifest.json")).unwrap(),
-        index_before
-    );
+    let authority_after = active_schema_authority(&project, "local.events");
+    assert_eq!(authority_after.head, authority_before.head);
+    assert_eq!(authority_after.version, authority_before.version);
 }
 
 #[test]
@@ -175,9 +164,10 @@ fn selected_config_bindings_ignore_unrelated_sources_and_stale_on_relevant_chang
     ]);
     assert_eq!(prepared.exit_code, 0, "stderr: {}", prepared.stderr);
     let prepared = stderr_or_stdout_json(&prepared.stdout);
-    let artifact_hash = prepared["result"]["resources"][0]["artifact_hash"]
+    let schema_hash = prepared["result"]["resources"][0]["schema_authority"]["schema_hash"]
         .as_str()
-        .unwrap();
+        .unwrap()
+        .to_owned();
 
     let config_path = project.root.join("cdf.toml");
     let config = fs::read_to_string(&config_path).unwrap();
@@ -197,9 +187,14 @@ fn selected_config_bindings_ignore_unrelated_sources_and_stale_on_relevant_chang
     ]);
     assert_eq!(locked.exit_code, 0, "stderr: {}", locked.stderr);
     let locked = stderr_or_stdout_json(&locked.stdout);
+    assert!(
+        locked["result"]["resources"][0]["artifact_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
     assert_eq!(
-        locked["result"]["resources"][0]["artifact_hash"],
-        artifact_hash
+        locked["result"]["resources"][0]["schema_authority"]["schema_hash"],
+        schema_hash
     );
 
     let config = fs::read_to_string(&config_path).unwrap().replacen(

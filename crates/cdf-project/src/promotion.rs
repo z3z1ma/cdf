@@ -31,7 +31,7 @@ use crate::{
     SchemaSnapshotArtifact, SchemaSnapshotPromotionAuthority,
     SchemaSnapshotPromotionCoercionAuthority, SchemaSnapshotPromotionEvidenceAvailability,
     SchemaSnapshotPromotionPathAuthority, SchemaSnapshotPromotionTargetAssociationAuthority,
-    SchemaSnapshotSchema,
+    SchemaSnapshotPromotionTargetEvidenceAuthority, SchemaSnapshotSchema,
 };
 
 const PROMOTION_RESIDUAL_SCAN_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
@@ -796,6 +796,7 @@ pub fn plan_schema_promotion(
                     validation_program_hash: None,
                 },
                 &paths,
+                &evidence,
             )
         })
         .transpose()?;
@@ -1033,53 +1034,29 @@ pub fn validate_schema_promotion_plan_identity(
             Vec<SchemaPromotionTargetEvidenceReport>,
         ),
     >::new();
-    let mut evidence_by_target = BTreeMap::<
-        (String, String),
-        BTreeMap<String, (SchemaPromotionEvidenceAvailability, BTreeSet<String>)>,
-    >::new();
+    for evidence in &snapshot_authority.target_evidence {
+        let key = (evidence.destination.clone(), evidence.target.clone());
+        let entry = expected_targets.entry(key).or_default();
+        entry.0.insert(evidence.package_hash.clone());
+        entry
+            .2
+            .extend(evidence.recorded_receipt_ids.iter().cloned());
+        entry.3.push(SchemaPromotionTargetEvidenceReport {
+            package_hash: evidence.package_hash.clone(),
+            availability: promotion_plan_availability(&evidence.availability),
+            recorded_receipt_ids: evidence.recorded_receipt_ids.clone(),
+        });
+    }
     for selected in &snapshot_authority.selected_paths {
         for association in &selected.associations {
             let key = (association.destination.clone(), association.target.clone());
-            let entry = expected_targets.entry(key.clone()).or_default();
-            entry.0.insert(association.package_hash.clone());
+            let entry = expected_targets.get_mut(&key).ok_or_else(|| {
+                CdfError::data(
+                    "schema promotion typed path association has no complete target evidence",
+                )
+            })?;
             entry.1.insert(selected.path.clone());
-            entry
-                .2
-                .extend(association.recorded_receipt_ids.iter().cloned());
-            let package = evidence_by_target
-                .entry(key)
-                .or_default()
-                .entry(association.package_hash.clone())
-                .or_insert_with(|| {
-                    (
-                        promotion_plan_availability(&association.availability),
-                        BTreeSet::new(),
-                    )
-                });
-            if package.0 != promotion_plan_availability(&association.availability) {
-                return Err(CdfError::data(
-                    "schema promotion typed target association has conflicting availability",
-                ));
-            }
-            package
-                .1
-                .extend(association.recorded_receipt_ids.iter().cloned());
         }
-    }
-    for (key, packages) in evidence_by_target {
-        let target = expected_targets.get_mut(&key).ok_or_else(|| {
-            CdfError::internal("promotion association target accumulation was lost")
-        })?;
-        target.3 = packages
-            .into_iter()
-            .map(|(package_hash, (availability, receipt_ids))| {
-                SchemaPromotionTargetEvidenceReport {
-                    package_hash,
-                    availability,
-                    recorded_receipt_ids: receipt_ids.into_iter().collect(),
-                }
-            })
-            .collect();
     }
     if plan.targets.len() != expected_targets.len() {
         return Err(CdfError::data(
@@ -2089,6 +2066,7 @@ fn promotion_snapshot_plan(
     fresh: &FreshDiscoveryAuthority,
     lineage: SnapshotCompilerLineage<'_>,
     paths: &[SchemaPromotionPathReport],
+    evidence: &[SchemaPromotionEvidenceReport],
 ) -> cdf_kernel::Result<SchemaPromotionSnapshotPlan> {
     let selected_paths = paths
         .iter()
@@ -2142,6 +2120,57 @@ fn promotion_snapshot_plan(
                 })
         })
         .collect::<Vec<_>>();
+    let mut target_evidence =
+        BTreeMap::<(String, String, String), SchemaSnapshotPromotionTargetEvidenceAuthority>::new();
+    for item in evidence
+        .iter()
+        .filter(|item| item.resource_attribution == SchemaPromotionResourceAttribution::Attributed)
+    {
+        let package_hash = item.package_hash.as_ref().ok_or_else(|| {
+            CdfError::internal("canonical attributed promotion evidence lost its package hash")
+        })?;
+        for receipt in &item.recorded_receipts {
+            let key = (
+                receipt.destination.clone(),
+                receipt.target.clone(),
+                package_hash.clone(),
+            );
+            let entry = target_evidence.entry(key.clone()).or_insert_with(|| {
+                SchemaSnapshotPromotionTargetEvidenceAuthority {
+                    package_hash: package_hash.clone(),
+                    destination: receipt.destination.clone(),
+                    target: receipt.target.clone(),
+                    recorded_receipt_ids: Vec::new(),
+                    availability: match item.availability {
+                        SchemaPromotionEvidenceAvailability::RetainedPackage => {
+                            SchemaSnapshotPromotionEvidenceAvailability::RetainedPackage
+                        }
+                        SchemaPromotionEvidenceAvailability::DestinationReadback => {
+                            SchemaSnapshotPromotionEvidenceAvailability::DestinationReadback
+                        }
+                        SchemaPromotionEvidenceAvailability::TombstoneOnly => {
+                            SchemaSnapshotPromotionEvidenceAvailability::TombstoneOnly
+                        }
+                        SchemaPromotionEvidenceAvailability::Missing => {
+                            SchemaSnapshotPromotionEvidenceAvailability::Missing
+                        }
+                    },
+                }
+            });
+            let availability = promotion_snapshot_availability(&item.availability);
+            if entry.availability != availability {
+                return Err(CdfError::internal(format!(
+                    "canonical promotion evidence has conflicting availability for {}/{}/{}",
+                    key.0, key.1, key.2
+                )));
+            }
+            entry.recorded_receipt_ids.push(receipt.receipt_id.clone());
+        }
+    }
+    for evidence in target_evidence.values_mut() {
+        evidence.recorded_receipt_ids.sort();
+        evidence.recorded_receipt_ids.dedup();
+    }
     let promotion_authority = SchemaSnapshotPromotionAuthority {
         version: SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION,
         resource_id: pinned.resource_id.clone(),
@@ -2155,6 +2184,7 @@ fn promotion_snapshot_plan(
         contract_policy_hash: lineage.contract_policy_hash.to_owned(),
         validation_program_hash: lineage.validation_program_hash.map(str::to_owned),
         selected_paths,
+        target_evidence: target_evidence.into_values().collect(),
     };
     let artifact = SchemaSnapshotArtifact::new_with_promotion(
         &cdf_kernel::ResourceId::new(pinned.resource_id.clone())?,
@@ -3524,14 +3554,49 @@ mod tests {
                 availability: SchemaPromotionEvidenceAvailability::RetainedPackage,
             }],
         }];
+        let evidence = vec![
+            SchemaPromotionEvidenceReport {
+                artifact_location: "fixture-one".to_owned(),
+                package_hash: Some("sha256:package".to_owned()),
+                availability: SchemaPromotionEvidenceAvailability::RetainedPackage,
+                resource_attribution: SchemaPromotionResourceAttribution::Attributed,
+                recorded_receipts: vec![SchemaPromotionReceiptReport {
+                    receipt_id: "receipt-1".to_owned(),
+                    destination: "warehouse".to_owned(),
+                    target: "prices".to_owned(),
+                    verification: SchemaPromotionReceiptVerification::StructuralCoverageVerifiedDestinationVerificationPending,
+                }],
+                residual_rows: 10,
+                residual_paths: vec!["/price".to_owned()],
+                detail: None,
+            },
+            SchemaPromotionEvidenceReport {
+                artifact_location: "fixture-without-residual".to_owned(),
+                package_hash: Some("sha256:package-without-residual".to_owned()),
+                availability: SchemaPromotionEvidenceAvailability::RetainedPackage,
+                resource_attribution: SchemaPromotionResourceAttribution::Attributed,
+                recorded_receipts: vec![SchemaPromotionReceiptReport {
+                    receipt_id: "receipt-2".to_owned(),
+                    destination: "warehouse".to_owned(),
+                    target: "prices".to_owned(),
+                    verification: SchemaPromotionReceiptVerification::StructuralCoverageVerifiedDestinationVerificationPending,
+                }],
+                residual_rows: 0,
+                residual_paths: Vec::new(),
+                detail: None,
+            },
+        ];
         let lineage = || SnapshotCompilerLineage {
             normalizer_version: "namecase-v1",
             contract_policy_hash: "sha256:policy",
             validation_program_hash: Some("sha256:program"),
         };
-        let first = promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths).unwrap();
+        let first =
+            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths, &evidence)
+                .unwrap();
         let second =
-            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths).unwrap();
+            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths, &evidence)
+                .unwrap();
         assert_eq!(first, second);
         assert!(first.path.contains(&first.schema_hash));
         first.artifact.validate_hash_input().unwrap();
@@ -3543,6 +3608,18 @@ mod tests {
         assert_eq!(hydrated, first.artifact);
         assert_eq!(first.artifact.normalizer_version(), Some("namecase-v1"));
         assert_eq!(first.artifact.metadata.len(), 1);
+        assert_eq!(
+            first
+                .artifact
+                .promotion_authority
+                .as_ref()
+                .unwrap()
+                .target_evidence
+                .iter()
+                .map(|item| item.package_hash.as_str())
+                .collect::<Vec<_>>(),
+            ["sha256:package", "sha256:package-without-residual"]
+        );
         assert!(
             !first
                 .artifact
@@ -3607,12 +3684,22 @@ mod tests {
 
         let mut reassociated = paths.clone();
         reassociated[0].associations[0].recorded_receipt_ids = vec!["receipt-2".to_owned()];
-        let changed_association =
-            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &reassociated).unwrap();
+        let mut reassociated_evidence = evidence.clone();
+        reassociated_evidence[0].recorded_receipts[0].receipt_id = "receipt-2".to_owned();
+        let changed_association = promotion_snapshot_plan(
+            &pinned,
+            &proposed,
+            &fresh,
+            lineage(),
+            &reassociated,
+            &reassociated_evidence,
+        )
+        .unwrap();
         assert_ne!(first.schema_hash, changed_association.schema_hash);
         paths[0].affected_address_value_digest = "sha256:evidence-two".to_owned();
         let changed =
-            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths).unwrap();
+            promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths, &evidence)
+                .unwrap();
         assert_ne!(first.schema_hash, changed.schema_hash);
     }
 

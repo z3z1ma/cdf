@@ -1493,7 +1493,7 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
-        policy_version: "evolve-v1".to_owned(),
+        policy_version: "admission-v1".to_owned(),
         candidates: vec![second, first],
     };
     let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
@@ -1596,7 +1596,7 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
 
     let path = temp.path().join(&artifact.path);
     let mut tampered = artifact.clone();
-    tampered.policy_version = "freeze-v1".to_owned();
+    tampered.policy_version = "tampered-admission-v1".to_owned();
     std::fs::write(&path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
     assert!(
         store
@@ -1636,7 +1636,7 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
         selector: Some(selector),
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
-        policy_version: "evolve-v1".to_owned(),
+        policy_version: "admission-v1".to_owned(),
         candidates: vec![last, middle.clone(), first],
     };
     let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
@@ -1675,7 +1675,7 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
-        policy_version: "evolve-v1".to_owned(),
+        policy_version: "admission-v1".to_owned(),
         candidates: vec![false_observed],
     })
     .unwrap_err()
@@ -1715,7 +1715,7 @@ fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_ve
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
-        policy_version: "evolve-v1".to_owned(),
+        policy_version: "admission-v1".to_owned(),
         candidates: vec![observed_discovery_candidate(
             "file:///data/current.parquet",
             "sha256:current",
@@ -3694,7 +3694,7 @@ fn sampled_initial_pin_reports_every_selected_incompatibility_without_writes() {
 }
 
 #[test]
-fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_hash() {
+fn all_files_discovery_uses_exact_verified_baseline_as_effective_authority() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
@@ -3724,20 +3724,14 @@ fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_ha
     )
     .unwrap();
     let manifest = artifacts.discovery_manifest.as_ref().unwrap();
-    assert_eq!(manifest.baseline_schema_hash, Some(verified_baseline_hash));
+    assert_eq!(
+        manifest.baseline_schema_hash,
+        Some(verified_baseline_hash.clone())
+    );
 
-    let mut schema_only_metadata = artifacts.discovery.snapshot.artifact.metadata.clone();
-    schema_only_metadata.remove("cdf:discovery_manifest_hash");
-    schema_only_metadata.remove("cdf:discovery_manifest_path");
-    let schema_only = SchemaSnapshotArtifact::new(
-        &resource.descriptor().resource_id,
-        artifacts.discovery.normalized_schema.as_ref(),
-        schema_only_metadata,
-    )
-    .unwrap();
     assert_eq!(
         manifest.effective_schema_hash.as_ref(),
-        Some(&schema_only.schema_hash)
+        Some(&verified_baseline_hash)
     );
     assert_ne!(
         manifest.effective_schema_hash.as_ref(),

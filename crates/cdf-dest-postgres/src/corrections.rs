@@ -529,17 +529,17 @@ fn correction_field_plans(
     request: &DestinationCorrectionCommitRequest,
 ) -> Result<Vec<PostgresCorrectionFieldPlan>> {
     let mut by_path = BTreeMap::new();
-    for operation in &request.corrections {
-        let field = operation.output_field.to_arrow()?;
+    for authority in &request.fields {
+        let field = authority.output_field.to_arrow()?;
         let column = PostgresColumn::new(
             field.name(),
             &postgres_type_for_arrow(field.data_type())?,
             field.is_nullable(),
         )?;
         by_path
-            .entry(operation.correction.request.promoted_path.clone())
+            .entry(authority.promoted_path.clone())
             .or_insert(PostgresCorrectionFieldPlan {
-                promoted_path: operation.correction.request.promoted_path.clone(),
+                promoted_path: authority.promoted_path.clone(),
                 column,
             });
     }

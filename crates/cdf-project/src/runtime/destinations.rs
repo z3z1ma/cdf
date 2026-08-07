@@ -5,7 +5,7 @@ use cdf_contract::{
     validate_destination_schema_mappings,
 };
 use cdf_engine::EnginePlan;
-use cdf_kernel::{CdfError, DestinationSheet, ResourceStream, Result, SchemaHash, TargetName};
+use cdf_kernel::{DestinationSheet, ResourceStream, Result, SchemaHash, TargetName};
 
 pub use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome,
@@ -100,17 +100,8 @@ impl ResolvedProjectDestination {
     }
 
     pub(super) fn output_schema(&self, plan: &EnginePlan) -> Result<DestinationOutputSchema> {
-        let identifier_policy = self.column_identifier_policy()?;
         let schema = plan.output_arrow_schema()?;
-        if let Some(identifier_policy) = &identifier_policy
-            && plan.validation_program.identifier_policy != *identifier_policy
-        {
-            return Err(CdfError::contract(format!(
-                "run plan identifier policy does not match resolved destination sheet: planned {:?}, destination {:?}; rebuild the plan for the selected destination",
-                plan.validation_program.identifier_policy, identifier_policy
-            )));
-        }
-        let schema_hash = plan.effective_schema_hash().clone();
+        let schema_hash = plan.output_schema.arrow_schema_hash.clone();
         Ok(DestinationOutputSchema {
             schema,
             schema_hash,

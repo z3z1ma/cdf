@@ -741,9 +741,12 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
     );
 
     assert_eq!(missing.exit_code, 3);
-    assert!(
-        !project.root.join(".cdf/state.db").exists(),
-        "missing receipt recovery must not create checkpoint state"
+    assert_no_replay_mutation(
+        &project,
+        &package_dir,
+        package_receipt_count(&package_dir),
+        package_status(&package_dir),
+        None,
     );
     let missing_json = stderr_or_stdout_json(&missing.stderr);
     assert!(
@@ -769,9 +772,12 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
     );
 
     assert_eq!(ambiguous.exit_code, 3);
-    assert!(
-        !ambiguous_project.root.join(".cdf/state.db").exists(),
-        "ambiguous receipt recovery must not create checkpoint state"
+    assert_no_replay_mutation(
+        &ambiguous_project,
+        &package_dir,
+        package_receipt_count(&package_dir),
+        package_status(&package_dir),
+        None,
     );
     let ambiguous_json = stderr_or_stdout_json(&ambiguous.stderr);
     assert!(

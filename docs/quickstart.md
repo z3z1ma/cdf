@@ -124,8 +124,10 @@ cargo test -p cdf-project file_manifest_append_run_skips_unchanged_files_and_loa
 The active schema version does not mutate silently. Every current file is reconciled against that authority and the resource contract:
 
 - lossless width changes compile into recorded coercion verdicts;
-- compatible evolution produces a separately identified effective schema;
-- incompatible fields/files produce typed quarantine evidence naming the file, field, physical type, expected type, rule, and remediation;
+- compatible physical types use compiler-approved lossless coercions without changing authority;
+- unknown or incompatible ordinary values follow the active field disposition, while an
+  incompatible partition under the governed preset produces typed quarantine evidence naming the
+  file, field, physical type, expected type, rule, and remediation;
 - a quarantined file identity is marked processed only after its quarantine package receives a verified destination receipt.
 
 The run remains successful when policy admits quarantine; it does not collapse into a decoder stack trace. Review current authority with:
@@ -138,7 +140,7 @@ The run remains successful when policy admits quarantine; it does not collapse i
 To exercise the incompatible-month rendering without depending on mutable public data:
 
 ```bash
-cargo test -p cdf-cli governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence --locked
+cargo test -p cdf-cli governed_quarantines_incompatible_partition_with_exact_arrow_field_evidence --locked
 ```
 
 Promote the active schema only after reviewing the diff:

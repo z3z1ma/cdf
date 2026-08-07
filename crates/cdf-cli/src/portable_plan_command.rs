@@ -210,10 +210,13 @@ pub(crate) fn establish_portable_authority(
         .first()
         .ok_or_else(|| CdfError::data("portable plan must contain at least one resource"))?;
     let domain = first.schema_authority.key().authority_domain_id.clone();
+    let state_path = context.state_store_path()?;
+    let ownership = context.state_store_path_ownership();
+    cdf_project::ensure_state_parent_directory(&state_path, ownership)?;
     let store = cdf_state_sqlite::SqliteSchemaAuthorityStore::open_with_authority_domain_and_path_ownership(
-        context.state_store_path()?,
+        state_path,
         &domain,
-        context.state_store_path_ownership(),
+        ownership,
     )?;
     let checks = artifact
         .resources

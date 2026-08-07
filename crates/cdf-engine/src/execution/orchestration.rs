@@ -3455,7 +3455,6 @@ where
     let planned_partition_count =
         validate_execution_invocation(plan, resource, drain_controller.as_deref(), &options)?;
     let validation_program = plan.validation_program.clone();
-    let schema_authority = plan.schema_authority();
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let resource_schema = resource.schema();
@@ -3563,7 +3562,7 @@ where
         .statistics_profile
         .then(|| builder.begin_statistics_profile())
         .transpose()?;
-    let statistics_profile_schema_hash = schema_authority.effective_schema_hash.as_str().to_owned();
+    let statistics_profile_schema_hash = plan.output_schema.arrow_schema_hash.as_str().to_owned();
     let mut statistics_segment_ordinal = 0_u64;
     let mut verdict_summary = VerdictSummary::default();
     let mut lineage = LineageSummary::default();

@@ -1865,6 +1865,7 @@ fn dynamic_schema_quarantine_drains_to_eof_and_commits_terminal_content_identity
     }
     let resource = MockResource::tier_a(batches)
         .with_schema(sample_schema())
+        .without_control_keys()
         .with_completion_attestation(PartitionAttestation::new(terminal_position.clone(), None));
     let plan = Planner::new()
         .plan_tier_a(

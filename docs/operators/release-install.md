@@ -35,7 +35,7 @@ pinned DuckDB runtime and archives include the matching Python runtime beside
 
 ```bash
 CARGO_BUILD_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)" \
-  cargo build -p cdf-cli --release --locked
+  cargo build -p cdf-cli --release --locked --features bundled-duckdb
 target/release/cdf version
 ```
 

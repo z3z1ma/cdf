@@ -668,8 +668,6 @@ fn compile_manifest_resource(
     let resource = &entry.resource;
     let resource_id = resource.descriptor().resource_id.to_string();
     let source_binding = CompiledSourceCompilerBinding::compile(resource.source_plan())?;
-    let output_schema = CanonicalArrowSchema::from_arrow(resource.schema().as_ref())?;
-    let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
     let destination = ManifestDestinationBinding {
         destination_id: destination_artifact.sheet.destination.to_string(),
         sheet_hash: canonical_hash(destination_artifact)?,
@@ -683,6 +681,8 @@ fn compile_manifest_resource(
             "[CDF-SCHEMA-UNRESOLVED] resource {resource_id:?} has no finalized relational plan; run `cdf compile {resource_id}`"
         ))
     })?;
+    let output_schema = compiled_logical_output_schema(resource, semantic_catalog)?;
+    let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&output_schema.to_arrow()?)?;
     let compiled_stream_policy = (!resource.execution_extent().is_bounded())
         .then(|| {
             cdf_runtime::CompiledStreamPolicy::compile(
@@ -719,6 +719,38 @@ fn compile_manifest_resource(
     };
     manifest.compilation_hash = ResourceCompilationHash::new(resource_hash(&manifest)?)?;
     Ok(manifest)
+}
+
+pub fn compiled_logical_output_schema(
+    resource: &cdf_declarative::CompiledResource,
+    semantic_catalog: &SemanticCatalog,
+) -> Result<CanonicalArrowSchema> {
+    let descriptor = resource.descriptor();
+    let mut policy = ContractPolicy::for_trust(descriptor.trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    let logical_schema = resource
+        .relational_expression_plan()
+        .map(|plan| plan.output_schema.to_arrow())
+        .transpose()?
+        .unwrap_or_else(|| resource.schema().as_ref().clone());
+    let observed_schema = ObservedSchema::from_arrow(&logical_schema);
+    let validation_program = compile_resource_validation_program_with_semantic_catalog(
+        &policy,
+        &observed_schema,
+        descriptor,
+        semantic_catalog,
+    )?;
+    CanonicalArrowSchema::from_arrow(
+        cdf_engine::compile_logical_output_schema(
+            &logical_schema,
+            &validation_program,
+            None,
+            false,
+        )?
+        .as_ref(),
+    )
 }
 
 pub fn current_dependency_tuple() -> DependencyTuple {
@@ -1059,8 +1091,11 @@ fn validate_resource(
         .source_plan
         .validate()
         .map_err(|error| remap(error, authority))?;
+    let mut expected_source_descriptor = resource.descriptor.clone();
+    expected_source_descriptor.schema_source =
+        resource.source_plan.descriptor.schema_source.clone();
     if resource.resource_id != resource.descriptor.resource_id.as_str()
-        || resource.source_plan.descriptor != resource.descriptor
+        || resource.source_plan.descriptor != expected_source_descriptor
         || resource.source_plan.resource_capabilities != resource.capabilities
     {
         return manifest_error(
@@ -1135,18 +1170,40 @@ fn validate_resource(
     if CanonicalArrowSchema::from_arrow(&resource.source_plan.schema)
         .map_err(|error| remap(error, authority))?
         != resource.relational_plan.input_schema
-        || resource.relational_plan.output_schema != resource.output_schema
-        || resource
-            .output_schema
-            .to_arrow()
-            .and_then(|schema| cdf_kernel::canonical_arrow_schema_hash(&schema))
-            .map_err(|error| remap(error, authority))?
-            != resource.output_schema_hash
     {
         return manifest_error(
             authority,
             format!(
-                "manifest resource `{}` output schema is inconsistent",
+                "manifest resource `{}` relational input schema is inconsistent",
+                resource.resource_id
+            ),
+        );
+    }
+    if !logical_output_matches_relational(
+        &resource.output_schema,
+        &resource.relational_plan.output_schema,
+    )
+    .map_err(|error| remap(error, authority))?
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` relational output schema is inconsistent",
+                resource.resource_id
+            ),
+        );
+    }
+    if resource
+        .output_schema
+        .to_arrow()
+        .and_then(|schema| cdf_kernel::canonical_arrow_schema_hash(&schema))
+        .map_err(|error| remap(error, authority))?
+        != resource.output_schema_hash
+    {
+        return manifest_error(
+            authority,
+            format!(
+                "manifest resource `{}` output schema hash is inconsistent",
                 resource.resource_id
             ),
         );
@@ -1181,6 +1238,43 @@ fn validate_resource(
         );
     }
     Ok(())
+}
+
+fn logical_output_matches_relational(
+    logical: &CanonicalArrowSchema,
+    relational: &CanonicalArrowSchema,
+) -> Result<bool> {
+    let logical = logical.to_arrow()?;
+    let relational = relational.to_arrow()?;
+    let logical_fields = logical
+        .fields()
+        .iter()
+        .filter(|field| !cdf_contract::is_framework_variant_field(field.as_ref()))
+        .collect::<Vec<_>>();
+    if logical.metadata() != relational.metadata()
+        || logical_fields.len() != relational.fields().len()
+    {
+        return Ok(false);
+    }
+    Ok(logical_fields
+        .iter()
+        .zip(relational.fields())
+        .all(|(logical, relational)| {
+            if logical == &relational {
+                return true;
+            }
+            let mut logical = logical.as_ref().clone();
+            if cdf_kernel::source_name(&logical) == Some(logical.name())
+                && !relational
+                    .metadata()
+                    .contains_key(cdf_kernel::SOURCE_NAME_METADATA_KEY)
+            {
+                let mut metadata = logical.metadata().clone();
+                metadata.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
+                logical = logical.with_metadata(metadata);
+            }
+            &logical == relational.as_ref()
+        }))
 }
 
 fn resource_hash(resource: &ManifestResource) -> Result<String> {

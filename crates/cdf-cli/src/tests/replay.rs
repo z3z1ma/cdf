@@ -427,7 +427,13 @@ fn replay_package_failure_records_progress_events_without_json_progress_output()
         .collect::<Vec<_>>();
     assert_eq!(
         events,
-        vec![RunEventKind::PackageFinalized, RunEventKind::RunFailed]
+        vec![
+            RunEventKind::PackageFinalized,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::RunFailed,
+        ]
     );
 }
 
@@ -463,7 +469,7 @@ fn replay_package_failure_human_stderr_includes_progress_context() {
     assert!(second.stdout.is_empty());
     assert_no_headless_progress_controls(&second.stderr);
     for expected in [
-        "[package] failed run failed",
+        "[verify] failed run failed",
         "error[CDF-PROJECT-CONTRACT]:",
         checkpoint_id.as_str(),
     ] {
@@ -479,6 +485,7 @@ fn replay_package_failure_human_stderr_includes_progress_context() {
 fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate_facts() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
+    let authority_state = fs::read(project.root.join(".cdf/state.db")).unwrap();
     let reader = PackageReader::open(&package_dir).unwrap();
     let package_id = reader.manifest().identity.package_id.clone();
     let checkpoint_id = reader.replay_inputs().unwrap().state_delta.checkpoint_id;
@@ -495,6 +502,7 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
 
     remove_state_store(&project);
+    fs::write(project.root.join(".cdf/state.db"), authority_state).unwrap();
     let second = run_dynamic(vec![
         "cdf".to_owned(),
         "--project".to_owned(),

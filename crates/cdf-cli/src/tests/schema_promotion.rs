@@ -185,6 +185,178 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
 }
 
 #[test]
+fn schema_promote_plan_identity_binds_receipted_packages_without_residual_values() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let locked_hash = active_schema_hash(&project, "local.events");
+
+    write_vendor_score_parquet(&source_path);
+    write_schema_promote_package_fixture(&project, &locked_hash);
+    write_schema_promote_package_fixture_without_residual(
+        &project,
+        "pkg-promote-without-residual",
+        &locked_hash,
+    );
+    write_schema_promote_package_fixture_for_target(
+        &project,
+        "pkg-promote-current",
+        "events",
+        &locked_hash,
+    );
+    let dry = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
+    let plan: SchemaPromotionPlanReport =
+        serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
+    assert_eq!(plan.targets[0].evidence.len(), 3);
+    assert_eq!(plan.targets[0].affected_packages.len(), 3);
+    assert_eq!(
+        plan.proposed_snapshot
+            .as_ref()
+            .unwrap()
+            .artifact
+            .promotion_authority
+            .as_ref()
+            .unwrap()
+            .target_evidence
+            .len(),
+        3
+    );
+
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
+    let destinations = plan
+        .targets
+        .iter()
+        .map(|target| {
+            crate::destination_uri::resolve_selected_destination(
+                &test_destination_registry(),
+                &context,
+                &TargetName::new(target.target.clone()).unwrap(),
+                None,
+            )
+            .unwrap()
+            .destination
+        })
+        .collect::<Vec<_>>();
+    let authority = promotion_planning_authority(
+        &context,
+        context.resource("local.events").unwrap(),
+        &destinations,
+    );
+    cdf_project::validate_schema_promotion_plan_identity(&plan, &authority).unwrap();
+
+    let executed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
+    let report = stderr_or_stdout_json(&executed.stdout);
+    assert_eq!(report["result"]["phase"], "published");
+    assert_eq!(report["result"]["published_generation"], 2);
+    assert_eq!(report["result"]["targets"][0]["committed"], true);
+}
+
+#[test]
+fn schema_promote_settles_fully_superseded_replace_package_as_typed_noop() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    let resource_path = project.root.join("cdf/local/events.cdf.sql");
+    fs::write(
+        &resource_path,
+        fs::read_to_string(&resource_path)
+            .unwrap()
+            .replace("DISPOSITION APPEND", "DISPOSITION REPLACE"),
+    )
+    .unwrap();
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}", compile.stderr);
+    let locked_hash = active_schema_hash(&project, "local.events");
+
+    write_vendor_score_parquet(&source_path);
+    write_schema_promote_replace_package_fixture(
+        &project,
+        "pkg-promote-source",
+        &locked_hash,
+        true,
+    );
+    write_schema_promote_replace_package_fixture(
+        &project,
+        "pkg-promote-current-clean",
+        &locked_hash,
+        false,
+    );
+
+    let executed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
+    let report = stderr_or_stdout_json(&executed.stdout);
+    assert_eq!(report["result"]["phase"], "published");
+    assert_eq!(report["result"]["published_generation"], 2);
+
+    let correction_package = fs::read_dir(project.root.join(".cdf/packages"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.join("plan/promotion-correction.json").is_file())
+        .unwrap();
+    let artifact: cdf_project::SchemaPromotionCorrectionPackageArtifact = serde_json::from_slice(
+        &fs::read(correction_package.join("plan/promotion-correction.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(artifact.operations.is_empty(), "{artifact:#?}");
+    assert_eq!(artifact.superseded_packages.len(), 1);
+    assert_eq!(artifact.superseded_packages[0].operation_count, 2);
+    assert_eq!(artifact.source_packages.len(), 1);
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows = conn
+        .prepare("SELECT vendor_id, score, _cdf_variant FROM events ORDER BY _cdf_row_key")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i32>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![(1, None, None), (2, None, None)]);
+}
+
+#[test]
 fn schema_promote_execute_commits_correction_checkpoint_and_state_publication() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
@@ -650,7 +822,7 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     assert_secret_absent(&json_failure, &secret);
     let error = stderr_or_stdout_json(&json_failure.stderr);
     assert_eq!(
-        error["error"]["details"]["phase"], "staged",
+        error["error"]["details"]["phase"], "cutoff_established",
         "{}",
         json_failure.stderr
     );
@@ -676,7 +848,7 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     ]);
     assert_ne!(human_failure.exit_code, 0);
     assert_secret_absent(&human_failure, "promotion-secret");
-    assert!(human_failure.stderr.contains("phase: staged"));
+    assert!(human_failure.stderr.contains("phase: cutoff_established"));
     assert!(human_failure.stderr.contains("recovery_command:"));
     assert!(
         project_tree_snapshot(&project.root)
@@ -852,7 +1024,7 @@ fn schema_promote_api_rejects_divergent_destination_authority_before_mutation() 
     })
     .unwrap_err();
 
-    assert!(error.message.contains("destination sheet"), "{error}");
+    assert!(error.message.contains("capability sheet"), "{error}");
     assert!(!project.root.join(".cdf/promotions").exists());
     assert_eq!(
         fs::read_dir(project.root.join(".cdf/packages"))
@@ -1254,7 +1426,11 @@ fn schema_show_and_diff_use_state_authority_without_writes_or_secret_leak() {
     .unwrap();
 
     let compile = compile_resource(&project, "api.items");
-    assert_eq!(compile.exit_code, 0, "stderr: {}", compile.stderr);
+    assert_eq!(
+        compile.exit_code, 0,
+        "stdout: {}\nstderr: {}",
+        compile.stdout, compile.stderr
+    );
     assert_secret_absent(&compile, "rest-diff-secret");
     let active_before = active_schema_hash(&project, "api.items");
     let state_before = fs::read(project.root.join(".cdf/state.db")).unwrap();
@@ -1356,7 +1532,11 @@ fn compile_postgres_catalog_establishes_state_without_secret_leak() {
 
     let result = compile_resource(&project, "warehouse.orders");
 
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
     assert_secret_absent(&result, &source_dsn);
     assert_secret_absent(&result, "compile-secret");
     assert_generated_artifacts_exclude(&project.root, &source_dsn);

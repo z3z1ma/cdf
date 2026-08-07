@@ -45,13 +45,13 @@ struct DuckDbCorrectionSession<'a> {
 
 fn resolve_row_key(
     conn: &Connection,
-    target: &TargetRef,
+    mirror_target: &TargetName,
     address: &RowProvenanceAddress,
 ) -> Result<Option<u64>> {
     let range: Option<(u64, u64)> = conn.query_row(
         "SELECT row_key_start, row_key_end FROM _cdf_segments WHERE target = ? AND package_hash = ? AND segment_id = ?",
         params![
-            target.table.as_str(),
+            mirror_target.as_str(),
             address.original_package_hash.as_str(),
             address.original_segment_id.as_str(),
         ],
@@ -192,7 +192,8 @@ pub(crate) fn read_addressed_residual(
     if !destination.database_path().exists() {
         return Ok(None);
     }
-    let target = parse_target(target)?;
+    let mirror_target = target;
+    let target = parse_target(mirror_target)?;
     let conn = destination.open_read_only_connection()?;
     let existing = existing_columns(&conn, &target)?;
     if existing.is_empty() {
@@ -216,7 +217,7 @@ pub(crate) fn read_addressed_residual(
         }
     }
 
-    let Some(row_key) = resolve_row_key(&conn, &target, original_row)? else {
+    let Some(row_key) = resolve_row_key(&conn, mirror_target, original_row)? else {
         return Ok(None);
     };
     let residual: Option<Option<String>> = conn
@@ -314,8 +315,8 @@ fn build_correction_context(
     }
 
     let mut output_fields = BTreeMap::<String, FieldPlan>::new();
-    for operation in &request.corrections {
-        let arrow = operation.output_field.to_arrow()?;
+    for authority in &request.fields {
+        let arrow = authority.output_field.to_arrow()?;
         if arrow.name().starts_with("_cdf_") {
             return Err(CdfError::contract(format!(
                 "DuckDB promoted output field {:?} uses the reserved `_cdf_*` namespace",
@@ -357,7 +358,7 @@ fn build_correction_context(
             )),
         }
     }
-    prepare_correction_rows(conn, &target, request)?;
+    prepare_correction_rows(conn, &target, &request.target, request)?;
 
     correction_context_from_ddl(request, ddl)
 }
@@ -404,6 +405,7 @@ fn correction_context_from_ddl(
 fn prepare_correction_rows(
     conn: &Connection,
     target: &TargetRef,
+    mirror_target: &TargetName,
     request: &DestinationCorrectionCommitRequest,
 ) -> Result<Vec<PreparedCorrectionRow>> {
     let mut by_address =
@@ -417,7 +419,7 @@ fn prepare_correction_rows(
 
     let mut prepared = Vec::with_capacity(by_address.len());
     for (address, operations) in by_address {
-        let row_key = resolve_row_key(conn, target, &address)?.ok_or_else(|| {
+        let row_key = resolve_row_key(conn, mirror_target, &address)?.ok_or_else(|| {
             CdfError::destination(format!(
                 "DuckDB correction address ({}, {}, {}) has no compact provenance mapping",
                 address.original_package_hash,
@@ -518,9 +520,10 @@ fn commit_corrections(
                 duckdb_error(format!("apply DuckDB correction DDL {ddl}"), error)
             })?;
         }
-        let rows = prepare_correction_rows(&tx, &target, &context.request)?;
+        let rows =
+            prepare_correction_rows(&tx, &target, &context.request.target, &context.request)?;
         for row in &rows {
-            update_correction_row(&tx, &target, row)?;
+            update_correction_row(&tx, &target, &context.request.target, row)?;
         }
         let counts = correction_counts(&context.request);
         let receipt = build_correction_receipt(
@@ -549,9 +552,10 @@ fn commit_corrections(
 fn update_correction_row(
     conn: &Connection,
     target: &TargetRef,
+    mirror_target: &TargetName,
     row: &PreparedCorrectionRow,
 ) -> Result<()> {
-    let row_key = resolve_row_key(conn, target, &row.address)?
+    let row_key = resolve_row_key(conn, mirror_target, &row.address)?
         .ok_or_else(|| CdfError::destination("DuckDB correction provenance mapping disappeared"))?;
     let mut assignments = row
         .assignments
@@ -696,4 +700,40 @@ fn build_correction_receipt(
     )
     ?
     .finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_provenance_uses_the_exact_qualified_target_key() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_mirror_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO _cdf_segments (row_key_start, row_key_end, target, package_hash, segment_id) VALUES (?, ?, ?, ?, ?)",
+            params![
+                10_u64,
+                14_u64,
+                "local.events",
+                "sha256:source-package",
+                "segment-1"
+            ],
+        )
+        .unwrap();
+        let address = RowProvenanceAddress::new(
+            cdf_kernel::PackageHash::new("sha256:source-package").unwrap(),
+            cdf_kernel::SegmentId::new("segment-1").unwrap(),
+            2,
+        );
+
+        assert_eq!(
+            resolve_row_key(&conn, &TargetName::new("local.events").unwrap(), &address).unwrap(),
+            Some(12)
+        );
+        assert_eq!(
+            resolve_row_key(&conn, &TargetName::new("events").unwrap(), &address).unwrap(),
+            None
+        );
+    }
 }

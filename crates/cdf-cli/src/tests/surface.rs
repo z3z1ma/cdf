@@ -23,8 +23,8 @@ fn help_lists_required_command_surface() {
 
     assert_eq!(result.exit_code, 0);
     for command in [
-        "help", "version", "init", "add", "compile", "validate", "plan", "explain", "run",
-        "preview", "sql", "inspect", "diff", "schema", "contract", "state", "backfill", "package",
+        "help", "version", "init", "add", "discover", "compile", "validate", "plan", "explain",
+        "run", "preview", "sql", "inspect", "schema", "contract", "state", "backfill", "package",
         "doctor", "status",
     ] {
         assert!(result.stdout.contains(command), "missing {command}");

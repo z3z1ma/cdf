@@ -344,12 +344,16 @@ impl<'a> EnvelopeParser<'a> {
             TrustPreset::Experimental
         } else if token.is_word("GOVERNED") {
             TrustPreset::Governed
+        } else if token.is_word("FINANCIAL") {
+            TrustPreset::Financial
+        } else if token.is_word("SERVING") {
+            TrustPreset::Serving
         } else {
             return Err(resource_sql_error(
                 "CDF-RESOURCE-TRUST",
                 self.file,
                 Some(&token.span),
-                "TRUST must be EXPERIMENTAL or GOVERNED",
+                "TRUST must be EXPERIMENTAL, GOVERNED, FINANCIAL, or SERVING",
             ));
         };
         Ok(SpannedResourceValue {

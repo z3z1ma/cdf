@@ -725,24 +725,24 @@ ResourceBatchStream
 ### 11.4 Policy vocabulary and trust presets
 
 ```text
-schema:   allow_new_table · allow_new_column · allow_type_widening · quarantine_type_narrowing
-          allow_unknown_fields · variant_capture · freeze
-types:    coerce_types · preserve_decimal_exactness · preserve_timestamp_timezone · allow_lossy_mapping
-rows:     nullability · domain/enum · range · regex · freshness · dedup(keys, keep = first|last|fail)
-verdicts: admit · admit_as_variant · quarantine · reject_batch · reject_run
+fields:      capture_variant · quarantine_row · fail_run
+rows:        quarantine_row · fail_run
+records:     quarantine_record · fail_run
+partitions:  quarantine_partition · fail_run
+types:       compiled lossless coercion · strict decimal/timestamp fidelity
 ```
 
-`reject_run` exists, and the compiler warns when it guards low-severity rules: a run-fatal contract on a wide table converts one bad cell into an outage, so verdict severity is part of the policy on purpose — blast radius is a design input, not an accident.
+`fail_run` exists, and the compiler warns when it guards low-severity rules: a run-fatal contract on a wide table converts one bad cell into an outage, so disposition severity is part of the policy on purpose — blast radius is a design input, not an accident. Missing nullable fields materialize typed nulls, and lossless coercions remain recorded admissible transformations; neither changes the active schema.
 
 The full vocabulary compiles from one declared field, `trust`, whose four values expand into complete policies users override piecemeal:
 
 ```text
-experimental:  evolve everything, variant-capture unknowns, sampled profiling, quarantine off
-governed:      evolve columns with a review artifact, full validation, quarantine on, packages retained
-financial:     frozen schema, decimal/tz enforcement mandatory, full lineage, receipts required,
-               reconciliation counts recorded, long retention
-serving:       frozen schema, freshness SLO armed, sampled fast path after N clean runs,
-               demote-on-anomaly
+experimental:  variant-capture safe field drift; fail row, record, partition, and unsafe control drift
+governed:      variant-capture safe field drift; quarantine rows, records, and safely isolatable partitions
+financial:     fail all drift; require strict decimal/tz fidelity, full lineage, receipts,
+               reconciliation counts, and long retention
+serving:       governed dispositions plus freshness SLO, sampled fast path after N clean runs,
+               and demote-on-anomaly
 ```
 
 ### 11.5 Promotion and demotion: deployment rings for data
@@ -1141,7 +1141,7 @@ Compatibility layers are bridges into the native model, never alternate front do
 
 ### 21.2 The dlt bridge
 
-`cdf-python` ships a bridge running `@dlt.resource` and `@dlt.source` functions unmodified where feasible: dlt hints — primary key, merge key, `incremental`, write disposition, contract modes — map onto `ResourceDescriptor`; `dlt.current.state` maps onto a scoped state view backed by the ledger; dlt's contract-mode vocabulary (`evolve`, `freeze`, `discard_row`, `discard_value`) maps onto CDF verdicts (`admit`, `freeze`, `quarantine` at row and column grain). The bridge's purpose is migration gravity — the largest library-first authorship base can try CDF with existing code and immediately gain plans, packages, and the guarantee table. Its non-goal is bug-for-bug dlt emulation; divergences are a documented migration table, and the deepest divergence is the point: dlt normalizes and loads what arrived, CDF plans what to fetch.
+`cdf-python` ships a bridge running `@dlt.resource` and `@dlt.source` functions unmodified where feasible: dlt hints — primary key, merge key, `incremental`, write disposition, contract modes — map onto `ResourceDescriptor`; `dlt.current.state` maps onto a scoped state view backed by the ledger; dlt's contract-mode vocabulary (`evolve`, `freeze`, `discard_row`, `discard_value`) maps onto CDF's explicit capture-variant, quarantine, and fail dispositions at the applicable field, row, record, or partition grain. The bridge's purpose is migration gravity — the largest library-first authorship base can try CDF with existing code and immediately gain plans, packages, and the guarantee table. Its non-goal is bug-for-bug dlt emulation; divergences are a documented migration table, and the deepest divergence is the point: dlt normalizes and loads what arrived, CDF plans what to fetch.
 
 ### 21.3 Singer and Airbyte adapters
 

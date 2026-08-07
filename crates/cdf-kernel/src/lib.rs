@@ -68,12 +68,14 @@ pub use correction::{
     DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_VERSION,
     DESTINATION_PROTOCOL_CAPABILITIES_VERSION, DestinationCorrectionCapabilities,
     DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
-    DestinationCorrectionOperation, DestinationCorrectionOperationKind, DestinationCorrectionPlan,
+    DestinationCorrectionFieldAuthority, DestinationCorrectionOperation,
+    DestinationCorrectionOperationKind, DestinationCorrectionPlan,
     DestinationCorrectionReceiptEvidence, DestinationCorrectionRequest,
     DestinationCorrectionSidecarObjectEvidence, DestinationCorrectionSidecarReceiptEvidence,
     DestinationProtocolCapabilities, DestinationResidualReadback, DestinationSheetArtifact,
-    OBJECT_KEY_RULES_VERSION, ObjectKeyPolicy, ObjectKeyRules, ResidualCorrectionOperation,
-    RowProvenanceAddress, RowProvenanceCapabilities, correction_operations_digest,
+    DestinationSupersededPackageEvidence, OBJECT_KEY_RULES_VERSION, ObjectKeyPolicy,
+    ObjectKeyRules, ResidualCorrectionOperation, RowProvenanceAddress, RowProvenanceCapabilities,
+    correction_authority_digest, correction_operations_digest,
 };
 pub use destination::{
     CommitBatch, CommitBatchIterator, CommitCounts, CommitPlan, CommitSegment,

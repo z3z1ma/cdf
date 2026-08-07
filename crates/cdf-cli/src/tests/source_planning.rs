@@ -67,6 +67,24 @@ fn first_use_run_commits_schema_and_executes_without_compile_folklore() {
     );
     assert!(project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/manifest.json").exists());
+
+    let authority = active_schema_authority(&project, "local.events");
+    let authority_schema = authority.version.canonical_schema.to_arrow().unwrap();
+    assert!(
+        authority_schema
+            .fields()
+            .last()
+            .is_some_and(|field| cdf_contract::is_framework_variant_field(field.as_ref())),
+        "state must own the exact logical output schema, including framework fields"
+    );
+    let package = cdf_package::PackageReader::open(run_package_dir(&project, &result)).unwrap();
+    let output_schema = package.runtime_arrow_schema().unwrap();
+    let output_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref()).unwrap();
+    assert_eq!(
+        package.state_delta_preimage().unwrap().schema_hash,
+        output_hash,
+        "checkpoint authority must identify the actual logical package output"
+    );
 }
 
 #[test]
@@ -100,6 +118,65 @@ fn active_plan_enforces_exact_state_authority_without_project_writes() {
         "runtime_stream"
     );
     assert_eq!(report["admission"]["source_schema_migrations"], 0);
+}
+
+#[test]
+fn active_projected_resource_recompiles_against_source_input_schema() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    fs::write(
+        project.root.join("cdf/local/events.cdf.sql"),
+        r#"RESOURCE
+DISPOSITION REPLACE
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT vendor_id AS vendor_key
+FROM upstream(source => 'local', glob => '*.parquet', format => 'parquet');
+"#,
+    )
+    .unwrap();
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let compile = compile_resource(&project, "local.events");
+    assert_eq!(compile.exit_code, 0, "{}{}", compile.stdout, compile.stderr);
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "{}{}", plan.stdout, plan.stderr);
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    let report = single_plan(&plan_json);
+    assert_eq!(report["schema_authority"]["status"], "active");
+    assert!(
+        report["resource_schema"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"] == "vendor_key")
+    );
+    assert!(
+        report["resource_schema"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| field["name"] != "vendor_id")
+    );
+
+    let executed = run_valid_run_resource(&project, "local.events");
+    assert_eq!(
+        executed.exit_code, 0,
+        "{}{}",
+        executed.stdout, executed.stderr
+    );
+    assert_eq!(
+        single_run(&stderr_or_stdout_json(&executed.stdout))["row_count"],
+        2
+    );
 }
 
 #[test]

@@ -121,7 +121,8 @@ pub use manifest::{
     ManifestInputGeneration, ManifestInputKind, ManifestInputLocation, ManifestLineageEdge,
     ManifestLineageKind, ManifestLineageNode, ManifestResource, ManifestResourceOrigin,
     ManifestSemanticDefinition, ManifestSemanticFieldUsage, ManifestSemanticReferenceUsage,
-    ManifestSemanticSource, ResourceCompilationHash, SemanticProfileHash, current_dependency_tuple,
+    ManifestSemanticSource, ResourceCompilationHash, SemanticProfileHash,
+    compiled_logical_output_schema, current_dependency_tuple,
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
@@ -223,8 +224,9 @@ pub use schema_snapshot::{
     SchemaSnapshotIntervalUnit, SchemaSnapshotPromotionAuthority,
     SchemaSnapshotPromotionCoercionAuthority, SchemaSnapshotPromotionEvidenceAvailability,
     SchemaSnapshotPromotionPathAuthority, SchemaSnapshotPromotionTargetAssociationAuthority,
-    SchemaSnapshotSchema, SchemaSnapshotStore, SchemaSnapshotTimeUnit, SchemaSnapshotUnionField,
-    SchemaSnapshotUnionMode, schema_snapshot_relative_path,
+    SchemaSnapshotPromotionTargetEvidenceAuthority, SchemaSnapshotSchema, SchemaSnapshotStore,
+    SchemaSnapshotTimeUnit, SchemaSnapshotUnionField, SchemaSnapshotUnionMode,
+    schema_snapshot_relative_path,
 };
 pub use secrets::{DefaultSecretProvider, EnvSecretProvider, FileSecretProvider, SecretRef};
 pub use static_validation::{

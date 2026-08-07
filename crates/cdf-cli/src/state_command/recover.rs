@@ -24,6 +24,12 @@ pub(super) fn recover(
     let selected_receipt = select_recovery_receipt(&package.reader, args.receipt_id.as_deref())?;
     let selection = selected_receipt.selection;
     let selected_receipt_id = selected_receipt.receipt.receipt_id.to_string();
+    let execution = package
+        .project
+        .execution_with_state_authorities(execution)?;
+    let execution = package
+        .project
+        .execution_with_package_schema_authority(&execution, &package.inputs)?;
     let mut destination = build_replay_destination(
         destinations,
         &package.project,
@@ -32,8 +38,9 @@ pub(super) fn recover(
             target: args.target.as_deref(),
         },
         &package.inputs,
-        execution,
+        &execution,
     )?;
+    destination.bind_execution_services(execution)?;
     let destination_report = destination.report().clone();
     let state_store_path = package.project.state_store_path()?;
     ensure_parent_directory(

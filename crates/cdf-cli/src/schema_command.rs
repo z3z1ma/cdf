@@ -8,8 +8,8 @@ use std::{
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
     CdfError, EnvironmentName, LeaseOwnerId, PipelineId, ResourceId, SchemaAuthorityKey,
-    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaSnapshotReference, SchemaSource,
-    SchemaVersion, TargetName,
+    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaPromotionLifecyclePhase,
+    SchemaSnapshotReference, SchemaSource, SchemaVersion, TargetName,
 };
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PromotionEvidenceInventory,
@@ -148,8 +148,21 @@ fn execute_promotion(
         if let Ok(promotion_id) = cdf_kernel::PromotionId::new(prepared.report.promotion_id.clone())
             && let Ok(Some(state)) =
                 settlement_store.promotion_state(&prepared.authority.head.key, &promotion_id)
-            && let Ok(details) = serde_json::to_value(state)
+            && let Ok(mut details) = serde_json::to_value(&state)
         {
+            if let Some(details) = details.as_object_mut() {
+                details.insert(
+                    "remaining_action".to_owned(),
+                    serde_json::Value::String(promotion_remaining_action(&state.phase).to_owned()),
+                );
+                details.insert(
+                    "recovery_command".to_owned(),
+                    serde_json::Value::String(format!(
+                        "{} --execute",
+                        prepared.report.recovery_command
+                    )),
+                );
+            }
             cli_error = cli_error.with_details(details);
         }
         cli_error
@@ -159,6 +172,16 @@ fn execute_promotion(
         render::schema_promotion_execution_document(&result),
         result,
     )
+}
+
+fn promotion_remaining_action(phase: &SchemaPromotionLifecyclePhase) -> &'static str {
+    match phase {
+        SchemaPromotionLifecyclePhase::Fenced => "establish the promotion cutoff",
+        SchemaPromotionLifecyclePhase::CutoffEstablished => {
+            "build authenticated correction packages"
+        }
+        SchemaPromotionLifecyclePhase::Published => "none",
+    }
 }
 
 struct PreparedPromotion {
@@ -423,9 +446,18 @@ fn diff(
     let active = crate::schema_authority::load_active(&context, &resource_id)?
         .ok_or_else(|| no_active_schema_authority_error(&args.resource_id))?;
     let active_schema = active.version.canonical_schema.to_arrow()?;
-    let baseline = SchemaSnapshotSchema::from_arrow(&active_schema);
+    let source_schema = arrow_schema::Schema::new_with_metadata(
+        active_schema
+            .fields()
+            .iter()
+            .filter(|field| !cdf_contract::is_framework_variant_field(field.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>(),
+        active_schema.metadata().clone(),
+    );
+    let baseline = SchemaSnapshotSchema::from_arrow(&source_schema);
     let probe_resource =
-        resource.with_schema_source_and_schema(SchemaSource::Discover, Arc::new(active_schema));
+        resource.with_schema_source_and_schema(SchemaSource::Discover, Arc::new(source_schema));
     let inspection_root = inspection_artifact_root("schema-diff")?;
     let artifacts = discover_artifacts_for_cli_resource(
         &context,

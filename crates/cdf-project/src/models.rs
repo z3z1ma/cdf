@@ -173,6 +173,8 @@ pub struct DefaultsConfig {
 pub enum TrustPreset {
     Experimental,
     Governed,
+    Financial,
+    Serving,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

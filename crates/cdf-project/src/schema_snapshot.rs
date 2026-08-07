@@ -67,6 +67,7 @@ pub struct SchemaSnapshotPromotionAuthority {
     pub contract_policy_hash: String,
     pub validation_program_hash: Option<String>,
     pub selected_paths: Vec<SchemaSnapshotPromotionPathAuthority>,
+    pub target_evidence: Vec<SchemaSnapshotPromotionTargetEvidenceAuthority>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,16 @@ pub struct SchemaSnapshotPromotionCoercionAuthority {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaSnapshotPromotionTargetAssociationAuthority {
+    pub package_hash: String,
+    pub destination: String,
+    pub target: String,
+    pub recorded_receipt_ids: Vec<String>,
+    pub availability: SchemaSnapshotPromotionEvidenceAvailability,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSnapshotPromotionTargetEvidenceAuthority {
     pub package_hash: String,
     pub destination: String,
     pub target: String,
@@ -709,9 +720,10 @@ impl SchemaSnapshotPromotionAuthority {
         if self.normalizer_version.trim().is_empty()
             || self.contract_policy_hash.trim().is_empty()
             || self.selected_paths.is_empty()
+            || self.target_evidence.is_empty()
         {
             return Err(CdfError::data(
-                "schema snapshot promotion authority requires a normalizer version, contract policy hash, and at least one selected path",
+                "schema snapshot promotion authority requires compiler lineage, selected paths, and complete target evidence",
             ));
         }
         if self.fresh_discovery_manifest_hash.is_some()
@@ -733,6 +745,29 @@ impl SchemaSnapshotPromotionAuthority {
                 )));
             }
         }
+        let mut target_evidence = BTreeMap::new();
+        let mut previous_target_evidence = None::<(&str, &str, &str)>;
+        for evidence in &self.target_evidence {
+            let key = (
+                evidence.destination.as_str(),
+                evidence.target.as_str(),
+                evidence.package_hash.as_str(),
+            );
+            if previous_target_evidence.is_some_and(|previous| previous >= key)
+                || evidence.package_hash.trim().is_empty()
+                || evidence.destination.trim().is_empty()
+                || evidence.target.trim().is_empty()
+                || evidence.recorded_receipt_ids.is_empty()
+                || !is_sorted_unique(&evidence.recorded_receipt_ids)
+            {
+                return Err(CdfError::data(
+                    "schema snapshot promotion authority target evidence must be complete, unique, and sorted",
+                ));
+            }
+            previous_target_evidence = Some(key);
+            target_evidence.insert(key, evidence);
+        }
+
         let mut seen_outputs = BTreeMap::new();
         for selected in &self.selected_paths {
             if previous_path.is_some_and(|previous| previous >= selected.path.as_str()) {
@@ -815,6 +850,25 @@ impl SchemaSnapshotPromotionAuthority {
                 {
                     return Err(CdfError::data(format!(
                         "schema snapshot promotion authority path {:?} has an invalid package/target association",
+                        selected.path
+                    )));
+                }
+                let evidence_key = (
+                    association.destination.as_str(),
+                    association.target.as_str(),
+                    association.package_hash.as_str(),
+                );
+                let Some(evidence) = target_evidence.get(&evidence_key) else {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot promotion authority path {:?} association has no complete target evidence",
+                        selected.path
+                    )));
+                };
+                if evidence.recorded_receipt_ids != association.recorded_receipt_ids
+                    || evidence.availability != association.availability
+                {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot promotion authority path {:?} association diverges from complete target evidence",
                         selected.path
                     )));
                 }

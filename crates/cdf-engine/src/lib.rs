@@ -51,6 +51,7 @@ pub use expression_execution::{
 };
 pub use graph_plan::compile_operator_graph;
 pub use memory::DataFusionMemoryCoordinator;
+pub use output_schema::compile_logical_output_schema;
 pub use planning::{
     CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
     validate_plan_schema_authority,

@@ -22,7 +22,7 @@ use crate::{
         record_native_contract_expression, validate_recorded_contract_expressions,
         validate_recorded_expressions,
     },
-    output_schema::compile_output_schema,
+    output_schema::compile_logical_output_schema,
     types::source_materializations_for_constraint,
 };
 
@@ -85,7 +85,7 @@ impl Planner {
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
-            compile_output_schema(
+            compile_logical_output_schema(
                 &logical_schema,
                 &input.validation_program,
                 input.request.projection.as_deref(),
@@ -170,7 +170,7 @@ impl Planner {
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
-            compile_output_schema(
+            compile_logical_output_schema(
                 &logical_schema,
                 &input.validation_program,
                 input.request.projection.as_deref(),
@@ -772,7 +772,7 @@ pub(crate) fn rebind_validation_program(
     compiled_schema_admission.baseline_projected_schema_hashes = baseline_projected_schema_hashes;
     compiled_schema_admission.source = source_binding;
     let output_schema = CompiledArrowSchema::from_arrow(
-        compile_output_schema(
+        compile_logical_output_schema(
             expression_schema,
             &program,
             candidate.final_projection.as_deref(),
@@ -1063,7 +1063,9 @@ where
     }
     let schema_hash = match &resource.descriptor().schema_source {
         cdf_kernel::SchemaSource::Declared { schema_hash, .. } => schema_hash.clone(),
-        cdf_kernel::SchemaSource::Active { schema_hash } => schema_hash.clone(),
+        cdf_kernel::SchemaSource::Active { .. } => {
+            cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?
+        }
         cdf_kernel::SchemaSource::Discovered { snapshot } => snapshot.schema_hash.clone(),
         cdf_kernel::SchemaSource::Hints {
             snapshot: Some(snapshot),
@@ -1110,7 +1112,7 @@ where
         .transpose()?;
     let resource_schema = resource.schema();
     let expected_output = CompiledArrowSchema::from_arrow(
-        compile_output_schema(
+        compile_logical_output_schema(
             relational_output
                 .as_ref()
                 .unwrap_or(resource_schema.as_ref()),
@@ -1377,8 +1379,8 @@ mod expression_transform_tests {
     use arrow_array::{Array, BooleanArray, Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        CompiledExpressionPlan, ContractPolicy, DeclarativeExpression, ObservedSchema, RowRule,
-        TransformDescription, compile_validation_program,
+        CompiledExpressionPlan, ContractPolicy, DeclarativeExpression, FieldDisposition,
+        ObservedSchema, RowRule, TransformDescription, compile_validation_program,
     };
     use cdf_kernel::{PredicateId, ResourceId, ScanPredicate, ScanRequest, ScopeKey, TrustLevel};
 
@@ -1399,6 +1401,7 @@ mod expression_transform_tests {
             Field::new("updated_at", DataType::Int64, false),
         ]);
         let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+        policy.admission.field = FieldDisposition::FailRun;
         policy.transforms = vec![TransformDescription::Derive {
             column: "selected".to_owned(),
             expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
@@ -1481,7 +1484,7 @@ mod expression_transform_tests {
         let (planned, contract_schema) = plan_transform_expressions(&program, &schema).unwrap();
         cdf_contract::bind_vector_validation_plan(&program, Arc::new(contract_schema.clone()))
             .unwrap();
-        let projected = crate::output_schema::compile_output_schema(
+        let projected = crate::output_schema::compile_logical_output_schema(
             &schema,
             &program,
             Some(&["selected".to_owned()]),

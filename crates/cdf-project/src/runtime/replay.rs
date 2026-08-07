@@ -1078,10 +1078,14 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let inputs = package
         .reader()
         .replay_inputs_verified(package.verification())?;
-    if admission.effective_schema_hash != inputs.state_delta.schema_hash {
+    let output_schema = package
+        .reader()
+        .runtime_arrow_schema_verified(package.verification())?;
+    let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
+    if output_schema_hash != inputs.state_delta.schema_hash {
         return Err(CdfError::data(format!(
-            "compiled admission effective schema {} does not match StateDelta schema {}",
-            admission.effective_schema_hash, inputs.state_delta.schema_hash
+            "package logical output schema {} does not match StateDelta schema {}",
+            output_schema_hash, inputs.state_delta.schema_hash
         )));
     }
 

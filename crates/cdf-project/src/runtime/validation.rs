@@ -104,7 +104,16 @@ fn validate_normalization_program(resource: &dyn ResourceStream, plan: &EnginePl
         )));
     }
 
-    let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let relational_output = plan
+        .relational_expression_plan
+        .as_ref()
+        .map(|relational| relational.output_schema.to_arrow())
+        .transpose()?;
+    let resource_schema = resource.schema();
+    let observed_schema = relational_output
+        .as_ref()
+        .unwrap_or(resource_schema.as_ref());
+    let observed = ObservedSchema::from_arrow(observed_schema);
     let expected = normalize_schema(&observed, &program.identifier_policy)?;
     if program.column_programs.len() != expected.fields.len() {
         return Err(CdfError::contract(format!(

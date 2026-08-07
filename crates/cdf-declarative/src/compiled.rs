@@ -173,6 +173,13 @@ impl CompiledResource {
         resource
     }
 
+    pub fn with_logical_schema_source(&self, schema_source: SchemaSource) -> Result<Self> {
+        let mut resource = self.clone();
+        resource.descriptor.schema_source = schema_source;
+        resource.descriptor.validate()?;
+        Ok(resource)
+    }
+
     pub fn with_effective_schema(
         &self,
         schema: SchemaRef,

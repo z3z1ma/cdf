@@ -163,10 +163,13 @@ fn run_rest_progress_drift_fails_closed_without_parse_coercion() {
 }
 
 #[test]
-fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
+fn logical_identifier_policy_normalizes_plan_preview_package_and_duckdb_commit() {
     const LONG_SOURCE: &str =
         "this_is_a_very_long_vendor_identifier_column_name_that_exceeds_sixty_three_bytes_total";
     let project = TestProject::new();
+    let logical_name =
+        cdf_contract::normalize_identifier(LONG_SOURCE, &cdf_contract::IdentifierPolicy::default())
+            .unwrap();
     fs::write(
         project.root.join("data/events.ndjson"),
         format!("{{\"VendorID\":1,\"{LONG_SOURCE}\":10}}\n"),
@@ -185,13 +188,10 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     let plan_json = stderr_or_stdout_json(&plan.stdout);
     let plan_report = single_resource_plan_report(&plan_json);
     assert_eq!(plan_report["normalization"]["version"], "namecase-v1");
-    assert_eq!(
-        plan_report["normalization"]["max_length"],
-        serde_json::Value::Null
-    );
+    assert_eq!(plan_report["normalization"]["max_length"], 63);
     assert_eq!(
         plan_report["normalization"]["allowed_pattern"],
-        "^[a-z_][a-z0-9_]*$"
+        serde_json::Value::Null
     );
     assert_eq!(
         plan_report["resource_schema"]["fields"][0]["name"],
@@ -199,7 +199,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     );
     assert_eq!(
         plan_report["resource_schema"]["fields"][1]["name"],
-        LONG_SOURCE
+        logical_name
     );
 
     let preview = run([
@@ -214,7 +214,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
     let preview_json = stderr_or_stdout_json(&preview.stdout);
     assert_eq!(
         preview_json["result"]["fields"],
-        serde_json::json!(["vendor_id", LONG_SOURCE, "_cdf_variant"])
+        serde_json::json!(["vendor_id", logical_name, "_cdf_variant"])
     );
     assert_eq!(
         preview_json["result"]["normalization"],
@@ -238,7 +238,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
         output["fields"][0]["metadata"]["cdf:source_name"],
         "VendorID"
     );
-    assert_eq!(output["fields"][1]["name"], LONG_SOURCE);
+    assert_eq!(output["fields"][1]["name"], logical_name);
 
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let mut statement = conn.prepare("PRAGMA table_info('events')").unwrap();
@@ -257,7 +257,7 @@ fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
         columns,
         vec![
             ("vendor_id".to_owned(), "BIGINT".to_owned(), false),
-            (LONG_SOURCE.to_owned(), "BIGINT".to_owned(), false),
+            (logical_name, "BIGINT".to_owned(), false),
             ("_cdf_variant".to_owned(), "VARCHAR".to_owned(), false),
             ("_cdf_row_key".to_owned(), "UBIGINT".to_owned(), true),
         ]
@@ -582,7 +582,7 @@ fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
 }
 
 #[test]
-fn run_local_parquet_discovery_establishes_and_commits_locked_schema() {
+fn run_local_parquet_discovery_establishes_and_commits_state_schema() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     remove_resource_format(&project, "parquet");
@@ -593,15 +593,22 @@ fn run_local_parquet_discovery_establishes_and_commits_locked_schema() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     let report = single_resource_run_report(&json);
-    let snapshot_path = single_schema_snapshot_path(&project);
-    let snapshot = read_snapshot_json(&project, &snapshot_path);
-    let snapshot_hash = snapshot["schema_hash"].as_str().unwrap();
-    assert_eq!(report["schema_hash"], snapshot_hash);
-    assert_eq!(report["schema_snapshot"]["schema_hash"], snapshot_hash);
-    assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
+    let authority = active_schema_authority(&project, "local.events");
+    let state_schema = authority.version.canonical_schema.to_arrow().unwrap();
+    assert_eq!(report["schema_hash"], authority.head.schema_hash.as_str());
+    assert!(
+        report["schema_snapshot"]["schema_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert_eq!(state_schema.field(0).name(), "vendor_id");
     assert_eq!(
-        snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
-        "VendorID"
+        state_schema
+            .field(0)
+            .metadata()
+            .get("cdf:source_name")
+            .map(String::as_str),
+        Some("VendorID")
     );
 
     let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
@@ -670,18 +677,8 @@ fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
 
     let baseline_compile = compile_resource(&project, "local.events");
     assert_eq!(baseline_compile.exit_code, 0, "{}", baseline_compile.stderr);
-    let snapshot_path = single_schema_snapshot_path(&project);
-    let snapshot = read_snapshot_json(&project, &snapshot_path);
-    let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
-    let manifest_path = snapshot["metadata"]["cdf:discovery_manifest_path"]
-        .as_str()
-        .unwrap();
-    let discovery_manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(project.root.join(manifest_path)).unwrap()).unwrap();
-    assert_eq!(
-        discovery_manifest["candidates"].as_array().unwrap().len(),
-        1
-    );
+    let authority_before = active_schema_authority(&project, "local.events");
+    let authority_state = fs::read(project.root.join(".cdf/state.db")).unwrap();
 
     write_vendor_score_parquet(&project.root.join("data/b.parquet"));
     write_empty_vendor_parquet(&project.root.join("data/c.parquet"));
@@ -725,10 +722,9 @@ fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
             .any(|field| field["name"] == "_cdf_variant")
     );
     assert_eq!(
-        fs::read(project.root.join(&snapshot_path)).unwrap(),
-        snapshot_before
+        active_schema_authority(&project, "local.events").head,
+        authority_before.head
     );
-    assert_eq!(single_schema_snapshot_path(&project), snapshot_path);
 
     let before_preview = project_tree_snapshot(&project.root);
     let preview = run([
@@ -800,10 +796,21 @@ fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     assert_eq!(run_report["admission"]["accepted_with_residual_rows"], 2);
     assert_eq!(run_report["admission"]["quarantined_rows"], 0);
     assert_eq!(
-        fs::read(project.root.join(&snapshot_path)).unwrap(),
-        snapshot_before
+        active_schema_authority(&project, "local.events").head,
+        authority_before.head
     );
     let package_dir = run_package_dir(&project, &result);
+    let admission: serde_json::Value =
+        serde_json::from_slice(&fs::read(package_dir.join("plan/schema-admission.json")).unwrap())
+            .unwrap();
+    let delta: serde_json::Value =
+        serde_json::from_slice(&fs::read(package_dir.join("state/proposed_delta.json")).unwrap())
+            .unwrap();
+    assert_ne!(
+        admission["effective_schema_hash"], delta["schema_hash"],
+        "source admission and logical output are distinct authorities when the framework variant is active"
+    );
+    assert_eq!(delta["schema_hash"], run_report["schema_hash"]);
     assert!(
         !package_dir
             .join("schema/effective-schema-evidence.json")
@@ -862,7 +869,8 @@ fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     fs::remove_file(project.root.join("data/a.parquet")).unwrap();
     fs::remove_file(project.root.join("data/b.parquet")).unwrap();
     fs::remove_file(project.root.join("data/c.parquet")).unwrap();
-    fs::remove_file(project.root.join(".cdf/state.db")).unwrap();
+    remove_state_store(&project);
+    fs::write(project.root.join(".cdf/state.db"), authority_state).unwrap();
     fs::remove_file(project.root.join(".cdf/dev.duckdb")).unwrap();
     let replay = run([
         "cdf",
@@ -894,7 +902,7 @@ fn active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
 }
 
 #[test]
-fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence() {
+fn governed_quarantines_incompatible_partition_with_exact_arrow_field_evidence() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     let path = project.root.join("data/a.parquet");
@@ -909,7 +917,10 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
     let report = single_resource_run_report(&json);
     let rendered = &report["terminal_schema_quarantines"][0];
     assert_eq!(rendered["observation_id"], "a.parquet");
-    assert_eq!(rendered["rule_id"], "schema-observation:incompatible");
+    assert_eq!(
+        rendered["rule_id"],
+        "schema-observation:incompatible-partition"
+    );
     assert_eq!(rendered["fields"][0]["scope"]["path"][0], "VendorID");
     assert_eq!(
         rendered["fields"][0]["observed_field"]["data_type"]["kind"],
@@ -925,8 +936,14 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
         &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(quarantine[0]["policy"], "evolve");
-    assert_eq!(quarantine[0]["rule_id"], "schema-observation:incompatible");
+    assert_eq!(
+        quarantine[0]["rule_id"],
+        "schema-observation:incompatible-partition"
+    );
+    assert_eq!(
+        quarantine[0]["error_code"],
+        "schema_observation_quarantined"
+    );
     let field = &quarantine[0]["fields"][0];
     assert_eq!(field["scope"]["kind"], "field_path");
     assert_eq!(field["observed_field"]["name"], "VendorID");

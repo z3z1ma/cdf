@@ -175,7 +175,7 @@ fn helper_process_after_checkpoint_proposal_leaves_no_destination_or_checkpoint_
             .manifest()
             .lifecycle
             .status,
-        PackageStatus::Loading
+        PackageStatus::Packaged
     );
 }
 

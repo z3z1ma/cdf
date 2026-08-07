@@ -20,12 +20,13 @@ use cdf_declarative::CompiledResource;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CanonicalArrowField, CanonicalArrowSchema, Checkpoint, CheckpointId,
     CheckpointStatus, CheckpointStore, CompositePosition, CorrectionStrategy,
-    DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
-    DestinationId, IdempotencyToken, LeaseOwnerId, PackageHash, PipelineId, PromotionId, Receipt,
-    ResourceId, SchemaAuthorityStore, SchemaHash, SchemaHead, SchemaPromotionFence,
-    SchemaPromotionLifecyclePhase, SchemaPromotionPlanState, SchemaPromotionState,
-    SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeKey, ScopeLease,
-    ScopeLeaseStore, SourcePosition, StateDelta, StateSegment, TargetName,
+    DestinationCorrectionCommitRequest, DestinationCorrectionFieldAuthority,
+    DestinationCorrectionOperation, DestinationCorrectionPlan, DestinationId,
+    DestinationSupersededPackageEvidence, IdempotencyToken, LeaseOwnerId, PackageHash, PipelineId,
+    PromotionId, Receipt, ResourceId, SchemaAuthorityStore, SchemaHash, SchemaHead,
+    SchemaPromotionFence, SchemaPromotionLifecyclePhase, SchemaPromotionPlanState,
+    SchemaPromotionState, SchemaPromotionTarget, SchemaVersion, SchemaVersionProvenance, ScopeKey,
+    ScopeLease, ScopeLeaseStore, SourcePosition, StateDelta, StateSegment, TargetName,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageBuilder, PackageReader};
@@ -131,7 +132,9 @@ pub struct SchemaPromotionCorrectionPackageArtifact {
     pub new_schema_hash: SchemaHash,
     pub strategy: CorrectionStrategy,
     pub disposition: cdf_kernel::WriteDisposition,
+    pub fields: Vec<DestinationCorrectionFieldAuthority>,
     pub source_packages: Vec<PackageHash>,
+    pub superseded_packages: Vec<DestinationSupersededPackageEvidence>,
     pub validation_program: cdf_contract::ValidationProgram,
     pub operations: Vec<DestinationCorrectionOperation>,
 }
@@ -659,18 +662,18 @@ where
             let package_index = package_index
                 .as_ref()
                 .expect("source inventory was initialized");
-            verify_target_source_receipts(
-                &mut request.destinations,
-                staged,
-                target,
-                package_index,
-            )?;
-            let artifact = correction_package_artifact(
+            verify_target_source_receipts(&mut request.destinations, target, package_index)?;
+            let mut artifact = correction_package_artifact(
                 request,
                 staged,
                 target,
                 &validation_program,
                 package_index,
+            )?;
+            retain_current_destination_operations(
+                &mut request.destinations,
+                target,
+                &mut artifact,
             )?;
             let prepared = build_correction_package(
                 &package_dir,
@@ -791,7 +794,6 @@ fn promotion_validation_program(
 
 fn verify_target_source_receipts(
     destinations: &mut [ResolvedProjectDestination],
-    staged: &SchemaPromotionExecutionPlanArtifact,
     target: &SchemaPromotionTargetReport,
     package_index: &BTreeMap<String, PathBuf>,
 ) -> cdf_kernel::Result<()> {
@@ -800,31 +802,16 @@ fn verify_target_source_receipts(
     let destination = take_destination(destinations, &destination_id, &target_name)?;
     destination.runtime_mut().ensure_protocol_ready()?;
 
-    let mut packages = BTreeMap::<String, Vec<String>>::new();
-    for path in staged
-        .dry_plan
-        .paths
+    let packages = target
+        .evidence
         .iter()
-        .filter(|path| target.affected_paths.contains(&path.path))
-    {
-        for association in path.associations.iter().filter(|association| {
-            association.destination == target.destination && association.target == target.target
-        }) {
-            let prior = packages.insert(
-                association.package_hash.clone(),
-                association.recorded_receipt_ids.clone(),
-            );
-            if prior
-                .as_ref()
-                .is_some_and(|prior| prior != &association.recorded_receipt_ids)
-            {
-                return Err(cdf_kernel::CdfError::data(format!(
-                    "source package {} has conflicting receipt authority across promoted paths",
-                    association.package_hash
-                )));
-            }
-        }
-    }
+        .map(|evidence| {
+            (
+                evidence.package_hash.clone(),
+                evidence.recorded_receipt_ids.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     if packages.is_empty() {
         return Err(cdf_kernel::CdfError::data(format!(
             "promotion target {}/{} has no source package receipt authority",
@@ -845,6 +832,97 @@ fn verify_target_source_receipts(
             destination,
         )?;
     }
+    Ok(())
+}
+
+fn retain_current_destination_operations(
+    destinations: &mut [ResolvedProjectDestination],
+    target: &SchemaPromotionTargetReport,
+    artifact: &mut SchemaPromotionCorrectionPackageArtifact,
+) -> cdf_kernel::Result<()> {
+    if target.residual_readback != cdf_kernel::CapabilitySupport::Supported {
+        return Ok(());
+    }
+    let destination_id = DestinationId::new(target.destination.clone())?;
+    let target_name = TargetName::new(target.target.clone())?;
+    let destination = take_destination(destinations, &destination_id, &target_name)?;
+    destination.runtime_mut().ensure_protocol_ready()?;
+    let protocol = destination.runtime_mut().protocol();
+    let mut by_package = BTreeMap::<PackageHash, Vec<DestinationCorrectionOperation>>::new();
+    for operation in std::mem::take(&mut artifact.operations) {
+        by_package
+            .entry(
+                operation
+                    .correction
+                    .request
+                    .original_row
+                    .original_package_hash
+                    .clone(),
+            )
+            .or_default()
+            .push(operation);
+    }
+
+    let mut retained = Vec::new();
+    let mut superseded = Vec::new();
+    for (package_hash, operations) in by_package {
+        let operation_count = operations.len() as u64;
+        let operation_digest = cdf_kernel::correction_operations_digest(&operations)?;
+        let mut present = Vec::new();
+        let mut absent = 0_usize;
+        for operation in operations {
+            let correction = &operation.correction.request;
+            match protocol.read_correction_residual(&target_name, &correction.original_row)? {
+                None => absent += 1,
+                Some(readback) => {
+                    let residual = readback.residual_json_v1.ok_or_else(|| {
+                        cdf_kernel::CdfError::destination(format!(
+                            "current target row {:?} has no residual value for promoted path {:?}",
+                            correction.original_row, correction.promoted_path
+                        ))
+                    })?;
+                    let paths = cdf_contract::decode_residual_json_v1(&residual)
+                        .map_err(|error| cdf_kernel::CdfError::destination(error.to_string()))?;
+                    if !paths
+                        .iter()
+                        .any(|field| field.path == correction.promoted_path)
+                    {
+                        return Err(cdf_kernel::CdfError::destination(format!(
+                            "current target row {:?} has no residual value at promoted path {:?}",
+                            correction.original_row, correction.promoted_path
+                        )));
+                    }
+                    present.push(operation);
+                }
+            }
+        }
+        if absent != 0 && !present.is_empty() {
+            return Err(cdf_kernel::CdfError::destination(format!(
+                "current target contains only part of source package {package_hash}; addressed promotion cannot reconcile a partial package"
+            )));
+        }
+        if absent != 0 && artifact.disposition != cdf_kernel::WriteDisposition::Replace {
+            return Err(cdf_kernel::CdfError::destination(format!(
+                "current target is missing committed source package {package_hash}; addressed promotion requires complete destination provenance"
+            )));
+        }
+        if absent != 0 {
+            superseded.push(DestinationSupersededPackageEvidence {
+                package_hash,
+                operation_count,
+                operation_digest,
+            });
+        }
+        retained.extend(present);
+    }
+    retained.sort_by(|left, right| {
+        let left = &left.correction.request;
+        let right = &right.correction.request;
+        (&left.original_row, &left.promoted_path).cmp(&(&right.original_row, &right.promoted_path))
+    });
+    artifact.operations = retained;
+    artifact.superseded_packages = superseded;
+    artifact.validate()?;
     Ok(())
 }
 
@@ -955,6 +1033,7 @@ where
             })?,
         )?;
     let mut operations = Vec::new();
+    let mut fields = BTreeMap::new();
     let mut source_packages = BTreeSet::new();
     for path in &staged.dry_plan.paths {
         if !target.affected_paths.contains(&path.path) {
@@ -969,6 +1048,13 @@ where
             .map_err(|_| cdf_kernel::CdfError::data("promoted output field is missing"))?
             .clone();
         let output_field = CanonicalArrowField::from_arrow(&proposed_field)?;
+        fields.insert(
+            path.path.clone(),
+            DestinationCorrectionFieldAuthority {
+                promoted_path: path.path.clone(),
+                output_field: output_field.clone(),
+            },
+        );
         let associated = path
             .associations
             .iter()
@@ -1031,7 +1117,9 @@ where
         new_schema_hash,
         strategy,
         disposition: request.resource.descriptor().write_disposition.clone(),
+        fields: fields.into_values().collect(),
         source_packages: source_packages.into_iter().collect(),
+        superseded_packages: Vec::new(),
         validation_program: validation_program.clone(),
         operations,
     };
@@ -1042,16 +1130,31 @@ where
 impl SchemaPromotionCorrectionPackageArtifact {
     pub fn validate(&self) -> cdf_kernel::Result<()> {
         if self.version != SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION
-            || self.operations.is_empty()
+            || self.fields.is_empty()
             || self.source_packages.is_empty()
+            || (self.operations.is_empty() && self.superseded_packages.is_empty())
         {
             return Err(cdf_kernel::CdfError::data(
                 "promotion correction package has incomplete typed authority",
             ));
         }
+        let mut field_paths = BTreeSet::new();
+        let mut field_names = BTreeSet::new();
+        for field in &self.fields {
+            field.validate()?;
+            if !field_paths.insert(field.promoted_path.as_str())
+                || !field_names.insert(field.output_field.name.as_str())
+            {
+                return Err(cdf_kernel::CdfError::data(
+                    "promotion correction fields must have unique paths and output names",
+                ));
+            }
+        }
+        let mut operation_packages = BTreeSet::new();
         for operation in &self.operations {
             operation.validate_structure()?;
             let correction = &operation.correction.request;
+            operation_packages.insert(correction.original_row.original_package_hash.clone());
             if correction.promotion_id != self.promotion_id
                 || correction.old_schema_hash != self.old_schema_hash
                 || correction.new_schema_hash != self.new_schema_hash
@@ -1064,6 +1167,47 @@ impl SchemaPromotionCorrectionPackageArtifact {
                     "promotion correction operation does not match package authority",
                 ));
             }
+            if !self.fields.iter().any(|field| {
+                field.promoted_path == correction.promoted_path
+                    && field.output_field == operation.output_field
+            }) {
+                return Err(cdf_kernel::CdfError::data(
+                    "promotion correction operation is absent from promoted-field authority",
+                ));
+            }
+        }
+        let mut superseded_packages = BTreeSet::new();
+        for evidence in &self.superseded_packages {
+            evidence.validate()?;
+            if !superseded_packages.insert(evidence.package_hash.clone()) {
+                return Err(cdf_kernel::CdfError::data(
+                    "promotion correction superseded-package evidence is duplicated",
+                ));
+            }
+        }
+        if !self.superseded_packages.is_empty()
+            && self.disposition != cdf_kernel::WriteDisposition::Replace
+        {
+            return Err(cdf_kernel::CdfError::data(
+                "promotion correction supersession evidence requires replace disposition",
+            ));
+        }
+        if operation_packages
+            .iter()
+            .any(|package| superseded_packages.contains(package))
+        {
+            return Err(cdf_kernel::CdfError::data(
+                "promotion correction source package cannot be executable and superseded",
+            ));
+        }
+        let covered_packages = operation_packages
+            .union(&superseded_packages)
+            .cloned()
+            .collect::<Vec<_>>();
+        if covered_packages != self.source_packages {
+            return Err(cdf_kernel::CdfError::data(
+                "promotion correction package source packages do not exactly match operations and supersession evidence",
+            ));
         }
         Ok(())
     }
@@ -1219,16 +1363,36 @@ fn build_correction_package(
         vec![Arc::new(StringArray::from(operation_json))],
     )
     .map_err(cdf_kernel::CdfError::from)?;
-    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
-    let segment =
-        builder.write_segment(cdf_kernel::SegmentId::new("correction-000001")?, 0, &batch)?;
     let output_position = source_package_position(&artifact.source_packages, package_index)?;
-    let state_segment = StateSegment {
-        segment_id: segment.segment_id.clone(),
-        scope: scope.clone(),
-        output_position: output_position.clone(),
-        row_count: segment.row_count,
-        byte_count: segment.byte_count,
+    let segments = if batch.num_rows() == 0 {
+        let processed = cdf_package_contract::ProcessedObservationEvidenceArtifact::new(
+            input_checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.delta.output_position.clone()),
+            artifact.disposition.clone(),
+            vec![cdf_kernel::ProcessedObservationPosition::new(
+                format!("promotion-supersession:{}", artifact.promotion_id),
+                cdf_kernel::ProcessedObservationOutcome::Admitted,
+                output_position.clone(),
+            )?],
+            output_position.clone(),
+        )?;
+        builder.write_json_artifact(
+            cdf_package_contract::PROCESSED_OBSERVATIONS_FILE,
+            &processed,
+        )?;
+        Vec::new()
+    } else {
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
+        let segment =
+            builder.write_segment(cdf_kernel::SegmentId::new("correction-000001")?, 0, &batch)?;
+        vec![StateSegment {
+            segment_id: segment.segment_id,
+            scope: scope.clone(),
+            output_position: output_position.clone(),
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        }]
     };
     let preimage = StateDeltaPreimage {
         checkpoint_id,
@@ -1249,7 +1413,7 @@ fn build_correction_package(
         source_continuation: None,
         run_schema_authority: None,
         schema_hash: artifact.new_schema_hash.clone(),
-        segments: vec![state_segment],
+        segments,
     };
     builder.write_input_checkpoint_artifact(&input_checkpoint)?;
     builder.write_state_delta_preimage_artifact(&preimage)?;
@@ -1382,11 +1546,6 @@ fn validate_correction_artifact_for_staged(
         .new_schema_hash
         .as_ref()
         .ok_or_else(|| cdf_kernel::CdfError::data("staged promotion schema hash is missing"))?;
-    let expected_packages = target
-        .affected_packages
-        .iter()
-        .map(|package| PackageHash::new(package.clone()))
-        .collect::<cdf_kernel::Result<Vec<_>>>()?;
     if artifact.promotion_id != staged.promotion_id
         || artifact.resource_id != staged.resource_id
         || artifact.destination_id.as_str() != target.destination
@@ -1395,7 +1554,6 @@ fn validate_correction_artifact_for_staged(
         || artifact.new_schema_hash.as_str() != expected_new_schema_hash
         || Some(artifact.strategy) != target.strategy
         || &artifact.disposition != disposition
-        || artifact.source_packages != expected_packages
         || &artifact.validation_program != validation_program
     {
         return Err(cdf_kernel::CdfError::data(
@@ -1404,6 +1562,7 @@ fn validate_correction_artifact_for_staged(
     }
     let proposed_schema = snapshot.artifact.schema.to_arrow()?;
     let mut path_authority = BTreeMap::new();
+    let mut expected_fields = Vec::new();
     for path in staged
         .dry_plan
         .paths
@@ -1425,8 +1584,19 @@ fn validate_correction_artifact_for_staged(
             path.path.as_str(),
             (CanonicalArrowField::from_arrow(field)?, packages),
         );
+        expected_fields.push(DestinationCorrectionFieldAuthority {
+            promoted_path: path.path.clone(),
+            output_field: CanonicalArrowField::from_arrow(field)?,
+        });
+    }
+    expected_fields.sort_by(|left, right| left.promoted_path.cmp(&right.promoted_path));
+    if artifact.fields != expected_fields {
+        return Err(cdf_kernel::CdfError::data(
+            "correction package promoted fields differ from staged target authority",
+        ));
     }
     let mut addresses = BTreeSet::new();
+    let mut operation_packages = BTreeSet::new();
     for operation in &artifact.operations {
         let request = &operation.correction.request;
         let Some((field, packages)) = path_authority.get(request.promoted_path.as_str()) else {
@@ -1442,6 +1612,33 @@ fn validate_correction_artifact_for_staged(
                 "correction package operation conflicts with staged path/package authority",
             ));
         }
+        operation_packages.insert(request.original_row.original_package_hash.clone());
+    }
+    let associated_packages = path_authority
+        .values()
+        .flat_map(|(_, packages)| packages.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let superseded_packages = artifact
+        .superseded_packages
+        .iter()
+        .map(|evidence| evidence.package_hash.clone())
+        .collect::<BTreeSet<_>>();
+    if superseded_packages
+        .iter()
+        .any(|package| !associated_packages.contains(package.as_str()))
+    {
+        return Err(cdf_kernel::CdfError::data(
+            "correction package supersession evidence names a package outside staged target authority",
+        ));
+    }
+    let covered_packages = operation_packages
+        .union(&superseded_packages)
+        .cloned()
+        .collect::<Vec<_>>();
+    if covered_packages != artifact.source_packages {
+        return Err(cdf_kernel::CdfError::data(
+            "correction package source packages do not match staged operations and supersession evidence",
+        ));
     }
     Ok(())
 }
@@ -1566,14 +1763,7 @@ fn settle_correction_package(
 ) -> cdf_kernel::Result<Receipt> {
     destination.runtime_mut().ensure_protocol_ready()?;
     let reader = PackageReader::open(&package.package_dir)?;
-    let request = DestinationCorrectionCommitRequest::new(
-        package.package_hash.clone(),
-        IdempotencyToken::new(package.package_hash.to_string())?,
-        package.artifact.target.clone(),
-        package.artifact.disposition.clone(),
-        package.state_delta.segments.clone(),
-        package.artifact.operations.clone(),
-    )?;
+    let request = correction_commit_request(package)?;
     if reader.receipt_count()? != 0 {
         return verify_stored_correction_receipt(destination, package);
     }
@@ -1619,14 +1809,7 @@ fn verify_stored_correction_receipt(
             "promotion correction package must contain exactly one canonical receipt",
         ));
     }
-    let request = DestinationCorrectionCommitRequest::new(
-        package.package_hash.clone(),
-        IdempotencyToken::new(package.package_hash.to_string())?,
-        package.artifact.target.clone(),
-        package.artifact.disposition.clone(),
-        package.state_delta.segments.clone(),
-        package.artifact.operations.clone(),
-    )?;
+    let request = correction_commit_request(package)?;
     let verified_package = Arc::new(reader.clone().into_verified()?);
     let runtime = destination.runtime_mut();
     let plan = runtime.prepare_correction_commit(verified_package, &request)?;
@@ -1639,6 +1822,25 @@ fn verify_stored_correction_receipt(
         ));
     }
     Ok(receipt)
+}
+
+fn correction_commit_request(
+    package: &PreparedCorrectionPackage,
+) -> cdf_kernel::Result<DestinationCorrectionCommitRequest> {
+    DestinationCorrectionCommitRequest::new_with_authority(
+        package.package_hash.clone(),
+        IdempotencyToken::new(package.package_hash.to_string())?,
+        package.artifact.target.clone(),
+        package.artifact.disposition.clone(),
+        package.artifact.promotion_id.clone(),
+        package.artifact.old_schema_hash.clone(),
+        package.artifact.new_schema_hash.clone(),
+        package.artifact.strategy,
+        package.artifact.fields.clone(),
+        package.artifact.superseded_packages.clone(),
+        package.state_delta.segments.clone(),
+        package.artifact.operations.clone(),
+    )
 }
 
 fn settle_promotion_checkpoint<Store>(

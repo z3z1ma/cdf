@@ -116,6 +116,7 @@ pub(crate) fn run(
                 error_catalog::RUN_ARGUMENT,
             ));
         }
+        let locked = args.locked;
         let prepared = prepare_single(
             cli,
             args.selectors[0].clone(),
@@ -123,6 +124,21 @@ pub(crate) fn run(
             services,
             destinations,
             true,
+        )?;
+        let authority = prepared.schema_authority.as_ref().ok_or_else(|| {
+            CdfError::internal("ad-hoc run preparation produced no schema authority")
+        })?;
+        if locked && authority.proposal().is_some() {
+            return Err(CdfError::contract(format!(
+                "resource `{}` has no established state-backed schema authority; run it without --locked first",
+                prepared.explicit.resource_id
+            ))
+            .into());
+        }
+        crate::schema_authority::commit_at(
+            prepared.state_store_path.clone(),
+            prepared.state_store_path_ownership,
+            std::slice::from_ref(authority),
         )?;
         return execute_prepared(cli, prepared, host, progress_delivery);
     }
@@ -706,14 +722,10 @@ fn prepare_single(
         false,
         Some(&run_services),
     )?;
-    let schema_authority = if adhoc.is_some() {
-        None
-    } else {
-        Some(crate::schema_authority::prepare(
-            &context,
-            &prepared.compiled_resource,
-        )?)
-    };
+    let schema_authority = Some(crate::schema_authority::prepare(
+        &context,
+        &prepared.compiled_resource,
+    )?);
     let schema_authority_report = match schema_authority.as_ref() {
         Some(authority) => Some(run_schema_authority_report(
             &authority.compiled_authority()?,
@@ -744,7 +756,6 @@ fn prepare_single(
     .map_err(|error| {
         run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
     })?;
-    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &ScanArgs {
@@ -758,7 +769,6 @@ fn prepare_single(
         },
         Some(&explicit.package_id),
         committed_frontier,
-        identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
     let destination = resolved.destination;

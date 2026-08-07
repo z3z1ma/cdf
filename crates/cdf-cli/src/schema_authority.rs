@@ -6,10 +6,9 @@ use std::{
 };
 
 use cdf_kernel::{
-    CanonicalArrowSchema, CdfError, EnvironmentName, LeaseAuthorityDomainId, ResourceId,
-    SchemaAuthorityCheck, SchemaAuthorityEstablishment, SchemaAuthorityKey,
-    SchemaAuthorityPrecondition, SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaVersion,
-    SchemaVersionProvenance,
+    CdfError, EnvironmentName, LeaseAuthorityDomainId, ResourceId, SchemaAuthorityCheck,
+    SchemaAuthorityEstablishment, SchemaAuthorityKey, SchemaAuthorityPrecondition,
+    SchemaAuthorityStore, SchemaHead, SchemaHeadStatus, SchemaVersion, SchemaVersionProvenance,
 };
 use cdf_project::CompiledSchemaAuthority;
 use cdf_state_sqlite::{SqliteSchemaAuthorityState, SqliteSchemaAuthorityStore};
@@ -134,7 +133,8 @@ pub(crate) fn prepare(
         EnvironmentName::new(context.environment.name.clone())?,
         ResourceId::new(resource.descriptor().resource_id.to_string())?,
     )?;
-    let canonical_schema = CanonicalArrowSchema::from_arrow(resource.schema().as_ref())?;
+    let canonical_schema =
+        cdf_project::compiled_logical_output_schema(resource, &context.semantic_catalog)?;
     let mut proposed = SchemaVersion::new(
         canonical_schema,
         None,
@@ -291,6 +291,7 @@ pub(crate) fn commit_at(
         )
         .into());
     }
+    cdf_project::ensure_state_parent_directory(&state_path, ownership)?;
     let store = SqliteSchemaAuthorityStore::open_with_authority_domain_and_path_ownership(
         state_path, &domain, ownership,
     )?;

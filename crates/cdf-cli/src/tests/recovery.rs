@@ -285,6 +285,7 @@ fn injected_quasar_destination_reaches_plan_run_duplicate_replay_doctor_and_insp
     assert!(state.inspections() >= 3);
     assert!(state.health_checks() >= 2);
     assert!(state.resolutions() >= 1);
+    let authority_state = fs::read(project.root.join(".cdf/state.db")).unwrap();
 
     let loaded = run_injected_dynamic(
         &project,
@@ -333,6 +334,7 @@ fn injected_quasar_destination_reaches_plan_run_duplicate_replay_doctor_and_insp
     }
 
     remove_state_store(&project);
+    fs::write(project.root.join(".cdf/state.db"), &authority_state).unwrap();
     let userinfo_uri = crate::destination_registry_test_support::destination_uri_with_userinfo();
     let replayed = run_injected_dynamic(
         &project,
@@ -361,6 +363,7 @@ fn injected_quasar_destination_reaches_plan_run_duplicate_replay_doctor_and_insp
     assert!(state.receipt_verifications() >= 2);
 
     remove_state_store(&project);
+    fs::write(project.root.join(".cdf/state.db"), authority_state).unwrap();
     let human_replay = run_injected_human_dynamic(
         &project,
         &registry,

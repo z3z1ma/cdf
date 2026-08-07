@@ -71,7 +71,7 @@ pub(crate) fn build_project_run_resource_from_compilation(
         .transpose()?
         .unwrap_or_else(|| resource.schema().as_ref().clone());
     source_plan.validate_schema_authority(
-        resource.descriptor(),
+        &source_plan.descriptor,
         &source_schema,
         resource.effective_schema_runtime(),
         resource.baseline_observation_schema_catalog(),
@@ -161,7 +161,7 @@ fn build_project_run_resource_with_artifact_root(
         .transpose()?
         .unwrap_or_else(|| resource.schema().as_ref().clone());
     source_plan.validate_schema_authority(
-        resource.descriptor(),
+        &source_plan.descriptor,
         &source_schema,
         resource.effective_schema_runtime(),
         resource.baseline_observation_schema_catalog(),

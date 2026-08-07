@@ -208,7 +208,7 @@ impl<'a> ReplayProgressRecorder<'a> {
 }
 
 impl ReplayDestination {
-    fn bind_execution_services(
+    pub(crate) fn bind_execution_services(
         &mut self,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<(), CliError> {

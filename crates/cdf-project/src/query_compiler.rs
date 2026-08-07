@@ -817,5 +817,7 @@ fn trust_level(value: &TrustPreset) -> TrustLevel {
     match value {
         TrustPreset::Experimental => TrustLevel::Experimental,
         TrustPreset::Governed => TrustLevel::Governed,
+        TrustPreset::Financial => TrustLevel::Financial,
+        TrustPreset::Serving => TrustLevel::Serving,
     }
 }

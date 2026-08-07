@@ -25,7 +25,7 @@ pub struct ForeignProducerDescriptor {
 /// How a foreign producer supplies the fixed schema required before execution begins.
 ///
 /// A declared handshake is metadata-only. A stream bootstrap starts the real producer and
-/// requires the compiler to retain that same invocation across the schema-freeze barrier.
+/// requires the compiler to retain that same invocation across the schema-authority barrier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForeignSchemaAcquisition {

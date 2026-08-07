@@ -215,10 +215,6 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(staged_path.starts_with(".cdf/adhoc/data/parquet_"));
     assert!(project.root.join(definition_path).is_file());
     assert!(project.root.join(staged_path).is_file());
-    assert_eq!(
-        report["schema_hash"],
-        report["schema_snapshot"]["schema_hash"]
-    );
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
     assert_eq!(
@@ -241,7 +237,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(!resource_sql.contains(PATH_SECRET));
     assert_eq!(
         active_schema_hash(&project, resource_id),
-        report["schema_snapshot"]["schema_hash"].as_str().unwrap()
+        report["schema_hash"].as_str().unwrap()
     );
     let package = PackageReader::open(run_package_dir(&project, &first)).unwrap();
     package.verify().unwrap();
@@ -260,6 +256,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
         .unwrap();
     assert_eq!(head.delta.schema_hash.as_str(), report["schema_hash"]);
     assert!(receipt.covers_state_delta(&head.delta));
+    drop(store);
 
     let second = run([
         "cdf",
@@ -387,6 +384,7 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
             .iter()
             .all(|event| event.kind != RunEventKind::CheckpointCommitted)
     );
+    drop(ledger);
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
     assert!(
         store
@@ -398,6 +396,7 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
             .unwrap()
             .is_none()
     );
+    drop(store);
 
     let connection = DuckConnection::open(&destination_path).unwrap();
     connection
@@ -459,7 +458,7 @@ fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
     assert!(report["adhoc"]["source_artifact_path"].is_null());
     assert_eq!(
         report["schema_hash"],
-        report["schema_snapshot"]["schema_hash"]
+        report["schema_authority"]["schema_hash"]
     );
     assert_eq!(
         report["schema_snapshot"]["discovery"]["file_coverage"],

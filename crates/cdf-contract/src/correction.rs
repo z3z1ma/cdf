@@ -55,7 +55,11 @@ pub fn validate_destination_correction_commit_request(
     for operation in &request.corrections {
         decode_destination_correction_value(operation)?;
     }
-    let digest = correction_operations_digest(&request.corrections)?;
+    let digest = cdf_kernel::correction_authority_digest(
+        &request.fields,
+        &request.superseded_packages,
+        &request.corrections,
+    )?;
     if digest != request.operations_digest {
         return Err(CdfError::contract(format!(
             "destination correction operations digest {} does not match computed {}",
@@ -145,8 +149,13 @@ mod tests {
 
         let mut wrong_path = request.clone();
         wrong_path.corrections[0].correction.request.promoted_path = "/years".to_owned();
-        wrong_path.operations_digest =
-            correction_operations_digest(&wrong_path.corrections).unwrap();
+        wrong_path.fields[0].promoted_path = "/years".to_owned();
+        wrong_path.operations_digest = cdf_kernel::correction_authority_digest(
+            &wrong_path.fields,
+            &wrong_path.superseded_packages,
+            &wrong_path.corrections,
+        )
+        .unwrap();
         assert!(
             validate_destination_correction_commit_request(&wrong_path)
                 .unwrap_err()
@@ -157,8 +166,13 @@ mod tests {
         let mut wrong_type = request.clone();
         wrong_type.corrections[0].output_field =
             CanonicalArrowField::from_arrow(&Field::new("age", DataType::Utf8, true)).unwrap();
-        wrong_type.operations_digest =
-            correction_operations_digest(&wrong_type.corrections).unwrap();
+        wrong_type.fields[0].output_field = wrong_type.corrections[0].output_field.clone();
+        wrong_type.operations_digest = cdf_kernel::correction_authority_digest(
+            &wrong_type.fields,
+            &wrong_type.superseded_packages,
+            &wrong_type.corrections,
+        )
+        .unwrap();
         assert!(
             validate_destination_correction_commit_request(&wrong_type)
                 .unwrap_err()

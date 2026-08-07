@@ -1,6 +1,6 @@
 mod render;
 
-use std::{collections::BTreeMap, fs, sync::Arc};
+use std::{collections::BTreeMap, fs};
 
 use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
@@ -53,17 +53,25 @@ impl PreparedSchemaForCli {
         schema_artifact_files: Vec<(String, Vec<u8>)>,
     ) -> Result<Self, CliError> {
         let source_plan = resource.source_plan().clone();
-        validate_resource_source_authority(&resource, &source_plan)?;
+        validate_resource_source_authority(&source_plan)?;
         let source_schema = resource
             .relational_expression_plan()
             .map(|plan| plan.input_schema.to_arrow())
             .transpose()?
             .unwrap_or_else(|| resource.schema().as_ref().clone());
-        let source_plan = source_plan.bind_schema_authority(
-            resource.descriptor(),
+        let mut expected_source_descriptor = resource.descriptor().clone();
+        expected_source_descriptor.schema_source = source_plan.descriptor.schema_source.clone();
+        if expected_source_descriptor != source_plan.descriptor {
+            return Err(CdfError::contract(
+                "compiled source plan changed non-schema resource authority",
+            )
+            .into());
+        }
+        source_plan.validate_schema_authority(
+            &source_plan.descriptor,
             &source_schema,
-            resource.effective_schema_runtime().cloned(),
-            resource.baseline_observation_schema_catalog().to_vec(),
+            resource.effective_schema_runtime(),
+            resource.baseline_observation_schema_catalog(),
         )?;
         Ok(Self {
             resource,
@@ -76,10 +84,9 @@ impl PreparedSchemaForCli {
 }
 
 pub(crate) fn validate_resource_source_authority(
-    resource: &CompiledResource,
     source_plan: &cdf_runtime::CompiledSourcePlan,
 ) -> cdf_kernel::Result<()> {
-    if let Some(snapshot) = resource.descriptor().schema_source.cached_snapshot() {
+    if let Some(snapshot) = source_plan.descriptor.schema_source.cached_snapshot() {
         validate_recorded_source_authority(
             &snapshot.metadata,
             source_plan.driver.driver_id.as_str(),
@@ -306,7 +313,6 @@ fn scan_one_with_portable(
         command,
         portable.then_some(execution),
     )?;
-    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let committed_frontier = planning_frontier(
         &context,
         prepared.resource.as_queryable().descriptor(),
@@ -317,7 +323,6 @@ fn scan_one_with_portable(
         args,
         None,
         committed_frontier,
-        identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
     let portable = portable
@@ -393,13 +398,11 @@ pub(crate) fn preview(
         "preview",
         None,
     )?;
-    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
         None,
         None,
-        identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
     match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot, host) {
@@ -422,29 +425,11 @@ pub(crate) fn prepare_resource_schema_for_cli(
     artifact_root: &std::path::Path,
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
-    if let Some(active) =
-        crate::schema_authority::load_active(context, &resource.descriptor().resource_id)?
+    let active = crate::schema_authority::load_active(context, &resource.descriptor().resource_id)?;
+    if let Some(active) = active.as_ref()
+        && let Some(compiled) = active_compiled_source_resource(context, active)?
     {
-        let active_schema = Arc::new(active.version.canonical_schema.to_arrow()?);
-        let prepared = resource.with_schema_source_and_schema(
-            cdf_kernel::SchemaSource::Active {
-                schema_hash: active.head.schema_hash.clone(),
-            },
-            active_schema,
-        );
-        let prepared = finalize_resource_query_for_cli(context, prepared)?;
-        let prepared_hash = cdf_kernel::canonical_arrow_schema_hash(prepared.schema().as_ref())?;
-        if prepared_hash != active.head.schema_hash {
-            return Err(CdfError::contract(format!(
-                "resource `{}` compiles to schema {} but active state authority is generation {} schema {}; run `cdf schema promote {}` to review the logical schema change",
-                resource.descriptor().resource_id,
-                prepared_hash,
-                active.head.generation,
-                active.head.schema_hash,
-                resource.descriptor().resource_id,
-            ))
-            .into());
-        }
+        let prepared = bind_active_logical_schema(context, compiled, Some(active))?;
         return PreparedSchemaForCli::new(prepared, None, prepared_payloads, Vec::new());
     }
     let source_plan = compile_source_plan_for_cli(resource)?;
@@ -456,6 +441,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             .map(DiscoveryCoverageReport::from_manifest);
         let (prepared, _) = prepared.into_parts();
         let prepared = finalize_resource_query_for_cli(context, prepared)?;
+        let prepared = bind_active_logical_schema(context, prepared, active.as_ref())?;
         return PreparedSchemaForCli::new(
             prepared,
             Some(SchemaSnapshotActionReport {
@@ -474,12 +460,9 @@ pub(crate) fn prepare_resource_schema_for_cli(
         probe_resource.descriptor().schema_source,
         SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
     ) {
-        return PreparedSchemaForCli::new(
-            finalize_resource_query_for_cli(context, resource.clone())?,
-            None,
-            prepared_payloads,
-            Vec::new(),
-        );
+        let prepared = finalize_resource_query_for_cli(context, resource.clone())?;
+        let prepared = bind_active_logical_schema(context, prepared, active.as_ref())?;
+        return PreparedSchemaForCli::new(prepared, None, prepared_payloads, Vec::new());
     }
     let options = match resource.descriptor().schema_source.cached_snapshot() {
         Some(snapshot) => {
@@ -513,6 +496,8 @@ pub(crate) fn prepare_resource_schema_for_cli(
     let prepared_resource =
         cdf_project::compile_discovered_schema_artifacts(&probe_resource, &mut artifacts)?;
     let prepared_resource = finalize_resource_query_for_cli(context, prepared_resource)?;
+    let prepared_resource =
+        bind_active_logical_schema(context, prepared_resource, active.as_ref())?;
     let discovery_coverage = artifacts
         .discovery_manifest
         .as_ref()
@@ -541,6 +526,57 @@ pub(crate) fn prepare_resource_schema_for_cli(
         prepared_payloads,
         schema_artifact_files,
     )
+}
+
+fn active_compiled_source_resource(
+    context: &ProjectContext,
+    active: &crate::schema_authority::ActiveSchemaAuthority,
+) -> Result<Option<CompiledResource>, CliError> {
+    let snapshot = cdf_project::load_compilation_snapshot(
+        &context.root,
+        Some(context.environment.name.as_str()),
+    )?;
+    let resource_id = active.head.key.resource_id.as_str();
+    let Some(artifact) = snapshot.artifacts.get(resource_id) else {
+        return Ok(None);
+    };
+    if artifact.schema_authority.key != active.head.key
+        || artifact.schema_authority.generation != active.head.generation
+        || artifact.schema_authority.schema_hash != active.head.schema_hash
+    {
+        return Ok(None);
+    }
+    Ok(Some(cdf_project::hydrate_compiled_resource_artifact(
+        &context.root,
+        artifact,
+    )?))
+}
+
+fn bind_active_logical_schema(
+    context: &ProjectContext,
+    prepared: CompiledResource,
+    active: Option<&crate::schema_authority::ActiveSchemaAuthority>,
+) -> Result<CompiledResource, CliError> {
+    let Some(active) = active else {
+        return Ok(prepared);
+    };
+    let logical =
+        cdf_project::compiled_logical_output_schema(&prepared, &context.semantic_catalog)?;
+    let logical_hash = cdf_kernel::canonical_arrow_schema_hash(&logical.to_arrow()?)?;
+    if logical_hash != active.head.schema_hash {
+        return Err(CdfError::contract(format!(
+            "resource `{}` compiles to schema {} but active state authority is generation {} schema {}; run `cdf schema promote {}` to review the logical schema change",
+            prepared.descriptor().resource_id,
+            logical_hash,
+            active.head.generation,
+            active.head.schema_hash,
+            prepared.descriptor().resource_id,
+        ))
+        .into());
+    }
+    Ok(prepared.with_logical_schema_source(SchemaSource::Active {
+        schema_hash: active.head.schema_hash.clone(),
+    })?)
 }
 
 fn finalize_resource_query_for_cli(
@@ -573,7 +609,6 @@ pub(crate) fn build_engine_plan_for_resource(
     args: &ScanArgs,
     run_package_id: Option<&str>,
     committed_frontier: Option<SourcePosition>,
-    identifier_policy: Option<&IdentifierPolicy>,
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
 ) -> Result<EnginePlan, CliError> {
     let resource = source.as_queryable();
@@ -587,9 +622,6 @@ pub(crate) fn build_engine_plan_for_resource(
     let allowances = resource.type_policy_allowances();
     policy.types.coerce_types = allowances.coerce_types;
     policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
-    if let Some(identifier_policy) = identifier_policy {
-        policy.normalization.identifier = identifier_policy.clone();
-    }
     let validation_program =
         compile_resource_validation_program(&policy, &observed_schema, resource.descriptor())?;
     let request = scan_request(resource.descriptor(), args)?;
