@@ -885,6 +885,7 @@ pub(super) fn write_state_commit_artifacts(
         partition_watermarks: Vec::new(),
         late_data_carryover,
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments,
     };

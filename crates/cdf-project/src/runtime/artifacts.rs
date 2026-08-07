@@ -13,7 +13,7 @@ use cdf_kernel::{
 #[cfg(test)]
 use cdf_kernel::{PackageHash, QueryableResource, StateDelta};
 use cdf_package_contract::{
-    DestinationCommitPlanPreimage, PROCESSED_OBSERVATIONS_FILE,
+    DestinationCommitPlanPreimage, PROCESSED_OBSERVATIONS_FILE, PackageRunSchemaAuthority,
     ProcessedObservationEvidenceArtifact, SegmentEntry, StateDeltaPreimage,
 };
 
@@ -116,6 +116,7 @@ pub(super) struct StateCommitArtifactContext<'a> {
     pub(super) checkpoint_id: &'a CheckpointId,
     pub(super) target: &'a TargetName,
     pub(super) destination_policy: &'a std::collections::BTreeMap<String, String>,
+    pub(super) run_schema_authority: Option<PackageRunSchemaAuthority>,
 }
 
 pub(super) struct QuarantineMirrorArtifactContext {
@@ -238,6 +239,7 @@ pub(crate) fn state_delta_from_run(
         checkpoint_id: &request.checkpoint_id,
         target: &request.target,
         destination_policy: &destination_policy,
+        run_schema_authority: None,
     };
     let preimage = state_delta_preimage_from_run_draft(
         &context,
@@ -396,6 +398,7 @@ fn state_delta_preimage_from_run_draft(
         partition_watermarks: draft.partition_watermarks,
         late_data_carryover: draft.late_data_carryover,
         source_continuation: draft.source_continuation,
+        run_schema_authority: context.run_schema_authority.clone(),
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     })

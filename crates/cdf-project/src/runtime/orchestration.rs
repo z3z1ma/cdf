@@ -768,6 +768,18 @@ async fn run_project_inner(
     let destination_policy = execution
         .destination
         .commit_policy(&descriptor.write_disposition);
+    let run_schema_authority = execution
+        .services
+        .schema_settlement()
+        .map(|binding| {
+            if binding.active_head().key.resource_id != descriptor.resource_id {
+                return Err(CdfError::contract(
+                    "run schema settlement authority does not match packaged resource",
+                ));
+            }
+            cdf_package_contract::PackageRunSchemaAuthority::from_active_head(binding.active_head())
+        })
+        .transpose()?;
     if let Some(graph) = &manifest_plan.plan.operator_graph {
         graph.validate_destination_join(&destination_capabilities)?;
     }
@@ -784,6 +796,7 @@ async fn run_project_inner(
                     checkpoint_id: execution.checkpoint_id,
                     target: &execution.target,
                     destination_policy: &destination_policy,
+                    run_schema_authority: run_schema_authority.clone(),
                 },
                 &execution.schema_hash,
                 &scope,

@@ -456,6 +456,7 @@ fn write_current_state_artifacts(
             partition_watermarks: Vec::new(),
             late_data_carryover: Vec::new(),
             source_continuation: None,
+            run_schema_authority: None,
             schema_hash: SchemaHash::new("schema-v1").unwrap(),
             segments: segments.clone(),
         })

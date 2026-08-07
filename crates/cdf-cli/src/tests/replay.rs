@@ -1,5 +1,176 @@
 use super::*;
 
+fn publish_replay_fixture_schema_v2(project: &TestProject) {
+    let context = crate::context::ProjectContext::load_with_destination_registry(
+        Some(&project.root),
+        None,
+        &test_destination_registry(),
+    )
+    .unwrap();
+    let active =
+        crate::schema_authority::load_active(&context, &ResourceId::new("local.events").unwrap())
+            .unwrap()
+            .unwrap();
+    let state_path = context.state_store_path().unwrap();
+    let store = SqliteSchemaPromotionStore::open(&state_path).unwrap();
+    let promotion_id = cdf_kernel::PromotionId::new("package-replay-schema-v2").unwrap();
+    let proposed = cdf_kernel::SchemaVersion::new(
+        cdf_kernel::CanonicalArrowSchema::from_arrow(&Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("updated_at", DataType::Int64, false),
+            Field::new("promoted", DataType::Utf8, true),
+        ]))
+        .unwrap(),
+        Some(active.head.schema_hash.clone()),
+        None,
+        now_ms_for_test(),
+        cdf_kernel::SchemaVersionProvenance::Promotion {
+            promotion_id: promotion_id.clone(),
+        },
+    )
+    .unwrap();
+    let lease = cdf_kernel::ScopeLeaseStore::acquire(
+        &store,
+        active.head.key.promotion_scope().unwrap(),
+        LeaseOwnerId::new("package-replay-schema-promoter").unwrap(),
+        30_000,
+    )
+    .unwrap();
+    let fence = cdf_kernel::SchemaPromotionFence::new(
+        active.head.key.authority_domain_id.clone(),
+        promotion_id,
+        lease,
+    )
+    .unwrap();
+    let target = cdf_kernel::SchemaPromotionTarget {
+        destination_id: DestinationId::new("local-test").unwrap(),
+        target: TargetName::new("events").unwrap(),
+    };
+    let plan = cdf_kernel::SchemaPromotionPlanState::new(
+        fence.promotion_id.clone(),
+        "{}".to_owned(),
+        vec![target.clone()],
+        Vec::new(),
+        now_ms_for_test(),
+    )
+    .unwrap();
+    SchemaAuthorityStore::begin_promotion(&store, &active.head, proposed.clone(), plan, &fence)
+        .unwrap();
+    let promoting = SchemaAuthorityStore::head(&store, &active.head.key)
+        .unwrap()
+        .unwrap();
+    SchemaAuthorityStore::establish_promotion_cutoff(&store, &promoting, &fence).unwrap();
+
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(1),
+    });
+    let package_hash = PackageHash::new("package-schema-v2-correction").unwrap();
+    let checkpoint_id = CheckpointId::new("checkpoint-schema-v2-correction").unwrap();
+    let segment_id = SegmentId::new("segment-schema-v2-correction").unwrap();
+    let delta = StateDelta {
+        checkpoint_id: checkpoint_id.clone(),
+        pipeline_id: PipelineId::new("schema-v2-promotion").unwrap(),
+        resource_id: ResourceId::new("local.events").unwrap(),
+        scope: fence.lease.scope.clone(),
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: output_position.clone(),
+        output_watermark: None,
+        partition_watermarks: Vec::new(),
+        late_data_carryover: Vec::new(),
+        source_continuation: None,
+        package_hash: package_hash.clone(),
+        schema_hash: proposed.schema_hash.clone(),
+        segments: vec![StateSegment {
+            segment_id: segment_id.clone(),
+            scope: fence.lease.scope.clone(),
+            output_position,
+            row_count: 1,
+            byte_count: 8,
+        }],
+    };
+    CheckpointStore::propose(&store, delta).unwrap();
+    let receipt = Receipt {
+        receipt_id: ReceiptId::new("receipt-schema-v2-correction").unwrap(),
+        destination: target.destination_id.clone(),
+        target: target.target.clone(),
+        package_hash: package_hash.clone(),
+        segment_acks: vec![SegmentAck {
+            segment_id,
+            row_count: 1,
+            byte_count: 8,
+        }],
+        disposition: WriteDisposition::Append,
+        idempotency_token: IdempotencyToken::new(package_hash.to_string()).unwrap(),
+        transaction: None,
+        counts: CommitCounts {
+            rows_written: 1,
+            rows_inserted: Some(1),
+            rows_updated: Some(0),
+            rows_deleted: Some(0),
+        },
+        schema_hash: proposed.schema_hash,
+        migrations: Vec::new(),
+        committed_at_ms: now_ms_for_test(),
+        verify: VerifyClause {
+            kind: "schema-promotion-test".to_owned(),
+            statement: "select 1".to_owned(),
+            parameters: BTreeMap::new(),
+        },
+    };
+    SchemaAuthorityStore::commit_promotion_target(
+        &store,
+        &promoting,
+        &fence,
+        &target,
+        &checkpoint_id,
+        receipt,
+    )
+    .unwrap();
+    let published = SchemaAuthorityStore::publish_promotion(&store, &promoting, &fence).unwrap();
+    assert_eq!(published.generation, 2);
+}
+
+#[test]
+fn replay_package_fences_v1_before_destination_mutation_after_v2_publication() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(&project);
+    let receipt_count = package_receipt_count(&package_dir);
+    let initial_status = package_status(&package_dir);
+    publish_replay_fixture_schema_v2(&project);
+    let destination = project.root.join(".cdf/stale-package.duckdb");
+
+    let result =
+        replay_package_command(&project, &package_dir, "duckdb://.cdf/stale-package.duckdb");
+
+    assert_ne!(result.exit_code, 0, "{}", result.stdout);
+    assert!(
+        result.stdout.contains("schema authority") || result.stderr.contains("schema authority"),
+        "stdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert_eq!(package_receipt_count(&package_dir), receipt_count);
+    assert_eq!(package_status(&package_dir), initial_status);
+    if destination.exists() {
+        let connection = DuckConnection::open(destination).unwrap();
+        let event_tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            event_tables, 0,
+            "stale package must not create its target table"
+        );
+    }
+}
+
 #[test]
 fn run_package_requires_and_uses_explicit_destination_without_source_contact() {
     let project = TestProject::new();

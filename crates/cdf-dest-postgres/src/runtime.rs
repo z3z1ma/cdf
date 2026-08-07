@@ -195,6 +195,7 @@ impl DestinationRuntime for PostgresRuntime {
             schema_hash: schema_hash.clone(),
             merge_keys: resource.descriptor().merge_key.clone(),
             destination_policy: Default::default(),
+            run_schema_authority: None,
         };
         let input = load_plan_input_from_artifacts(
             &inputs,
@@ -222,6 +223,7 @@ impl DestinationRuntime for PostgresRuntime {
             schema_hash: inputs.schema_hash.clone(),
             merge_keys: resource.descriptor().merge_key.clone(),
             destination_policy: Default::default(),
+            run_schema_authority: None,
         };
         let load_input = load_plan_input_from_artifacts(
             &replay_inputs,

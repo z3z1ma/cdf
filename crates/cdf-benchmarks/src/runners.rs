@@ -1773,6 +1773,7 @@ fn build_archive_input_fixture(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     };
@@ -1865,6 +1866,7 @@ fn build_replay_package_fixture(
             partition_watermarks: Vec::new(),
             late_data_carryover: Vec::new(),
             source_continuation: None,
+            run_schema_authority: None,
             schema_hash: schema_hash.clone(),
             segments: state_segments,
         };

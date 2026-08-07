@@ -783,6 +783,7 @@ fn write_prepared_state_commit_artifacts(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: spec.schema_hash.clone(),
         segments,
     };

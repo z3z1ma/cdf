@@ -1,8 +1,8 @@
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
     DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId,
-    ProcessedObservationPosition, ResourceId, Result, SchemaHash, ScopeKey, SourcePosition,
-    StateDelta, StateSegment, TargetName, WriteDisposition,
+    ProcessedObservationPosition, ResourceId, Result, SchemaAuthorityKey, SchemaHash, SchemaHead,
+    ScopeKey, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
     aggregate_processed_observation_positions,
 };
 use serde::{Deserialize, Serialize};
@@ -157,6 +157,48 @@ impl ProcessedObservationEvidenceArtifact {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageRunSchemaAuthority {
+    pub key: SchemaAuthorityKey,
+    pub generation: u64,
+    pub schema_hash: SchemaHash,
+}
+
+impl PackageRunSchemaAuthority {
+    pub fn from_active_head(head: &SchemaHead) -> Result<Self> {
+        head.validate()?;
+        if !matches!(head.status, cdf_kernel::SchemaHeadStatus::Active) {
+            return Err(CdfError::contract(
+                "package run schema authority requires an active state head",
+            ));
+        }
+        let authority = Self {
+            key: head.key.clone(),
+            generation: head.generation,
+            schema_hash: head.schema_hash.clone(),
+        };
+        authority.validate(&head.key.resource_id)?;
+        Ok(authority)
+    }
+
+    pub fn validate(&self, resource_id: &ResourceId) -> Result<()> {
+        self.key.validate()?;
+        SchemaHash::new(self.schema_hash.as_str()).map(drop)?;
+        if self.generation == 0 || self.key.resource_id != *resource_id {
+            return Err(CdfError::data(
+                "package run schema authority must match its resource and positive generation",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn active_head(&self) -> Result<SchemaHead> {
+        self.validate(&self.key.resource_id)?;
+        SchemaHead::active(self.key.clone(), self.generation, self.schema_hash.clone())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDeltaPreimage {
     pub checkpoint_id: CheckpointId,
     pub pipeline_id: PipelineId,
@@ -170,6 +212,7 @@ pub struct StateDeltaPreimage {
     pub partition_watermarks: Vec<cdf_kernel::PartitionWatermarkState>,
     pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
     pub source_continuation: Option<SourcePosition>,
+    pub run_schema_authority: Option<PackageRunSchemaAuthority>,
     pub schema_hash: SchemaHash,
     pub segments: Vec<StateSegment>,
 }
@@ -193,6 +236,9 @@ impl StateDeltaPreimage {
         cdf_kernel::validate_late_data_carryover_refs(&self.late_data_carryover)?;
         if let Some(position) = &self.source_continuation {
             position.validate()?;
+        }
+        if let Some(authority) = &self.run_schema_authority {
+            authority.validate(&self.resource_id)?;
         }
         for segment in &self.segments {
             segment.output_position.validate()?;
@@ -299,6 +345,7 @@ pub struct PackageReplayInputs {
     pub merge_keys: Vec<String>,
     pub schema_hash: SchemaHash,
     pub destination_policy: BTreeMap<String, String>,
+    pub run_schema_authority: Option<PackageRunSchemaAuthority>,
 }
 
 impl PackageReplayInputs {
@@ -359,6 +406,7 @@ impl PackageReplayInputs {
         }
 
         let schema_hash = state_delta.schema_hash.clone();
+        let run_schema_authority = state_delta.run_schema_authority.clone();
         let merge_keys = commit_plan.merge_keys.clone();
         let destination_policy = commit_plan.destination_policy.clone();
         let destination_commit =
@@ -371,6 +419,7 @@ impl PackageReplayInputs {
             merge_keys,
             schema_hash,
             destination_policy,
+            run_schema_authority,
         })
     }
 }

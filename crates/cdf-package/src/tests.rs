@@ -863,6 +863,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments,
     };
@@ -1731,6 +1732,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: vec![StateSegment {
             segment_id: segment.segment_id.clone(),
@@ -2099,6 +2101,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),
     };
@@ -2204,6 +2207,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),
     };

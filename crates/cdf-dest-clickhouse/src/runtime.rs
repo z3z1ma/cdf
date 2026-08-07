@@ -190,6 +190,7 @@ impl DestinationRuntime for ClickHouseRuntime {
                 schema_hash: inputs.schema_hash.clone(),
                 merge_keys: resource.descriptor().merge_key.clone(),
                 destination_policy: self.commit_policy(&inputs.destination_commit.disposition),
+                run_schema_authority: None,
             },
             &self.destination,
             columns_for_schema(output_schema)?,

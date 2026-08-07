@@ -578,6 +578,37 @@ impl ProjectOperationalContext {
         )))
     }
 
+    pub fn execution_with_package_schema_authority(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        inputs: &cdf_package_contract::PackageReplayInputs,
+    ) -> StdResult<cdf_runtime::ExecutionServices, CliError> {
+        let Some(authority) = &inputs.run_schema_authority else {
+            return Ok(execution.clone());
+        };
+        if authority.key.project_id != self.config.project.id
+            || authority.key.environment.as_str() != self.environment.name
+            || authority.key.resource_id != inputs.state_delta.resource_id
+        {
+            return Err(CdfError::contract(format!(
+                "package schema authority belongs to project `{}` environment `{}` resource `{}`, not selected project `{}` environment `{}` resource `{}`",
+                authority.key.project_id,
+                authority.key.environment,
+                authority.key.resource_id,
+                self.config.project.id,
+                self.environment.name,
+                inputs.state_delta.resource_id,
+            ))
+            .into());
+        }
+        crate::schema_authority::bind_package_settlement_services_at(
+            self.state_store_path()?,
+            self.state_store_path_ownership(),
+            authority,
+            execution,
+        )
+    }
+
     pub fn destination_runtime(
         &self,
         registry: &cdf_runtime::DestinationRegistry,

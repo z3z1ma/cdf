@@ -119,6 +119,15 @@ promotion lifecycle:
   scan against resource-only publication history, and freshness/test dependencies. The remaining
   `SqliteSchemaPromotionStore` composes checkpoint, lease, and schema authority while promotion
   target settlement and publication remain owned by the state-authority transaction.
+- 2026-08-06: Closed artifact-only settlement bypasses. Every ordinary package state preimage now
+  explicitly carries either no run authority (ad hoc/specialized flows) or the exact state domain,
+  project/environment/resource key, generation, and logical schema hash that prepared it. Normal
+  replay and durable-receipt recovery require a matching execution binding and acquire the exact
+  state permit before destination mutation/checkpoint settlement. CLI package replay and resume
+  bind from those manifest-verified bytes without source discovery or authored-resource loading.
+- 2026-08-06: Added a validation-only existing-state schema-store open for replay/resume so
+  authority binding does not rerun SQLite component initialization while run-ledger/checkpoint
+  handles are live. This preserves one state domain without the self-lock seen during recovery.
 
 ## Blockers
 
@@ -160,6 +169,17 @@ dispositions.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-state-sqlite schema_authority --lib` passed 8 focused
   state-authority tests, and the focused multi-target CLI promotion test passed with assertions
   against the canonical state lifecycle target settlements and committed checkpoint chain.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-package-contract -p cdf-package -p cdf-project -p
+  cdf-cli --all-targets` passed after binding package artifacts to exact run schema authority.
+- Focused CLI tests passed for a normal state-backed run, source-free DuckDB package replay,
+  durable-receipt resume, and `replay_package_fences_v1_before_destination_mutation_after_v2_publication`.
+  The last test publishes generation two, attempts the retained uncommitted generation-one
+  package, and verifies that no destination table or package receipt/status mutation occurs.
+- All 17 `cdf-package-contract` unit tests plus its build-graph test passed; the three focused
+  `cdf-package` replay-input reconstruction/validation tests passed; the focused project package
+  replay test passed.
+- Strict all-target Clippy passed for `cdf-package-contract`, `cdf-package`, `cdf-state-sqlite`,
+  `cdf-project`, and `cdf-cli` with warnings denied.
 
 ## Review
 

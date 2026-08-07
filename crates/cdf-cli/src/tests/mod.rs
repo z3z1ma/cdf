@@ -409,11 +409,24 @@ fn run_valid_run_resource(
 }
 
 fn create_replay_package_fixture(project: &TestProject) -> PathBuf {
+    let compiled = compile_resource(project, "local.events");
+    assert_eq!(
+        compiled.exit_code, 0,
+        "stderr: {}\nstdout: {}",
+        compiled.stderr, compiled.stdout
+    );
+    let state_path = project.root.join(".cdf/state.db");
+    let authority_state = fs::read(&state_path).unwrap();
     let result = run_valid_run_args(project);
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        result.exit_code, 0,
+        "stderr: {}\nstdout: {}",
+        result.stderr, result.stdout
+    );
     let package_id = run_package_id(&result);
     fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
     remove_state_store(project);
+    fs::write(state_path, authority_state).unwrap();
     project.root.join(".cdf/packages").join(package_id)
 }
 
@@ -549,19 +562,22 @@ fn seed_resume_receipt_before_checkpoint(
     package_dir: &Path,
     run_id: &str,
 ) -> RunId {
-    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let inputs = PackageReader::open(package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap();
+    let target = inputs.destination_commit.target.clone();
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
     let run_id = RunId::new(run_id).unwrap();
+    let context =
+        crate::context::ProjectOperationalContext::load(Some(&project.root), None).unwrap();
+    let execution = context
+        .execution_with_package_schema_authority(&test_execution_services(), &inputs)
+        .unwrap();
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
     ledger.create_run(Some(run_id.clone())).unwrap();
     let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
     let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
-    let target = PackageReader::open(package_dir)
-        .unwrap()
-        .replay_inputs()
-        .unwrap()
-        .destination_commit
-        .target;
-    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
-    let execution = test_execution_services();
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.to_path_buf(),
         destination: ResolvedProjectDestination::new(Box::new(destination), target)
@@ -1082,6 +1098,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new(schema_hash).unwrap(),
         segments: vec![state_segment.clone()],
     };
@@ -2187,6 +2204,7 @@ fn doctor_delta_preimage(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
         segments: vec![segment],
     }
@@ -2488,6 +2506,7 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
             partition_watermarks: Vec::new(),
             late_data_carryover: Vec::new(),
             source_continuation: None,
+            run_schema_authority: None,
             schema_hash: schema_hash.clone(),
             segments: vec![state_segment.clone()],
         })

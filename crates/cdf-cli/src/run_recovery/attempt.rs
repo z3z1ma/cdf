@@ -224,11 +224,15 @@ impl<'a> ResumeAttempt<'a> {
         package: &ResumePackageFacts,
         inputs: &PackageReplayInputs,
     ) -> Result<ResumeReport, CliError> {
-        let mut selected =
-            match self.selected_destination_or_report(&inputs.destination_commit.target)? {
-                Ok(destination) => destination,
-                Err(report) => return Ok(report),
-            };
+        let execution = self
+            .context
+            .execution_with_package_schema_authority(self.execution, inputs)?;
+        let mut selected = match self
+            .selected_destination_or_report(&inputs.destination_commit.target, &execution)?
+        {
+            Ok(destination) => destination,
+            Err(report) => return Ok(report),
+        };
         let destination = selected.take()?;
         let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
             package_dir: package.path.clone(),
@@ -247,11 +251,15 @@ impl<'a> ResumeAttempt<'a> {
         receipt: Receipt,
     ) -> Result<ResumeReport, CliError> {
         let inputs = package.reader.replay_inputs()?;
-        let mut selected =
-            match self.selected_destination_or_report(&inputs.destination_commit.target)? {
-                Ok(destination) => destination,
-                Err(report) => return Ok(report),
-            };
+        let execution = self
+            .context
+            .execution_with_package_schema_authority(self.execution, &inputs)?;
+        let mut selected = match self
+            .selected_destination_or_report(&inputs.destination_commit.target, &execution)?
+        {
+            Ok(destination) => destination,
+            Err(report) => return Ok(report),
+        };
         let destination = selected.take()?;
         let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
             package_dir: package.path.clone(),
@@ -268,13 +276,14 @@ impl<'a> ResumeAttempt<'a> {
     fn selected_destination_or_report(
         &self,
         target: &cdf_kernel::TargetName,
+        execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Result<SelectedDestination, ResumeReport>, CliError> {
         match SelectedDestination::from_context(
             self.destinations,
             self.context,
             "run --resume",
             target,
-            self.execution,
+            execution,
         ) {
             Ok(destination) => Ok(Ok(destination)),
             Err(error) if error.not_supported => {

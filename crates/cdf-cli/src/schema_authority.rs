@@ -238,7 +238,28 @@ pub(crate) fn bind_settlement_services_at(
         authority.generation,
         authority.schema_hash,
     )?;
-    let store = SqliteSchemaAuthorityStore::open_with_authority_domain_and_path_ownership(
+    let store = SqliteSchemaAuthorityStore::open_existing_with_authority_domain_and_path_ownership(
+        state_path,
+        &authority.key.authority_domain_id,
+        ownership,
+    )?;
+    services
+        .with_schema_settlement(
+            Arc::new(store),
+            active_head,
+            DEFAULT_RUN_SCHEMA_SETTLEMENT_PERMIT_MS,
+        )
+        .map_err(Into::into)
+}
+
+pub(crate) fn bind_package_settlement_services_at(
+    state_path: std::path::PathBuf,
+    ownership: cdf_state_sqlite::StateStorePathOwnership,
+    authority: &cdf_package_contract::PackageRunSchemaAuthority,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<cdf_runtime::ExecutionServices, CliError> {
+    let active_head = authority.active_head()?;
+    let store = SqliteSchemaAuthorityStore::open_existing_with_authority_domain_and_path_ownership(
         state_path,
         &authority.key.authority_domain_id,
         ownership,

@@ -933,6 +933,42 @@ impl Drop for ActiveSchemaSettlement {
     }
 }
 
+fn acquire_package_schema_settlement(
+    inputs: &PackageReplayInputs,
+    execution: Option<&ExecutionServices>,
+    hooks: &PackageReplayHooks<'_>,
+) -> Result<Option<ActiveSchemaSettlement>> {
+    let binding = execution.and_then(ExecutionServices::schema_settlement);
+    let Some(authority) = &inputs.run_schema_authority else {
+        if binding.is_some() {
+            return Err(CdfError::contract(
+                "package has no state-backed run schema authority but execution supplied one",
+            ));
+        }
+        return Ok(None);
+    };
+    let binding = binding.ok_or_else(|| {
+        CdfError::contract(
+            "package requires state-backed schema settlement authority before destination mutation",
+        )
+    })?;
+    let expected = authority.active_head()?;
+    if binding.active_head() != &expected {
+        return Err(CdfError::contract(format!(
+            "package requires schema authority generation {} hash {}, but execution prepared generation {} hash {}",
+            expected.generation,
+            expected.schema_hash,
+            binding.active_head().generation,
+            binding.active_head().schema_hash,
+        )));
+    }
+    let run_id = match hooks.schema_settlement_run_id {
+        Some(run_id) => run_id.clone(),
+        None => RunId::new(format!("package-replay-{}", uuid::Uuid::new_v4().simple()))?,
+    };
+    ActiveSchemaSettlement::acquire(binding, &run_id).map(Some)
+}
+
 pub fn replay_package_from_artifacts<Store>(
     request: PackageArtifactReplayRequest<'_, Store>,
 ) -> Result<PackageReplayReport>
@@ -1601,12 +1637,17 @@ where
         .reader()
         .replay_inputs_verified(package.verification())?;
     validate_resolved_destination_target(&destination, &inputs)?;
+    let execution = destination.execution_services().cloned();
+    if let Some(execution) = &execution {
+        destination.bind_execution_services(execution.clone())?;
+    }
     recover_package_with_runtime(
         package,
         destination.runtime_mut(),
         checkpoint_store,
         receipt,
         hooks,
+        execution.as_ref(),
     )
 }
 
@@ -1681,6 +1722,7 @@ where
             checkpoint_store,
             receipt,
             PackageReplayHooks::default(),
+            execution,
         ),
         _ => Err(CdfError::data(format!(
             "drain package {} contains {receipt_count} receipts; one package must have exactly one durable destination settlement",
@@ -1765,19 +1807,10 @@ where
                 },
             )?;
         }
-        if !checkpoint_already_committed {
-            package.reader_mut().update_status(PackageStatus::Loading)?;
-        }
         notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
-        if !checkpoint_already_committed
-            && let Some(binding) = execution.and_then(ExecutionServices::schema_settlement)
-        {
-            let run_id = hooks.schema_settlement_run_id.ok_or_else(|| {
-                CdfError::internal(
-                    "state-backed schema settlement requires the current project run id",
-                )
-            })?;
-            schema_settlement = Some(ActiveSchemaSettlement::acquire(binding, run_id)?);
+        if !checkpoint_already_committed {
+            schema_settlement = acquire_package_schema_settlement(&inputs, execution, &hooks)?;
+            package.reader_mut().update_status(PackageStatus::Loading)?;
         }
 
         let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
@@ -2412,6 +2445,7 @@ pub(crate) fn recover_package_with_runtime<Store>(
     checkpoint_store: &Store,
     receipt: Receipt,
     hooks: PackageReplayHooks<'_>,
+    execution: Option<&ExecutionServices>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -2428,14 +2462,25 @@ where
         &receipt,
         &cdf_runtime::DestinationCommitVerification::Independent,
     )?;
+    let checkpoint = propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
+    let mut schema_settlement = if checkpoint.status == CheckpointStatus::Committed {
+        None
+    } else {
+        acquire_package_schema_settlement(&inputs, execution, &hooks)?
+    };
     record_package_receipt_once(package.reader(), &receipt)?;
     notify_verified_receipt(&receipt, &hooks)?;
 
-    let checkpoint = commit_or_reuse_committed_checkpoint(
-        checkpoint_store,
-        &inputs.state_delta,
-        receipt.clone(),
-    )?;
+    let checkpoint = match schema_settlement.as_mut() {
+        Some(settlement) => {
+            settlement.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?
+        }
+        None => commit_or_reuse_committed_checkpoint(
+            checkpoint_store,
+            &inputs.state_delta,
+            receipt.clone(),
+        )?,
+    };
     let package_status =
         mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
 

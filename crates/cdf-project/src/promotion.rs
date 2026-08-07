@@ -3195,6 +3195,7 @@ mod tests {
             partition_watermarks: Vec::new(),
             late_data_carryover: Vec::new(),
             source_continuation: None,
+            run_schema_authority: None,
             schema_hash: SchemaHash::new("sha256:old-schema").unwrap(),
             segments: Vec::new(),
         };
@@ -3916,6 +3917,7 @@ mod tests {
                 partition_watermarks: Vec::new(),
                 late_data_carryover: Vec::new(),
                 source_continuation: None,
+                run_schema_authority: None,
                 schema_hash: schema_hash.clone(),
                 segments: vec![state_segment.clone()],
             })

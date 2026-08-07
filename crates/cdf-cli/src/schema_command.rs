@@ -259,6 +259,12 @@ fn prepare_resumable_promotion(
     })
 }
 
+type PromotionAuthorityResolution = (
+    SchemaPromotionPlanningAuthority,
+    Vec<cdf_project::ResolvedProjectDestination>,
+    Vec<Option<String>>,
+);
+
 fn resolve_promotion_authority(
     context: &ProjectContext,
     resource: &CompiledResource,
@@ -267,14 +273,7 @@ fn resolve_promotion_authority(
     targets: BTreeSet<(String, String)>,
     execution: &cdf_runtime::ExecutionServices,
     destination_registry: &cdf_runtime::DestinationRegistry,
-) -> Result<
-    (
-        SchemaPromotionPlanningAuthority,
-        Vec<cdf_project::ResolvedProjectDestination>,
-        Vec<Option<String>>,
-    ),
-    CliError,
-> {
+) -> Result<PromotionAuthorityResolution, CliError> {
     let schema_cache = SchemaSnapshotArtifact::new(
         &resource.descriptor().resource_id,
         &version.canonical_schema.to_arrow()?,

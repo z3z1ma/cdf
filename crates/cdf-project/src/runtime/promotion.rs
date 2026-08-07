@@ -1247,6 +1247,7 @@ fn build_correction_package(
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
+        run_schema_authority: None,
         schema_hash: artifact.new_schema_hash.clone(),
         segments: vec![state_segment],
     };

@@ -97,6 +97,25 @@ impl SqliteSchemaAuthorityStore {
         })
     }
 
+    pub fn open_existing_with_authority_domain_and_path_ownership(
+        path: impl AsRef<Path>,
+        authority_domain_id: &LeaseAuthorityDomainId,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let store = Self::open_existing_with_clock_and_path_ownership(
+            path,
+            Arc::new(SystemScopeLeaseClock),
+            ownership,
+        )?;
+        if &store.authority_domain_id != authority_domain_id {
+            return Err(CdfError::contract(format!(
+                "schema authority domain {} does not match state store domain {}",
+                authority_domain_id, store.authority_domain_id
+            )));
+        }
+        Ok(store)
+    }
+
     pub fn open_with_path_ownership(
         path: impl AsRef<Path>,
         ownership: StateStorePathOwnership,

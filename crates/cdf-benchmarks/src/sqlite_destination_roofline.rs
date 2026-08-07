@@ -884,6 +884,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
             merge_keys: Vec::new(),
             schema_hash,
             destination_policy: Default::default(),
+            run_schema_authority: None,
         },
         state,
     ))

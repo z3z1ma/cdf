@@ -539,6 +539,12 @@ pub(crate) fn run_package(
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &package_dir)?;
+    let execution = package
+        .project
+        .execution_with_state_authorities(execution)?;
+    let execution = package
+        .project
+        .execution_with_package_schema_authority(&execution, &package.inputs)?;
     let mut replay_destination = build_replay_destination(
         destinations,
         &package.project,
@@ -547,11 +553,8 @@ pub(crate) fn run_package(
             target: target.as_deref(),
         },
         &package.inputs,
-        execution,
+        &execution,
     )?;
-    let execution = package
-        .project
-        .execution_with_state_authorities(execution)?;
     replay_destination.bind_execution_services(execution)?;
     let package_hash = package.inputs.state_delta.package_hash.clone();
     let state_store_path = package.project.state_store_path()?;

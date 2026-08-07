@@ -768,6 +768,7 @@ fn replay_inputs(
             } else {
                 Default::default()
             },
+            run_schema_authority: None,
         },
         state,
     ))

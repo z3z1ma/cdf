@@ -529,6 +529,7 @@ fn replay_inputs(request: &ParquetCommitRequest) -> PackageReplayInputs {
         merge_keys: Vec::new(),
         schema_hash: request.schema_hash.clone(),
         destination_policy: Default::default(),
+        run_schema_authority: None,
     }
 }
 
