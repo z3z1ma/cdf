@@ -203,7 +203,11 @@ pub(crate) fn expected_counts(plan: &SqliteLoadPlan, stored: &Receipt) -> Result
             cdf_kernel::CdfError::data("SQLite duplicate receipt row count overflowed")
         })
     })?;
-    if stored.counts.rows_written != rows && !plan.segments.is_empty() {
+    let settled = match &stored.counts {
+        CommitCounts::Rows { rows_written, .. } => *rows_written,
+        CommitCounts::KeyedChanges { intent, .. } => intent.total()?,
+    };
+    if settled != rows && !plan.segments.is_empty() {
         return Err(cdf_kernel::CdfError::destination(
             "SQLite duplicate receipt row count contradicts package segments",
         ));

@@ -1340,12 +1340,7 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
             disposition: WriteDisposition::Append,
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
             transaction: None,
-            counts: CommitCounts {
-                rows_written: 2,
-                rows_inserted: Some(2),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(2, Some(2), Some(0), Some(0)),
             schema_hash: SchemaHash::new(&old_hash).unwrap(),
             migrations: Vec::new(),
             committed_at_ms: now_ms_for_test(),

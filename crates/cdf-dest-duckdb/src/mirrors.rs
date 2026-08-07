@@ -246,24 +246,72 @@ fn validate_duckdb_duplicate_counts(stored: &Receipt, segment_acks: &[SegmentAck
     })?;
     let counts = &stored.counts;
     let valid = if segment_acks.is_empty() {
-        counts == &CommitCounts::default()
+        match (&stored.content, counts) {
+            (
+                cdf_kernel::PackageContentAuthority::Rows { .. },
+                CommitCounts::Rows {
+                    rows_written: 0,
+                    rows_inserted: None,
+                    rows_updated: None,
+                    rows_deleted: None,
+                },
+            ) => true,
+            (
+                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. },
+                CommitCounts::KeyedChanges {
+                    intent,
+                    rows_inserted: Some(0),
+                    rows_updated: Some(0),
+                    hard_deletes: None,
+                    soft_deletes: None,
+                    missing_delete_keys: None,
+                    ignored_deletes: None,
+                },
+            ) => *intent == reduction.surviving,
+            _ => false,
+        }
     } else {
-        counts.rows_written == rows
-            && match stored.disposition {
-                WriteDisposition::Append | WriteDisposition::Replace => {
-                    counts.rows_inserted == Some(rows)
-                        && counts.rows_updated == Some(0)
-                        && counts.rows_deleted == Some(0)
-                }
-                WriteDisposition::Merge => counts
-                    .rows_inserted
-                    .zip(counts.rows_updated)
-                    .is_some_and(|(inserted, updated)| {
-                        inserted.checked_add(updated) == Some(rows)
-                            && counts.rows_deleted == Some(0)
-                    }),
-                WriteDisposition::CdcApply => false,
+        match (&stored.disposition, counts) {
+            (
+                WriteDisposition::Append | WriteDisposition::Replace,
+                CommitCounts::Rows {
+                    rows_written,
+                    rows_inserted,
+                    rows_updated,
+                    rows_deleted,
+                },
+            ) => {
+                *rows_written == rows
+                    && *rows_inserted == Some(rows)
+                    && *rows_updated == Some(0)
+                    && *rows_deleted == Some(0)
             }
+            (
+                WriteDisposition::Merge,
+                CommitCounts::KeyedChanges {
+                    intent,
+                    rows_inserted,
+                    rows_updated,
+                    hard_deletes,
+                    soft_deletes,
+                    missing_delete_keys,
+                    ignored_deletes,
+                },
+            ) => {
+                intent.upserts == rows
+                    && intent.deletes == 0
+                    && rows_inserted
+                        .zip(*rows_updated)
+                        .is_some_and(|(inserted, updated)| {
+                            inserted.checked_add(updated) == Some(rows)
+                        })
+                    && hard_deletes.is_none()
+                    && soft_deletes.is_none()
+                    && missing_delete_keys.is_none()
+                    && ignored_deletes.is_none()
+            }
+            _ => false,
+        }
     };
     if valid {
         Ok(())
@@ -365,10 +413,8 @@ fn decode_duckdb_load_row(row: DuckDbLoadEvidenceRow) -> Result<LoadMirrorRow> {
         || receipt.idempotency_token.as_str() != idempotency_token
         || disposition_name(&receipt.disposition) != disposition
         || receipt.schema_hash.as_str() != schema_hash
-        || receipt.counts.rows_written != rows_written
-        || receipt.counts.rows_inserted != rows_inserted
-        || receipt.counts.rows_updated != rows_updated
-        || receipt.counts.rows_deleted != rows_deleted
+        || indexed_counts(&receipt.counts)
+            != (rows_written, rows_inserted, rows_updated, rows_deleted)
         || receipt.segment_acks.len() as u64 != segment_count
         || receipt.migrations != migrations
         || receipt.committed_at_ms != committed_at_ms
@@ -409,6 +455,7 @@ fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
     let receipt = &mutation.receipt;
     let receipt_json = serde_json::to_string(receipt).map_err(json_error)?;
     let migrations_json = serde_json::to_string(&receipt.migrations).map_err(json_error)?;
+    let (rows_written, rows_inserted, rows_updated, rows_deleted) = indexed_counts(&receipt.counts);
     conn.execute(
         "INSERT INTO _cdf_loads \
          (target, idempotency_token, package_hash, destination, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, segment_count, migrations_json, receipt_id, receipt_json, committed_at_ms) \
@@ -420,10 +467,10 @@ fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
             receipt.destination.as_str(),
             disposition_name(&receipt.disposition),
             receipt.schema_hash.as_str(),
-            receipt.counts.rows_written,
-            receipt.counts.rows_inserted,
-            receipt.counts.rows_updated,
-            receipt.counts.rows_deleted,
+            rows_written,
+            rows_inserted,
+            rows_updated,
+            rows_deleted,
             receipt.segment_acks.len() as u64,
             migrations_json,
             receipt.receipt_id.as_str(),
@@ -433,6 +480,30 @@ fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
     )
     .map_err(|error| duckdb_error("insert DuckDB _cdf_loads row", error))?;
     Ok(())
+}
+
+fn indexed_counts(counts: &CommitCounts) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
+    match counts {
+        CommitCounts::Rows {
+            rows_written,
+            rows_inserted,
+            rows_updated,
+            rows_deleted,
+        } => (*rows_written, *rows_inserted, *rows_updated, *rows_deleted),
+        CommitCounts::KeyedChanges {
+            intent,
+            rows_inserted,
+            rows_updated,
+            hard_deletes,
+            soft_deletes,
+            ..
+        } => (
+            intent.upserts,
+            *rows_inserted,
+            *rows_updated,
+            hard_deletes.or(*soft_deletes),
+        ),
+    }
 }
 
 fn insert_segment(conn: &Connection, mutation: &SegmentMirrorMutation) -> Result<()> {

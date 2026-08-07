@@ -829,6 +829,7 @@ pub(super) fn plan_input_for_schema(
         },
         validation_program,
         execution_extent,
+        keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
         segmentation: CanonicalSegmentationPolicy::performance_default(),
         package_id: "pkg-engine-test".to_owned(),
         relational_expression_plan: None,

@@ -785,21 +785,54 @@ fn receipt_details(receipt: &Receipt) -> Result<RunEventDetails> {
         "segment_ack_count".to_owned(),
         RunEventValue::U64(u64_from_usize(receipt.segment_acks.len())?),
     );
-    details.insert(
-        "rows_written".to_owned(),
-        RunEventValue::U64(receipt.counts.rows_written),
-    );
-    if let Some(rows_inserted) = receipt.counts.rows_inserted {
-        details.insert(
-            "rows_inserted".to_owned(),
-            RunEventValue::U64(rows_inserted),
-        );
-    }
-    if let Some(rows_updated) = receipt.counts.rows_updated {
-        details.insert("rows_updated".to_owned(), RunEventValue::U64(rows_updated));
-    }
-    if let Some(rows_deleted) = receipt.counts.rows_deleted {
-        details.insert("rows_deleted".to_owned(), RunEventValue::U64(rows_deleted));
+    match &receipt.counts {
+        cdf_kernel::CommitCounts::Rows {
+            rows_written,
+            rows_inserted,
+            rows_updated,
+            rows_deleted,
+        } => {
+            details.insert("rows_written".to_owned(), RunEventValue::U64(*rows_written));
+            for (name, value) in [
+                ("rows_inserted", rows_inserted),
+                ("rows_updated", rows_updated),
+                ("rows_deleted", rows_deleted),
+            ] {
+                if let Some(value) = value {
+                    details.insert(name.to_owned(), RunEventValue::U64(*value));
+                }
+            }
+        }
+        cdf_kernel::CommitCounts::KeyedChanges {
+            intent,
+            rows_inserted,
+            rows_updated,
+            hard_deletes,
+            soft_deletes,
+            missing_delete_keys,
+            ignored_deletes,
+        } => {
+            details.insert(
+                "upsert_intent".to_owned(),
+                RunEventValue::U64(intent.upserts),
+            );
+            details.insert(
+                "delete_intent".to_owned(),
+                RunEventValue::U64(intent.deletes),
+            );
+            for (name, value) in [
+                ("rows_inserted", rows_inserted),
+                ("rows_updated", rows_updated),
+                ("hard_deletes", hard_deletes),
+                ("soft_deletes", soft_deletes),
+                ("missing_delete_keys", missing_delete_keys),
+                ("ignored_deletes", ignored_deletes),
+            ] {
+                if let Some(value) = value {
+                    details.insert(name.to_owned(), RunEventValue::U64(*value));
+                }
+            }
+        }
     }
     details.insert(
         "migration_count".to_owned(),

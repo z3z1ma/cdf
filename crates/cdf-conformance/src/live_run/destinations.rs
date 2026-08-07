@@ -138,7 +138,10 @@ fn duckdb_row_counts(database_path: &PathBuf, receipt: &Receipt) -> Result<BTree
         ),
         (
             "receipt_rows_written".to_owned(),
-            receipt.counts.rows_written,
+            receipt
+                .counts
+                .row_write_outcome()
+                .expect("DuckDB live-run receipt must report ordinary row outcomes"),
         ),
     ]))
 }
@@ -155,7 +158,10 @@ fn parquet_row_counts(_root: &PathBuf, receipt: &Receipt) -> Result<BTreeMap<Str
         ("transaction_object_count".to_owned(), object_count),
         (
             "receipt_rows_written".to_owned(),
-            receipt.counts.rows_written,
+            receipt
+                .counts
+                .row_write_outcome()
+                .expect("Parquet live-run receipt must report ordinary row outcomes"),
         ),
     ]))
 }
@@ -183,7 +189,10 @@ fn postgres_row_counts(
         ),
         (
             "receipt_rows_written".to_owned(),
-            receipt.counts.rows_written,
+            receipt
+                .counts
+                .row_write_outcome()
+                .expect("Postgres live-run receipt must report ordinary row outcomes"),
         ),
     ]))
 }

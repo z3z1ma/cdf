@@ -430,12 +430,7 @@ impl CommitSession for QuasarCommitSession {
             disposition: self.request.disposition.clone(),
             idempotency_token: self.request.idempotency_token.clone(),
             transaction: None,
-            counts: CommitCounts {
-                rows_written,
-                rows_inserted: Some(rows_written),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0)),
             schema_hash: self.schema_hash,
             migrations: self.plan.migrations,
             committed_at_ms: 1_700_000_000_000,

@@ -26,7 +26,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(report.row_count, 1);
     assert_eq!(report.segment_count, 1);
     assert_eq!(report.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(report.receipt.counts.rows_written, 1);
+    assert_eq!(report.receipt.counts.row_write_outcome(), Some(1));
     assert_eq!(
         report
             .receipt

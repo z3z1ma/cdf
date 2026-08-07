@@ -477,12 +477,7 @@ impl CorrectionCommitSession for PostgresCorrectionSession {
         }
 
         let addressed = self.request.addressed_row_count();
-        let counts = CommitCounts {
-            rows_written: addressed,
-            rows_inserted: Some(0),
-            rows_updated: Some(addressed),
-            rows_deleted: Some(0),
-        };
+        let counts = CommitCounts::rows(addressed, Some(0), Some(addressed), Some(0));
         let xid: String = client
             .query_one(POSTGRES_XID_SQL, &[])
             .map(|row| row.get(0))
@@ -1006,12 +1001,11 @@ fn insert_correction_load_mirror(
         .as_ref()
         .and_then(|metadata| metadata.values.get("xid"))
         .ok_or_else(|| CdfError::internal("Postgres correction receipt missing xid"))?;
-    let rows_written = i64::try_from(receipt.counts.rows_written)
+    let (indexed_written, _, indexed_updated, _) = crate::mirrors::indexed_counts(&receipt.counts);
+    let rows_written = i64::try_from(indexed_written)
         .map_err(|_| CdfError::internal("correction rows_written exceeds BIGINT"))?;
     let rows_inserted = Some(0_i64);
-    let rows_updated = receipt
-        .counts
-        .rows_updated
+    let rows_updated = indexed_updated
         .map(i64::try_from)
         .transpose()
         .map_err(|_| CdfError::internal("correction rows_updated exceeds BIGINT"))?;

@@ -1,9 +1,9 @@
 use std::{collections::BTreeSet, path::Path, sync::Mutex};
 
 use cdf_kernel::{
-    CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, PackageHash, PipelineId,
-    Receipt, ResourceId, Result, RewindReport, RewindRequest, SchemaHash, ScopeKey, SourcePosition,
-    StateDelta,
+    CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
+    CheckpointStore, PackageHash, PipelineId, Receipt, ResourceId, Result, RewindReport,
+    RewindRequest, SchemaHash, ScopeKey, SourcePosition, StateDelta,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -18,7 +18,7 @@ use crate::support::{
 };
 
 pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
-pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 2;
+pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 3;
 const CHECKPOINT_SELECT: &str = "SELECT sequence, checkpoint_id, pipeline_id, resource_id, scope_json, state_version, parent_checkpoint_id, input_position_json, output_position_json, package_hash, schema_hash, receipt_id, status, is_head, created_at_ms, committed_at_ms, delta_json, receipt_json, rewind_target_checkpoint_id FROM cdf_checkpoints";
 pub struct SqliteCheckpointStore {
     conn: Mutex<Connection>,
@@ -552,7 +552,7 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
     }
     ensure_schema_version_table(conn)?;
 
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "
         PRAGMA foreign_keys = ON;
         PRAGMA journal_mode = WAL;
@@ -578,7 +578,7 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
             delta_json TEXT NOT NULL,
             receipt_json TEXT,
             rewind_target_checkpoint_id TEXT,
-            CHECK (state_version = 2),
+            CHECK (state_version = {CHECKPOINT_STATE_VERSION}),
             CHECK (is_head = 0 OR status = 'committed'),
             CHECK ((status = 'committed') = (receipt_id IS NOT NULL AND receipt_json IS NOT NULL AND committed_at_ms IS NOT NULL))
         );
@@ -589,8 +589,8 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS cdf_checkpoints_history
             ON cdf_checkpoints (pipeline_id, resource_id, scope_json, sequence);
-        ",
-    )
+        "
+    ))
     .map_err(sqlite_error)?;
     write_component_schema_version(
         conn,

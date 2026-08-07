@@ -370,8 +370,11 @@ fn finalize_correction(
     let mut session = destination.begin_correction(request.clone(), plan).unwrap();
     session.apply_migrations().unwrap();
     let counts = session.apply_corrections().unwrap();
-    assert_eq!(counts.rows_inserted, Some(request.corrections.len() as u64));
-    assert_eq!(counts.rows_updated, Some(0));
+    assert_eq!(
+        counts.inserted_outcome(),
+        Some(request.corrections.len() as u64)
+    );
+    assert_eq!(counts.updated_outcome(), Some(0));
     session.finalize().unwrap()
 }
 
@@ -1441,10 +1444,10 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
     let correction = correction_request(&built.hash);
     let receipt = finalize_correction(&dest, &correction);
 
-    assert_eq!(receipt.counts.rows_written, 2);
-    assert_eq!(receipt.counts.rows_inserted, Some(2));
-    assert_eq!(receipt.counts.rows_updated, Some(0));
-    assert_eq!(receipt.counts.rows_deleted, Some(0));
+    assert_eq!(receipt.counts.row_write_outcome(), Some(2));
+    assert_eq!(receipt.counts.inserted_outcome(), Some(2));
+    assert_eq!(receipt.counts.updated_outcome(), Some(0));
+    assert_eq!(receipt.counts.row_delete_outcome(), Some(0));
     assert_eq!(receipt.schema_hash.as_str(), "schema-v2");
     assert_eq!(
         receipt
@@ -1869,7 +1872,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
     .unwrap();
 
     assert!(!outcome.duplicate);
-    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    assert_eq!(outcome.receipt.counts.row_write_outcome(), Some(3));
     assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
     assert_eq!(outcome.object_manifest.objects.len(), 1);
     assert_eq!(outcome.object_manifest.objects[0].schema_hash, "schema-v1");
@@ -1977,7 +1980,7 @@ fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
     assert_eq!(receipt.package_hash, commit.commit.package_hash);
     assert_eq!(receipt.schema_hash.as_str(), "schema-v1");
     assert_eq!(receipt.segment_acks.len(), 1);
-    assert_eq!(receipt.counts.rows_written, 2);
+    assert_eq!(receipt.counts.row_write_outcome(), Some(2));
     assert!(dest.verify_receipt(&receipt).unwrap().verified);
 
     let manifest = load_manifest(&dest, manifest_key(&receipt));
@@ -3153,7 +3156,7 @@ fn zero_data_append_and_replace_emit_receipts_without_objects_or_pointer_mutatio
 
         let outcome = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
         assert!(outcome.receipt.segment_acks.is_empty());
-        assert_eq!(outcome.receipt.counts.rows_written, 0);
+        assert_eq!(outcome.receipt.counts.row_write_outcome(), Some(0));
         assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
     }
 

@@ -297,6 +297,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),
+            keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: spec.package_id.clone(),
             relational_expression_plan: resource.relational_expression_plan().cloned(),
@@ -365,11 +366,11 @@ pub fn assert_live_run_matches_expected(
     assert_eq!(destination_row_counts, expected.destination_row_counts);
     assert_eq!(fixture.report.segment_count, expected.segment_count);
     assert_eq!(
-        fixture.report.receipt.counts.rows_written,
-        expected.destination_rows
+        fixture.report.receipt.counts.row_write_outcome(),
+        Some(expected.destination_rows)
     );
     assert_eq!(
-        fixture.report.receipt.counts.rows_inserted,
+        fixture.report.receipt.counts.inserted_outcome(),
         Some(expected.destination_rows)
     );
     assert_eq!(

@@ -147,7 +147,7 @@ fn rest_compile_preview_run_package_checkpoint_conformance() {
     let receipt = &receipts[0];
     assert_eq!(receipt.schema_hash.as_str(), active_schema_hash);
     assert_eq!(receipt.disposition, WriteDisposition::Append);
-    assert_eq!(receipt.counts.rows_written, 2);
+    assert_eq!(receipt.counts.row_write_outcome(), Some(2));
 
     let destination = DuckDbDestination::new(temp.path().join(".cdf/s5.duckdb")).unwrap();
     assert!(destination.verify_receipt(receipt).unwrap().verified);

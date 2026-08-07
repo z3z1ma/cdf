@@ -28,6 +28,7 @@ pub struct EnginePlanInput {
     pub request: ScanRequest,
     pub validation_program: ValidationProgram,
     pub execution_extent: ExecutionExtent,
+    pub keyed_effects: cdf_kernel::KeyedEffectPlanAuthority,
     pub segmentation: crate::CanonicalSegmentationPolicy,
     pub package_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,6 +69,7 @@ pub struct EnginePlan {
     pub write_disposition: WriteDisposition,
     /// Ordered normalized key authority for merge/CDC package effects.
     pub effect_key: Vec<String>,
+    pub keyed_effects: cdf_kernel::KeyedEffectPlanAuthority,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
     pub output_schema: CompiledArrowSchema,

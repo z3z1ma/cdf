@@ -654,12 +654,26 @@ impl DuckDbStagedIngressSession {
         }
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         let committed_at_ms = self.destination.committed_at_ms()?;
+        let counts = match &binding.commit().content {
+            cdf_kernel::PackageContentAuthority::Rows { .. } => CommitCounts::default(),
+            cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. } => {
+                CommitCounts::keyed_changes(
+                    reduction.surviving,
+                    Some(0),
+                    Some(0),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+        };
         let receipt = build_receipt(
             binding.commit(),
             binding.plan(),
             binding.schema_hash(),
             &[],
-            CommitCounts::default(),
+            counts,
             &ReceiptBuildContext {
                 committed_at_ms,
                 duckdb_version: &duckdb_version,
@@ -899,12 +913,12 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             ));
         }
         let counts = match binding.commit().disposition.clone() {
-            WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
-                rows_written: writer.rows_received,
-                rows_inserted: Some(writer.rows_received),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            WriteDisposition::Append | WriteDisposition::Replace => CommitCounts::rows(
+                writer.rows_received,
+                Some(writer.rows_received),
+                Some(0),
+                Some(0),
+            ),
             WriteDisposition::Merge => finalize_merge(
                 &writer.conn,
                 &writer.target,

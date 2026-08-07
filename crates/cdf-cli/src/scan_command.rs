@@ -629,6 +629,7 @@ pub(crate) fn build_engine_plan_for_resource(
         request,
         validation_program,
         execution_extent: source.execution_extent().clone(),
+        keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
         segmentation: segmentation_policy_from_tuning(&args.segmentation)?,
         package_id: run_package_id
             .map(ToOwned::to_owned)

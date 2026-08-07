@@ -354,8 +354,8 @@ impl RunCliReport {
                 .row("rows", humanize_rows(self.row_count))
                 .row("segments", self.segment_count.to_string())
                 .row(
-                    "receipt rows",
-                    humanize_rows(self.receipt.counts.rows_written),
+                    receipt_count_label(&self.receipt.counts),
+                    humanize_rows(receipt_count_value(&self.receipt.counts)),
                 )
                 .row(
                     "receipt segments",
@@ -970,7 +970,10 @@ impl ReplayPackageCliReport {
                     .row("receipt", self.receipt_id.clone())
                     .row("destination", self.receipt.destination_id.clone())
                     .row("target", self.receipt.target.clone())
-                    .row("rows", humanize_rows(self.receipt.counts.rows_written))
+                    .row(
+                        receipt_count_label(&self.receipt.counts),
+                        humanize_rows(receipt_count_value(&self.receipt.counts)),
+                    )
                     .row("segments", self.receipt.segment_ack_count.to_string()),
             )
             .blank_line()
@@ -1085,6 +1088,22 @@ pub(crate) struct RunReceiptReport {
     committed_at_ms: i64,
     segment_ack_count: usize,
     counts: cdf_kernel::CommitCounts,
+}
+
+fn receipt_count_label(counts: &cdf_kernel::CommitCounts) -> &'static str {
+    match counts {
+        cdf_kernel::CommitCounts::Rows { .. } => "receipt rows",
+        cdf_kernel::CommitCounts::KeyedChanges { .. } => "receipt effects",
+    }
+}
+
+fn receipt_count_value(counts: &cdf_kernel::CommitCounts) -> u64 {
+    match counts {
+        cdf_kernel::CommitCounts::Rows { rows_written, .. } => *rows_written,
+        cdf_kernel::CommitCounts::KeyedChanges { intent, .. } => {
+            intent.upserts.saturating_add(intent.deletes)
+        }
+    }
 }
 
 impl RunReceiptReport {
@@ -1455,12 +1474,7 @@ mod tests {
                 disposition: "append".to_owned(),
                 committed_at_ms: 1,
                 segment_ack_count: 1,
-                counts: cdf_kernel::CommitCounts {
-                    rows_written: 2,
-                    rows_inserted: None,
-                    rows_updated: None,
-                    rows_deleted: None,
-                },
+                counts: cdf_kernel::CommitCounts::rows(2, None, None, None),
             },
             receipt_source: RunReceiptSourceReport {
                 kind: "duck_db_commit",

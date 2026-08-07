@@ -244,6 +244,7 @@ fn write_compiled_plan_artifacts(
             },
             validation_program: program,
             execution_extent: ExecutionExtent::bounded(),
+            keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: "conformance-prepared-package".to_owned(),
             relational_expression_plan: None,

@@ -1998,7 +1998,8 @@ fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
                 .as_ref()
                 .expect("committed checkpoint receipt")
                 .counts
-                .rows_written
+                .row_write_outcome()
+                .expect("continuous test receipt must contain ordinary row outcomes")
         })
         .sum::<u64>();
     assert_eq!(committed_rows, 3);

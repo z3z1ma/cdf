@@ -285,8 +285,8 @@ fn live_native_and_atomic_merge_contract() {
         ClickHouseMergeMode::AtomicCopyOnWrite,
         live_batch(&[1, 3], &["new", "three"]),
     );
-    assert_eq!(atomic.counts.rows_inserted, Some(1));
-    assert_eq!(atomic.counts.rows_updated, Some(1));
+    assert_eq!(atomic.counts.inserted_outcome(), Some(1));
+    assert_eq!(atomic.counts.updated_outcome(), Some(1));
     assert_eq!(
         atomic,
         live_commit(
@@ -315,8 +315,8 @@ fn live_native_and_atomic_merge_contract() {
         ClickHouseMergeMode::ReplacingMergeTree,
         live_batch(&[3], &["three"]),
     );
-    assert_eq!(replacement.counts.rows_inserted, Some(1));
-    assert_eq!(replacement.counts.rows_deleted, Some(2));
+    assert_eq!(replacement.counts.inserted_outcome(), Some(1));
+    assert_eq!(replacement.counts.row_delete_outcome(), Some(2));
     assert_eq!(
         replacement,
         live_commit(
@@ -337,8 +337,8 @@ fn live_native_and_atomic_merge_contract() {
         ClickHouseMergeMode::ReplacingMergeTree,
         live_batch(&[], &[]),
     );
-    assert_eq!(zero_replacement.counts.rows_written, 0);
-    assert_eq!(zero_replacement.counts.rows_deleted, Some(1));
+    assert_eq!(zero_replacement.counts.row_write_outcome(), Some(0));
+    assert_eq!(zero_replacement.counts.row_delete_outcome(), Some(1));
     let replacement_verifier = ClickHouseDestination::for_runtime(
         connection.clone(),
         crate::identifier::ClickHouseIdentifier::user("replace_events").unwrap(),
@@ -525,8 +525,8 @@ fn live_native_and_atomic_merge_contract() {
         ClickHouseMergeMode::AtomicCopyOnWrite,
         recovery_batch,
     );
-    assert_eq!(recovered.counts.rows_inserted, Some(1));
-    assert_eq!(recovered.counts.rows_updated, Some(1));
+    assert_eq!(recovered.counts.inserted_outcome(), Some(1));
+    assert_eq!(recovered.counts.updated_outcome(), Some(1));
 
     #[derive(Debug, serde::Deserialize, clickhouse::Row)]
     struct LiveValue {

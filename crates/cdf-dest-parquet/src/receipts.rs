@@ -83,12 +83,12 @@ pub(crate) fn build_receipt(
                 system: "object_store".to_owned(),
                 values: transaction_values,
             }),
-            counts: CommitCounts {
-                rows_written: manifest.total_rows,
-                rows_inserted: Some(manifest.total_rows),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(
+                manifest.total_rows,
+                Some(manifest.total_rows),
+                Some(0),
+                Some(0),
+            ),
             committed_at_ms: manifest.committed_at_ms,
             verify: VerifyClause {
                 kind: "parquet_object_manifest_v1".to_owned(),
@@ -284,10 +284,10 @@ fn validate_manifest_matches_receipt(
             "manifest identity metadata does not match receipt",
         ));
     }
-    if manifest.total_rows != receipt.counts.rows_written {
+    if receipt.counts.row_outcomes().map(|counts| counts.0) != Some(manifest.total_rows) {
         return Err(CdfError::data(format!(
-            "manifest row count {} does not match receipt {}",
-            manifest.total_rows, receipt.counts.rows_written
+            "manifest row count {} does not match receipt row outcomes",
+            manifest.total_rows
         )));
     }
 

@@ -129,12 +129,129 @@ pub struct TransactionMetadata {
     pub values: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommitCounts {
-    pub rows_written: u64,
-    pub rows_inserted: Option<u64>,
-    pub rows_updated: Option<u64>,
-    pub rows_deleted: Option<u64>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommitCounts {
+    Rows {
+        rows_written: u64,
+        rows_inserted: Option<u64>,
+        rows_updated: Option<u64>,
+        rows_deleted: Option<u64>,
+    },
+    KeyedChanges {
+        intent: crate::KeyedEffectCounts,
+        rows_inserted: Option<u64>,
+        rows_updated: Option<u64>,
+        hard_deletes: Option<u64>,
+        soft_deletes: Option<u64>,
+        missing_delete_keys: Option<u64>,
+        ignored_deletes: Option<u64>,
+    },
+}
+
+pub type RowCommitOutcomes = (u64, Option<u64>, Option<u64>, Option<u64>);
+
+impl Default for CommitCounts {
+    fn default() -> Self {
+        Self::Rows {
+            rows_written: 0,
+            rows_inserted: None,
+            rows_updated: None,
+            rows_deleted: None,
+        }
+    }
+}
+
+impl CommitCounts {
+    pub const fn rows(
+        rows_written: u64,
+        rows_inserted: Option<u64>,
+        rows_updated: Option<u64>,
+        rows_deleted: Option<u64>,
+    ) -> Self {
+        Self::Rows {
+            rows_written,
+            rows_inserted,
+            rows_updated,
+            rows_deleted,
+        }
+    }
+
+    pub const fn keyed_changes(
+        intent: crate::KeyedEffectCounts,
+        rows_inserted: Option<u64>,
+        rows_updated: Option<u64>,
+        hard_deletes: Option<u64>,
+        soft_deletes: Option<u64>,
+        missing_delete_keys: Option<u64>,
+        ignored_deletes: Option<u64>,
+    ) -> Self {
+        Self::KeyedChanges {
+            intent,
+            rows_inserted,
+            rows_updated,
+            hard_deletes,
+            soft_deletes,
+            missing_delete_keys,
+            ignored_deletes,
+        }
+    }
+
+    pub const fn row_outcomes(&self) -> Option<RowCommitOutcomes> {
+        match self {
+            Self::Rows {
+                rows_written,
+                rows_inserted,
+                rows_updated,
+                rows_deleted,
+            } => Some((*rows_written, *rows_inserted, *rows_updated, *rows_deleted)),
+            Self::KeyedChanges { .. } => None,
+        }
+    }
+
+    pub const fn keyed_intent(&self) -> Option<crate::KeyedEffectCounts> {
+        match self {
+            Self::Rows { .. } => None,
+            Self::KeyedChanges { intent, .. } => Some(*intent),
+        }
+    }
+
+    pub const fn row_write_outcome(&self) -> Option<u64> {
+        match self {
+            Self::Rows { rows_written, .. } => Some(*rows_written),
+            Self::KeyedChanges { .. } => None,
+        }
+    }
+
+    pub const fn inserted_outcome(&self) -> Option<u64> {
+        match self {
+            Self::Rows { rows_inserted, .. } | Self::KeyedChanges { rows_inserted, .. } => {
+                *rows_inserted
+            }
+        }
+    }
+
+    pub const fn updated_outcome(&self) -> Option<u64> {
+        match self {
+            Self::Rows { rows_updated, .. } | Self::KeyedChanges { rows_updated, .. } => {
+                *rows_updated
+            }
+        }
+    }
+
+    pub const fn row_delete_outcome(&self) -> Option<u64> {
+        match self {
+            Self::Rows { rows_deleted, .. } => *rows_deleted,
+            Self::KeyedChanges { .. } => None,
+        }
+    }
+
+    pub const fn settled_effect_count(&self) -> Option<u64> {
+        match self {
+            Self::Rows { rows_written, .. } => Some(*rows_written),
+            Self::KeyedChanges { intent, .. } => intent.upserts.checked_add(intent.deletes),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

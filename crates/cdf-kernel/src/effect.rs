@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::{CdfError, Result, SchemaHash};
 
@@ -27,7 +28,7 @@ pub enum PackageContentAuthority {
         upsert_schema_hash: SchemaHash,
         delete_schema_hash: SchemaHash,
         key: KeyAuthority,
-        reduction: KeyedEffectReductionAuthority,
+        reduction: Box<KeyedEffectReductionAuthority>,
         deletion_capture: DeletionCaptureAuthority,
         delete_application: DeleteApplicationAuthority,
     },
@@ -112,12 +113,12 @@ impl PackageContentAuthority {
                 }
             }
         }
-        if let Self::KeyedChanges { reduction, .. } = self {
-            if upserts != reduction.surviving.upserts || deletes != reduction.surviving.deletes {
-                return Err(CdfError::data(
-                    "keyed-change segment row counts do not match surviving effect authority",
-                ));
-            }
+        if let Self::KeyedChanges { reduction, .. } = self
+            && (upserts != reduction.surviving.upserts || deletes != reduction.surviving.deletes)
+        {
+            return Err(CdfError::data(
+                "keyed-change segment row counts do not match surviving effect authority",
+            ));
         }
         Ok(())
     }
@@ -215,7 +216,7 @@ impl KeyedEffectReductionAuthority {
             || self.provenance_format != "parquet"
             || self.provenance_version == 0
             || surviving > input
-            || input.saturating_sub(surviving) != self.duplicate_key_count
+            || self.duplicate_key_count > surviving
         {
             return Err(CdfError::data(
                 "keyed effect reduction counts or provenance authority are inconsistent",
@@ -319,6 +320,45 @@ pub enum DeleteApplicationPolicy {
     Soft { marker_field: String },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyedEffectPlanAuthority {
+    pub deletion_capture: DeletionCaptureAuthority,
+    pub delete_application: DeleteApplicationAuthority,
+}
+
+impl KeyedEffectPlanAuthority {
+    pub fn deletes_unsupported() -> Self {
+        Self {
+            deletion_capture: DeletionCaptureAuthority::unsupported(format!(
+                "sha256:{:x}",
+                sha2::Sha256::digest(b"cdf-source-deletion-capture-unsupported-v1")
+            )),
+            delete_application: DeleteApplicationAuthority::NotApplicable,
+        }
+    }
+
+    pub fn validate_for_disposition(&self, disposition: &crate::WriteDisposition) -> Result<()> {
+        self.deletion_capture.validate()?;
+        self.delete_application.validate(&self.deletion_capture)?;
+        match disposition {
+            crate::WriteDisposition::Append | crate::WriteDisposition::Replace
+                if self.deletion_capture.support != DeletionCaptureSupport::Unsupported =>
+            {
+                Err(CdfError::contract(
+                    "append and replace cannot bind a delete-capable source plan",
+                ))
+            }
+            crate::WriteDisposition::CdcApply if !self.deletion_capture.enabled => {
+                Err(CdfError::contract(
+                    "cdc_apply requires enabled source deletion capture and an explicit delete application policy",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -342,7 +382,7 @@ mod tests {
                 encoding: DEDUP_KEY_ENCODING_VERSION.to_owned(),
                 schema_hash: key_hash,
             },
-            reduction: KeyedEffectReductionAuthority {
+            reduction: Box::new(KeyedEffectReductionAuthority {
                 version: KEYED_EFFECT_AUTHORITY_VERSION,
                 winner: KeyedEffectWinnerPolicy::Last,
                 input_order: KeyedEffectInputOrder::CanonicalPackageRows { version: 1 },
@@ -351,7 +391,7 @@ mod tests {
                 surviving: KeyedEffectCounts { upserts, deletes },
                 provenance_format: "parquet".to_owned(),
                 provenance_version: 1,
-            },
+            }),
             deletion_capture: DeletionCaptureAuthority {
                 support: DeletionCaptureSupport::Optional,
                 enabled: true,

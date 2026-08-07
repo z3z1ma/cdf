@@ -940,10 +940,13 @@ impl DestinationCorrectionCommitPlan {
         }
         match request.strategy() {
             CorrectionStrategy::InPlaceUpdate => {
-                if receipt.counts.rows_written != expected.addressed_rows
-                    || receipt.counts.rows_updated != Some(expected.addressed_rows)
-                    || receipt.counts.rows_inserted != Some(0)
-                    || receipt.counts.rows_deleted != Some(0)
+                if receipt.counts.row_outcomes()
+                    != Some((
+                        expected.addressed_rows,
+                        Some(0),
+                        Some(expected.addressed_rows),
+                        Some(0),
+                    ))
                 {
                     return Err(CdfError::destination(
                         "destination correction receipt counts do not match addressed updates",
@@ -951,10 +954,13 @@ impl DestinationCorrectionCommitPlan {
                 }
             }
             CorrectionStrategy::CorrectionSidecar => {
-                if receipt.counts.rows_written != expected.correction_count
-                    || receipt.counts.rows_inserted != Some(expected.correction_count)
-                    || receipt.counts.rows_updated != Some(0)
-                    || receipt.counts.rows_deleted != Some(0)
+                if receipt.counts.row_outcomes()
+                    != Some((
+                        expected.correction_count,
+                        Some(expected.correction_count),
+                        Some(0),
+                        Some(0),
+                    ))
                 {
                     return Err(CdfError::destination(
                         "destination correction receipt counts do not match immutable sidecar operations",

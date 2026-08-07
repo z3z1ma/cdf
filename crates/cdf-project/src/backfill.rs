@@ -105,6 +105,7 @@ pub fn plan_backfill(
                 request: scan_request,
                 validation_program: validation_program.clone(),
                 execution_extent: ExecutionExtent::bounded(),
+                keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
                 segmentation: request.segmentation.clone(),
                 package_id: package_id.clone(),
                 relational_expression_plan: None,

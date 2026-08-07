@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap},
+    collections::{BTreeMap, BinaryHeap, HashMap},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -8,12 +8,13 @@ use std::{
 };
 
 use cdf_contract::DedupKeepProgram;
-use cdf_kernel::{CdfError, Result, SourcePosition};
+use cdf_kernel::{CdfError, PackageSegmentKind, Result, SourcePosition};
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest};
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 
 const DEFAULT_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const MERGE_FAN_IN: u64 = 32;
+const EFFECT_MERGE_FAN_IN: usize = 4;
 const MAX_KEY_BYTES: usize = 32 * 1024 * 1024;
 const FAST_PATH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -32,30 +33,604 @@ impl<T> MutexFailStop<T> for Mutex<T> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PayloadMetadata {
+    kind: PackageSegmentKind,
     partition_ordinal: u64,
     output_position: Option<SourcePosition>,
 }
 
 pub(crate) struct DedupPayload {
+    pub kind: PackageSegmentKind,
     pub partition_ordinal: u64,
     pub output_position: Option<SourcePosition>,
     pub batch: arrow_array::RecordBatch,
+    pub keys: Vec<Vec<u8>>,
 }
 
 pub(crate) struct DedupPayloadSpool {
     owner: Arc<ScratchOwner>,
     reservation: Arc<Mutex<SpillReservation>>,
-    writer: Option<arrow_ipc::writer::StreamWriter<BudgetedSpillFile>>,
+    writers: BTreeMap<PackageSegmentKind, arrow_ipc::writer::StreamWriter<BudgetedSpillFile>>,
     metadata: BufWriter<BudgetedSpillFile>,
-    schema: Option<arrow_schema::SchemaRef>,
+    keys: BufWriter<BudgetedSpillFile>,
+    schemas: BTreeMap<PackageSegmentKind, arrow_schema::SchemaRef>,
+    input_rows: u64,
     pub input_bytes: u64,
 }
 
 pub(crate) struct DedupPayloadReader {
     _owner: Arc<ScratchOwner>,
     _reservation: Arc<Mutex<SpillReservation>>,
-    reader: arrow_ipc::reader::StreamReader<BufReader<File>>,
+    readers: BTreeMap<PackageSegmentKind, arrow_ipc::reader::StreamReader<BufReader<File>>>,
     metadata: BufReader<File>,
+    keys: KeyReader,
+    next_ordinal: u64,
+}
+
+pub(crate) struct EffectSortSpool {
+    owner: Arc<ScratchOwner>,
+    reservation: Arc<Mutex<SpillReservation>>,
+    memory: Arc<dyn MemoryCoordinator>,
+    runs: BTreeMap<PackageSegmentKind, Vec<EffectRun>>,
+    schemas: BTreeMap<PackageSegmentKind, arrow_schema::SchemaRef>,
+    next_run: u64,
+    terminal_position: Option<SourcePosition>,
+}
+
+pub(crate) struct EffectSortReader {
+    _owner: Arc<ScratchOwner>,
+    _reservation: Arc<Mutex<SpillReservation>>,
+    families: std::collections::VecDeque<(PackageSegmentKind, EffectRunReader)>,
+    terminal_position: Option<SourcePosition>,
+    previous_key: Option<Vec<u8>>,
+}
+
+pub(crate) struct EffectSortedBatch {
+    pub kind: PackageSegmentKind,
+    pub batch: arrow_array::RecordBatch,
+    pub output_position: Option<SourcePosition>,
+}
+
+#[derive(Clone)]
+struct EffectRun {
+    arrow: PathBuf,
+    keys: PathBuf,
+    maximum_batch_bytes: u64,
+}
+
+struct EffectRunReader {
+    batches: arrow_ipc::reader::StreamReader<BufReader<File>>,
+    keys: KeyReader,
+    current_batch: Option<arrow_array::RecordBatch>,
+    next_row: usize,
+}
+
+struct EffectMergeRow {
+    key: Vec<u8>,
+    batch: arrow_array::RecordBatch,
+    reader: usize,
+    last_in_batch: bool,
+}
+
+impl PartialEq for EffectMergeRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.reader == other.reader
+    }
+}
+
+impl Eq for EffectMergeRow {}
+
+impl Ord for EffectMergeRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then(other.reader.cmp(&self.reader))
+    }
+}
+
+impl PartialOrd for EffectMergeRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl EffectSortSpool {
+    pub fn create(
+        root: impl AsRef<Path>,
+        budget: Arc<dyn SpillBudgetCoordinator>,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir(&root)
+            .map_err(|error| io_error("create effect-sort scratch", &root, error))?;
+        set_owner_only(&root)?;
+        let owner = Arc::new(ScratchOwner { root });
+        let reservation = Arc::new(Mutex::new(budget.try_reserve(1)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "keyed-effect ordering requires scratch bytes but the shared {}-byte spill budget is exhausted",
+                budget.snapshot().budget_bytes
+            ))
+        })?));
+        Ok(Self {
+            owner,
+            reservation,
+            memory,
+            runs: BTreeMap::new(),
+            schemas: BTreeMap::new(),
+            next_run: 0,
+            terminal_position: None,
+        })
+    }
+
+    pub fn push(
+        &mut self,
+        kind: PackageSegmentKind,
+        output_position: Option<SourcePosition>,
+        batch: arrow_array::RecordBatch,
+        keys: Vec<Vec<u8>>,
+    ) -> Result<()> {
+        if !matches!(
+            kind,
+            PackageSegmentKind::Upsert | PackageSegmentKind::Delete
+        ) {
+            return Err(CdfError::internal(
+                "canonical keyed-effect ordering received an ordinary row batch",
+            ));
+        }
+        if batch.num_rows() == 0 || batch.num_rows() != keys.len() {
+            return Err(CdfError::internal(
+                "canonical keyed-effect sort batch and key counts are inconsistent",
+            ));
+        }
+        match self.schemas.get(&kind) {
+            Some(schema) if schema.as_ref() != batch.schema().as_ref() => {
+                return Err(CdfError::data(
+                    "one keyed-effect family changed Arrow schema during canonical ordering",
+                ));
+            }
+            Some(_) => {}
+            None => {
+                self.schemas.insert(kind, batch.schema());
+            }
+        }
+        let retained = u64::try_from(batch.get_array_memory_size())
+            .map_err(|_| CdfError::data("keyed-effect sort batch bytes exceed u64"))?;
+        let working_set = retained
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add((keys.len() as u64).saturating_mul(16)))
+            .ok_or_else(|| CdfError::data("keyed-effect sort working set overflowed u64"))?
+            .max(1);
+        let request = ReservationRequest::new(
+            ConsumerKey::new("keyed-effect-run-sort", MemoryClass::Validation)?,
+            working_set,
+        )?
+        .as_minimum_working_set();
+        let _lease = self.memory.try_reserve(&request)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "canonical keyed-effect ordering requires {working_set} bytes for one decoded source batch; reduce source batch size or raise the memory budget"
+            ))
+        })?;
+
+        let mut order = (0..keys.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| keys[*left].cmp(&keys[*right]).then(left.cmp(right)));
+        let indices = order
+            .iter()
+            .map(|index| {
+                u32::try_from(*index)
+                    .map_err(|_| CdfError::data("keyed-effect sort row index exceeds u32"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let indices = arrow_array::UInt32Array::from(indices);
+        let columns = batch
+            .columns()
+            .iter()
+            .map(|column| {
+                arrow_select::take::take(column.as_ref(), &indices, None).map_err(CdfError::from)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sorted =
+            arrow_array::RecordBatch::try_new(batch.schema(), columns).map_err(CdfError::from)?;
+        let sorted_keys = order
+            .into_iter()
+            .map(|index| keys[index].clone())
+            .collect::<Vec<_>>();
+        let mut run = self.new_run(kind, 0, self.next_run)?;
+        self.next_run = self
+            .next_run
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("keyed-effect run ordinal overflowed u64"))?;
+        run.maximum_batch_bytes = write_effect_run(
+            &run,
+            Arc::clone(&self.reservation),
+            batch.schema().as_ref(),
+            std::iter::once((sorted_keys, sorted)),
+        )?;
+        self.runs.entry(kind).or_default().push(run);
+        if output_position.is_some() {
+            self.terminal_position = output_position;
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Option<EffectSortReader>> {
+        if self.runs.values().all(Vec::is_empty) {
+            return Ok(None);
+        }
+        let mut families = std::collections::VecDeque::new();
+        for kind in [PackageSegmentKind::Upsert, PackageSegmentKind::Delete] {
+            let Some(mut runs) = self.runs.remove(&kind) else {
+                continue;
+            };
+            let schema = self.schemas.get(&kind).ok_or_else(|| {
+                CdfError::internal("keyed-effect sort family omitted its Arrow schema")
+            })?;
+            let mut level = 1_u32;
+            while runs.len() > 1 {
+                let mut next = Vec::with_capacity(runs.len().div_ceil(EFFECT_MERGE_FAN_IN));
+                for group in runs.chunks(EFFECT_MERGE_FAN_IN) {
+                    let mut output = self.new_run(kind, level, self.next_run)?;
+                    self.next_run = self
+                        .next_run
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("keyed-effect run ordinal overflowed u64"))?;
+                    output.maximum_batch_bytes = merge_effect_runs(
+                        group,
+                        &output,
+                        schema.as_ref(),
+                        Arc::clone(&self.reservation),
+                        Arc::clone(&self.memory),
+                    )?;
+                    for input in group {
+                        remove_effect_run(input, &self.reservation)?;
+                    }
+                    next.push(output);
+                }
+                runs = next;
+                level = level
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("keyed-effect merge level overflowed u32"))?;
+            }
+            let run = runs
+                .pop()
+                .ok_or_else(|| CdfError::internal("keyed-effect sort family lost its final run"))?;
+            families.push_back((kind, EffectRunReader::open(&run)?));
+        }
+        Ok(Some(EffectSortReader {
+            _owner: Arc::clone(&self.owner),
+            _reservation: Arc::clone(&self.reservation),
+            families,
+            terminal_position: self.terminal_position,
+            previous_key: None,
+        }))
+    }
+
+    fn new_run(&self, kind: PackageSegmentKind, level: u32, ordinal: u64) -> Result<EffectRun> {
+        let family = match kind {
+            PackageSegmentKind::Upsert => "upsert",
+            PackageSegmentKind::Delete => "delete",
+            PackageSegmentKind::Row => {
+                return Err(CdfError::internal(
+                    "ordinary rows cannot create an effect sort run",
+                ));
+            }
+        };
+        let stem = format!("{family}-l{level:03}-r{ordinal:012}");
+        Ok(EffectRun {
+            arrow: self.owner.root.join(format!("{stem}.arrow")),
+            keys: self.owner.root.join(format!("{stem}.keys")),
+            maximum_batch_bytes: 0,
+        })
+    }
+}
+
+impl EffectSortReader {
+    pub fn next(&mut self) -> Result<Option<EffectSortedBatch>> {
+        loop {
+            let Some((kind, reader)) = self.families.front_mut() else {
+                return Ok(None);
+            };
+            let Some(batch) = reader
+                .batches
+                .next()
+                .transpose()
+                .map_err(|error| scratch_arrow_error("read keyed-effect sort run", error))?
+            else {
+                if reader.keys.next()?.is_some() {
+                    return Err(CdfError::internal(
+                        "keyed-effect sort run contains excess encoded keys",
+                    ));
+                }
+                self.families.pop_front();
+                self.previous_key = None;
+                continue;
+            };
+            for _ in 0..batch.num_rows() {
+                let key = reader.keys.next()?.ok_or_else(|| {
+                    CdfError::internal("keyed-effect sort run ended its key stream early")
+                })?;
+                if self
+                    .previous_key
+                    .as_ref()
+                    .is_some_and(|previous| previous >= &key.key)
+                {
+                    return Err(CdfError::internal(
+                        "canonical keyed-effect run is not strictly exact-key sorted",
+                    ));
+                }
+                self.previous_key = Some(key.key);
+            }
+            return Ok(Some(EffectSortedBatch {
+                kind: *kind,
+                batch,
+                output_position: self.terminal_position.clone(),
+            }));
+        }
+    }
+}
+
+impl EffectRunReader {
+    fn open(run: &EffectRun) -> Result<Self> {
+        Ok(Self {
+            batches: arrow_ipc::reader::StreamReader::try_new(
+                BufReader::new(File::open(&run.arrow).map_err(|error| {
+                    scratch_read_io_error("open keyed-effect Arrow run", &run.arrow, error)
+                })?),
+                None,
+            )
+            .map_err(|error| scratch_arrow_error("open keyed-effect Arrow run", error))?,
+            keys: KeyReader::open(&run.keys)?,
+            current_batch: None,
+            next_row: 0,
+        })
+    }
+
+    fn next_row(&mut self) -> Result<Option<(Vec<u8>, arrow_array::RecordBatch, bool)>> {
+        if self
+            .current_batch
+            .as_ref()
+            .is_none_or(|batch| self.next_row == batch.num_rows())
+        {
+            self.current_batch = self
+                .batches
+                .next()
+                .transpose()
+                .map_err(|error| scratch_arrow_error("read keyed-effect merge run", error))?;
+            self.next_row = 0;
+            let Some(batch) = self.current_batch.as_ref() else {
+                if self.keys.next()?.is_some() {
+                    return Err(CdfError::internal(
+                        "keyed-effect merge run contains excess encoded keys",
+                    ));
+                }
+                return Ok(None);
+            };
+            if batch.num_rows() == 0 {
+                return Err(CdfError::internal(
+                    "keyed-effect merge run contains an empty Arrow batch",
+                ));
+            }
+        }
+        let key = self.keys.next()?.ok_or_else(|| {
+            CdfError::internal("keyed-effect merge run ended its key stream early")
+        })?;
+        let batch = self
+            .current_batch
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("keyed-effect merge batch disappeared"))?
+            .slice(self.next_row, 1);
+        self.next_row += 1;
+        let last_in_batch = self
+            .current_batch
+            .as_ref()
+            .is_some_and(|current| self.next_row == current.num_rows());
+        Ok(Some((key.key, batch, last_in_batch)))
+    }
+}
+
+fn write_effect_run(
+    run: &EffectRun,
+    reservation: Arc<Mutex<SpillReservation>>,
+    schema: &arrow_schema::Schema,
+    batches: impl IntoIterator<Item = (Vec<Vec<u8>>, arrow_array::RecordBatch)>,
+) -> Result<u64> {
+    let mut arrow = arrow_ipc::writer::StreamWriter::try_new(
+        BudgetedSpillFile::create(run.arrow.clone(), Arc::clone(&reservation))?,
+        schema,
+    )
+    .map_err(CdfError::from)?;
+    let mut keys = BufWriter::new(BudgetedSpillFile::create(
+        run.keys.clone(),
+        Arc::clone(&reservation),
+    )?);
+    let mut ordinal = 0_u64;
+    let mut maximum_batch_bytes = 0_u64;
+    for (batch_keys, batch) in batches {
+        if batch_keys.len() != batch.num_rows() {
+            return Err(CdfError::internal(
+                "keyed-effect run batch and key counts differ",
+            ));
+        }
+        arrow
+            .write(&batch)
+            .map_err(|error| scratch_arrow_error("write keyed-effect Arrow run", error))?;
+        maximum_batch_bytes = maximum_batch_bytes.max(
+            u64::try_from(batch.get_array_memory_size())
+                .map_err(|_| CdfError::data("keyed-effect run batch bytes exceed u64"))?,
+        );
+        for key in batch_keys {
+            write_key_record(&mut keys, &KeyRecord { key, ordinal })?;
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("keyed-effect run row count overflowed u64"))?;
+        }
+    }
+    arrow
+        .finish()
+        .map_err(|error| scratch_arrow_error("finish keyed-effect Arrow run", error))?;
+    keys.flush()
+        .map_err(|error| io_error("flush keyed-effect key run", &run.keys, error))?;
+    Ok(maximum_batch_bytes)
+}
+
+fn merge_effect_runs(
+    inputs: &[EffectRun],
+    output: &EffectRun,
+    schema: &arrow_schema::Schema,
+    reservation: Arc<Mutex<SpillReservation>>,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<u64> {
+    let input_bytes = inputs.iter().try_fold(0_u64, |total, run| {
+        total
+            .checked_add(run.maximum_batch_bytes)
+            .ok_or_else(|| CdfError::data("keyed-effect merge working set overflowed u64"))
+    })?;
+    let output_bytes = input_bytes;
+    let working_set = input_bytes
+        .checked_add(output_bytes)
+        .ok_or_else(|| CdfError::data("keyed-effect merge working set overflowed u64"))?
+        .max(1);
+    let request = ReservationRequest::new(
+        ConsumerKey::new("keyed-effect-run-merge", MemoryClass::Validation)?,
+        working_set,
+    )?
+    .as_minimum_working_set();
+    let _lease = memory.try_reserve(&request)?.ok_or_else(|| {
+        CdfError::data(format!(
+            "canonical keyed-effect merge requires {working_set} bytes for its bounded fan-in; reduce source batch size or raise the memory budget"
+        ))
+    })?;
+    let schema_ref = Arc::new(schema.clone());
+    let mut readers = inputs
+        .iter()
+        .map(EffectRunReader::open)
+        .collect::<Result<Vec<_>>>()?;
+    let mut heap = BinaryHeap::new();
+    for (reader, input) in readers.iter_mut().enumerate() {
+        if let Some((key, batch, last_in_batch)) = input.next_row()? {
+            heap.push(EffectMergeRow {
+                key,
+                batch,
+                reader,
+                last_in_batch,
+            });
+        }
+    }
+    let mut output_batches = Vec::new();
+    let mut output_keys = Vec::new();
+    let mut arrow = arrow_ipc::writer::StreamWriter::try_new(
+        BudgetedSpillFile::create(output.arrow.clone(), Arc::clone(&reservation))?,
+        schema,
+    )
+    .map_err(CdfError::from)?;
+    let mut keys = BufWriter::new(BudgetedSpillFile::create(
+        output.keys.clone(),
+        Arc::clone(&reservation),
+    )?);
+    let mut ordinal = 0_u64;
+    let mut maximum_batch_bytes = 0_u64;
+    let mut previous = None::<Vec<u8>>;
+    while let Some(item) = heap.pop() {
+        if previous.as_ref().is_some_and(|key| key >= &item.key) {
+            return Err(CdfError::internal(
+                "keyed-effect merge inputs are not globally unique and sorted",
+            ));
+        }
+        previous = Some(item.key.clone());
+        output_keys.push(item.key);
+        output_batches.push(item.batch);
+        if output_batches.len() == 4_096 || item.last_in_batch {
+            flush_effect_merge_output(
+                &schema_ref,
+                &mut output_batches,
+                &mut output_keys,
+                &mut arrow,
+                &mut keys,
+                &mut ordinal,
+                &mut maximum_batch_bytes,
+            )?;
+        }
+        if let Some((key, batch, last_in_batch)) = readers[item.reader].next_row()? {
+            heap.push(EffectMergeRow {
+                key,
+                batch,
+                reader: item.reader,
+                last_in_batch,
+            });
+        }
+    }
+    flush_effect_merge_output(
+        &schema_ref,
+        &mut output_batches,
+        &mut output_keys,
+        &mut arrow,
+        &mut keys,
+        &mut ordinal,
+        &mut maximum_batch_bytes,
+    )?;
+    arrow
+        .finish()
+        .map_err(|error| scratch_arrow_error("finish merged keyed-effect run", error))?;
+    keys.flush()
+        .map_err(|error| io_error("flush merged keyed-effect key run", &output.keys, error))?;
+    Ok(maximum_batch_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_effect_merge_output(
+    schema: &arrow_schema::SchemaRef,
+    batches: &mut Vec<arrow_array::RecordBatch>,
+    batch_keys: &mut Vec<Vec<u8>>,
+    arrow: &mut arrow_ipc::writer::StreamWriter<BudgetedSpillFile>,
+    keys: &mut BufWriter<BudgetedSpillFile>,
+    ordinal: &mut u64,
+    maximum_batch_bytes: &mut u64,
+) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+    let batch =
+        arrow_select::concat::concat_batches(schema, batches.iter()).map_err(CdfError::from)?;
+    *maximum_batch_bytes = (*maximum_batch_bytes).max(
+        u64::try_from(batch.get_array_memory_size())
+            .map_err(|_| CdfError::data("merged effect batch bytes exceed u64"))?,
+    );
+    arrow
+        .write(&batch)
+        .map_err(|error| scratch_arrow_error("write merged keyed-effect run", error))?;
+    for key in batch_keys.drain(..) {
+        write_key_record(
+            keys,
+            &KeyRecord {
+                key,
+                ordinal: *ordinal,
+            },
+        )?;
+        *ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("merged keyed-effect row count overflowed u64"))?;
+    }
+    batches.clear();
+    Ok(())
+}
+
+fn remove_effect_run(run: &EffectRun, reservation: &Arc<Mutex<SpillReservation>>) -> Result<()> {
+    let bytes = [&run.arrow, &run.keys]
+        .into_iter()
+        .try_fold(0_u64, |total, path| {
+            total
+                .checked_add(
+                    fs::metadata(path)
+                        .map_err(|error| io_error("stat consumed keyed-effect run", path, error))?
+                        .len(),
+                )
+                .ok_or_else(|| CdfError::data("keyed-effect run byte count overflowed u64"))
+        })?;
+    for path in [&run.arrow, &run.keys] {
+        fs::remove_file(path)
+            .map_err(|error| io_error("remove consumed keyed-effect run", path, error))?;
+    }
+    reservation.lock_fail_stop().shrink(bytes);
+    Ok(())
 }
 
 impl DedupPayloadSpool {
@@ -76,34 +651,48 @@ impl DedupPayloadSpool {
             root.join("payload-metadata.jsonl"),
             Arc::clone(&reservation),
         )?);
+        let keys = BufWriter::new(BudgetedSpillFile::create(
+            root.join("payload-keys.bin"),
+            Arc::clone(&reservation),
+        )?);
         Ok(Self {
             owner,
             reservation,
-            writer: None,
+            writers: BTreeMap::new(),
             metadata,
-            schema: None,
+            keys,
+            schemas: BTreeMap::new(),
+            input_rows: 0,
             input_bytes: 0,
         })
     }
 
     pub fn push(
         &mut self,
+        kind: PackageSegmentKind,
         partition_ordinal: u64,
         output_position: Option<SourcePosition>,
+        keys: &[Vec<u8>],
         batch: &arrow_array::RecordBatch,
     ) -> Result<()> {
-        if let Some(schema) = &self.schema {
+        if keys.len() != batch.num_rows() {
+            return Err(CdfError::internal(
+                "dedup payload key count does not match its Arrow row count",
+            ));
+        }
+        if let Some(schema) = self.schemas.get(&kind) {
             if schema.as_ref() != batch.schema().as_ref() {
                 return Err(CdfError::data(
-                    "dedup payload batches must share the compiled output schema",
+                    "dedup payload batches in one effect family must share one schema",
                 ));
             }
         } else {
-            self.schema = Some(batch.schema());
-            self.writer = Some(
+            self.schemas.insert(kind, batch.schema());
+            self.writers.insert(
+                kind,
                 arrow_ipc::writer::StreamWriter::try_new(
                     BudgetedSpillFile::create(
-                        self.owner.root.join("payload.arrow"),
+                        self.owner.root.join(payload_path(kind)),
                         Arc::clone(&self.reservation),
                     )?,
                     batch.schema().as_ref(),
@@ -111,12 +700,13 @@ impl DedupPayloadSpool {
                 .map_err(CdfError::from)?,
             );
         }
-        self.writer
-            .as_mut()
+        self.writers
+            .get_mut(&kind)
             .ok_or_else(|| CdfError::internal("dedup payload writer was not initialized"))?
             .write(batch)
             .map_err(|error| scratch_arrow_error("write dedup payload", error))?;
         let mut metadata = serde_json::to_vec(&PayloadMetadata {
+            kind,
             partition_ordinal,
             output_position,
         })
@@ -127,6 +717,19 @@ impl DedupPayloadSpool {
         self.metadata
             .write_all(&metadata)
             .map_err(|error| io_error("write dedup payload metadata", &self.owner.root, error))?;
+        for key in keys {
+            write_key_record(
+                &mut self.keys,
+                &KeyRecord {
+                    key: key.clone(),
+                    ordinal: self.input_rows,
+                },
+            )?;
+            self.input_rows = self
+                .input_rows
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("dedup payload row count overflowed u64"))?;
+        }
         self.input_bytes = self
             .input_bytes
             .saturating_add(batch.get_array_memory_size() as u64);
@@ -134,56 +737,63 @@ impl DedupPayloadSpool {
     }
 
     pub fn finish(mut self) -> Result<Option<DedupPayloadReader>> {
-        let Some(mut writer) = self.writer.take() else {
+        if self.writers.is_empty() {
             return Ok(None);
-        };
-        writer
-            .finish()
-            .map_err(|error| scratch_arrow_error("finish dedup payload", error))?;
-        drop(writer);
+        }
+        for writer in self.writers.values_mut() {
+            writer
+                .finish()
+                .map_err(|error| scratch_arrow_error("finish dedup payload", error))?;
+        }
+        self.writers.clear();
         self.metadata
             .flush()
             .map_err(|error| io_error("flush dedup payload metadata", &self.owner.root, error))?;
+        self.keys
+            .flush()
+            .map_err(|error| io_error("flush dedup payload keys", &self.owner.root, error))?;
+        let readers = self
+            .schemas
+            .keys()
+            .copied()
+            .map(|kind| {
+                Ok((
+                    kind,
+                    arrow_ipc::reader::StreamReader::try_new(
+                        BufReader::new(
+                            File::open(self.owner.root.join(payload_path(kind))).map_err(
+                                |error| {
+                                    scratch_read_io_error(
+                                        "open dedup payload",
+                                        &self.owner.root,
+                                        error,
+                                    )
+                                },
+                            )?,
+                        ),
+                        None,
+                    )
+                    .map_err(|error| scratch_arrow_error("open dedup payload stream", error))?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(Some(DedupPayloadReader {
             _owner: Arc::clone(&self.owner),
             _reservation: Arc::clone(&self.reservation),
-            reader: arrow_ipc::reader::StreamReader::try_new(
-                BufReader::new(File::open(self.owner.root.join("payload.arrow")).map_err(
-                    |error| scratch_read_io_error("open dedup payload", &self.owner.root, error),
-                )?),
-                None,
-            )
-            .map_err(|error| scratch_arrow_error("open dedup payload stream", error))?,
+            readers,
             metadata: BufReader::new(
                 File::open(self.owner.root.join("payload-metadata.jsonl")).map_err(|error| {
                     scratch_read_io_error("open dedup payload metadata", &self.owner.root, error)
                 })?,
             ),
+            keys: KeyReader::open(&self.owner.root.join("payload-keys.bin"))?,
+            next_ordinal: 0,
         }))
     }
 }
 
 impl DedupPayloadReader {
     pub fn next(&mut self) -> Result<Option<DedupPayload>> {
-        let Some(batch) = self
-            .reader
-            .next()
-            .transpose()
-            .map_err(|error| scratch_arrow_error("read dedup payload stream", error))?
-        else {
-            let mut trailing = String::new();
-            if self
-                .metadata
-                .read_line(&mut trailing)
-                .map_err(|error| scratch_stream_io_error("read dedup metadata tail", error))?
-                != 0
-            {
-                return Err(CdfError::internal(
-                    "CDF-managed dedup metadata contains more records than its Arrow spool",
-                ));
-            }
-            return Ok(None);
-        };
         let mut line = String::new();
         if self
             .metadata
@@ -191,16 +801,64 @@ impl DedupPayloadReader {
             .map_err(|error| scratch_stream_io_error("read dedup payload metadata", error))?
             == 0
         {
-            return Err(CdfError::internal(
-                "CDF-managed dedup Arrow spool contains more batches than its metadata",
-            ));
+            for reader in self.readers.values_mut() {
+                if reader
+                    .next()
+                    .transpose()
+                    .map_err(|error| scratch_arrow_error("read dedup payload tail", error))?
+                    .is_some()
+                {
+                    return Err(CdfError::internal(
+                        "CDF-managed dedup Arrow spool contains more batches than its metadata",
+                    ));
+                }
+            }
+            if self.keys.next()?.is_some() {
+                return Err(CdfError::internal(
+                    "CDF-managed dedup payload contains excess encoded keys",
+                ));
+            }
+            return Ok(None);
         }
         let metadata = decode_payload_metadata(&line)?;
+        let batch = self
+            .readers
+            .get_mut(&metadata.kind)
+            .ok_or_else(|| CdfError::internal("dedup metadata names an absent effect spool"))?
+            .next()
+            .transpose()
+            .map_err(|error| scratch_arrow_error("read dedup payload stream", error))?
+            .ok_or_else(|| {
+                CdfError::internal("CDF-managed dedup metadata outlived its Arrow effect spool")
+            })?;
+        let mut keys = Vec::with_capacity(batch.num_rows());
+        for _ in 0..batch.num_rows() {
+            let record = self.keys.next()?.ok_or_else(|| {
+                CdfError::internal("CDF-managed dedup payload key stream ended early")
+            })?;
+            if record.ordinal != self.next_ordinal {
+                return Err(CdfError::internal(
+                    "CDF-managed dedup payload keys are not in input order",
+                ));
+            }
+            self.next_ordinal += 1;
+            keys.push(record.key);
+        }
         Ok(Some(DedupPayload {
+            kind: metadata.kind,
             partition_ordinal: metadata.partition_ordinal,
             output_position: metadata.output_position,
             batch,
+            keys,
         }))
+    }
+}
+
+fn payload_path(kind: PackageSegmentKind) -> &'static str {
+    match kind {
+        PackageSegmentKind::Row => "payload-rows.arrow",
+        PackageSegmentKind::Upsert => "payload-upserts.arrow",
+        PackageSegmentKind::Delete => "payload-deletes.arrow",
     }
 }
 
@@ -1100,7 +1758,62 @@ mod tests {
     use super::*;
     use std::{collections::HashMap, time::Instant};
 
-    use arrow_array::{ArrayRef, BinaryArray, RecordBatch};
+    use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
+
+    #[test]
+    fn effect_sort_spill_orders_each_typed_family_across_merge_levels() {
+        let temp = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                64 * 1024 * 1024,
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let mut sorter =
+            EffectSortSpool::create(temp.path().join("effects"), spill, memory).unwrap();
+
+        for (kind, values) in [
+            (PackageSegmentKind::Upsert, vec![6_i64, 1, 5, 2, 4, 3]),
+            (PackageSegmentKind::Delete, vec![9_i64, 7, 8]),
+        ] {
+            for value in values {
+                let array: ArrayRef = Arc::new(Int64Array::from(vec![value]));
+                let batch = RecordBatch::try_from_iter([("id", array)]).unwrap();
+                sorter
+                    .push(kind, None, batch, vec![value.to_be_bytes().to_vec()])
+                    .unwrap();
+            }
+        }
+
+        let mut reader = sorter.finish().unwrap().unwrap();
+        let mut observed = Vec::new();
+        while let Some(effect) = reader.next().unwrap() {
+            let values = effect
+                .batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            observed.extend(values.values().iter().map(|value| (effect.kind, *value)));
+        }
+        assert_eq!(
+            observed,
+            vec![
+                (PackageSegmentKind::Upsert, 1),
+                (PackageSegmentKind::Upsert, 2),
+                (PackageSegmentKind::Upsert, 3),
+                (PackageSegmentKind::Upsert, 4),
+                (PackageSegmentKind::Upsert, 5),
+                (PackageSegmentKind::Upsert, 6),
+                (PackageSegmentKind::Delete, 7),
+                (PackageSegmentKind::Delete, 8),
+                (PackageSegmentKind::Delete, 9),
+            ]
+        );
+    }
 
     #[test]
     fn corrupt_private_scratch_is_internal_while_clean_eof_is_empty() {
@@ -1446,7 +2159,15 @@ mod tests {
             bytes[..8].copy_from_slice(&ordinal.to_le_bytes());
             let array: ArrayRef = Arc::new(BinaryArray::from_vec(vec![bytes.as_slice()]));
             let batch = RecordBatch::try_from_iter([("payload", array)]).unwrap();
-            payload.push(0, None, &batch).unwrap();
+            payload
+                .push(
+                    PackageSegmentKind::Row,
+                    0,
+                    None,
+                    &[ordinal.to_le_bytes().to_vec()],
+                    &batch,
+                )
+                .unwrap();
             index
                 .push_owned_keys(std::iter::once(ordinal.to_le_bytes().to_vec()))
                 .unwrap();

@@ -101,6 +101,42 @@ impl SourcePosition {
         }
     }
 
+    /// Returns the source-protocol ordering identity used by keyed CDC effect reduction.
+    pub fn cdc_protocol_order_identity(&self) -> Result<(String, String)> {
+        self.validate()?;
+        let (protocol, scope_bytes) = match self {
+            Self::Log(position) => {
+                let protocol = match position.protocol() {
+                    CommittedLogProtocol::PostgreSql => "postgresql",
+                    CommittedLogProtocol::MySql => "mysql",
+                };
+                let bytes = serde_json::to_vec(&position.scope()).map_err(|error| {
+                    CdfError::internal(format!("serialize committed-log scope: {error}"))
+                })?;
+                (protocol, bytes)
+            }
+            Self::ResumeToken(position) => match position.as_ref() {
+                ResumeTokenPosition::MongoChangeStream(position) => {
+                    let bytes = serde_json::to_vec(&position.scope).map_err(|error| {
+                        CdfError::internal(format!(
+                            "serialize MongoDB change-stream scope: {error}"
+                        ))
+                    })?;
+                    ("mongodb_change_stream", bytes)
+                }
+            },
+            _ => {
+                return Err(CdfError::data(
+                    "CDC operation metadata requires a committed-log or MongoDB resume-token position",
+                ));
+            }
+        };
+        Ok((
+            protocol.to_owned(),
+            format!("sha256:{:x}", Sha256::digest(scope_bytes)),
+        ))
+    }
+
     /// Validates source-position structure before it is frozen into plan or checkpoint authority.
     pub fn validate(&self) -> Result<()> {
         if self.version() != SOURCE_POSITION_VERSION {

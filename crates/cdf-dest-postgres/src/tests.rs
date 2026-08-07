@@ -4,7 +4,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
-    representative_commit_request,
+    representative_commit_request, representative_merge_content,
 };
 use cdf_contract::{TypePolicy, validate_destination_schema_mappings};
 use cdf_kernel::{
@@ -45,7 +45,16 @@ fn segment(id: &str, rows: u64) -> StateSegment {
 }
 
 fn input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
-    let segments = vec![segment("seg-0001", 3), segment("seg-0002", 2)];
+    let mut segments = vec![segment("seg-0001", 3), segment("seg-0002", 2)];
+    let schema_hash = SchemaHash::new("sha256:schema").unwrap();
+    let content = if disposition == WriteDisposition::Merge {
+        for segment in &mut segments {
+            segment.kind = cdf_kernel::PackageSegmentKind::Upsert;
+        }
+        representative_merge_content(schema_hash.clone(), vec!["id".to_owned()], 5)
+    } else {
+        cdf_kernel::PackageContentAuthority::rows(schema_hash.clone())
+    };
     let state_delta = StateDelta {
         checkpoint_id: CheckpointId::new("chk-1").unwrap(),
         pipeline_id: PipelineId::new("pipe-1").unwrap(),
@@ -66,21 +75,17 @@ fn input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("sha256:abcdef0123456789").unwrap(),
-        content: cdf_kernel::PackageContentAuthority::rows(
-            SchemaHash::new("sha256:schema").unwrap(),
-        ),
-        schema_hash: SchemaHash::new("sha256:schema").unwrap(),
+        content: content.clone(),
+        schema_hash: schema_hash.clone(),
         segments: segments.clone(),
     };
     PostgresLoadPlanInput {
         package_hash: PackageHash::new("sha256:abcdef0123456789").unwrap(),
-        content: cdf_kernel::PackageContentAuthority::rows(
-            SchemaHash::new("sha256:schema").unwrap(),
-        ),
+        content,
         idempotency_token: IdempotencyToken::new("sha256:abcdef0123456789").unwrap(),
         target: PostgresTarget::parse("raw.orders").unwrap(),
         disposition,
-        schema_hash: SchemaHash::new("sha256:schema").unwrap(),
+        schema_hash,
         segments,
         columns: columns(),
         merge_keys: vec![PostgresIdentifier::user("id").unwrap()],
@@ -715,12 +720,18 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
             receipt_id: ReceiptId::new("receipt-1").unwrap(),
             xid: "123456".to_owned(),
             committed_at_ms: 1_788_000_000_000,
-            counts: CommitCounts {
-                rows_written: 5,
-                rows_inserted: Some(3),
-                rows_updated: Some(2),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::keyed_changes(
+                cdf_kernel::KeyedEffectCounts {
+                    upserts: 5,
+                    deletes: 0,
+                },
+                Some(3),
+                Some(2),
+                None,
+                None,
+                None,
+                None,
+            ),
             duplicate: false,
         },
     )
@@ -736,7 +747,7 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
     assert_eq!(receipt.verify.kind, "postgres_sql");
     assert!(receipt.verify.statement.contains(CDF_LOADS_TABLE));
     assert_eq!(receipt.segment_acks.len(), 2);
-    assert_eq!(receipt.counts.rows_written, 5);
+    assert_eq!(receipt.counts.settled_effect_count(), Some(5));
 }
 
 #[test]
@@ -752,12 +763,7 @@ fn receipt_orders_segment_acks_lexicographically_from_typed_segments() {
             receipt_id: ReceiptId::new("receipt-order").unwrap(),
             xid: "123456".to_owned(),
             committed_at_ms: 1_788_000_000_000,
-            counts: CommitCounts {
-                rows_written: 5,
-                rows_inserted: Some(5),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(5, Some(5), Some(0), Some(0)),
             duplicate: false,
         },
     )

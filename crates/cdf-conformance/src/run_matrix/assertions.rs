@@ -70,7 +70,7 @@ pub(crate) fn assert_run_report(
     );
     assert_eq!(report.row_count, ROW_COUNT);
     assert_eq!(report.segment_count, SEGMENT_COUNT);
-    assert_eq!(report.receipt.counts.rows_written, ROW_COUNT);
+    assert_eq!(report.receipt.counts.row_write_outcome(), Some(ROW_COUNT));
     assert_eq!(
         report
             .receipt

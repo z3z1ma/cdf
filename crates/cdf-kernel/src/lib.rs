@@ -40,9 +40,9 @@ mod stratified_selection;
 pub use arrow_type::parse_arrow_field_type;
 pub use async_types::{BatchStream, BoxFuture};
 pub use batch::{
-    Batch, BatchHeader, BatchPayload, CdcMetadata, PayloadRef, PhysicalObservationRepresentation,
-    PreContractObservedValue, PreContractPhysicalReconciliation, PreContractQuarantineFact,
-    PreContractResidualCandidate, RecordBatchPayload,
+    Batch, BatchHeader, BatchPayload, CdcMetadata, CdcOperation, PayloadRef,
+    PhysicalObservationRepresentation, PreContractObservedValue, PreContractPhysicalReconciliation,
+    PreContractQuarantineFact, PreContractResidualCandidate, RecordBatchPayload,
 };
 pub use canonical_arrow::{
     CanonicalArrowDateUnit, CanonicalArrowField, CanonicalArrowIntervalUnit, CanonicalArrowSchema,
@@ -89,8 +89,8 @@ pub use effect::{
     DEDUP_KEY_ENCODING_VERSION, DeleteApplicationAuthority, DeleteApplicationPolicy,
     DeletionCaptureAuthority, DeletionCaptureSupport, KEYED_EFFECT_AUTHORITY_VERSION,
     KEYED_EFFECT_ORDER_VERSION, KeyAuthority, KeyedEffectCounts, KeyedEffectInputOrder,
-    KeyedEffectReductionAuthority, KeyedEffectWinnerPolicy, PackageContentAuthority,
-    PackageSegmentKind,
+    KeyedEffectPlanAuthority, KeyedEffectReductionAuthority, KeyedEffectWinnerPolicy,
+    PackageContentAuthority, PackageSegmentKind,
 };
 pub use error::{CdfError, ErrorKind, Result, embedded_cdf_error, is_filesystem_loop};
 pub use execution_extent::{

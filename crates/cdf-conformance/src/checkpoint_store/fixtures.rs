@@ -133,12 +133,7 @@ pub(super) fn receipt(delta: &StateDelta) -> Receipt {
         disposition: WriteDisposition::Merge,
         idempotency_token: IdempotencyToken::new(delta.package_hash.as_str()).unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written,
-            rows_inserted: Some(rows_written),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0)),
         schema_hash: delta.schema_hash.clone(),
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,

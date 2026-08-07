@@ -203,10 +203,12 @@ impl CommitSession for MockFinalizedSession {
             disposition: self.request.disposition,
             idempotency_token: self.request.idempotency_token,
             transaction: None,
-            counts: CommitCounts {
-                rows_written: self.acknowledgements.iter().map(|ack| ack.row_count).sum(),
-                ..CommitCounts::default()
-            },
+            counts: CommitCounts::rows(
+                self.acknowledgements.iter().map(|ack| ack.row_count).sum(),
+                None,
+                None,
+                None,
+            ),
             schema_hash: self.schema_hash,
             migrations: self.plan.migrations,
             committed_at_ms: 0,
@@ -462,10 +464,12 @@ impl StagedIngressSession for MockStagedSession {
                 .into_iter()
                 .collect(),
             }),
-            counts: CommitCounts {
-                rows_written: accepted.iter().map(|identity| identity.row_count).sum(),
-                ..CommitCounts::default()
-            },
+            counts: CommitCounts::rows(
+                accepted.iter().map(|identity| identity.row_count).sum(),
+                None,
+                None,
+                None,
+            ),
             schema_hash: binding.schema_hash().clone(),
             migrations: binding.plan().migrations.clone(),
             committed_at_ms: 0,

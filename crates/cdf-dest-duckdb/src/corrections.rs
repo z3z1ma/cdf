@@ -601,12 +601,7 @@ fn update_correction_row(
 
 fn correction_counts(request: &DestinationCorrectionCommitRequest) -> CommitCounts {
     let addressed = request.addressed_row_count();
-    CommitCounts {
-        rows_written: addressed,
-        rows_inserted: Some(0),
-        rows_updated: Some(addressed),
-        rows_deleted: Some(0),
-    }
+    CommitCounts::rows(addressed, Some(0), Some(addressed), Some(0))
 }
 
 fn mirror_request(request: &DestinationCorrectionCommitRequest) -> DestinationCommitRequest {

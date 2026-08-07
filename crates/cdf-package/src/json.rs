@@ -45,6 +45,9 @@ pub(crate) fn manifest_identity_hash_streaming(
     Ok(format!("sha256:{}", hex::encode(writer.0.finalize())))
 }
 
+// The immutable manifest fields and the two streaming sources stay explicit so publication cannot
+// accidentally combine files or segments from a different snapshot.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_package_manifest_canonical_streaming<W: Write>(
     package_id: &str,
     layout: &[String],

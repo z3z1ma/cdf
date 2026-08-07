@@ -640,7 +640,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(report.row_count, 2);
     assert_eq!(report.segment_count, 1);
     assert_eq!(report.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(report.receipt.counts.rows_written, 2);
+    assert_eq!(report.receipt.counts.row_write_outcome(), Some(2));
     assert_eq!(
         report.receipt_source,
         ProjectReceiptSource::DestinationCommit {
@@ -712,7 +712,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
 
     assert_eq!(replay.checkpoint.delta, report.checkpoint.delta);
     assert_eq!(replay.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(replay.receipt.counts.rows_written, 2);
+    assert_eq!(replay.receipt.counts.row_write_outcome(), Some(2));
     assert_eq!(
         replay
             .receipt

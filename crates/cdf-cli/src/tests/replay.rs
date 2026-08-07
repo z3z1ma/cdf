@@ -110,12 +110,7 @@ fn publish_replay_fixture_schema_v2(project: &TestProject) {
         disposition: WriteDisposition::Append,
         idempotency_token: IdempotencyToken::new(package_hash.to_string()).unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written: 1,
-            rows_inserted: Some(1),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(1, Some(1), Some(0), Some(0)),
         schema_hash: proposed.schema_hash,
         migrations: Vec::new(),
         committed_at_ms: now_ms_for_test(),

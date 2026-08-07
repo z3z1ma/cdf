@@ -168,6 +168,7 @@ fn validate_receipt(receipt: &Receipt, expected_segments: &[ExpectedReceiptSegme
             .iter()
             .map(|ack| (&ack.kind, ack.row_count)),
     )?;
+    validate_commit_counts(&receipt.content, &receipt.counts)?;
     if receipt.committed_at_ms < 0 {
         return Err(CdfError::contract(
             "receipt committed_at_ms must be a nonnegative Unix timestamp",
@@ -230,6 +231,114 @@ fn validate_receipt(receipt: &Receipt, expected_segments: &[ExpectedReceiptSegme
     Ok(())
 }
 
+fn validate_commit_counts(
+    content: &cdf_kernel::PackageContentAuthority,
+    counts: &CommitCounts,
+) -> Result<()> {
+    match (content, counts) {
+        (cdf_kernel::PackageContentAuthority::Rows { .. }, CommitCounts::Rows { .. }) => Ok(()),
+        (
+            cdf_kernel::PackageContentAuthority::KeyedChanges {
+                reduction,
+                delete_application,
+                ..
+            },
+            CommitCounts::KeyedChanges {
+                intent,
+                hard_deletes,
+                soft_deletes,
+                missing_delete_keys,
+                ignored_deletes,
+                ..
+            },
+        ) => {
+            if intent != &reduction.surviving {
+                return Err(CdfError::contract(
+                    "keyed-change receipt intent does not match the verified package effects",
+                ));
+            }
+            match delete_application {
+                cdf_kernel::DeleteApplicationAuthority::NotApplicable => {
+                    if intent.deletes != 0
+                        || hard_deletes.is_some()
+                        || soft_deletes.is_some()
+                        || missing_delete_keys.is_some()
+                        || ignored_deletes.is_some()
+                    {
+                        return Err(CdfError::contract(
+                            "delete-inapplicable receipt contains delete intent or outcomes",
+                        ));
+                    }
+                }
+                cdf_kernel::DeleteApplicationAuthority::Apply {
+                    policy: cdf_kernel::DeleteApplicationPolicy::Ignore,
+                } => {
+                    if *ignored_deletes != Some(intent.deletes)
+                        || hard_deletes.is_some()
+                        || soft_deletes.is_some()
+                        || missing_delete_keys.is_some()
+                    {
+                        return Err(CdfError::contract(
+                            "ignored-delete receipt must report the exact ignored intent and no mutation outcomes",
+                        ));
+                    }
+                }
+                cdf_kernel::DeleteApplicationAuthority::Apply {
+                    policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+                } => {
+                    validate_delete_outcome_partition(
+                        intent.deletes,
+                        *hard_deletes,
+                        *missing_delete_keys,
+                        *soft_deletes,
+                        *ignored_deletes,
+                        "hard",
+                    )?;
+                }
+                cdf_kernel::DeleteApplicationAuthority::Apply {
+                    policy: cdf_kernel::DeleteApplicationPolicy::Soft { .. },
+                } => {
+                    validate_delete_outcome_partition(
+                        intent.deletes,
+                        *soft_deletes,
+                        *missing_delete_keys,
+                        *hard_deletes,
+                        *ignored_deletes,
+                        "soft",
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(CdfError::contract(
+            "receipt count kind does not match its package content authority",
+        )),
+    }
+}
+
+fn validate_delete_outcome_partition(
+    intent: u64,
+    applied: Option<u64>,
+    missing: Option<u64>,
+    incompatible: Option<u64>,
+    ignored: Option<u64>,
+    policy: &str,
+) -> Result<()> {
+    if incompatible.is_some() || ignored.is_some() || applied.is_some() != missing.is_some() {
+        return Err(CdfError::contract(format!(
+            "{policy}-delete receipt outcomes are incomplete or contain another delete policy"
+        )));
+    }
+    if let (Some(applied), Some(missing)) = (applied, missing)
+        && applied.checked_add(missing) != Some(intent)
+    {
+        return Err(CdfError::contract(format!(
+            "{policy}-delete receipt outcomes do not partition the exact delete intent"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_verify_parameter(receipt: &Receipt, name: &str, expected: &str) -> Result<()> {
     if let Some(actual) = receipt.verify.parameters.get(name)
         && actual != expected
@@ -281,12 +390,7 @@ mod tests {
                 system: "test".to_owned(),
                 values: BTreeMap::new(),
             }),
-            counts: CommitCounts {
-                rows_written: 7,
-                rows_inserted: Some(7),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(7, Some(7), Some(0), Some(0)),
             committed_at_ms: 1_234,
             verify: VerifyClause {
                 kind: "test_v1".to_owned(),
@@ -617,5 +721,126 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("byte count"));
+    }
+
+    #[test]
+    fn keyed_receipt_binds_exact_intent_and_delete_policy_outcomes() {
+        let logical = SchemaHash::new("schema").unwrap();
+        let key_schema = SchemaHash::new("key-schema").unwrap();
+        let intent = cdf_kernel::KeyedEffectCounts {
+            upserts: 2,
+            deletes: 1,
+        };
+        let content = cdf_kernel::PackageContentAuthority::KeyedChanges {
+            logical_schema_hash: logical.clone(),
+            upsert_schema_hash: logical.clone(),
+            delete_schema_hash: key_schema.clone(),
+            key: cdf_kernel::KeyAuthority {
+                version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+                fields: vec!["id".to_owned()],
+                encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+                schema_hash: key_schema,
+            },
+            reduction: Box::new(cdf_kernel::KeyedEffectReductionAuthority {
+                version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+                winner: cdf_kernel::KeyedEffectWinnerPolicy::Last,
+                input_order: cdf_kernel::KeyedEffectInputOrder::SourceProtocol {
+                    protocol: "postgresql".to_owned(),
+                    version: 1,
+                    scope_sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                input: cdf_kernel::KeyedEffectCounts {
+                    upserts: 3,
+                    deletes: 2,
+                },
+                duplicate_key_count: 2,
+                surviving: intent,
+                provenance_format: "parquet".to_owned(),
+                provenance_version: 1,
+            }),
+            deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+                support: cdf_kernel::DeletionCaptureSupport::Inherent,
+                enabled: true,
+                semantics_sha256: format!("sha256:{}", "b".repeat(64)),
+            },
+            delete_application: cdf_kernel::DeleteApplicationAuthority::Apply {
+                policy: cdf_kernel::DeleteApplicationPolicy::Ignore,
+            },
+        };
+        let mut upsert = segment();
+        upsert.kind = cdf_kernel::PackageSegmentKind::Upsert;
+        upsert.segment_id = SegmentId::new("effect-0-upsert").unwrap();
+        upsert.row_count = 2;
+        upsert.byte_count = 20;
+        let mut delete = segment();
+        delete.kind = cdf_kernel::PackageSegmentKind::Delete;
+        delete.segment_id = SegmentId::new("effect-1-delete").unwrap();
+        delete.row_count = 1;
+        delete.byte_count = 10;
+        let request = DestinationCommitRequest {
+            package_hash: PackageHash::new("package").unwrap(),
+            content,
+            target: TargetName::new("main.events").unwrap(),
+            disposition: WriteDisposition::CdcApply,
+            segments: vec![upsert.clone(), delete.clone()],
+            idempotency_token: IdempotencyToken::new("token").unwrap(),
+        };
+        let acks = [&upsert, &delete]
+            .into_iter()
+            .map(|segment| SegmentAck {
+                kind: segment.kind,
+                segment_id: segment.segment_id.clone(),
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
+            })
+            .collect();
+        let evidence = ReceiptEvidence {
+            transaction: None,
+            counts: CommitCounts::keyed_changes(intent, None, None, None, None, None, Some(1)),
+            committed_at_ms: 1,
+            verify: VerifyClause {
+                kind: "test".to_owned(),
+                statement: "verify keyed receipt".to_owned(),
+                parameters: BTreeMap::new(),
+            },
+        };
+
+        ReceiptDraft::ordinary(
+            ReceiptId::new("receipt").unwrap(),
+            DestinationId::new("test").unwrap(),
+            &request,
+            &ordinary_plan(&request),
+            acks,
+            logical,
+            evidence.clone(),
+        )
+        .unwrap()
+        .finalize()
+        .unwrap();
+
+        let mut wrong = evidence;
+        wrong.counts = CommitCounts::keyed_changes(intent, None, None, None, None, None, Some(0));
+        let error = ReceiptDraft::ordinary(
+            ReceiptId::new("receipt-wrong").unwrap(),
+            DestinationId::new("test").unwrap(),
+            &request,
+            &ordinary_plan(&request),
+            request
+                .segments
+                .iter()
+                .map(|segment| SegmentAck {
+                    kind: segment.kind,
+                    segment_id: segment.segment_id.clone(),
+                    row_count: segment.row_count,
+                    byte_count: segment.byte_count,
+                })
+                .collect(),
+            SchemaHash::new("schema").unwrap(),
+            wrong,
+        )
+        .unwrap()
+        .finalize()
+        .unwrap_err();
+        assert!(error.message.contains("exact ignored intent"));
     }
 }

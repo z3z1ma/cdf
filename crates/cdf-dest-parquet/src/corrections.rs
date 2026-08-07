@@ -535,10 +535,13 @@ fn validate_sidecar_receipt_evidence(
         ));
     }
     let evidence = DestinationCorrectionSidecarReceiptEvidence::from_receipt(receipt)?;
-    if receipt.counts.rows_written != evidence.operation_count
-        || receipt.counts.rows_inserted != Some(evidence.operation_count)
-        || receipt.counts.rows_updated != Some(0)
-        || receipt.counts.rows_deleted != Some(0)
+    if receipt.counts.row_outcomes()
+        != Some((
+            evidence.operation_count,
+            Some(evidence.operation_count),
+            Some(0),
+            Some(0),
+        ))
     {
         return Err(CdfError::destination(
             "Parquet correction receipt counts do not match immutable sidecar operations",
@@ -744,12 +747,7 @@ fn load_correction_receipt(
 
 fn sidecar_counts(request: &DestinationCorrectionCommitRequest) -> CommitCounts {
     let operations = request.corrections.len() as u64;
-    CommitCounts {
-        rows_written: operations,
-        rows_inserted: Some(operations),
-        rows_updated: Some(0),
-        rows_deleted: Some(0),
-    }
+    CommitCounts::rows(operations, Some(operations), Some(0), Some(0))
 }
 
 fn content_sha256(bytes: &[u8]) -> String {

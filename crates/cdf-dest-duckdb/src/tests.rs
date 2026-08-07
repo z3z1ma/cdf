@@ -18,7 +18,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionFields,
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
-    representative_commit_request,
+    representative_commit_request, representative_merge_content,
 };
 use cdf_contract::{TypePolicy, validate_destination_schema_mappings};
 use cdf_kernel::{
@@ -168,7 +168,7 @@ fn finalize_correction(
     let mut session = destination.begin_correction(request.clone(), plan).unwrap();
     session.apply_migrations().unwrap();
     assert_eq!(
-        session.apply_corrections().unwrap().rows_updated,
+        session.apply_corrections().unwrap().updated_outcome(),
         Some(request.addressed_row_count())
     );
     session.finalize().unwrap()
@@ -256,10 +256,26 @@ fn build_package_segments_for_commit_with_statistics(
     merge_keys: Vec<String>,
     emit_statistics: bool,
 ) -> PackageHash {
+    let schema_hash = SchemaHash::new("schema-v1").unwrap();
+    let upserts = segments
+        .iter()
+        .flat_map(|(_, batches)| batches)
+        .map(RecordBatch::num_rows)
+        .sum::<usize>() as u64;
+    let content = if disposition == WriteDisposition::Merge {
+        representative_merge_content(schema_hash.clone(), merge_keys.clone(), upserts)
+    } else {
+        cdf_kernel::PackageContentAuthority::rows(schema_hash.clone())
+    };
+    let initial_content = if disposition == WriteDisposition::Merge {
+        representative_merge_content(schema_hash.clone(), merge_keys.clone(), 0)
+    } else {
+        content.clone()
+    };
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
-        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-v1").unwrap()),
+        initial_content,
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -290,7 +306,11 @@ fn build_package_segments_for_commit_with_statistics(
         entries.push(
             builder
                 .write_segment(
-                    cdf_kernel::PackageSegmentKind::Row,
+                    if disposition == WriteDisposition::Merge {
+                        cdf_kernel::PackageSegmentKind::Upsert
+                    } else {
+                        cdf_kernel::PackageSegmentKind::Row
+                    },
                     segment_id.clone(),
                     package_row_ord_start,
                     &canonical,
@@ -336,7 +356,8 @@ fn build_package_segments_for_commit_with_statistics(
             .unwrap();
         profile.finish().unwrap();
     }
-    write_current_state_artifacts(&builder, &entries, disposition, merge_keys);
+    builder.set_content_authority(content.clone()).unwrap();
+    write_current_state_artifacts(&builder, &entries, disposition, merge_keys, content);
     let manifest = builder.finish().unwrap();
     PackageHash::new(manifest.package_hash).unwrap()
 }
@@ -408,6 +429,7 @@ fn write_current_state_artifacts(
     entries: &[SegmentEntry],
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
+    content: cdf_kernel::PackageContentAuthority,
 ) {
     let scope = ScopeKey::Partition {
         partition_id: PartitionId::new("p0").unwrap(),
@@ -469,12 +491,15 @@ fn write_current_state_artifacts(
         })
         .unwrap();
     builder
-        .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
-            TargetName::new("orders").unwrap(),
-            disposition,
-            merge_keys,
-            SchemaHash::new("schema-v1").unwrap(),
-        ))
+        .write_commit_plan_preimage_artifact(
+            &DestinationCommitPlanPreimage::package_hash_token_with_content(
+                content,
+                TargetName::new("orders").unwrap(),
+                disposition,
+                merge_keys,
+                SchemaHash::new("schema-v1").unwrap(),
+            ),
+        )
         .unwrap();
 }
 
@@ -786,7 +811,7 @@ fn opt_in_profile_wraps_the_product_materialization_query() {
 
     let outcome = commit_current(&destination, request);
 
-    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(3));
     let profiles = std::fs::read_dir(profile_directory)
         .unwrap()
         .filter_map(std::result::Result::ok)
@@ -1979,7 +2004,7 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
     );
 
     let outcome = commit_current(&dest, request.clone());
-    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(3));
     assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
 
     let reopened = destination(&db_path);
@@ -2235,7 +2260,7 @@ fn replace_rebuilds_target_atomically() {
             1,
         ),
     );
-    assert_eq!(outcome.receipt.counts.rows_written, 1);
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(1));
 
     let conn = Connection::open(db_path).unwrap();
     let rows: Vec<(i64, String)> = conn
@@ -2404,7 +2429,7 @@ fn complete_all_null_statistics_override_existing_destination_defaults() {
 }
 
 #[test]
-fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
+fn merge_updates_and_inserts_canonical_keyed_effects() {
     let temp = tempfile::tempdir().unwrap();
     let initial_package = temp.path().join("pkg-initial");
     let initial_hash = build_package(
@@ -2429,10 +2454,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
     let merge_hash = build_package_for_commit(
         &merge_package,
         "pkg-merge",
-        &[sample_batch(
-            vec![1, 1, 3],
-            vec![Some("new"), Some("new"), Some("insert")],
-        )],
+        &[sample_batch(vec![1, 3], vec![Some("new"), Some("insert")])],
         WriteDisposition::Merge,
         vec!["id".to_owned()],
     );
@@ -2443,12 +2465,12 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
             merge_hash.clone(),
             WriteDisposition::Merge,
             vec!["id".to_owned()],
-            3,
+            2,
         ),
     );
-    assert_eq!(outcome.receipt.counts.rows_written, 2);
-    assert_eq!(outcome.receipt.counts.rows_updated, Some(1));
-    assert_eq!(outcome.receipt.counts.rows_inserted, Some(1));
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(2));
+    assert_eq!(outcome.receipt.counts.updated_outcome(), Some(1));
+    assert_eq!(outcome.receipt.counts.inserted_outcome(), Some(1));
 
     let conn = Connection::open(db_path).unwrap();
     let rows: Vec<(i64, String)> = conn
@@ -2478,7 +2500,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
         vec![
             (1, merge_hash.to_string(), 0),
             (2, initial_hash.to_string(), 1),
-            (3, merge_hash.to_string(), 2),
+            (3, merge_hash.to_string(), 1),
         ]
     );
 }
@@ -2692,8 +2714,8 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
         correction_operation(&original_hash, 1, 84),
     ]);
     let receipt = finalize_correction(&dest, &correction);
-    assert_eq!(receipt.counts.rows_written, 2);
-    assert_eq!(receipt.counts.rows_updated, Some(2));
+    assert_eq!(receipt.counts.settled_effect_count(), Some(2));
+    assert_eq!(receipt.counts.updated_outcome(), Some(2));
     assert!(dest.verify_correction(&receipt).unwrap().verified);
     let reopened = destination(&db_path);
     assert!(reopened.verify_correction(&receipt).unwrap().verified);

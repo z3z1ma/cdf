@@ -1081,11 +1081,18 @@ impl PackageReader {
                 self.manifest.lifecycle.status.as_str()
             )));
         }
+        let commit_plan: cdf_package_contract::DestinationCommitPlanPreimage =
+            self.verified_json_artifact(verified, DESTINATION_COMMIT_PLAN_FILE)?;
+        if commit_plan.content != self.manifest.identity.content {
+            return Err(CdfError::data(
+                "destination commit plan content authority does not match the verified package manifest",
+            ));
+        }
         PackageReplayInputs::from_preimages_with_processed(
             PackageHash::new(self.manifest.package_hash.clone())?,
             self.verified_json_artifact(verified, STATE_INPUT_CHECKPOINT_FILE)?,
             self.verified_json_artifact(verified, STATE_PROPOSED_DELTA_FILE)?,
-            self.verified_json_artifact(verified, DESTINATION_COMMIT_PLAN_FILE)?,
+            commit_plan,
             ManifestSegmentStream::new(
                 self.package_root
                     .open_std_file(cdf_package_contract::MANIFEST_FILE)?,

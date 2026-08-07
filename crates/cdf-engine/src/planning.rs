@@ -63,6 +63,9 @@ impl Planner {
         validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
+        input
+            .keyed_effects
+            .validate_for_disposition(&write_disposition)?;
         let logical_schema = relational_output_schema(resource, &input)?;
         let schema_admission_program = source_schema_admission_program(resource)?;
         let physical_request =
@@ -146,6 +149,9 @@ impl Planner {
         validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
+        input
+            .keyed_effects
+            .validate_for_disposition(&write_disposition)?;
         let logical_schema = relational_output_schema(resource, &input)?;
         let schema_admission_program = source_schema_admission_program(resource)?;
         let has_relational_plan = input.relational_expression_plan.is_some();
@@ -378,6 +384,7 @@ impl Planner {
             execution_extent: input.execution_extent,
             write_disposition: finish.write_disposition,
             effect_key: finish.effect_key,
+            keyed_effects: input.keyed_effects,
             validation_program,
             schema_authority: finish.schema_authority,
             output_schema: finish.output_schema,

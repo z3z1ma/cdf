@@ -814,7 +814,13 @@ fn replayable_package_cannot_cross_incomplete_construction_deletion_boundary() {
 }
 
 fn build_fixture(package_dir: &Path) -> PackageManifest {
-    let builder = package_builder!(package_dir, "pkg-test-0001").unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        "pkg-test-0001",
+        PackageContentAuthority::rows(SchemaHash::new("schema-fixture").unwrap()),
+        PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024).unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -1015,12 +1021,7 @@ fn sample_receipt(package_hash: &str) -> Receipt {
         disposition: WriteDisposition::Append,
         idempotency_token: IdempotencyToken::new(package_hash.to_owned()).unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written: 3,
-            rows_inserted: Some(3),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(3, Some(3), Some(0), Some(0)),
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,
@@ -1357,7 +1358,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:aaa5745d2c5797cbfc53f7a2a4ae2059b03154629ed36adde214065b7e21f21a"
+        "sha256:8666ebf6aa87124ce2f031daf41798e86f06f7fab8908a3681abe0040daef416"
     );
 }
 

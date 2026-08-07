@@ -116,7 +116,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
 
     let receipt_gate_observed = Cell::new(false);
     let gate = |receipt: &Receipt| {
-        assert_eq!(receipt.counts.rows_written, 2);
+        assert_eq!(receipt.counts.row_write_outcome(), Some(2));
         assert_no_checkpoint_head(
             &project.state_store_path(),
             &PipelineId::new(PIPELINE_ID)?,
@@ -643,6 +643,7 @@ fn engine_plan(
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),
+            keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
             relational_expression_plan: None,

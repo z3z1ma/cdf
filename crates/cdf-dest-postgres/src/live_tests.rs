@@ -755,6 +755,7 @@ fn write_replay_artifacts(
     checkpoint_id: &str,
     parent_checkpoint_id: Option<&str>,
     entries: &[SegmentEntry],
+    content: cdf_kernel::PackageContentAuthority,
 ) {
     let segments = entries
         .iter()
@@ -814,7 +815,8 @@ fn write_replay_artifacts(
         schema_hash: schema_hash(),
         segments,
     };
-    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token_with_content(
+        content,
         target,
         disposition.clone(),
         replay_merge_keys(&disposition),
@@ -839,10 +841,15 @@ fn build_replay_package(
     checkpoint_id: &str,
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
+    let upserts = segments
+        .iter()
+        .map(|(_, batch)| batch.num_rows() as u64)
+        .sum();
+    let content = replay_content(&disposition, upserts);
     let builder = PackageBuilder::create(
         root,
         package_id,
-        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
+        replay_content(&disposition, 0),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -862,7 +869,7 @@ fn build_replay_package(
         entries.push(
             builder
                 .write_segment(
-                    cdf_kernel::PackageSegmentKind::Row,
+                    replay_segment_kind(&disposition),
                     SegmentId::new(segment_id).unwrap(),
                     package_row_ord_start,
                     &batch,
@@ -871,7 +878,16 @@ fn build_replay_package(
         );
         package_row_ord_start += rows;
     }
-    write_replay_artifacts(&builder, target, disposition, checkpoint_id, None, &entries);
+    builder.set_content_authority(content.clone()).unwrap();
+    write_replay_artifacts(
+        &builder,
+        target,
+        disposition,
+        checkpoint_id,
+        None,
+        &entries,
+        content,
+    );
     builder.finish().unwrap();
     cdf_package::read_manifest(root).unwrap()
 }
@@ -885,10 +901,15 @@ fn build_replay_package_with_parent(
     parent_checkpoint_id: &str,
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
+    let upserts = segments
+        .iter()
+        .map(|(_, batch)| batch.num_rows() as u64)
+        .sum();
+    let content = replay_content(&disposition, upserts);
     let builder = PackageBuilder::create(
         root,
         package_id,
-        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
+        replay_content(&disposition, 0),
         cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
             .unwrap(),
     )
@@ -908,7 +929,7 @@ fn build_replay_package_with_parent(
         entries.push(
             builder
                 .write_segment(
-                    cdf_kernel::PackageSegmentKind::Row,
+                    replay_segment_kind(&disposition),
                     SegmentId::new(segment_id).unwrap(),
                     package_row_ord_start,
                     &batch,
@@ -917,6 +938,7 @@ fn build_replay_package_with_parent(
         );
         package_row_ord_start += rows;
     }
+    builder.set_content_authority(content.clone()).unwrap();
     write_replay_artifacts(
         &builder,
         target,
@@ -924,9 +946,33 @@ fn build_replay_package_with_parent(
         checkpoint_id,
         Some(parent_checkpoint_id),
         &entries,
+        content,
     );
     builder.finish().unwrap();
     cdf_package::read_manifest(root).unwrap()
+}
+
+fn replay_content(
+    disposition: &WriteDisposition,
+    upserts: u64,
+) -> cdf_kernel::PackageContentAuthority {
+    if disposition == &WriteDisposition::Merge {
+        cdf_conformance::destination::representative_merge_content(
+            schema_hash(),
+            vec!["id".to_owned()],
+            upserts,
+        )
+    } else {
+        cdf_kernel::PackageContentAuthority::rows(schema_hash())
+    }
+}
+
+fn replay_segment_kind(disposition: &WriteDisposition) -> cdf_kernel::PackageSegmentKind {
+    if disposition == &WriteDisposition::Merge {
+        cdf_kernel::PackageSegmentKind::Upsert
+    } else {
+        cdf_kernel::PackageSegmentKind::Row
+    }
 }
 
 fn columns() -> Vec<PostgresColumn> {
@@ -1268,7 +1314,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
         vec![("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))]))],
     );
     let receipt = try_session_commit(&env, package_dir.path(), "orders_session_append").unwrap();
-    assert_eq!(receipt.counts.rows_written, 2);
+    assert_eq!(receipt.counts.settled_effect_count(), Some(2));
     assert!(env.destination().verify_receipt(&receipt).unwrap().verified);
     assert!(
         collect_package_receipts(&cdf_package::PackageReader::open(package_dir.path()).unwrap())
@@ -1383,7 +1429,7 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
         ],
     );
     let outcome = commit(&env, package_dir.path(), "orders_append");
-    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(3));
     assert_eq!(outcome.receipt.segment_acks.len(), 2);
     assert_eq!(outcome.receipt.schema_hash, schema_hash());
     assert_eq!(outcome.receipt.verify.kind, "postgres_sql");
@@ -1513,6 +1559,7 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
         "chk-live-quarantine-mirror",
         None,
         &[segment],
+        cdf_kernel::PackageContentAuthority::rows(schema_hash()),
     );
     let manifest = builder.finish().unwrap();
     commit(&env, package_dir.path(), "orders_quarantine_mirror");
@@ -1562,9 +1609,9 @@ fn live_replace_is_atomic_and_reports_deleted_rows() {
         vec![("seg-000001", batch(&[(3, Some("katherine"))]))],
     );
     let outcome = commit(&env, second_dir.path(), "orders_replace");
-    assert_eq!(outcome.receipt.counts.rows_written, 1);
-    assert_eq!(outcome.receipt.counts.rows_inserted, Some(1));
-    assert_eq!(outcome.receipt.counts.rows_deleted, Some(2));
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(1));
+    assert_eq!(outcome.receipt.counts.inserted_outcome(), Some(1));
+    assert_eq!(outcome.receipt.counts.row_delete_outcome(), Some(2));
 
     let mut client = env.client();
     let rows = client
@@ -1634,9 +1681,9 @@ fn live_merge_applies_finalized_unique_rows_and_updates_existing_keys() {
         vec![("seg-000001", batch(&[(1, Some("new")), (2, Some("two"))]))],
     );
     let first = commit(&env, first_dir.path(), "orders_merge");
-    assert_eq!(first.receipt.counts.rows_written, 2);
-    assert_eq!(first.receipt.counts.rows_inserted, Some(2));
-    assert_eq!(first.receipt.counts.rows_updated, Some(0));
+    assert_eq!(first.receipt.counts.settled_effect_count(), Some(2));
+    assert_eq!(first.receipt.counts.inserted_outcome(), Some(2));
+    assert_eq!(first.receipt.counts.updated_outcome(), Some(0));
 
     let second_dir = tempfile::tempdir().unwrap();
     let _second_manifest = build_replay_package_with_parent(
@@ -1652,9 +1699,9 @@ fn live_merge_applies_finalized_unique_rows_and_updates_existing_keys() {
         )],
     );
     let second = commit(&env, second_dir.path(), "orders_merge");
-    assert_eq!(second.receipt.counts.rows_written, 2);
-    assert_eq!(second.receipt.counts.rows_inserted, Some(1));
-    assert_eq!(second.receipt.counts.rows_updated, Some(1));
+    assert_eq!(second.receipt.counts.settled_effect_count(), Some(2));
+    assert_eq!(second.receipt.counts.inserted_outcome(), Some(1));
+    assert_eq!(second.receipt.counts.updated_outcome(), Some(1));
 
     let mut client = env.client();
     let rows = client
@@ -1705,7 +1752,7 @@ fn live_decimal128_values_preserve_exact_numeric_text() {
         )],
     );
     let outcome = commit(&env, package_dir.path(), "orders_decimal");
-    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    assert_eq!(outcome.receipt.counts.settled_effect_count(), Some(3));
 
     let mut client = env.client();
     let rows = client
@@ -1763,7 +1810,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
         )],
     );
     let append = try_session_commit(&env, append_dir.path(), "exact_values").unwrap();
-    assert_eq!(append.counts.rows_written, 3);
+    assert_eq!(append.counts.settled_effect_count(), Some(3));
     let replay = try_session_commit(&env, append_dir.path(), "exact_values").unwrap();
     assert_eq!(replay.receipt_id, append.receipt_id);
 
@@ -1824,8 +1871,8 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
         )],
     );
     let replaced = try_session_commit(&env, replace_dir.path(), "exact_values").unwrap();
-    assert_eq!(replaced.counts.rows_written, 1);
-    assert_eq!(replaced.counts.rows_deleted, Some(3));
+    assert_eq!(replaced.counts.settled_effect_count(), Some(1));
+    assert_eq!(replaced.counts.row_delete_outcome(), Some(3));
     let replaced_row = client
         .query_one(
             &format!(
@@ -1857,7 +1904,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
         )],
     );
     let merged = try_session_commit(&env, merge_dir.path(), "exact_merge").unwrap();
-    assert_eq!(merged.counts.rows_written, 2);
+    assert_eq!(merged.counts.settled_effect_count(), Some(2));
     let merged_rows = client
         .query(
             &format!(
@@ -2101,8 +2148,8 @@ fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays(
     session.apply_migrations().unwrap();
     let counts = session.apply_corrections().unwrap();
     let receipt = session.finalize().unwrap();
-    assert_eq!(counts.rows_written, 2);
-    assert_eq!(counts.rows_updated, Some(2));
+    assert_eq!(counts.settled_effect_count(), Some(2));
+    assert_eq!(counts.updated_outcome(), Some(2));
     plan.kernel.validate_receipt(&request, &receipt).unwrap();
     assert!(
         env.destination()

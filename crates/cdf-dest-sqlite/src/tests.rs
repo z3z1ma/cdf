@@ -299,9 +299,9 @@ fn logical_batch(ids: Vec<i64>, names: Vec<&str>) -> RecordBatch {
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-fn state_segment(rows: u64) -> StateSegment {
+fn state_segment(rows: u64, kind: cdf_kernel::PackageSegmentKind) -> StateSegment {
     StateSegment {
-        kind: cdf_kernel::PackageSegmentKind::Row,
+        kind,
         segment_id: SegmentId::new("segment-1").unwrap(),
         scope: ScopeKey::Resource,
         output_position: SourcePosition::Cursor(CursorPosition {
@@ -324,7 +324,21 @@ fn test_plan(
     let package_hash = PackageHash::new(hash).unwrap();
     let schema_hash = SchemaHash::new(format!("schema-{hash}")).unwrap();
     let suffix = hash.replace([':', '-'], "_");
-    let segment = state_segment(rows);
+    let segment_kind = if disposition == WriteDisposition::Merge {
+        cdf_kernel::PackageSegmentKind::Upsert
+    } else {
+        cdf_kernel::PackageSegmentKind::Row
+    };
+    let segment = state_segment(rows, segment_kind);
+    let content = if disposition == WriteDisposition::Merge {
+        merge_content(
+            schema_hash.clone(),
+            merge_keys.iter().map(|key| (*key).to_owned()).collect(),
+            rows,
+        )
+    } else {
+        cdf_kernel::PackageContentAuthority::rows(schema_hash.clone())
+    };
     let state_delta = StateDelta {
         checkpoint_id: CheckpointId::new(format!("checkpoint-{suffix}")).unwrap(),
         pipeline_id: PipelineId::new(format!("pipeline-{suffix}")).unwrap(),
@@ -339,13 +353,13 @@ fn test_plan(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),
-        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
+        content: content.clone(),
         schema_hash: schema_hash.clone(),
         segments: vec![segment.clone()],
     };
     plan_sqlite_load(SqliteLoadPlanInput {
         package_hash: package_hash.clone(),
-        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
+        content,
         idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         target: SqliteIdentifier::user("events").unwrap(),
         disposition,
@@ -360,6 +374,49 @@ fn test_plan(
         state_delta: Some(state_delta),
     })
     .unwrap()
+}
+
+fn merge_content(
+    logical_schema_hash: SchemaHash,
+    keys: Vec<String>,
+    upserts: u64,
+) -> cdf_kernel::PackageContentAuthority {
+    let key_schema_hash = SchemaHash::new(format!(
+        "{}:keys:{}",
+        logical_schema_hash.as_str(),
+        keys.join(",")
+    ))
+    .unwrap();
+    let keyed_effects = cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported();
+    cdf_kernel::PackageContentAuthority::KeyedChanges {
+        logical_schema_hash: logical_schema_hash.clone(),
+        upsert_schema_hash: logical_schema_hash,
+        delete_schema_hash: key_schema_hash.clone(),
+        key: cdf_kernel::KeyAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            fields: keys,
+            encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+            schema_hash: key_schema_hash,
+        },
+        reduction: Box::new(cdf_kernel::KeyedEffectReductionAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            winner: cdf_kernel::KeyedEffectWinnerPolicy::Fail,
+            input_order: cdf_kernel::KeyedEffectInputOrder::Unordered,
+            input: cdf_kernel::KeyedEffectCounts {
+                upserts,
+                deletes: 0,
+            },
+            duplicate_key_count: 0,
+            surviving: cdf_kernel::KeyedEffectCounts {
+                upserts,
+                deletes: 0,
+            },
+            provenance_format: "parquet".to_owned(),
+            provenance_version: 1,
+        }),
+        deletion_capture: keyed_effects.deletion_capture,
+        delete_application: keyed_effects.delete_application,
+    }
 }
 
 #[test]
@@ -493,8 +550,13 @@ fn start_session_with_execution(
     let canonical = cdf_package_contract::append_package_row_ord(vec![batch], 0)
         .unwrap()
         .remove(0);
+    let kind = if disposition == WriteDisposition::Merge {
+        cdf_kernel::PackageSegmentKind::Upsert
+    } else {
+        cdf_kernel::PackageSegmentKind::Row
+    };
     let plan = test_plan(hash, disposition, schema.as_ref(), merge_keys, rows);
-    let state = state_segment(rows);
+    let state = state_segment(rows, kind);
     let expected = SqliteExpectedSegment {
         state: state.clone(),
         package_byte_count: rows * 16,
@@ -503,7 +565,7 @@ fn start_session_with_execution(
     let package = Arc::new(TestPackage {
         hash: hash.to_owned(),
         entries: vec![SegmentEntry {
-            kind: cdf_kernel::PackageSegmentKind::Row,
+            kind,
             segment_id: state.segment_id.clone(),
             path: "data/segment-1.arrow".to_owned(),
             package_row_ord_start: 0,
@@ -834,8 +896,8 @@ fn zero_segment_replace_atomically_empties_an_existing_target() {
         "sha256:zero-replace-after",
         WriteDisposition::Replace,
     );
-    assert_eq!(replacement.counts.rows_written, 0);
-    assert_eq!(replacement.counts.rows_deleted, Some(2));
+    assert_eq!(replacement.counts.row_write_outcome(), Some(0));
+    assert_eq!(replacement.counts.row_delete_outcome(), Some(2));
     let connection = Connection::open(&path).unwrap();
     assert_eq!(
         connection
@@ -867,7 +929,7 @@ fn replace_changes_the_target_atomically() {
         &[],
         logical_batch(vec![3], vec!["three"]),
     );
-    assert_eq!(receipt.counts.rows_deleted, Some(2));
+    assert_eq!(receipt.counts.row_delete_outcome(), Some(2));
     let connection = Connection::open(path).unwrap();
     assert_eq!(
         connection
@@ -896,8 +958,8 @@ fn merge_updates_matches_and_inserts_misses() {
         &["id"],
         logical_batch(vec![2, 3], vec!["TWO", "three"]),
     );
-    assert_eq!(receipt.counts.rows_updated, Some(1));
-    assert_eq!(receipt.counts.rows_inserted, Some(1));
+    assert_eq!(receipt.counts.updated_outcome(), Some(1));
+    assert_eq!(receipt.counts.inserted_outcome(), Some(1));
     let connection = Connection::open(path).unwrap();
     let values = connection
         .prepare("SELECT id, name FROM events ORDER BY id")

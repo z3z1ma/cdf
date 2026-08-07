@@ -1208,10 +1208,10 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
             .all(|segment| segment.kind == cdf_kernel::PackageSegmentKind::Upsert)
     );
     let segment = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
-    assert_eq!(batch_i32s(&segment[0], "id"), vec![2, 1, 3]);
+    assert_eq!(batch_i32s(&segment[0], "id"), vec![1, 2, 3]);
     assert_eq!(
         batch_strings(&segment, "customer_name"),
-        vec!["two", "one-last", "three"]
+        vec!["one-last", "two", "three"]
     );
 
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
@@ -1276,6 +1276,164 @@ fn merge_dedup_keep_first_uses_package_order() {
     assert_eq!(summary["duplicate_key_count"], 1);
     assert_eq!(summary["dropped_row_count"], 1);
     assert_eq!(collect_dedup_dropped_provenance(&reader), vec![(2, 0)]);
+}
+
+#[test]
+fn cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families() {
+    fn postgres_position(lsn: u64, xid: u32) -> SourcePosition {
+        SourcePosition::committed_log(cdf_kernel::CommittedLogPosition::PostgreSql(
+            cdf_kernel::PostgresCommitPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                scope: cdf_kernel::PostgresLogScope {
+                    system_identifier: "7421938841407953395".to_owned(),
+                    database_oid: 16_384,
+                    slot: "cdf_orders".to_owned(),
+                    output_plugin: "pgoutput".to_owned(),
+                    semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                commit_lsn: lsn,
+                end_lsn: lsn + 1,
+                xid,
+            },
+        ))
+    }
+
+    fn cdc_batch(mut batch: Batch, operation: cdf_kernel::CdcOperation, lsn: u64) -> Batch {
+        let position = postgres_position(lsn, u32::try_from(lsn).unwrap());
+        batch.header.source_position = Some(position.clone());
+        batch.header.cdc = Some(cdf_kernel::CdcMetadata {
+            operation,
+            position,
+        });
+        batch
+    }
+
+    fn delete_batch(batch_id: &str, key_field: Field, id: i32, lsn: u64) -> Batch {
+        let key_schema = Arc::new(Schema::new(vec![key_field]));
+        let record_batch = RecordBatch::try_new(
+            key_schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![id])) as ArrayRef],
+        )
+        .unwrap();
+        let mut batch = Batch::from_record_batch(
+            BatchId::new(batch_id).unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            cdf_kernel::canonical_arrow_schema_hash(key_schema.as_ref()).unwrap(),
+            record_batch,
+        )
+        .unwrap();
+        let position = postgres_position(lsn, u32::try_from(lsn).unwrap());
+        batch.header.source_position = Some(position.clone());
+        batch.header.cdc = Some(cdf_kernel::CdcMetadata {
+            operation: cdf_kernel::CdcOperation::Delete,
+            position,
+        });
+        batch
+    }
+
+    let initial = cdc_batch(
+        batch_for_partition(
+            "cdc-upsert-0",
+            "part-0",
+            vec![3, 1],
+            vec!["three-old", "one-old"],
+            vec![true, true],
+        ),
+        cdf_kernel::CdcOperation::Insert,
+        10,
+    );
+    let mut resource = MockResource::tier_a(vec![initial.clone()])
+        .with_write_disposition(WriteDisposition::CdcApply);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
+    input.keyed_effects = cdf_kernel::KeyedEffectPlanAuthority {
+        deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+            support: cdf_kernel::DeletionCaptureSupport::Inherent,
+            enabled: true,
+            semantics_sha256: format!("sha256:{}", "b".repeat(64)),
+        },
+        delete_application: cdf_kernel::DeleteApplicationAuthority::Apply {
+            policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+        },
+    };
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let key_field = plan.output_arrow_schema().unwrap().field(0).clone();
+    resource.batches = vec![
+        initial,
+        delete_batch("cdc-delete-1", key_field.clone(), 1, 20),
+        cdc_batch(
+            batch_for_partition(
+                "cdc-upsert-2",
+                "part-0",
+                vec![1, 2],
+                vec!["one-new", "two"],
+                vec![true, true],
+            ),
+            cdf_kernel::CdcOperation::Update,
+            30,
+        ),
+        delete_batch("cdc-delete-3", key_field, 3, 40),
+    ];
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        reduction,
+        deletion_capture,
+        delete_application,
+        ..
+    } = &reader.manifest().identity.content
+    else {
+        panic!("cdc_apply package must carry keyed-change content authority");
+    };
+    assert_eq!(
+        reduction.input,
+        cdf_kernel::KeyedEffectCounts {
+            upserts: 4,
+            deletes: 2,
+        }
+    );
+    assert_eq!(reduction.duplicate_key_count, 2);
+    assert_eq!(
+        reduction.surviving,
+        cdf_kernel::KeyedEffectCounts {
+            upserts: 2,
+            deletes: 1,
+        }
+    );
+    assert!(matches!(
+        reduction.input_order,
+        cdf_kernel::KeyedEffectInputOrder::SourceProtocol {
+            ref protocol,
+            version: 1,
+            ..
+        } if protocol == "postgresql"
+    ));
+    assert_eq!(
+        deletion_capture.support,
+        cdf_kernel::DeletionCaptureSupport::Inherent
+    );
+    assert_eq!(
+        delete_application,
+        &cdf_kernel::DeleteApplicationAuthority::Apply {
+            policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+        }
+    );
+
+    let segments = output.identity_segments();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0].kind, cdf_kernel::PackageSegmentKind::Upsert);
+    assert_eq!(segments[1].kind, cdf_kernel::PackageSegmentKind::Delete);
+    assert_eq!(segments[0].package_row_ord_start, 0);
+    assert_eq!(segments[1].package_row_ord_start, 2);
+    let upserts = read_package_segment(&reader, &segments[0].segment_id);
+    assert_eq!(batch_i32s(&upserts[0], "id"), vec![1, 2]);
+    assert_eq!(batch_strings(&upserts, "name"), vec!["one-new", "two"]);
+    let deletes = read_package_segment(&reader, &segments[1].segment_id);
+    assert_eq!(batch_i32s(&deletes[0], "id"), vec![3]);
+    assert!(deletes[0].column_by_name("name").is_none());
+    assert!(deletes[0].column_by_name("_cdf_package_row_ord").is_some());
 }
 
 #[test]

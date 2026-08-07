@@ -323,12 +323,7 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         disposition: WriteDisposition::Merge,
         idempotency_token: IdempotencyToken::new("package-sha256").unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written: 3,
-            rows_inserted: Some(3),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(3, Some(3), Some(0), Some(0)),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,
@@ -544,12 +539,7 @@ impl CommitSession for FakeCommitSession {
             disposition: self.plan.disposition,
             idempotency_token: self.request.idempotency_token,
             transaction: None,
-            counts: CommitCounts {
-                rows_written,
-                rows_inserted: Some(rows_written),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0)),
             schema_hash: SchemaHash::new("schema-sha256").unwrap(),
             migrations: self.plan.migrations,
             committed_at_ms: 1_700_000_000_100,
@@ -598,7 +588,7 @@ fn commit_session_api_writes_segments_and_finalizes_to_durable_receipt() {
     assert_eq!(receipt.destination, destination.sheet().destination);
     assert!(receipt.covers_state_delta(&delta));
     assert_eq!(receipt.segment_acks.len(), delta.segments.len());
-    assert_eq!(receipt.counts.rows_written, 3);
+    assert_eq!(receipt.counts.row_outcomes().unwrap().0, 3);
     assert_eq!(receipt.migrations.len(), 1);
     assert_eq!(receipt.verify.kind, "fake");
 
@@ -976,12 +966,7 @@ fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() 
                 ),
             ]),
         }),
-        counts: CommitCounts {
-            rows_written: 1,
-            rows_inserted: Some(1),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(1, Some(1), Some(0), Some(0)),
         schema_hash: request.new_schema_hash().clone(),
         migrations: Vec::new(),
         committed_at_ms: 1,
@@ -994,8 +979,7 @@ fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() 
 
     plan.validate_receipt(&request, &receipt).unwrap();
     let mut false_update = receipt.clone();
-    false_update.counts.rows_inserted = Some(0);
-    false_update.counts.rows_updated = Some(1);
+    false_update.counts = CommitCounts::rows(1, Some(0), Some(1), Some(0));
     assert!(
         plan.validate_receipt(&request, &false_update)
             .unwrap_err()
@@ -1303,12 +1287,7 @@ fn artifact_values_serde_round_trip() {
         disposition: WriteDisposition::Merge,
         idempotency_token: IdempotencyToken::new("package-sha256").unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written: 3,
-            rows_inserted: Some(3),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(3, Some(3), Some(0), Some(0)),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,

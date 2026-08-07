@@ -163,12 +163,18 @@ pub(crate) fn finalize_merge(
         dedup.sql_name(),
     ))
     .map_err(|error| duckdb_error("apply DuckDB merge", error))?;
-    Ok(CommitCounts {
-        rows_written: written,
-        rows_inserted: Some(written.saturating_sub(updated)),
-        rows_updated: Some(updated),
-        rows_deleted: Some(0),
-    })
+    Ok(CommitCounts::keyed_changes(
+        cdf_kernel::KeyedEffectCounts {
+            upserts: written,
+            deletes: 0,
+        },
+        Some(written.saturating_sub(updated)),
+        Some(updated),
+        None,
+        None,
+        None,
+        None,
+    ))
 }
 
 pub(crate) fn staging_table_name() -> String {

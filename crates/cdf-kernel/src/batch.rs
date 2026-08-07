@@ -142,6 +142,7 @@ pub struct BatchHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_idleness: Option<crate::PartitionIdlenessClaim>,
     pub stats: BatchStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cdc: Option<CdcMetadata>,
     #[serde(skip, default)]
     pre_contract_evidence: PreContractEvidence,
@@ -250,6 +251,10 @@ impl BatchHeader {
 
     pub fn take_physical_reconciliations(&mut self) -> Vec<PreContractPhysicalReconciliation> {
         std::mem::take(&mut self.pre_contract_evidence.physical_reconciliations)
+    }
+
+    pub fn physical_reconciliations(&self) -> &[PreContractPhysicalReconciliation] {
+        &self.pre_contract_evidence.physical_reconciliations
     }
 
     pub fn mark_materialized_residuals_complete(&mut self) {
@@ -657,8 +662,42 @@ pub struct PayloadRef {
     pub sha256: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdcOperation {
+    Insert,
+    Update,
+    Delete,
+}
+
+/// Source-proven operation and ordering authority for one homogeneous CDC batch.
+///
+/// Adapters split native mixed-operation buffers at operation boundaries. This keeps key-only
+/// deletes truthful without introducing nullable placeholder values for a complete after-image.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CdcMetadata {
-    pub operation_field: String,
+    pub operation: CdcOperation,
     pub position: SourcePosition,
+}
+
+impl CdcMetadata {
+    pub fn validate(&self, row_count: u64, batch_position: Option<&SourcePosition>) -> Result<()> {
+        if row_count == 0 {
+            return Err(crate::CdfError::data(
+                "CDC operation metadata requires at least one row",
+            ));
+        }
+        self.position.validate()?;
+        self.position.cdc_protocol_order_identity()?;
+        let batch_position = batch_position.ok_or_else(|| {
+            crate::CdfError::data("CDC batches require exact source-position authority")
+        })?;
+        if !self.position.equivalent(batch_position)? {
+            return Err(crate::CdfError::data(
+                "CDC operation position does not match the batch source position",
+            ));
+        }
+        Ok(())
+    }
 }

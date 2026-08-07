@@ -416,12 +416,7 @@ fn receipt(
         segment_acks: Vec::new(),
         disposition,
         transaction: None,
-        counts: CommitCounts {
-            rows_written: 0,
-            rows_inserted,
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+        counts: CommitCounts::rows(0, rows_inserted, Some(0), Some(0)),
         schema_hash,
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,

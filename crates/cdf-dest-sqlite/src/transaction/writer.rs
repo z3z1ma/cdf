@@ -373,12 +373,12 @@ pub(super) fn finish_payload(
 ) -> Result<CommitCounts> {
     cancellation.check()?;
     match plan.kernel.disposition {
-        WriteDisposition::Append | WriteDisposition::Replace => Ok(CommitCounts {
-            rows_written: rows,
-            rows_inserted: Some(rows),
-            rows_updated: Some(0),
-            rows_deleted: Some(deleted_rows),
-        }),
+        WriteDisposition::Append | WriteDisposition::Replace => Ok(CommitCounts::rows(
+            rows,
+            Some(rows),
+            Some(0),
+            Some(deleted_rows),
+        )),
         WriteDisposition::Merge => finish_merge(connection, plan, rows, cancellation),
         WriteDisposition::CdcApply => Err(CdfError::internal(
             "unsupported SQLite CDC disposition reached payload finalization",
@@ -509,12 +509,18 @@ pub(super) fn finish_merge(
     let inserted = rows
         .checked_sub(updated)
         .ok_or_else(|| CdfError::internal("SQLite merge update count exceeds source rows"))?;
-    Ok(CommitCounts {
-        rows_written: rows,
-        rows_inserted: Some(inserted),
-        rows_updated: Some(updated),
-        rows_deleted: Some(0),
-    })
+    Ok(CommitCounts::keyed_changes(
+        cdf_kernel::KeyedEffectCounts {
+            upserts: rows,
+            deletes: 0,
+        },
+        Some(inserted),
+        Some(updated),
+        None,
+        None,
+        None,
+        None,
+    ))
 }
 
 pub(super) fn merge_predicate(

@@ -777,12 +777,7 @@ fn direct_commit_artifacts(
         inputs.schema_hash.clone(),
         ReceiptEvidence {
             transaction: Some(transaction),
-            counts: CommitCounts {
-                rows_written: rows,
-                rows_inserted: Some(rows),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(rows, Some(rows), Some(0), Some(0)),
             committed_at_ms,
             verify: VerifyClause {
                 kind: "sqlite_mirror_receipt_v1".to_owned(),

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use cdf_dest_sql::LoadMirrorRow;
 use cdf_kernel::{
-    CdfError, IdempotencyToken, MigrationRecord, PackageHash, Receipt, Result, SchemaHash,
-    StateSegment, TargetName, VerifyClause,
+    CdfError, CommitCounts, IdempotencyToken, MigrationRecord, PackageHash, Receipt, Result,
+    SchemaHash, StateSegment, TargetName, VerifyClause,
 };
 use cdf_postgres::PostgresIdentifier;
 use postgres::Row;
@@ -43,10 +43,8 @@ pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
         || receipt.idempotency_token.as_str() != row.get::<_, String>(5)
         || disposition_name(&receipt.disposition) != row.get::<_, String>(6)
         || receipt.schema_hash.as_str() != row.get::<_, String>(7)
-        || receipt.counts.rows_written != rows_written
-        || receipt.counts.rows_inserted != rows_inserted
-        || receipt.counts.rows_updated != rows_updated
-        || receipt.counts.rows_deleted != rows_deleted
+        || indexed_counts(&receipt.counts)
+            != (rows_written, rows_inserted, rows_updated, rows_deleted)
         || receipt.segment_acks.len() as u64 != segment_count
         || receipt.migrations != migrations
         || receipt.committed_at_ms != row.get::<_, i64>(14)
@@ -56,6 +54,32 @@ pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
         ));
     }
     Ok(LoadMirrorRow { receipt })
+}
+
+pub(crate) fn indexed_counts(
+    counts: &CommitCounts,
+) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
+    match counts {
+        CommitCounts::Rows {
+            rows_written,
+            rows_inserted,
+            rows_updated,
+            rows_deleted,
+        } => (*rows_written, *rows_inserted, *rows_updated, *rows_deleted),
+        CommitCounts::KeyedChanges {
+            intent,
+            rows_inserted,
+            rows_updated,
+            hard_deletes,
+            soft_deletes,
+            ..
+        } => (
+            intent.upserts,
+            *rows_inserted,
+            *rows_updated,
+            (*hard_deletes).or(*soft_deletes),
+        ),
+    }
 }
 
 fn load_count(value: i64, name: &str) -> Result<u64> {

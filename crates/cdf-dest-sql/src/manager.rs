@@ -483,12 +483,7 @@ mod tests {
                 system: "test".to_owned(),
                 values: BTreeMap::new(),
             }),
-            counts: CommitCounts {
-                rows_written: 2,
-                rows_inserted: Some(2),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(2, Some(2), Some(0), Some(0)),
             schema_hash: SchemaHash::new("schema-1").unwrap(),
             migrations: Vec::new(),
             committed_at_ms: 100,
@@ -647,7 +642,7 @@ mod tests {
             TransactionalMirrorManager::new(&mut backend)
                 .find_duplicate(&key, |stored| {
                     let mut expected = stored.clone();
-                    expected.counts.rows_written += 1;
+                    expected.counts = CommitCounts::rows(3, Some(2), Some(0), Some(0));
                     Ok(expected)
                 })
                 .unwrap_err()

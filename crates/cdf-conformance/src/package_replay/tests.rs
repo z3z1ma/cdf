@@ -605,17 +605,16 @@ fn fake_receipt(case: &PreparedPackageReplayCase) -> Receipt {
         disposition: case.disposition.clone(),
         idempotency_token: IdempotencyToken::new(case.delta.package_hash.as_str()).unwrap(),
         transaction: None,
-        counts: CommitCounts {
-            rows_written: case
-                .delta
+        counts: CommitCounts::rows(
+            case.delta
                 .segments
                 .iter()
                 .map(|segment| segment.row_count)
                 .sum(),
-            rows_inserted: Some(3),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        },
+            Some(3),
+            Some(0),
+            Some(0),
+        ),
         schema_hash: case.schema_hash.clone(),
         migrations: Vec::new(),
         committed_at_ms: 1_700_000_000_000,

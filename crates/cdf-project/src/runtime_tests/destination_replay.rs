@@ -705,12 +705,7 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
             disposition: binding.commit().disposition.clone(),
             idempotency_token: binding.commit().idempotency_token.clone(),
             transaction: None,
-            counts: CommitCounts {
-                rows_written,
-                rows_inserted: Some(rows_written),
-                rows_updated: Some(0),
-                rows_deleted: Some(0),
-            },
+            counts: CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0)),
             schema_hash: binding.schema_hash().clone(),
             migrations: binding.plan().migrations.clone(),
             committed_at_ms: 1_700_000_000_000,
@@ -1671,7 +1666,10 @@ fn generic_plan_replay_and_recovery_drive_mock_runtime_without_destination_branc
     );
     assert!(report.receipt.covers_state_delta(&inputs.state_delta));
     let mut conflicting = report.receipt.clone();
-    conflicting.counts.rows_written += 1;
+    let (rows_written, rows_inserted, rows_updated, rows_deleted) =
+        conflicting.counts.row_outcomes().unwrap();
+    conflicting.counts =
+        CommitCounts::rows(rows_written + 1, rows_inserted, rows_updated, rows_deleted);
     let conflict =
         record_package_receipt_once(&PackageReader::open(&package_dir).unwrap(), &conflicting)
             .unwrap_err();

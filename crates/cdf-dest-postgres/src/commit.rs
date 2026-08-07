@@ -211,7 +211,20 @@ impl PostgresCommitSession {
         let xid = query_xid(&mut client, &self.plan)?;
         let committed_at_ms = now_ms(&self.execution)?;
         let counts = if self.expected_segments.is_empty() {
-            CommitCounts::default()
+            match &self.plan.content {
+                cdf_kernel::PackageContentAuthority::Rows { .. } => CommitCounts::default(),
+                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. } => {
+                    CommitCounts::keyed_changes(
+                        reduction.surviving,
+                        Some(0),
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                }
+            }
         } else {
             apply_write_plan_after_payload(&mut client, &self.plan, copied_rows, deleted_rows)?
         };
@@ -543,29 +556,67 @@ pub(crate) fn validate_postgres_duplicate_counts(stored: &Receipt) -> Result<()>
     })?;
     let counts = &stored.counts;
     let valid = if stored.segment_acks.is_empty() {
-        counts == &CommitCounts::default()
+        match (&stored.content, counts) {
+            (
+                cdf_kernel::PackageContentAuthority::Rows { .. },
+                CommitCounts::Rows {
+                    rows_written: 0,
+                    rows_inserted: None,
+                    rows_updated: None,
+                    rows_deleted: None,
+                },
+            ) => true,
+            (
+                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. },
+                CommitCounts::KeyedChanges {
+                    intent,
+                    rows_inserted: Some(0),
+                    rows_updated: Some(0),
+                    hard_deletes: None,
+                    soft_deletes: None,
+                    missing_delete_keys: None,
+                    ignored_deletes: None,
+                },
+            ) => *intent == reduction.surviving,
+            _ => false,
+        }
     } else {
-        counts.rows_written == rows
-            && match stored.disposition {
-                WriteDisposition::Append => {
-                    counts.rows_inserted == Some(rows)
-                        && counts.rows_updated == Some(0)
-                        && counts.rows_deleted == Some(0)
-                }
-                WriteDisposition::Replace => {
-                    counts.rows_inserted == Some(rows)
-                        && counts.rows_updated == Some(0)
-                        && counts.rows_deleted.is_some()
-                }
-                WriteDisposition::Merge => counts
-                    .rows_inserted
-                    .zip(counts.rows_updated)
-                    .is_some_and(|(inserted, updated)| {
-                        inserted.checked_add(updated) == Some(rows)
-                            && counts.rows_deleted == Some(0)
-                    }),
-                WriteDisposition::CdcApply => false,
+        match (&stored.disposition, counts) {
+            (
+                WriteDisposition::Append | WriteDisposition::Replace,
+                CommitCounts::Rows {
+                    rows_written,
+                    rows_inserted,
+                    rows_updated,
+                    ..
+                },
+            ) => *rows_written == rows && *rows_inserted == Some(rows) && *rows_updated == Some(0),
+            (
+                WriteDisposition::Merge,
+                CommitCounts::KeyedChanges {
+                    intent,
+                    rows_inserted,
+                    rows_updated,
+                    hard_deletes,
+                    soft_deletes,
+                    missing_delete_keys,
+                    ignored_deletes,
+                },
+            ) => {
+                intent.upserts == rows
+                    && intent.deletes == 0
+                    && rows_inserted
+                        .zip(*rows_updated)
+                        .is_some_and(|(inserted, updated)| {
+                            inserted.checked_add(updated) == Some(rows)
+                        })
+                    && hard_deletes.is_none()
+                    && soft_deletes.is_none()
+                    && missing_delete_keys.is_none()
+                    && ignored_deletes.is_none()
             }
+            _ => false,
+        }
     };
     if valid {
         Ok(())
@@ -640,11 +691,27 @@ fn apply_write_plan_after_payload(
         }
     }
 
-    Ok(CommitCounts {
-        rows_written,
-        rows_inserted,
-        rows_updated,
-        rows_deleted,
+    Ok(match plan.kernel.disposition {
+        WriteDisposition::Append | WriteDisposition::Replace => {
+            CommitCounts::rows(rows_written, rows_inserted, rows_updated, rows_deleted)
+        }
+        WriteDisposition::Merge => CommitCounts::keyed_changes(
+            cdf_kernel::KeyedEffectCounts {
+                upserts: rows_written,
+                deletes: 0,
+            },
+            rows_inserted,
+            rows_updated,
+            None,
+            None,
+            None,
+            None,
+        ),
+        WriteDisposition::CdcApply => {
+            return Err(CdfError::internal(
+                "unsupported Postgres CDC disposition reached row-only finalization",
+            ));
+        }
     })
 }
 
@@ -1017,10 +1084,12 @@ fn insert_load_mirror(
     let idempotency_token = receipt.idempotency_token.as_str();
     let disposition = disposition_name(&receipt.disposition);
     let schema_hash = receipt.schema_hash.as_str();
-    let rows_written = to_i64(receipt.counts.rows_written, "rows_written")?;
-    let rows_inserted = optional_to_i64(receipt.counts.rows_inserted, "rows_inserted")?;
-    let rows_updated = optional_to_i64(receipt.counts.rows_updated, "rows_updated")?;
-    let rows_deleted = optional_to_i64(receipt.counts.rows_deleted, "rows_deleted")?;
+    let (indexed_written, indexed_inserted, indexed_updated, indexed_deleted) =
+        crate::mirrors::indexed_counts(&receipt.counts);
+    let rows_written = to_i64(indexed_written, "rows_written")?;
+    let rows_inserted = optional_to_i64(indexed_inserted, "rows_inserted")?;
+    let rows_updated = optional_to_i64(indexed_updated, "rows_updated")?;
+    let rows_deleted = optional_to_i64(indexed_deleted, "rows_deleted")?;
     let segment_count = to_i64(receipt.segment_acks.len() as u64, "segment_count")?;
     client
         .query_opt(

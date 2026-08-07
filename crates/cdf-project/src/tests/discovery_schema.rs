@@ -1151,6 +1151,7 @@ pub(super) fn live_plan_for_stream(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
                 relational_expression_plan: None,

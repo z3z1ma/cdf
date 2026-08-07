@@ -1710,24 +1710,25 @@ fn commit_counts(
             .ok_or_else(|| CdfError::data("ClickHouse commit row count overflowed"))
     })?;
     match plan.kernel.disposition {
-        WriteDisposition::Append => Ok(CommitCounts {
-            rows_written: rows,
-            rows_inserted: Some(rows),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
-        }),
-        WriteDisposition::Replace => Ok(CommitCounts {
-            rows_written: rows,
-            rows_inserted: Some(rows),
-            rows_updated: Some(0),
-            rows_deleted: Some(existing_rows),
-        }),
-        WriteDisposition::Merge if is_native_merge(plan) => Ok(CommitCounts {
-            rows_written: rows,
-            rows_inserted: None,
-            rows_updated: None,
-            rows_deleted: Some(0),
-        }),
+        WriteDisposition::Append => Ok(CommitCounts::rows(rows, Some(rows), Some(0), Some(0))),
+        WriteDisposition::Replace => Ok(CommitCounts::rows(
+            rows,
+            Some(rows),
+            Some(0),
+            Some(existing_rows),
+        )),
+        WriteDisposition::Merge if is_native_merge(plan) => Ok(CommitCounts::keyed_changes(
+            cdf_kernel::KeyedEffectCounts {
+                upserts: rows,
+                deletes: 0,
+            },
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )),
         WriteDisposition::Merge => {
             let counts = atomic_merge.ok_or_else(|| {
                 CdfError::internal("ClickHouse atomic merge omitted exact count evidence")
@@ -1737,12 +1738,18 @@ fn commit_counts(
                     "ClickHouse atomic merge count evidence differs from package rows",
                 ));
             }
-            Ok(CommitCounts {
-                rows_written: rows,
-                rows_inserted: Some(rows.saturating_sub(counts.updated_rows)),
-                rows_updated: Some(counts.updated_rows),
-                rows_deleted: Some(0),
-            })
+            Ok(CommitCounts::keyed_changes(
+                cdf_kernel::KeyedEffectCounts {
+                    upserts: rows,
+                    deletes: 0,
+                },
+                Some(rows.saturating_sub(counts.updated_rows)),
+                Some(counts.updated_rows),
+                None,
+                None,
+                None,
+                None,
+            ))
         }
         WriteDisposition::CdcApply => Err(CdfError::internal(
             "unsupported ClickHouse CDC disposition reached commit counts",
@@ -2047,7 +2054,7 @@ async fn verify_receipt_on_client(
         }
         ordinal_start = ordinal_end;
     }
-    if ordinal_start != receipt.counts.rows_written {
+    if ordinal_start != settled_effects(&receipt.counts)? {
         return Err(CdfError::destination(
             "ClickHouse segment mirror ranges do not cover the receipt row count",
         ));
@@ -2092,7 +2099,8 @@ async fn verify_receipt_on_client(
         // than a false claim that the old values remain current.
         return Ok(());
     }
-    if !is_atomic_receipt(receipt, merge_mode) && package_rows != Some(receipt.counts.rows_written)
+    if !is_atomic_receipt(receipt, merge_mode)
+        && package_rows != Some(settled_effects(&receipt.counts)?)
     {
         return Err(CdfError::destination(
             "ClickHouse target package rows differ from receipt counts",
@@ -2121,11 +2129,11 @@ async fn verify_receipt_on_client(
                     "verify ClickHouse replacement target rows",
                 )
                 .await?
-                    == receipt.counts.rows_written
+                    == settled_effects(&receipt.counts)?
             } else {
                 true
             };
-            if package_rows != receipt.counts.rows_written || !row_count_matches {
+            if package_rows != settled_effects(&receipt.counts)? || !row_count_matches {
                 return Err(CdfError::destination(
                     "ClickHouse atomic publication target rows differ from its receipt",
                 ));
@@ -2141,6 +2149,13 @@ async fn verify_receipt_on_client(
         }
     }
     Ok(())
+}
+
+fn settled_effects(counts: &CommitCounts) -> Result<u64> {
+    match counts {
+        CommitCounts::Rows { rows_written, .. } => Ok(*rows_written),
+        CommitCounts::KeyedChanges { intent, .. } => intent.total(),
+    }
 }
 
 fn is_atomic_receipt(receipt: &Receipt, merge_mode: &str) -> bool {

@@ -659,18 +659,14 @@ where
                             pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
                                 .quarantined_rows;
                         let residual_candidates = batch.header.take_residual_candidates();
-                        let cdc_operation_field = batch
-                            .header
-                            .cdc
-                            .as_ref()
-                            .map(|metadata| metadata.operation_field.clone());
+                        validate_cdc_batch_authority(&plan.write_disposition, &batch.header)?;
                         let residual_preflight = preflight_residual_quarantines(
                             &plan.validation_program,
                             residual_candidates,
                             &ResidualBatchContext {
                                 evaluation: &evaluation_context,
                                 source_rows: None,
-                                cdc_operation_field: cdc_operation_field.as_deref(),
+                                cdc_operation_field: None,
                                 batch_id: &batch.header.batch_id,
                                 observation_id: candidate
                                     .expected
@@ -777,7 +773,7 @@ where
                             &ResidualBatchContext {
                                 evaluation: &evaluation_context,
                                 source_rows: source_rows.as_deref(),
-                                cdc_operation_field: cdc_operation_field.as_deref(),
+                                cdc_operation_field: None,
                                 batch_id: &batch.header.batch_id,
                                 observation_id: candidate
                                     .expected
@@ -1141,6 +1137,46 @@ fn validate_batch_partition_ownership(
             batch.header.partition_id.as_str()
         )));
     }
+    Ok(())
+}
+
+fn validate_cdc_batch_authority(
+    disposition: &WriteDisposition,
+    header: &cdf_kernel::BatchHeader,
+) -> Result<()> {
+    match (&header.cdc, disposition) {
+        (Some(metadata), WriteDisposition::Merge | WriteDisposition::CdcApply) => {
+            metadata.validate(header.row_count, header.source_position.as_ref())
+        }
+        (Some(_), WriteDisposition::Append | WriteDisposition::Replace) => Err(CdfError::contract(
+            "append and replace resources cannot admit CDC operation batches",
+        )),
+        (None, WriteDisposition::CdcApply) => Err(CdfError::data(
+            "cdc_apply requires operation metadata on every admitted batch",
+        )),
+        (None, WriteDisposition::Append | WriteDisposition::Replace | WriteDisposition::Merge) => {
+            Ok(())
+        }
+    }
+}
+
+fn observe_cdc_order_identity(
+    observed: &mut Option<(String, String)>,
+    header: &cdf_kernel::BatchHeader,
+) -> Result<()> {
+    let Some(metadata) = &header.cdc else {
+        return Ok(());
+    };
+    let identity = metadata.position.cdc_protocol_order_identity()?;
+    if observed
+        .as_ref()
+        .is_some_and(|current| current != &identity)
+    {
+        return Err(CdfError::data(
+            "one package cannot combine CDC batches from different source-protocol scopes",
+        ));
+    }
+    *observed = Some(identity);
     Ok(())
 }
 
@@ -1939,10 +1975,23 @@ struct ExecutedBatch {
 }
 
 struct PendingDedupBatch {
+    kind: cdf_kernel::PackageSegmentKind,
     partition_ordinal: u64,
     output: RecordBatch,
     output_position: Option<SourcePosition>,
     _memory_lease: Option<MemoryLease>,
+}
+
+struct AppliedDedup {
+    summary: cdf_contract::DedupSummary,
+    input_effects: cdf_kernel::KeyedEffectCounts,
+    surviving_effects: cdf_kernel::KeyedEffectCounts,
+}
+
+struct ExternalDedupState {
+    index: crate::dedup_spill::ExternalDedupIndex,
+    payload: crate::dedup_spill::DedupPayloadSpool,
+    effect_sort: Option<crate::dedup_spill::EffectSortSpool>,
 }
 
 struct PreparedOutputBatch {
@@ -3633,6 +3682,7 @@ where
     }
     let mut pending_dedup_batches = Vec::new();
     let mut next_package_output_row_ordinal = 0_u64;
+    let mut cdc_order_identity = None::<(String, String)>;
     let mut phase_measurements = PhaseMeasurements::new(options.phase_metrics);
     let memory = options
         .services
@@ -3652,7 +3702,23 @@ where
                     builder.package_dir().join(".dedup-payload"),
                     services.spill(),
                 )?;
-                Ok((index, payload))
+                let effect_sort = matches!(
+                    plan.write_disposition,
+                    WriteDisposition::Merge | WriteDisposition::CdcApply
+                )
+                .then(|| {
+                    crate::dedup_spill::EffectSortSpool::create(
+                        builder.package_dir().join(".effect-sort-spill"),
+                        services.spill(),
+                        services.memory(),
+                    )
+                })
+                .transpose()?;
+                Ok(ExternalDedupState {
+                    index,
+                    payload,
+                    effect_sort,
+                })
             })
             .transpose()?
     } else {
@@ -3833,23 +3899,27 @@ where
                     .ok_or_else(|| CdfError::data("late-data carryover memory count overflow"))?;
 
                 if apply_package_dedup {
-                    if let Some((index, payload)) = &mut external_dedup {
+                    if let Some(external) = &mut external_dedup {
                         let rule = package_dedup_rule.as_ref().ok_or_else(|| {
                             CdfError::internal("package dedup rule is absent")
                         })?;
-                        index.push_owned_keys(encode_effect_keys(
+                        let keys = encode_effect_keys(
                             plan,
                             &validation_program,
                             rule,
                             &batch,
-                        )?)?;
-                        payload.push(
+                        )?;
+                        external.index.push_owned_keys(keys.iter().cloned())?;
+                        external.payload.push(
+                            package_segment_kind,
                             carryover_partition_ordinal,
                             Some(carryover_frontier.clone()),
+                            &keys,
                             &batch,
                         )?;
                     } else {
                         pending_dedup_batches.push(PendingDedupBatch {
+                            kind: package_segment_kind,
                             partition_ordinal: carryover_partition_ordinal,
                             output: batch,
                             output_position: Some(carryover_frontier.clone()),
@@ -4264,6 +4334,8 @@ where
                     &plan.scan.request.resource_id,
                     &partition,
                 )?;
+                validate_cdc_batch_authority(&plan.write_disposition, &batch.header)?;
+                observe_cdc_order_identity(&mut cdc_order_identity, &batch.header)?;
                 if let Some(watermarks) = partition_watermarks.as_ref() {
                     for watermark in &batch.header.watermarks {
                         watermarks.validate_partition_claim(
@@ -4314,11 +4386,6 @@ where
                     }
                     quarantine_sink.finish()?;
                 }
-                let cdc_operation_field = batch
-                    .header
-                    .cdc
-                    .as_ref()
-                    .map(|metadata| metadata.operation_field.clone());
                 let Some(record_batch) = batch.record_batch() else {
                     return Err(CdfError::data(
                         "package execution requires in-memory Arrow record batches at MVP",
@@ -4326,6 +4393,112 @@ where
                 };
                 let validation_input_bytes = u64::try_from(record_batch.get_array_memory_size())
                     .map_err(|error| CdfError::internal(error.to_string()))?;
+                if batch
+                    .header
+                    .cdc
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.operation == cdf_kernel::CdcOperation::Delete)
+                {
+                    if remaining_limit.is_some() {
+                        return Err(CdfError::contract(
+                            "cdc_apply delete effects cannot be combined with a row limit",
+                        ));
+                    }
+                    if !batch.header.pre_contract_quarantine.is_empty()
+                        || !batch.header.residual_candidates().is_empty()
+                        || !batch.header.physical_reconciliations().is_empty()
+                    {
+                        return Err(CdfError::data(
+                            "CDC delete keys cannot be quarantined, residualized, or physically reconciled",
+                        ));
+                    }
+                    let output = prepare_delete_effect_batch(plan, &batch, record_batch)?;
+                    let batch_source_position = normalize_source_position_for_partition(
+                        batch.header.source_position.clone(),
+                        &partition_scope,
+                    );
+                    if let Some(position) = &batch_source_position {
+                        accumulate_processed_partition_position(
+                            cdf_kernel::partition_schema_observation_id(&partition),
+                            resource.descriptor(),
+                            resource_schema.as_ref(),
+                            &mut observed_partition_position,
+                            position.clone(),
+                        )?;
+                    }
+                    admitted_batch_count = admitted_batch_count.saturating_add(1);
+                    partition_source_row_ordinal = partition_source_row_ordinal
+                        .checked_add(batch.header.row_count)
+                        .ok_or_else(|| CdfError::data("CDC source row count overflowed u64"))?;
+                    verdict_summary.input_rows = verdict_summary
+                        .input_rows
+                        .saturating_add(batch.header.row_count);
+                    verdict_summary.accepted_rows = verdict_summary
+                        .accepted_rows
+                        .saturating_add(batch.header.row_count);
+                    let rule = package_dedup_rule.as_ref().ok_or_else(|| {
+                        CdfError::internal("CDC delete package omitted its exact-key rule")
+                    })?;
+                    let external = external_dedup.as_mut().ok_or_else(|| {
+                        CdfError::contract(
+                            "CDC delete reduction requires bounded execution services and spill authority",
+                        )
+                    })?;
+                    let keys = encode_effect_keys(
+                        plan,
+                        &validation_program,
+                        rule,
+                        &output,
+                    )?;
+                    external.index.push_owned_keys(keys.iter().cloned())?;
+                    external.payload.push(
+                        cdf_kernel::PackageSegmentKind::Delete,
+                        partition_ordinal,
+                        batch_source_position,
+                        &keys,
+                        &output,
+                    )?;
+                    phase_measurements.add(
+                        RunPhase::ValidationNormalization,
+                        elapsed_ns(validation_started, "CDC delete-key validation")?,
+                        validation_input_bytes,
+                        u64::try_from(output.get_array_memory_size())
+                            .map_err(|_| CdfError::data("CDC delete batch bytes exceed u64"))?,
+                    );
+                    if partition_drain_batch_frontiers_enabled {
+                        partition_batch_frontiers_observed = true;
+                        let watermark_observation_milliseconds =
+                            drain_clock.monotonic_milliseconds(options.services.as_ref());
+                        if let Some((decision, partition_position)) = observe_drain_batch_frontier(
+                            drain_controller.as_deref_mut(),
+                            resource.descriptor(),
+                            resource_schema.as_ref(),
+                            &processed_observations,
+                            &partition,
+                            observed_partition_position.as_ref(),
+                            &mut drain_partition_positions,
+                            batch.header.row_count,
+                            batch.header.byte_count,
+                            None,
+                            watermark_observation_milliseconds,
+                            drain_clock.observed_at_unix_milliseconds(options.services.as_ref())?,
+                        )? {
+                            let resume = Box::new(crate::DrainPartitionResume {
+                                partition_id: partition.partition_id.clone(),
+                                start_position: partition_position,
+                            });
+                            last_drain_partition_resume = Some(resume.clone());
+                            if let cdf_runtime::DrainEpochDecision::Close(closure) = decision {
+                                drain_partition_resume = Some(resume);
+                                drain_epoch_closure = Some(*closure);
+                                fully_processed = false;
+                                partition_epoch_closed = true;
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let reconciled = materialize_batch_schema_evidence(
                     &batch,
                     record_batch,
@@ -4538,7 +4711,7 @@ where
                     &ResidualBatchContext {
                         evaluation: &evaluation_context,
                         source_rows: None,
-                        cdc_operation_field: cdc_operation_field.as_deref(),
+                        cdc_operation_field: None,
                         batch_id: &batch.header.batch_id,
                         observation_id: partition_observation_id.as_deref(),
                     },
@@ -4747,7 +4920,7 @@ where
                     &ResidualBatchContext {
                         evaluation: &evaluation_context,
                         source_rows: source_rows.as_deref(),
-                        cdc_operation_field: cdc_operation_field.as_deref(),
+                        cdc_operation_field: None,
                         batch_id: &batch.header.batch_id,
                         observation_id: partition_observation_id.as_deref(),
                     },
@@ -4987,19 +5160,27 @@ where
                         validation_input_bytes,
                         validation_output_bytes,
                     );
-                    if let Some((index, payload)) = &mut external_dedup {
+                    if let Some(external) = &mut external_dedup {
                         let rule = package_dedup_rule.as_ref().ok_or_else(|| {
                             CdfError::internal("package dedup rule is absent")
                         })?;
-                        index.push_owned_keys(encode_effect_keys(
+                        let keys = encode_effect_keys(
                             plan,
                             &validation_program,
                             rule,
                             &output,
-                        )?)?;
-                        payload.push(partition_ordinal, batch_output_position, &output)?;
+                        )?;
+                        external.index.push_owned_keys(keys.iter().cloned())?;
+                        external.payload.push(
+                            package_segment_kind,
+                            partition_ordinal,
+                            batch_output_position,
+                            &keys,
+                            &output,
+                        )?;
                     } else {
                         pending_dedup_batches.push(PendingDedupBatch {
+                            kind: package_segment_kind,
                             partition_ordinal,
                             output,
                             output_position: batch_output_position,
@@ -5203,7 +5384,7 @@ where
         let rule = package_dedup_rule.as_ref().ok_or_else(|| {
             CdfError::internal("package dedup was selected without a compiled rule")
         })?;
-        let summary = apply_dedup_and_write_pending_batches(
+        let applied = apply_dedup_and_write_pending_batches(
             &builder,
             &validation_program,
             rule,
@@ -5234,7 +5415,13 @@ where
             plan.write_disposition,
             WriteDisposition::Merge | WriteDisposition::CdcApply
         ) {
-            keyed_reduction = Some(keyed_reduction_authority(rule, &summary, plan)?);
+            keyed_reduction = Some(keyed_reduction_authority(
+                rule,
+                &applied.summary,
+                plan,
+                cdc_order_identity.as_ref(),
+                Some((applied.input_effects, applied.surviving_effects)),
+            )?);
         }
     }
 
@@ -5963,25 +6150,30 @@ fn prepare_package_artifacts(
     })
 }
 
+// Reduction, canonical assembly, and the two publication sinks must share one snapshot and write
+// transaction, so keeping their authorities explicit is safer than hiding them in ambient state.
+#[allow(clippy::too_many_arguments)]
 fn apply_dedup_and_write_pending_batches(
     builder: &PackageBuilder,
     program: &ValidationProgram,
     rule: &cdf_contract::PackageDedupRuleSpec,
     pending: Vec<PendingDedupBatch>,
-    external: Option<(
-        crate::dedup_spill::ExternalDedupIndex,
-        crate::dedup_spill::DedupPayloadSpool,
-    )>,
+    external: Option<ExternalDedupState>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
     sink: &mut SegmentOutputSink<'_, '_>,
-) -> Result<cdf_contract::DedupSummary> {
+) -> Result<AppliedDedup> {
     let validation_started = state.phase_measurements.start();
     let pending_input_bytes = pending
         .iter()
         .map(|batch| batch.output.get_array_memory_size() as u64)
         .sum();
-    if let Some((index, payload)) = external {
+    if let Some(ExternalDedupState {
+        index,
+        payload,
+        mut effect_sort,
+    }) = external
+    {
         let validation_input_bytes = payload.input_bytes;
         let mut decisions = index.finish(rule.keep.clone())?;
         if let Some(memory) = state.memory {
@@ -5990,14 +6182,27 @@ fn apply_dedup_and_write_pending_batches(
             });
         }
         let mut payload = payload.finish()?;
-        let mut assembler = None::<(u64, crate::CanonicalSegmentAssembler)>;
+        let mut assembler = None::<(
+            u64,
+            cdf_kernel::PackageSegmentKind,
+            crate::CanonicalSegmentAssembler,
+        )>;
         let mut provenance = DedupProvenanceSink::new();
         let mut expected_ordinal = 0_u64;
+        let mut input_effects = cdf_kernel::KeyedEffectCounts::default();
+        let mut surviving_effects = cdf_kernel::KeyedEffectCounts::default();
         while let Some(payload_batch) = match payload.as_mut() {
             Some(payload) => payload.next()?,
             None => None,
         } {
+            add_effect_count(
+                &mut input_effects,
+                payload_batch.kind,
+                u64::try_from(payload_batch.batch.num_rows())
+                    .map_err(|_| CdfError::data("dedup payload row count exceeds u64"))?,
+            )?;
             let mut retained = Vec::with_capacity(payload_batch.batch.num_rows());
+            let mut retained_count = 0_u64;
             for _ in 0..payload_batch.batch.num_rows() {
                 let decision = decisions.next()?.ok_or_else(|| {
                     CdfError::internal("external dedup decision stream ended early")
@@ -6009,24 +6214,54 @@ fn apply_dedup_and_write_pending_batches(
                 }
                 let keep = decision.ordinal == decision.kept_ordinal;
                 retained.push(keep);
+                if keep {
+                    retained_count = retained_count
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("surviving effect count overflowed u64"))?;
+                }
                 if !keep {
                     provenance.push(builder, decision.ordinal, decision.kept_ordinal)?;
                 }
                 expected_ordinal += 1;
             }
+            let retained_keys = effect_sort.as_ref().map(|_| {
+                payload_batch
+                    .keys
+                    .iter()
+                    .zip(&retained)
+                    .filter(|(_, keep)| **keep)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>()
+            });
             let output = filter_record_batch(&payload_batch.batch, &BooleanArray::from(retained))
                 .map_err(CdfError::from)?;
+            add_effect_count(&mut surviving_effects, payload_batch.kind, retained_count)?;
             if output.num_rows() == 0 {
                 continue;
             }
-            if assembler.as_ref().map(|(ordinal, _)| *ordinal)
-                != Some(payload_batch.partition_ordinal)
+            if let Some(sorter) = effect_sort.as_mut() {
+                sorter.push(
+                    payload_batch.kind,
+                    payload_batch.output_position,
+                    output,
+                    retained_keys.ok_or_else(|| {
+                        CdfError::internal("keyed-effect sort omitted retained exact keys")
+                    })?,
+                )?;
+                continue;
+            }
+            if assembler
+                .as_ref()
+                .map(|(ordinal, kind, _)| (*ordinal, *kind))
+                != Some((payload_batch.partition_ordinal, payload_batch.kind))
             {
-                if let Some((_, mut previous)) = assembler.take() {
+                if let Some((_, kind, mut previous)) = assembler.take() {
+                    state.kind = kind;
                     persist_canonical_segments(previous.finish()?, state, sink)?;
                 }
                 assembler = Some((
                     payload_batch.partition_ordinal,
+                    payload_batch.kind,
                     crate::CanonicalSegmentAssembler::new(
                         segmentation_policy.clone(),
                         payload_batch.partition_ordinal,
@@ -6036,13 +6271,14 @@ fn apply_dedup_and_write_pending_batches(
             let assembler = assembler
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("dedup segment assembler was not initialized"))?;
+            state.kind = payload_batch.kind;
             write_normalized_output_batch(
                 PreparedKernelOutput {
                     output,
                     memory_lease: None,
                 },
                 payload_batch.output_position,
-                &mut assembler.1,
+                &mut assembler.2,
                 state,
                 sink,
             )?;
@@ -6052,8 +6288,47 @@ fn apply_dedup_and_write_pending_batches(
                 "external dedup decision stream contains excess rows",
             ));
         }
-        if let Some((_, mut assembler)) = assembler {
+        if let Some((_, kind, mut assembler)) = assembler {
+            state.kind = kind;
             persist_canonical_segments(assembler.finish()?, state, sink)?;
+        }
+        if let Some(sorter) = effect_sort
+            && let Some(mut sorted) = sorter.finish()?
+        {
+            let mut assembler = None::<(
+                cdf_kernel::PackageSegmentKind,
+                crate::CanonicalSegmentAssembler,
+            )>;
+            while let Some(effect) = sorted.next()? {
+                if assembler.as_ref().map(|(kind, _)| *kind) != Some(effect.kind) {
+                    if let Some((kind, mut previous)) = assembler.take() {
+                        state.kind = kind;
+                        persist_canonical_segments(previous.finish()?, state, sink)?;
+                    }
+                    assembler = Some((
+                        effect.kind,
+                        crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), 0)?,
+                    ));
+                }
+                let (kind, assembler) = assembler.as_mut().ok_or_else(|| {
+                    CdfError::internal("keyed-effect sort assembler was not initialized")
+                })?;
+                state.kind = *kind;
+                write_normalized_output_batch(
+                    PreparedKernelOutput {
+                        output: effect.batch,
+                        memory_lease: None,
+                    },
+                    effect.output_position,
+                    assembler,
+                    state,
+                    sink,
+                )?;
+            }
+            if let Some((kind, mut assembler)) = assembler {
+                state.kind = kind;
+                persist_canonical_segments(assembler.finish()?, state, sink)?;
+            }
         }
         let shard_count = provenance.finish(builder)?;
         let summary = cdf_contract::DedupSummary {
@@ -6073,9 +6348,23 @@ fn apply_dedup_and_write_pending_batches(
             validation_input_bytes,
             validation_input_bytes,
         );
-        return Ok(summary);
+        return Ok(AppliedDedup {
+            summary,
+            input_effects,
+            surviving_effects,
+        });
     }
     let validation_input_bytes = pending_input_bytes;
+    if pending.iter().any(|batch| {
+        matches!(
+            batch.kind,
+            cdf_kernel::PackageSegmentKind::Upsert | cdf_kernel::PackageSegmentKind::Delete
+        )
+    }) {
+        return Err(CdfError::contract(
+            "keyed-effect reduction and canonical ordering require bounded execution services",
+        ));
+    }
     let accepted = pending
         .iter()
         .map(|batch| batch.output.clone())
@@ -6102,19 +6391,43 @@ fn apply_dedup_and_write_pending_batches(
         validation_input_bytes,
     );
 
-    let mut assembler = None::<(u64, crate::CanonicalSegmentAssembler)>;
+    let mut input_effects = cdf_kernel::KeyedEffectCounts::default();
+    let mut surviving_effects = cdf_kernel::KeyedEffectCounts::default();
+    let mut assembler = None::<(
+        u64,
+        cdf_kernel::PackageSegmentKind,
+        crate::CanonicalSegmentAssembler,
+    )>;
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
+        add_effect_count(
+            &mut input_effects,
+            pending.kind,
+            u64::try_from(pending.output.num_rows())
+                .map_err(|_| CdfError::data("dedup payload row count exceeds u64"))?,
+        )?;
         let output =
             filter_record_batch(&pending.output, &retained_rows).map_err(CdfError::from)?;
+        add_effect_count(
+            &mut surviving_effects,
+            pending.kind,
+            u64::try_from(output.num_rows())
+                .map_err(|_| CdfError::data("surviving effect count exceeds u64"))?,
+        )?;
         if output.num_rows() == 0 {
             continue;
         }
-        if assembler.as_ref().map(|(ordinal, _)| *ordinal) != Some(pending.partition_ordinal) {
-            if let Some((_, mut previous)) = assembler.take() {
+        if assembler
+            .as_ref()
+            .map(|(ordinal, kind, _)| (*ordinal, *kind))
+            != Some((pending.partition_ordinal, pending.kind))
+        {
+            if let Some((_, kind, mut previous)) = assembler.take() {
+                state.kind = kind;
                 persist_canonical_segments(previous.finish()?, state, sink)?;
             }
             assembler = Some((
                 pending.partition_ordinal,
+                pending.kind,
                 crate::CanonicalSegmentAssembler::new(
                     segmentation_policy.clone(),
                     pending.partition_ordinal,
@@ -6124,21 +6437,43 @@ fn apply_dedup_and_write_pending_batches(
         let assembler = assembler
             .as_mut()
             .ok_or_else(|| CdfError::internal("dedup segment assembler was not initialized"))?;
+        state.kind = pending.kind;
         write_normalized_output_batch(
             PreparedKernelOutput {
                 output,
                 memory_lease: None,
             },
             pending.output_position,
-            &mut assembler.1,
+            &mut assembler.2,
             state,
             sink,
         )?;
     }
-    if let Some((_, mut assembler)) = assembler {
+    if let Some((_, kind, mut assembler)) = assembler {
+        state.kind = kind;
         persist_canonical_segments(assembler.finish()?, state, sink)?;
     }
-    Ok(dedup.summary)
+    Ok(AppliedDedup {
+        summary: dedup.summary,
+        input_effects,
+        surviving_effects,
+    })
+}
+
+fn add_effect_count(
+    counts: &mut cdf_kernel::KeyedEffectCounts,
+    kind: cdf_kernel::PackageSegmentKind,
+    rows: u64,
+) -> Result<()> {
+    let target = match kind {
+        cdf_kernel::PackageSegmentKind::Upsert => &mut counts.upserts,
+        cdf_kernel::PackageSegmentKind::Delete => &mut counts.deletes,
+        cdf_kernel::PackageSegmentKind::Row => return Ok(()),
+    };
+    *target = target
+        .checked_add(rows)
+        .ok_or_else(|| CdfError::data("keyed effect count overflowed u64"))?;
+    Ok(())
 }
 
 fn initial_package_content(plan: &EnginePlan) -> Result<cdf_kernel::PackageContentAuthority> {
@@ -6146,16 +6481,13 @@ fn initial_package_content(plan: &EnginePlan) -> Result<cdf_kernel::PackageConte
         WriteDisposition::Append | WriteDisposition::Replace => Ok(
             cdf_kernel::PackageContentAuthority::rows(plan.output_schema.arrow_schema_hash.clone()),
         ),
-        WriteDisposition::Merge => {
+        WriteDisposition::Merge | WriteDisposition::CdcApply => {
             let rule = effective_keyed_effect_rule(plan)?;
             keyed_package_content(
                 plan,
-                keyed_reduction_authority(&rule, &empty_dedup_summary(&rule), plan)?,
+                keyed_reduction_authority(&rule, &empty_dedup_summary(&rule), plan, None, None)?,
             )
         }
-        WriteDisposition::CdcApply => Err(CdfError::contract(
-            "cdc_apply execution requires compiled source-protocol effect-order authority",
-        )),
     }
 }
 
@@ -6191,6 +6523,78 @@ fn encode_effect_keys(
         }
     }
     encode_package_dedup_keys(program, rule, batch)
+}
+
+fn prepare_delete_effect_batch(
+    plan: &EnginePlan,
+    batch: &cdf_kernel::Batch,
+    input: &RecordBatch,
+) -> Result<RecordBatch> {
+    if input.num_rows()
+        != usize::try_from(batch.header.row_count)
+            .map_err(|_| CdfError::data("CDC delete row count exceeds usize"))?
+    {
+        return Err(CdfError::data(
+            "CDC delete batch header row count does not match its Arrow payload",
+        ));
+    }
+    let observed_hash = cdf_kernel::canonical_arrow_schema_hash(input.schema().as_ref())?;
+    if observed_hash != batch.header.observed_schema_hash {
+        return Err(CdfError::data(
+            "CDC delete batch schema does not match its observed schema authority",
+        ));
+    }
+    let output_schema = plan.output_schema.to_arrow()?;
+    let input_schema = input.schema();
+    if input.num_columns() != plan.effect_key.len() {
+        return Err(CdfError::data(
+            "CDC delete batches must contain exactly the complete ordered effect key",
+        ));
+    }
+    let mut output_indices = Vec::with_capacity(plan.effect_key.len());
+    let mut columns = Vec::with_capacity(plan.effect_key.len());
+    for key in &plan.effect_key {
+        let output_matches = output_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.name() == key)
+            .collect::<Vec<_>>();
+        let [(output_index, output_field)] = output_matches.as_slice() else {
+            return Err(CdfError::contract(format!(
+                "CDC delete key `{key}` does not resolve exactly once in the compiled output schema"
+            )));
+        };
+        let input_matches = input_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.name() == key)
+            .collect::<Vec<_>>();
+        let [(input_index, input_field)] = input_matches.as_slice() else {
+            return Err(CdfError::data(format!(
+                "CDC delete key `{key}` does not resolve exactly once in the delete payload"
+            )));
+        };
+        if input_field.as_ref() != output_field.as_ref() {
+            return Err(CdfError::data(format!(
+                "CDC delete key `{key}` does not preserve its compiled Arrow field authority"
+            )));
+        }
+        if input.column(*input_index).null_count() != 0 {
+            return Err(CdfError::data(format!(
+                "CDC delete key `{key}` contains null values"
+            )));
+        }
+        output_indices.push(*output_index);
+        columns.push(Arc::clone(input.column(*input_index)));
+    }
+    let delete_schema = Arc::new(
+        output_schema
+            .project(&output_indices)
+            .map_err(CdfError::from)?,
+    );
+    RecordBatch::try_new(delete_schema, columns).map_err(CdfError::from)
 }
 
 fn effective_keyed_effect_rule(plan: &EnginePlan) -> Result<cdf_contract::PackageDedupRuleSpec> {
@@ -6235,12 +6639,9 @@ fn keyed_package_content(
         upsert_schema_hash: plan.output_schema.arrow_schema_hash.clone(),
         delete_schema_hash,
         key,
-        reduction,
-        deletion_capture: cdf_kernel::DeletionCaptureAuthority::unsupported(format!(
-            "sha256:{:x}",
-            Sha256::digest(b"cdf-source-deletion-capture-unsupported-v1")
-        )),
-        delete_application: cdf_kernel::DeleteApplicationAuthority::NotApplicable,
+        reduction: Box::new(reduction),
+        deletion_capture: plan.keyed_effects.deletion_capture.clone(),
+        delete_application: plan.keyed_effects.delete_application.clone(),
     };
     content.validate()?;
     Ok(content)
@@ -6292,6 +6693,8 @@ fn keyed_reduction_authority(
     rule: &cdf_contract::PackageDedupRuleSpec,
     summary: &cdf_contract::DedupSummary,
     plan: &EnginePlan,
+    cdc_order_identity: Option<&(String, String)>,
+    effect_counts: Option<(cdf_kernel::KeyedEffectCounts, cdf_kernel::KeyedEffectCounts)>,
 ) -> Result<cdf_kernel::KeyedEffectReductionAuthority> {
     if summary.keys != plan.effect_key {
         return Err(CdfError::contract(
@@ -6307,24 +6710,53 @@ fn keyed_reduction_authority(
             cdf_kernel::KeyedEffectWinnerPolicy::First,
             cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 },
         ),
-        cdf_contract::DedupKeepProgram::Last => (
-            cdf_kernel::KeyedEffectWinnerPolicy::Last,
-            cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 },
-        ),
+        cdf_contract::DedupKeepProgram::Last => {
+            let input_order = if plan.write_disposition == WriteDisposition::CdcApply {
+                match cdc_order_identity {
+                    Some((protocol, scope_sha256)) => {
+                        cdf_kernel::KeyedEffectInputOrder::SourceProtocol {
+                            protocol: protocol.clone(),
+                            version: 1,
+                            scope_sha256: scope_sha256.clone(),
+                        }
+                    }
+                    None if summary.input_rows == 0 => {
+                        cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 }
+                    }
+                    None => {
+                        return Err(CdfError::data(
+                            "cdc_apply reduction lacks source-protocol order authority",
+                        ));
+                    }
+                }
+            } else {
+                cdf_kernel::KeyedEffectInputOrder::CanonicalPackageRows { version: 1 }
+            };
+            (cdf_kernel::KeyedEffectWinnerPolicy::Last, input_order)
+        }
     };
+    let (input, surviving) = effect_counts.unwrap_or((
+        cdf_kernel::KeyedEffectCounts {
+            upserts: summary.input_rows,
+            deletes: 0,
+        },
+        cdf_kernel::KeyedEffectCounts {
+            upserts: summary.output_rows,
+            deletes: 0,
+        },
+    ));
+    if input.total()? != summary.input_rows || surviving.total()? != summary.output_rows {
+        return Err(CdfError::data(
+            "typed keyed-effect counts do not match the exact-key reduction summary",
+        ));
+    }
     let reduction = cdf_kernel::KeyedEffectReductionAuthority {
         version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
         winner,
         input_order,
-        input: cdf_kernel::KeyedEffectCounts {
-            upserts: summary.input_rows,
-            deletes: 0,
-        },
+        input,
         duplicate_key_count: summary.duplicate_key_count,
-        surviving: cdf_kernel::KeyedEffectCounts {
-            upserts: summary.output_rows,
-            deletes: 0,
-        },
+        surviving,
         provenance_format: "parquet".to_owned(),
         provenance_version: cdf_package_contract::DEDUP_PROVENANCE_VERSION,
     };
@@ -6928,7 +7360,7 @@ fn persist_canonical_segments(
 ) -> Result<()> {
     for canonical in canonical_segments {
         let crate::CanonicalSegment {
-            segment_id,
+            segment_id: canonical_segment_id,
             partition_ordinal,
             batches,
             output_position,
@@ -6940,6 +7372,7 @@ fn persist_canonical_segments(
             memory_leases: _transform_memory_leases,
             ..
         } = canonical;
+        let segment_id = effect_segment_id(state.kind, canonical_segment_id)?;
         let mut _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
                 let canonical_output_allocation_bytes =
@@ -6992,7 +7425,7 @@ fn persist_canonical_segments(
                 "canonical segment {segment_id} retained {row_count} rows but canonicalized {observed_rows}"
             )));
         }
-        if state.statistics.is_some() {
+        if state.statistics.is_some() && state.kind != cdf_kernel::PackageSegmentKind::Delete {
             let statistics_reservation_bytes = statistics_computation_reservation_bytes(&output)?;
             let request = ReservationRequest::new(
                 ConsumerKey::new("profile-statistics", MemoryClass::Package)?,
@@ -7079,6 +7512,18 @@ fn persist_canonical_segments(
         )?;
     }
     Ok(())
+}
+
+fn effect_segment_id(
+    kind: cdf_kernel::PackageSegmentKind,
+    canonical: cdf_kernel::SegmentId,
+) -> Result<cdf_kernel::SegmentId> {
+    let prefix = match kind {
+        cdf_kernel::PackageSegmentKind::Row => return Ok(canonical),
+        cdf_kernel::PackageSegmentKind::Upsert => "effect-0-upsert",
+        cdf_kernel::PackageSegmentKind::Delete => "effect-1-delete",
+    };
+    cdf_kernel::SegmentId::new(format!("{prefix}-{}", canonical.as_str()))
 }
 
 pub(crate) fn canonical_construction_reservation_bytes(
@@ -8451,6 +8896,14 @@ pub fn assemble_isolated_worker_package(
     resources: &cdf_runtime::WorkerResourceBudget,
     services: &cdf_runtime::ExecutionServices,
 ) -> Result<EngineRunOutputWithSegmentPositions> {
+    if matches!(
+        plan.write_disposition,
+        WriteDisposition::Merge | WriteDisposition::CdcApply
+    ) {
+        return Err(CdfError::contract(
+            "isolated worker assembly does not yet admit keyed-change packages because winner reduction must be coordinator-global",
+        ));
+    }
     let mut preparation_results = BTreeMap::new();
     for admitted in &partition_evidence {
         admitted.validate_plan(plan)?;

@@ -348,14 +348,20 @@ impl CommitSession for SqliteCommitSession {
                     connection
                         .execute(&format!("DELETE FROM {}", self.plan.target.quoted()), [])
                         .map_err(|error| classify_sqlite_error("replace SQLite target", error))?;
-                    CommitCounts {
-                        rows_written: 0,
-                        rows_inserted: Some(0),
-                        rows_updated: Some(0),
-                        rows_deleted: Some(deleted_rows),
-                    }
+                    CommitCounts::rows(0, Some(0), Some(0), Some(deleted_rows))
                 } else {
-                    CommitCounts::default()
+                    match self.plan.kernel.disposition {
+                        WriteDisposition::Merge => CommitCounts::keyed_changes(
+                            cdf_kernel::KeyedEffectCounts::default(),
+                            Some(0),
+                            Some(0),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                        _ => CommitCounts::default(),
+                    }
                 },
             )
         } else {

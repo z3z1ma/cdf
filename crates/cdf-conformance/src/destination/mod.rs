@@ -133,15 +133,25 @@ where
 }
 
 pub fn representative_commit_request(disposition: WriteDisposition) -> DestinationCommitRequest {
+    let schema_hash = cdf_kernel::SchemaHash::new("destination-conformance-schema").unwrap();
+    let (content, segment_kind) = if disposition == WriteDisposition::Merge {
+        (
+            representative_merge_content(schema_hash.clone(), vec!["id".to_owned()], 3),
+            cdf_kernel::PackageSegmentKind::Upsert,
+        )
+    } else {
+        (
+            cdf_kernel::PackageContentAuthority::rows(schema_hash),
+            cdf_kernel::PackageSegmentKind::Row,
+        )
+    };
     DestinationCommitRequest {
         package_hash: PackageHash::new("sha256:destination-conformance").unwrap(),
-        content: cdf_kernel::PackageContentAuthority::rows(
-            cdf_kernel::SchemaHash::new("destination-conformance-schema").unwrap(),
-        ),
+        content,
         target: TargetName::new("orders").unwrap(),
         disposition,
         segments: vec![StateSegment {
-            kind: cdf_kernel::PackageSegmentKind::Row,
+            kind: segment_kind,
             segment_id: SegmentId::new("seg-000001").unwrap(),
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new("p0").unwrap(),
@@ -155,6 +165,49 @@ pub fn representative_commit_request(disposition: WriteDisposition) -> Destinati
             byte_count: 48,
         }],
         idempotency_token: IdempotencyToken::new("sha256:destination-conformance").unwrap(),
+    }
+}
+
+pub fn representative_merge_content(
+    logical_schema_hash: cdf_kernel::SchemaHash,
+    keys: Vec<String>,
+    upserts: u64,
+) -> cdf_kernel::PackageContentAuthority {
+    let key_schema_hash = cdf_kernel::SchemaHash::new(format!(
+        "{}:keys:{}",
+        logical_schema_hash.as_str(),
+        keys.join(",")
+    ))
+    .unwrap();
+    let keyed_effects = cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported();
+    cdf_kernel::PackageContentAuthority::KeyedChanges {
+        logical_schema_hash: logical_schema_hash.clone(),
+        upsert_schema_hash: logical_schema_hash,
+        delete_schema_hash: key_schema_hash.clone(),
+        key: cdf_kernel::KeyAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            fields: keys,
+            encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+            schema_hash: key_schema_hash,
+        },
+        reduction: Box::new(cdf_kernel::KeyedEffectReductionAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            winner: cdf_kernel::KeyedEffectWinnerPolicy::Fail,
+            input_order: cdf_kernel::KeyedEffectInputOrder::Unordered,
+            input: cdf_kernel::KeyedEffectCounts {
+                upserts,
+                deletes: 0,
+            },
+            duplicate_key_count: 0,
+            surviving: cdf_kernel::KeyedEffectCounts {
+                upserts,
+                deletes: 0,
+            },
+            provenance_format: "parquet".to_owned(),
+            provenance_version: 1,
+        }),
+        deletion_capture: keyed_effects.deletion_capture,
+        delete_application: keyed_effects.delete_application,
     }
 }
 
