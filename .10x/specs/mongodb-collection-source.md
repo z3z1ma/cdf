@@ -1,19 +1,20 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-04
+Updated: 2026-08-08
 
 # MongoDB collection source
 
 ## Purpose and scope
 
-This specification governs a first-party finite MongoDB collection source on MongoDB 8.0 or
+This specification governs a first-party finite MongoDB collection source on MongoDB 7.0 or
 later. It is further governed by `.10x/specs/source-extension-runtime-contract.md`,
 `.10x/specs/resource-authoring-planning-batches.md`, and
 `.10x/decisions/non-file-window-close-checkpoint-semantics.md`. Exact numeric fallbacks are governed
 by `.10x/decisions/exact-value-text-fallbacks.md`.
 
 The user ratified finite snapshot/cursor extraction and deferred change streams to a separate CDC
-tranche on 2026-08-02.
+tranche on 2026-08-02. On 2026-08-08 the user superseded the initial 8.0 floor with MongoDB 7.0+
+after the authorized Atlas environments were observed at 7.0.40.
 
 ## Source contract
 

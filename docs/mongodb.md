@@ -1,6 +1,6 @@
 # MongoDB collection source
 
-CDF reads one finite MongoDB 8.0+ collection through the built-in `mongodb` source and the
+CDF reads one finite MongoDB 7.0+ collection through the built-in `mongodb` source and the
 official asynchronous Rust driver's raw-BSON cursor. Change streams, resume tokens, arbitrary
 aggregation pipelines, map-reduce, and ObjectId-only cursor positions are not part of this
 connector.

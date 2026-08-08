@@ -20,7 +20,7 @@ use mongodb::bson::{
 
 use crate::{
     MongoDbSourceDriver,
-    driver::collection_metadata_from_response,
+    driver::{collection_metadata_from_response, validate_server_version},
     error::classify_mongodb_error,
     execution::cursor_value,
     identifier::{MongoDbIdentifier, validate_field_path},
@@ -31,6 +31,24 @@ use crate::{
         decode_batch_with_evidence, decode_batch_with_physical_schema, parse_decimal128,
     },
 };
+
+#[test]
+fn server_version_accepts_seven_and_rejects_older_servers() {
+    let seven = doc! {
+        "version": "7.0.40",
+        "versionArray": [7_i32, 0_i32, 40_i32, 0_i32],
+    };
+    assert_eq!(validate_server_version(&seven).unwrap(), "7.0.40");
+
+    let six = doc! {
+        "version": "6.0.25",
+        "versionArray": [6_i32, 0_i32, 25_i32, 0_i32],
+    };
+    let error = validate_server_version(&six).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert!(error.message.contains("requires server 7.0 or later"));
+    assert!(error.message.contains("observed major version 6"));
+}
 
 fn descriptor(cursor: bool) -> ResourceDescriptor {
     ResourceDescriptor {

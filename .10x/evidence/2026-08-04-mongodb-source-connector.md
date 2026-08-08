@@ -33,18 +33,21 @@ ordinary final acceptance sweep and documentation/research obligations.
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 306
-  construction/direct-kind lines: 266 production and 40 test rows. The 47 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 307
+  construction/direct-kind lines: 266 production and 41 test rows. The 47 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
   `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
-  `d0344c09b144ab7f87462adf7e565aa0aee0cf71327b5ffeafbacb6e713ff5d4`.
+  `d787c35a54cf06c746417905998cce49cefb2e9f496c0b7333dacf3daa4703cc`.
 - The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
   existing frozen source scope. Focused tests prove URI credential/session-token splitting,
   secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
   references. The SDK authentication variant continues through the existing central classifier as
   `Auth`; no raw credential value is incorporated into CDF diagnostics.
+- The user-ratified 7.0 floor changes no SDK/error construction. One new test assertion proves
+  7.0 admission and that an older server remains a caller-repairable `Contract` failure with the
+  observed major version and 7.0 remediation boundary.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
   one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the

@@ -882,7 +882,7 @@ fn optional_metadata_string(options: &Document, field: &str) -> Result<Option<St
     }
 }
 
-fn validate_server_version(build_info: &Document) -> Result<String> {
+pub(crate) fn validate_server_version(build_info: &Document) -> Result<String> {
     let version = build_info
         .get_str("version")
         .map_err(|_| CdfError::data("MongoDB buildInfo omitted its version string"))?;
@@ -896,9 +896,9 @@ fn validate_server_version(build_info: &Document) -> Result<String> {
             _ => None,
         })
         .ok_or_else(|| CdfError::data("MongoDB buildInfo omitted its major version"))?;
-    if major < 8 {
+    if major < 7 {
         return Err(CdfError::contract(format!(
-            "MongoDB source requires server 8.0 or later; observed major version {major}"
+            "MongoDB source requires server 7.0 or later; observed major version {major}"
         )));
     }
     Ok(version.to_owned())

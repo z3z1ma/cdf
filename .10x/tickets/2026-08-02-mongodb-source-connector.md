@@ -8,7 +8,7 @@ Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 
 ## Scope
 
-Implement and ship `cdf-source-mongodb` for MongoDB 8.0+ finite collection reads using the official
+Implement and ship `cdf-source-mongodb` for MongoDB 7.0+ finite collection reads using the official
 asynchronous driver's raw BSON cursor. Add bounded discovery/schema evidence, exact pushdown and
 cursor semantics, BSON-to-Arrow mapping, catalog enrollment, live fixtures, documentation, and a
 direct raw-BSON source roofline cell.
@@ -29,7 +29,7 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   cancellation, retry, and egress authorities without a private runtime or unbounded queue.
 - Built-in catalog integrity, generic source matrix, jobs invariance, package/replay/checkpoint
   laws, and `tools/certify-connector.py --kind source --id mongodb --core-impact` pass against a
-  digest-pinned MongoDB 8.0+ fixture.
+  digest-pinned MongoDB 8.0+ fixture plus an authorized MongoDB 7.0 Atlas lifecycle.
 - The source macro benchmark reaches the 0.90 direct raw-BSON driver roofline with pool/batch
   settings recorded.
 - Independent review passes after closure repair.
@@ -46,7 +46,7 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 
 ## Assumptions
 
-- Finite source semantics, deferred change streams, MongoDB 8.0+, and the 90% roofline are
+- Finite source semantics, deferred change streams, MongoDB 7.0+, and the 90% roofline are
   user-ratified.
 - Collection-only authoring is the smallest complete finite document-source surface.
 
@@ -183,6 +183,10 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   conflicting, or unsupported query options without rendering their values. The official driver
   owns authentication; CDF's existing SDK classifier retains `Auth` ownership and controlled,
   credential-free diagnostics.
+- 2026-08-08: Both authorized Atlas targets reported MongoDB 7.0.40. The user explicitly
+  superseded the initial 8.0 minimum with 7.0+ so the finite connector matches the real deployment
+  authority. The digest-pinned 8.0.13 fixture remains the deterministic conformance and roofline
+  environment; the Atlas sandbox lifecycle supplies the 7.0 compatibility observation.
 
 ## Blockers
 
