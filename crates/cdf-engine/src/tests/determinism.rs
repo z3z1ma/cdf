@@ -283,9 +283,18 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
         one_output.manifest.package_hash,
         many_output.manifest.package_hash
     );
+    // Golden package hash for the current package format. The assertions above prove the
+    // *invariant* (rechunking cannot change identity); this pins the concrete bytes so a silent
+    // format drift is visible. It legitimately changes only when package content authority changes,
+    // and every such change must refresh every package-hash golden together.
+    //
+    // Last moved by `fe53f2a5 feat: lower cdc batches to canonical keyed effects`, which altered
+    // package content authority and refreshed the sibling golden in
+    // `fixed_fixture_hash_is_deterministic_across_repeated_runs` but missed this one. Bisect
+    // confirmed the test passes at `f5d4d4c2` and fails at `fe53f2a5` on this line alone.
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:ce88efb01f31da2d13ce3760c524ae80039db9a8d81b1e540668c8c10789b904"
+        "sha256:55a44f7aef1b175399fa1a1fb4493c428fc04dd0ba9fac316e83b50b33438c8d"
     );
 }
 
