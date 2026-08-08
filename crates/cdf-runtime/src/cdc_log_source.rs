@@ -20,7 +20,11 @@
 
 use cdf_kernel::{
     CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, Result, SourcePosition,
+    WatermarkClaim,
 };
+use cdf_memory::SpillBudgetCoordinator;
+
+use crate::drain_epoch::DrainSafeFrontierObservation;
 
 /// What evidence proves one settlement unit terminal.
 ///
@@ -97,6 +101,17 @@ impl TransactionByteCeiling {
             host_maximum_bytes,
             effective_bytes,
         })
+    }
+
+    /// Resolves the ceiling against the live host spill authority.
+    ///
+    /// The spill coordinator's budget is the host maximum, so a CDC resource can never admit a
+    /// transaction larger than the memory envelope the host already proved it can hold.
+    pub fn from_spill_budget(
+        coordinator: &dyn SpillBudgetCoordinator,
+        resource_maximum_bytes: Option<u64>,
+    ) -> Result<Self> {
+        Self::resolve(coordinator.snapshot().budget_bytes, resource_maximum_bytes)
     }
 
     #[must_use]
@@ -232,6 +247,37 @@ pub struct CompletedSettlementUnit {
     pub bytes: u64,
     /// Present only when a closure request arrived while this unit was still open.
     pub overshoot: Option<SettlementOvershoot>,
+}
+
+impl CompletedSettlementUnit {
+    /// Lowers a proven terminal unit into the one canonical safe frontier the drain controller
+    /// accepts.
+    ///
+    /// Exactly one position is admitted per settlement unit: the boundary the source proved. That
+    /// is what makes a mid-unit checkpoint structurally impossible rather than merely discouraged —
+    /// the controller is never offered an interior position to close on.
+    #[must_use]
+    pub fn into_observation(
+        self,
+        carryover: Option<SourcePosition>,
+        global_watermark: Option<WatermarkClaim>,
+        source_exhausted: bool,
+        monotonic_milliseconds: u64,
+        observed_at_unix_milliseconds: u64,
+    ) -> DrainSafeFrontierObservation {
+        DrainSafeFrontierObservation {
+            frontier: self.terminal_position,
+            carryover,
+            admitted_batches: self.batches,
+            admitted_rows: self.rows,
+            admitted_bytes: self.bytes,
+            admitted_positions: 1,
+            global_watermark,
+            source_exhausted,
+            monotonic_milliseconds,
+            observed_at_unix_milliseconds,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -526,6 +572,7 @@ impl CdcLogSourceRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drain_epoch::{DrainEpochController, DrainEpochDecision};
     use cdf_kernel::{
         CdcOperation, CommittedLogPosition, DrainTermination, LateDataAction,
         MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
@@ -533,6 +580,7 @@ mod tests {
         ResumeTokenPosition, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION,
         SafeFrontierPolicy, StreamEpochPolicy, WatermarkPolicy,
     };
+    use cdf_memory::FixedSpillBudget;
 
     const SEMANTICS: &str =
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -999,6 +1047,193 @@ mod tests {
         let overshoot = completed.overshoot.expect("overshoot must be recorded");
         assert_eq!(overshoot.cause, SettlementClosureCause::Elapsed);
         assert_eq!(overshoot.overshoot_rows, 0);
+    }
+
+    // --- integration with the real drain epoch controller -------------------------------------
+
+    fn observe(
+        controller: &mut DrainEpochController,
+        completed: CompletedSettlementUnit,
+        clock: u64,
+    ) -> DrainEpochDecision {
+        controller
+            .observe_safe_frontier(completed.into_observation(
+                None,
+                None,
+                false,
+                clock,
+                1_700_000_000_000 + clock,
+            ))
+            .unwrap()
+    }
+
+    /// Drive one transaction that crosses the cadence threshold partway through, and assert the
+    /// controller closes on the commit position rather than any interior position.
+    #[test]
+    fn controller_closes_only_at_the_proven_transaction_boundary() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 10 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        for _ in 0..3 {
+            source
+                .admit_batch(&meta(CdcOperation::Insert, &start), &start, 6, 60, None)
+                .unwrap();
+        }
+        let commit = pg(20, "orders");
+        let completed = source.complete_unit(&commit).unwrap();
+        assert!(completed.overshoot.is_some(), "threshold crossed mid-unit");
+
+        let decision = observe(&mut controller, completed, 100);
+        let DrainEpochDecision::Close(closure) = decision else {
+            panic!("18 rows past a 10-row cadence must close the epoch");
+        };
+        assert_eq!(
+            closure.frontier.frontier, commit,
+            "the epoch must close on the committed boundary, never an interior position"
+        );
+    }
+
+    /// An abandoned partial unit must be invisible to the controller: no observation, therefore no
+    /// frontier, therefore the prior committed authority stands.
+    #[test]
+    fn abandoned_partial_unit_never_reaches_the_controller() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 5 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let prior = pg(5, "orders");
+        controller
+            .bind_initial_committed_state(Some(prior.clone()), None, None, Vec::new(), 0)
+            .unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 50, 500, None)
+            .unwrap();
+        source.abandon_unit();
+
+        assert_eq!(
+            controller.committed_frontier(),
+            Some(&prior),
+            "a partially observed transaction must leave the prior checkpoint authoritative"
+        );
+    }
+
+    /// Several small transactions accumulate across the epoch; only the one that carries the epoch
+    /// past the cadence closes it, and it still closes on its own commit boundary.
+    #[test]
+    fn multiple_units_accumulate_until_the_cadence_boundary() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 10 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        for (index, lsn) in [10_u64, 20].into_iter().enumerate() {
+            let position = pg(lsn, "orders");
+            source.begin_unit(&position).unwrap();
+            source
+                .admit_batch(
+                    &meta(CdcOperation::Insert, &position),
+                    &position,
+                    4,
+                    40,
+                    None,
+                )
+                .unwrap();
+            let completed = source.complete_unit(&position).unwrap();
+            assert!(
+                completed.overshoot.is_none(),
+                "unit {index} is below the cadence"
+            );
+            assert_eq!(
+                observe(&mut controller, completed, 100 + lsn),
+                DrainEpochDecision::Continue
+            );
+        }
+
+        // The third transaction carries the epoch to 12 rows, past the 10-row cadence.
+        let third = pg(30, "orders");
+        source.begin_unit(&third).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &third), &third, 4, 40, None)
+            .unwrap();
+        let completed = source.complete_unit(&third).unwrap();
+        assert!(
+            completed.overshoot.is_some(),
+            "the epoch cadence is crossed inside this unit"
+        );
+        let DrainEpochDecision::Close(closure) = observe(&mut controller, completed, 200) else {
+            panic!("crossing the epoch cadence must close");
+        };
+        assert_eq!(closure.frontier.frontier, third);
+    }
+
+    /// Full round trip: close, settle the exact frontier, and resume admission.
+    #[test]
+    fn settlement_round_trip_resumes_admission() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 2 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let first = pg(10, "orders");
+        source.begin_unit(&first).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 3, 30, None)
+            .unwrap();
+        let completed = source.complete_unit(&first).unwrap();
+        let commit = completed.terminal_position.clone();
+        let DrainEpochDecision::Close(_) = observe(&mut controller, completed, 100) else {
+            panic!("must close");
+        };
+
+        assert!(
+            !source.admits_further_units(),
+            "no later unit while the epoch is unsettled"
+        );
+        controller.acknowledge_settlement(&commit).unwrap();
+        source.acknowledge_settlement();
+
+        assert_eq!(controller.committed_frontier(), Some(&commit));
+        assert!(source.admits_further_units());
+        source.begin_unit(&pg(20, "orders")).unwrap();
+    }
+
+    #[test]
+    fn ceiling_resolves_from_the_live_spill_budget() {
+        let budget = FixedSpillBudget::new(8_192).unwrap();
+        let ceiling = TransactionByteCeiling::from_spill_budget(&budget, None).unwrap();
+        assert_eq!(ceiling.effective_bytes(), 8_192);
+        assert_eq!(ceiling.host_maximum_bytes(), 8_192);
+
+        let lowered = TransactionByteCeiling::from_spill_budget(&budget, Some(512)).unwrap();
+        assert_eq!(lowered.effective_bytes(), 512);
+
+        assert!(
+            TransactionByteCeiling::from_spill_budget(&budget, Some(8_193)).is_err(),
+            "a resource may not raise the ceiling above live host spill authority"
+        );
     }
 
     #[test]
