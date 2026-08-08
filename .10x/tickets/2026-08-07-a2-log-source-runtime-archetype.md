@@ -164,6 +164,47 @@ They prove its transition rules and arithmetic. They do **not** prove integratio
 `DrainEpochController`, package finalization, receipts, checkpoints, or crash recovery, and no live
 database was involved. A2 is not closeable on this evidence.
 
+### Increment 2 — controller bridge, keyed-effect delegation, synthetic model (2026-08-07)
+
+```text
+cargo fmt --all -- --check                                          exit 0
+cargo clippy -p cdf-runtime --all-targets --locked -- -D warnings   exit 0
+cargo test -p cdf-runtime --locked --no-fail-fast                   182 passed, 0 failed, 2 ignored
+                                                                    + 7 passed + 1 passed
+```
+
+32 tests in `cdc_log_source::tests` (up from 20). What changed per criterion:
+
+- **AC3 → Supported for the runtime half.** `CompletedSettlementUnit::into_observation` admits
+  exactly one position per unit, so the controller is never offered an interior position to close
+  on. `controller_closes_only_at_the_proven_transaction_boundary` drives a transaction that crosses
+  a 10-row cadence at row 6 and asserts the real `DrainEpochController` closes on the commit LSN.
+  `abandoned_partial_unit_never_reaches_the_controller` asserts the prior committed frontier
+  survives. Still **not proven**: crash recovery across a process restart.
+- **AC4 → Supported at the runtime boundary.** `TransactionByteCeiling::from_spill_budget` resolves
+  against a live `SpillBudgetCoordinator`; `ceiling_resolves_from_the_live_spill_budget` and
+  `within_limit_settles_and_over_limit_fails_without_advancing` prove lower-only and fail-closed.
+  Still **not wired** into the compiled plan — no resource can yet declare the value.
+- **AC5 → Supported for order authority.** `keyed_effect_input_order` derives
+  `KeyedEffectInputOrder::SourceProtocol` from the terminal position's protocol identity, and
+  `WINNER_POLICY` pins last-change-wins, which is what distinguishes CDC from unordered merge.
+  `reduction_scope_is_stable_across_the_settlement_unit` proves the scope does not drift.
+  Still **not implemented**: physically constructing package segments through the reducer.
+- **AC6 → Supported.** `reject_unsupported_event` gives adapters one typed path for
+  truncate/DDL/snapshot events; it abandons the unit so nothing partial can publish. Regression,
+  scope mismatch, position drift, and zero-row admission remain typed and asserted.
+- **AC7 → Partial.** A deterministic seeded model (`Lcg`, no wall clock, no `rand`) replays 12
+  transactions across five seeds and six chunk schedules and asserts the settled frontier sequence
+  is byte-identical — a failing schedule is reproducible from its seed alone. Cancellation is
+  injected at every transaction index and proven to publish nothing.
+  Still **not covered**: `jobs` invariance, which is currently structural rather than tested (the
+  archetype takes no concurrency input and owns one ordered stream), and failure injection at the
+  package/receipt/checkpoint transitions rather than only at admission.
+
+**Remaining for closure:** compiled-plan wiring for `maximum_transaction_bytes`; physical package
+construction through the A1.5 reducer; crash-recovery proof across restart; `jobs` invariance;
+and the finite-drain conformance certificate. AC8 is untouched.
+
 ## Review
 
 Pending implementation and the program-level review barrier.

@@ -19,8 +19,8 @@
 //! archetype records that crossing as phase-local overshoot so the epoch can report it truthfully.
 
 use cdf_kernel::{
-    CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, Result, SourcePosition,
-    WatermarkClaim,
+    CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, KEYED_EFFECT_ORDER_VERSION,
+    KeyedEffectInputOrder, KeyedEffectWinnerPolicy, Result, SourcePosition, WatermarkClaim,
 };
 use cdf_memory::SpillBudgetCoordinator;
 
@@ -250,6 +250,27 @@ pub struct CompletedSettlementUnit {
 }
 
 impl CompletedSettlementUnit {
+    /// The winner policy CDC always reduces under.
+    ///
+    /// Source protocol order makes last-change-wins the *truthful* answer for a keyed CDC stream,
+    /// which is precisely why CDC differs from ordinary merge: an unordered merge has no
+    /// authoritative winner and fails on duplicate keys instead of silently picking one.
+    pub const WINNER_POLICY: KeyedEffectWinnerPolicy = KeyedEffectWinnerPolicy::Last;
+
+    /// The canonical keyed-effect input order handed to package finalization.
+    ///
+    /// Derived from the terminal position's protocol order identity, so the reduction is scoped to
+    /// exactly the log lineage that proved the ordering. A position that is not an admitted CDC
+    /// kind cannot produce one.
+    pub fn keyed_effect_input_order(&self) -> Result<KeyedEffectInputOrder> {
+        let (protocol, scope_sha256) = self.terminal_position.cdc_protocol_order_identity()?;
+        Ok(KeyedEffectInputOrder::SourceProtocol {
+            protocol,
+            version: KEYED_EFFECT_ORDER_VERSION,
+            scope_sha256,
+        })
+    }
+
     /// Lowers a proven terminal unit into the one canonical safe frontier the drain controller
     /// accepts.
     ///
@@ -543,6 +564,21 @@ impl CdcLogSourceRuntime {
             bytes: unit.counters.bytes,
             overshoot,
         })
+    }
+
+    /// Rejects a source event outside the admitted insert/update/delete vocabulary.
+    ///
+    /// Snapshot/read, truncate, DDL, and schema events have no truthful lowering into a keyed
+    /// effect, so they are never silently mapped onto an admitted operation and never quarantined —
+    /// dropping one would break transaction completeness. The open unit is abandoned so nothing
+    /// partially observed can reach a package, receipt, or checkpoint.
+    pub fn reject_unsupported_event(&mut self, descriptor: &str) -> CdfError {
+        self.abandon_unit();
+        CdfError::data(format!(
+            "CDC source event `{descriptor}` is outside the admitted insert/update/delete \
+             vocabulary; it requires explicit semantics rather than being mapped onto an admitted \
+             operation, and no state advances"
+        ))
     }
 
     /// Abandons the open unit without publishing a frontier.
@@ -1220,6 +1256,85 @@ mod tests {
         source.begin_unit(&pg(20, "orders")).unwrap();
     }
 
+    // --- A1.5 keyed-effect delegation ---------------------------------------------------------
+
+    #[test]
+    fn committed_log_unit_lowers_to_protocol_ordered_keyed_effects() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Delete, &start), &start, 2, 20, None)
+            .unwrap();
+        let completed = source.complete_unit(&pg(20, "orders")).unwrap();
+
+        let order = completed.keyed_effect_input_order().unwrap();
+        let KeyedEffectInputOrder::SourceProtocol {
+            protocol,
+            version,
+            scope_sha256,
+        } = order
+        else {
+            panic!("CDC must reduce under source-protocol order, never unordered");
+        };
+        assert_eq!(protocol, "postgresql");
+        assert_eq!(version, KEYED_EFFECT_ORDER_VERSION);
+        assert!(scope_sha256.starts_with("sha256:"));
+        assert_eq!(
+            CompletedSettlementUnit::WINNER_POLICY,
+            KeyedEffectWinnerPolicy::Last
+        );
+    }
+
+    #[test]
+    fn event_prefix_unit_lowers_to_its_own_protocol_order_scope() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::EventPrefix, &extent);
+        let first = mongo_first();
+        source.begin_unit(&first).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Update, &first), &first, 1, 10, None)
+            .unwrap();
+        let completed = source.complete_unit(&mongo_second()).unwrap();
+
+        let KeyedEffectInputOrder::SourceProtocol { protocol, .. } =
+            completed.keyed_effect_input_order().unwrap()
+        else {
+            panic!("event prefixes still reduce under source-protocol order");
+        };
+        assert_eq!(protocol, "mongodb_change_stream");
+    }
+
+    /// The reduction scope must not drift across a unit: every admitted position and the terminal
+    /// position share one protocol order identity, or the reduction would be scoped to a lineage
+    /// that did not prove the ordering.
+    #[test]
+    fn reduction_scope_is_stable_across_the_settlement_unit() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .unwrap();
+        let completed = source.complete_unit(&pg(20, "orders")).unwrap();
+
+        assert_eq!(
+            start.cdc_protocol_order_identity().unwrap(),
+            completed
+                .terminal_position
+                .cdc_protocol_order_identity()
+                .unwrap(),
+            "scope identity drifted between admission and the proven boundary"
+        );
+        // A different slot is a different lineage and must not compare equal.
+        assert_ne!(
+            start.cdc_protocol_order_identity().unwrap(),
+            pg(20, "shipments").cdc_protocol_order_identity().unwrap()
+        );
+    }
+
     #[test]
     fn ceiling_resolves_from_the_live_spill_budget() {
         let budget = FixedSpillBudget::new(8_192).unwrap();
@@ -1234,6 +1349,204 @@ mod tests {
             TransactionByteCeiling::from_spill_budget(&budget, Some(8_193)).is_err(),
             "a resource may not raise the ceiling above live host spill authority"
         );
+    }
+
+    // --- deterministic synthetic log model ------------------------------------------------------
+
+    /// Deterministic generator. No external `rand` dependency and no wall clock, so a failing
+    /// schedule is reproducible from its seed alone.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_in(&mut self, bound: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) % bound.max(1)
+        }
+    }
+
+    /// One synthetic transaction: a row count, split across batches by the schedule under test.
+    fn synthetic_transactions(seed: u64, count: usize) -> Vec<u64> {
+        let mut rng = Lcg(seed);
+        (0..count).map(|_| 1 + rng.next_in(9)).collect()
+    }
+
+    /// Replays a transaction schedule through the archetype and a real controller, returning the
+    /// settled frontier sequence. `chunk` controls how each transaction's rows are split into Arrow
+    /// batches — the dimension a source cannot control.
+    fn replay(transactions: &[u64], chunk: u64) -> Vec<(SourcePosition, u64, u64)> {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 25 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let mut settled = Vec::new();
+
+        for (index, rows) in transactions.iter().enumerate() {
+            if !source.admits_further_units() {
+                // The epoch closed; settle it and continue with the next one.
+                let frontier = settled
+                    .last()
+                    .map(|(position, _, _): &(SourcePosition, u64, u64)| position.clone());
+                if let Some(frontier) = frontier {
+                    controller.acknowledge_settlement(&frontier).unwrap();
+                }
+                source.acknowledge_settlement();
+            }
+            let lsn = (index as u64 + 1) * 10;
+            let position = pg(lsn, "orders");
+            source.begin_unit(&position).unwrap();
+
+            let mut remaining = *rows;
+            while remaining > 0 {
+                let batch = remaining.min(chunk.max(1));
+                source
+                    .admit_batch(
+                        &meta(CdcOperation::Insert, &position),
+                        &position,
+                        batch,
+                        batch * 10,
+                        None,
+                    )
+                    .unwrap();
+                remaining -= batch;
+            }
+
+            let completed = source.complete_unit(&position).unwrap();
+            let record = (
+                completed.terminal_position.clone(),
+                completed.rows,
+                completed.bytes,
+            );
+            let _ = observe(&mut controller, completed, 1_000 + lsn);
+            settled.push(record);
+        }
+        settled
+    }
+
+    /// The settled frontier sequence must depend only on the source's transactions, never on how
+    /// upstream Arrow batches happened to be chunked.
+    #[test]
+    fn settled_sequence_is_invariant_under_arbitrary_rechunking() {
+        for seed in [1_u64, 7, 42, 1_337, 90_210] {
+            let transactions = synthetic_transactions(seed, 12);
+            let baseline = replay(&transactions, 1);
+            for chunk in [2_u64, 3, 5, 8, 64] {
+                assert_eq!(
+                    replay(&transactions, chunk),
+                    baseline,
+                    "seed {seed} chunk {chunk} changed the settled sequence"
+                );
+            }
+        }
+    }
+
+    /// Cancellation injected at any point inside a transaction must publish nothing for that
+    /// transaction and must leave the previously committed frontier authoritative.
+    #[test]
+    fn cancellation_inside_any_transaction_publishes_nothing() {
+        let transactions = synthetic_transactions(2_024, 6);
+        for cancel_at in 0..transactions.len() {
+            let extent = quiet_extent();
+            let mut controller = DrainEpochController::new(&extent).unwrap();
+            let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+            let mut last_settled: Option<SourcePosition> = None;
+
+            for (index, rows) in transactions.iter().enumerate() {
+                let lsn = (index as u64 + 1) * 10;
+                let position = pg(lsn, "orders");
+                source.begin_unit(&position).unwrap();
+                source
+                    .admit_batch(
+                        &meta(CdcOperation::Insert, &position),
+                        &position,
+                        *rows,
+                        rows * 10,
+                        None,
+                    )
+                    .unwrap();
+
+                if index == cancel_at {
+                    source.abandon_unit();
+                    break;
+                }
+                let completed = source.complete_unit(&position).unwrap();
+                last_settled = Some(completed.terminal_position.clone());
+                let _ = observe(&mut controller, completed, 1_000 + lsn);
+            }
+
+            assert_eq!(
+                source.units_completed() as usize,
+                cancel_at,
+                "cancelling transaction {cancel_at} must settle exactly the units before it"
+            );
+            // The cancelled transaction contributed no frontier of its own.
+            let cancelled_position = pg((cancel_at as u64 + 1) * 10, "orders");
+            assert_ne!(last_settled.as_ref(), Some(&cancelled_position));
+        }
+    }
+
+    /// A transaction at the ceiling settles; one byte more fails, and failing leaves the already
+    /// settled frontier untouched.
+    #[test]
+    fn within_limit_settles_and_over_limit_fails_without_advancing() {
+        let extent = quiet_extent();
+        let mut source = CdcLogSourceRuntime::new(
+            &extent,
+            SettlementUnitKind::CommittedTransaction,
+            TransactionByteCeiling::resolve(10_000, Some(100)).unwrap(),
+        )
+        .unwrap();
+
+        let first = pg(10, "orders");
+        source.begin_unit(&first).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 10, 100, None)
+            .unwrap();
+        assert!(
+            source.complete_unit(&first).is_ok(),
+            "exactly at the ceiling"
+        );
+        assert_eq!(source.units_completed(), 1);
+
+        let second = pg(20, "orders");
+        source.begin_unit(&second).unwrap();
+        assert!(
+            source
+                .admit_batch(&meta(CdcOperation::Insert, &second), &second, 11, 101, None)
+                .is_err(),
+            "one byte over the ceiling must fail"
+        );
+        assert_eq!(
+            source.units_completed(),
+            1,
+            "the failure must not advance settled state"
+        );
+    }
+
+    #[test]
+    fn unsupported_events_fail_typed_and_abandon_the_unit() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .unwrap();
+
+        let error = source.reject_unsupported_event("TRUNCATE");
+        assert!(
+            error.message.contains("outside the admitted"),
+            "unexpected message: {}",
+            error.message
+        );
+        assert!(!source.unit_open(), "the partial unit must be abandoned");
+        assert_eq!(source.units_completed(), 0, "no state advances");
     }
 
     #[test]
