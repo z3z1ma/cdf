@@ -15,8 +15,8 @@ use cdf_runtime::{RunCancellation, SourceEgressScope, TaskStreamSender};
 use futures::StreamExt;
 use mongodb::{
     Client,
-    bson::Document,
-    options::{ClientOptions, Credential, ServerApi, ServerApiVersion},
+    bson::{Document, doc},
+    options::{AuthMechanism, ClientOptions, Credential, ServerApi, ServerApiVersion},
 };
 
 use crate::{
@@ -86,6 +86,13 @@ pub(crate) async fn connect_mongodb(
                 .username(runtime.username.clone())
                 .password(runtime.password.clone())
                 .source(runtime.auth_source.clone())
+                .mechanism(runtime.auth_mechanism.map(|_| AuthMechanism::MongoDbAws))
+                .mechanism_properties(
+                    runtime
+                        .aws_session_token
+                        .as_ref()
+                        .map(|token| doc! {"AWS_SESSION_TOKEN": token}),
+                )
                 .build(),
         );
     }

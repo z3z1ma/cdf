@@ -57,6 +57,8 @@ impl MongoDbSourceDriver {
                     "username": {"type": "string", "pattern": "^secret://"},
                     "password": {"type": "string", "pattern": "^secret://"},
                     "auth_source": {"type": "string", "minLength": 1},
+                    "auth_mechanism": {"type": "string", "enum": ["MONGODB-AWS"]},
+                    "aws_session_token": {"type": "string", "pattern": "^secret://"},
                     "batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_BATCH_ROWS},
                     "max_pool_size": {"type": "integer", "minimum": 1, "maximum": 8, "default": DEFAULT_MAX_POOL_SIZE},
                     "stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 16, "default": DEFAULT_STREAM_BUFFER_BATCHES},
@@ -175,6 +177,7 @@ impl SourceDriver for MongoDbSourceDriver {
         let username = source.username.map(SecretUri::new).transpose()?;
         let password = source.password.map(SecretUri::new).transpose()?;
         let auth_source = source.auth_source.map(MongoDbIdentifier::new).transpose()?;
+        let aws_session_token = source.aws_session_token.map(SecretUri::new).transpose()?;
         let physical = MongoDbPhysicalPlan {
             endpoint: endpoint.clone(),
             database: database.clone(),
@@ -182,6 +185,8 @@ impl SourceDriver for MongoDbSourceDriver {
             username: username.map(|value| value.as_str().to_owned()),
             password: password.map(|value| value.as_str().to_owned()),
             auth_source,
+            auth_mechanism: source.auth_mechanism,
+            aws_session_token: aws_session_token.map(|value| value.as_str().to_owned()),
             batch_rows: source.batch_rows,
             max_pool_size: source.max_pool_size,
             stream_buffer_batches: source.stream_buffer_batches,
@@ -213,6 +218,8 @@ impl SourceDriver for MongoDbSourceDriver {
                     "username": physical.username.as_deref(),
                     "password": physical.password.as_deref(),
                     "auth_source": physical.auth_source.as_ref().map(MongoDbIdentifier::as_str),
+                    "auth_mechanism": physical.auth_mechanism,
+                    "aws_session_token": physical.aws_session_token.as_deref(),
                     "batch_rows": physical.batch_rows,
                     "max_pool_size": physical.max_pool_size,
                     "stream_buffer_batches": physical.stream_buffer_batches,
@@ -302,11 +309,12 @@ impl SourceAddPlanner for MongoDbSourceDriver {
         let mut parsed = Url::parse(&request.location).map_err(|error| {
             CdfError::contract(format!("cdf add could not parse MongoDB URL: {error}"))
         })?;
-        if parsed.query().is_some() || parsed.fragment().is_some() {
+        if parsed.fragment().is_some() {
             return Err(CdfError::contract(
-                "MongoDB cdf add URL must not contain query or fragment text",
+                "MongoDB cdf add URL must not contain fragment text",
             ));
         }
+        let uri_auth = parse_add_uri_auth(&parsed)?;
         let segments = parsed
             .path_segments()
             .map(|segments| {
@@ -338,6 +346,7 @@ impl SourceAddPlanner for MongoDbSourceDriver {
             .set_password(None)
             .map_err(|()| CdfError::contract("clear MongoDB URL password"))?;
         parsed.set_path("");
+        parsed.set_query(None);
         let endpoint = normalize_endpoint(parsed.as_str())?;
         let mut source_options = BTreeMap::from([
             ("endpoint".to_owned(), serde_json::json!(endpoint)),
@@ -354,11 +363,27 @@ impl SourceAddPlanner for MongoDbSourceDriver {
             source_options.insert("password".to_owned(), serde_json::json!(reference.as_str()));
             private_files.push(file);
         }
-        if let Some(auth_source) = request.options.get("auth_source") {
+        let auth_source = merge_add_auth_source(
+            request.options.get("auth_source").map(String::as_str),
+            uri_auth.auth_source.as_deref(),
+        )?;
+        if let Some(auth_source) = auth_source {
             source_options.insert(
                 "auth_source".to_owned(),
-                serde_json::json!(MongoDbIdentifier::new(auth_source.clone())?.as_str()),
+                serde_json::json!(MongoDbIdentifier::new(auth_source)?.as_str()),
             );
+        }
+        if let Some(mechanism) = uri_auth.mechanism {
+            source_options.insert("auth_mechanism".to_owned(), serde_json::json!(mechanism));
+        }
+        if let Some(token) = uri_auth.aws_session_token {
+            let (reference, file) =
+                add_private_file(&request.source_name, "aws_session_token", token)?;
+            source_options.insert(
+                "aws_session_token".to_owned(),
+                serde_json::json!(reference.as_str()),
+            );
+            private_files.push(file);
         }
         for key in [
             "batch_rows",
@@ -392,6 +417,89 @@ impl SourceAddPlanner for MongoDbSourceDriver {
             private_files,
         }))
     }
+}
+
+#[derive(Default)]
+struct AddUriAuth {
+    auth_source: Option<String>,
+    mechanism: Option<MongoDbAuthMechanism>,
+    aws_session_token: Option<String>,
+}
+
+fn parse_add_uri_auth(parsed: &Url) -> Result<AddUriAuth> {
+    let mut auth = AddUriAuth::default();
+    let mut unsupported = Vec::new();
+    for (name, value) in parsed.query_pairs() {
+        match name.as_ref() {
+            "ssl" if parsed.scheme() == "mongodb+srv" && value.eq_ignore_ascii_case("true") => {}
+            "authSource" => set_once(&mut auth.auth_source, value.into_owned(), "authSource")?,
+            "authMechanism" if value == "MONGODB-AWS" => {
+                set_once(
+                    &mut auth.mechanism,
+                    MongoDbAuthMechanism::MongoDbAws,
+                    "authMechanism",
+                )?;
+            }
+            "authMechanism" => {
+                return Err(CdfError::contract(
+                    "MongoDB cdf add supports URI authMechanism `MONGODB-AWS` only",
+                ));
+            }
+            "authMechanismProperties" => {
+                let token = value.strip_prefix("AWS_SESSION_TOKEN:").ok_or_else(|| {
+                    CdfError::contract(
+                        "MongoDB cdf add supports only the AWS_SESSION_TOKEN auth mechanism property",
+                    )
+                })?;
+                if token.is_empty() || token.contains(',') {
+                    return Err(CdfError::contract(
+                        "MongoDB cdf add AWS_SESSION_TOKEN must be one nonempty property",
+                    ));
+                }
+                set_once(
+                    &mut auth.aws_session_token,
+                    token.to_owned(),
+                    "AWS_SESSION_TOKEN",
+                )?;
+            }
+            _ => unsupported.push(name.into_owned()),
+        }
+    }
+    if !unsupported.is_empty() {
+        unsupported.sort();
+        unsupported.dedup();
+        return Err(CdfError::contract(format!(
+            "MongoDB cdf add URL contains unsupported query options: {}",
+            unsupported.join(", ")
+        )));
+    }
+    if auth.aws_session_token.is_some() && auth.mechanism != Some(MongoDbAuthMechanism::MongoDbAws)
+    {
+        return Err(CdfError::contract(
+            "MongoDB cdf add AWS_SESSION_TOKEN requires authMechanism `MONGODB-AWS`",
+        ));
+    }
+    Ok(auth)
+}
+
+fn merge_add_auth_source(option: Option<&str>, uri: Option<&str>) -> Result<Option<String>> {
+    match (option, uri) {
+        (Some(option), Some(uri)) if option != uri => Err(CdfError::contract(
+            "MongoDB cdf add auth_source conflicts with the URL authSource",
+        )),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value.to_owned())),
+        (None, None) => Ok(None),
+    }
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, label: &str) -> Result<()> {
+    if slot.is_some() {
+        return Err(CdfError::contract(format!(
+            "MongoDB cdf add URL repeats query option `{label}`"
+        )));
+    }
+    *slot = Some(value);
+    Ok(())
 }
 
 fn percent_decode_component(label: &str, value: &str) -> Result<String> {
@@ -807,6 +915,10 @@ struct MongoDbSourceOptions {
     password: Option<String>,
     #[serde(default)]
     auth_source: Option<String>,
+    #[serde(default)]
+    auth_mechanism: Option<MongoDbAuthMechanism>,
+    #[serde(default)]
+    aws_session_token: Option<String>,
     #[serde(default = "default_batch_rows")]
     batch_rows: u32,
     #[serde(default = "default_max_pool_size")]
@@ -817,6 +929,12 @@ struct MongoDbSourceOptions {
     discovery_records: u64,
     #[serde(default = "default_discovery_bytes")]
     discovery_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum MongoDbAuthMechanism {
+    #[serde(rename = "MONGODB-AWS")]
+    MongoDbAws,
 }
 
 #[derive(Debug, Deserialize)]
@@ -834,6 +952,8 @@ struct MongoDbPhysicalPlan {
     username: Option<String>,
     password: Option<String>,
     auth_source: Option<MongoDbIdentifier>,
+    auth_mechanism: Option<MongoDbAuthMechanism>,
+    aws_session_token: Option<String>,
     batch_rows: u32,
     max_pool_size: u32,
     stream_buffer_batches: usize,
@@ -866,12 +986,24 @@ impl MongoDbPhysicalPlan {
             .as_ref()
             .map(|value| SecretUri::new(value.clone()))
             .transpose()?;
+        self.aws_session_token
+            .as_ref()
+            .map(|value| SecretUri::new(value.clone()))
+            .transpose()?;
+        validate_auth_configuration(
+            self.username.is_some(),
+            self.password.is_some(),
+            self.auth_source.as_ref().map(MongoDbIdentifier::as_str),
+            self.auth_mechanism,
+            self.aws_session_token.is_some(),
+        )?;
         Ok(())
     }
 
     fn resolve(&self, provider: &dyn SecretProvider) -> Result<MongoDbRuntimeConfig> {
         let username = resolve_secret(self.username.as_deref(), provider)?;
         let password = resolve_secret(self.password.as_deref(), provider)?;
+        let aws_session_token = resolve_secret(self.aws_session_token.as_deref(), provider)?;
         Ok(MongoDbRuntimeConfig {
             endpoint: self.endpoint.clone(),
             username,
@@ -880,6 +1012,8 @@ impl MongoDbPhysicalPlan {
                 .auth_source
                 .as_ref()
                 .map(|value| value.as_str().to_owned()),
+            auth_mechanism: self.auth_mechanism,
+            aws_session_token,
             max_pool_size: self.max_pool_size,
         })
     }
@@ -891,7 +1025,44 @@ pub(crate) struct MongoDbRuntimeConfig {
     pub(crate) username: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) auth_source: Option<String>,
+    pub(crate) auth_mechanism: Option<MongoDbAuthMechanism>,
+    pub(crate) aws_session_token: Option<String>,
     pub(crate) max_pool_size: u32,
+}
+
+fn validate_auth_configuration(
+    has_username: bool,
+    has_password: bool,
+    auth_source: Option<&str>,
+    mechanism: Option<MongoDbAuthMechanism>,
+    has_aws_session_token: bool,
+) -> Result<()> {
+    if has_username != has_password {
+        return Err(CdfError::contract(
+            "MongoDB authentication requires username and password together",
+        ));
+    }
+    match mechanism {
+        Some(MongoDbAuthMechanism::MongoDbAws) => {
+            if !has_username {
+                return Err(CdfError::contract(
+                    "MongoDB MONGODB-AWS authentication requires access-key username and secret-key password references",
+                ));
+            }
+            if auth_source != Some("$external") {
+                return Err(CdfError::contract(
+                    "MongoDB MONGODB-AWS authentication requires auth_source `$external`",
+                ));
+            }
+        }
+        None if has_aws_session_token => {
+            return Err(CdfError::contract(
+                "MongoDB aws_session_token requires auth_mechanism `MONGODB-AWS`",
+            ));
+        }
+        None => {}
+    }
+    Ok(())
 }
 
 fn resolve_secret(value: Option<&str>, provider: &dyn SecretProvider) -> Result<Option<String>> {

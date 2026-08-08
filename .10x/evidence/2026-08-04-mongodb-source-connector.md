@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-08-04
-Updated: 2026-08-04
+Updated: 2026-08-08
 
 # MongoDB source connector closure evidence
 
@@ -10,8 +10,8 @@ The finite MongoDB 8.0+ source uses the official asynchronous raw-BSON cursor, p
 ratified BSON-to-Arrow meanings, carries current source-position authority, and remains bounded by
 the shared execution host. Its generic source matrix completes package, destination receipt,
 checkpoint, and replay laws. The final clean release roofline for revision `89786e35` clears the
-required 0.90 ratio. Connector closure remains blocked only on ratifying the endpoint/egress
-surface before the final connector certificate is meaningful.
+required 0.90 ratio. The endpoint/egress decision is now ratified; the remaining ticket work is its
+ordinary final acceptance sweep and documentation/research obligations.
 
 ## Procedure
 
@@ -33,13 +33,18 @@ surface before the final connector certificate is meaningful.
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 295
-  construction/direct-kind lines: 255 production and 40 test rows. The 47 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 306
+  construction/direct-kind lines: 266 production and 40 test rows. The 47 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
   `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
-  `bdaf728d4fada57d089bc12115f80815fc00df83dc62ce62e96cbde703e2985f`.
+  `d0344c09b144ab7f87462adf7e565aa0aee0cf71327b5ffeafbacb6e713ff5d4`.
+- The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
+  existing frozen source scope. Focused tests prove URI credential/session-token splitting,
+  secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
+  references. The SDK authentication variant continues through the existing central classifier as
+  `Auth`; no raw credential value is incorporated into CDF diagnostics.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
   one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the

@@ -20,6 +20,26 @@ password = "secret://env/MONGODB_PASSWORD"
 auth_source = "admin"
 ```
 
+Atlas IAM authentication uses the same credential-free endpoint boundary. Keep the access key,
+secret key, and optional STS session token behind independent secret references:
+
+```toml
+[sources.atlas]
+type = "mongodb"
+endpoint = "mongodb+srv://cluster.example.mongodb.net"
+database = "analytics"
+username = "secret://env/MONGODB_AWS_ACCESS_KEY_ID"
+password = "secret://env/MONGODB_AWS_SECRET_ACCESS_KEY"
+auth_source = "$external"
+auth_mechanism = "MONGODB-AWS"
+aws_session_token = "secret://env/MONGODB_AWS_SESSION_TOKEN"
+```
+
+`cdf add` accepts the corresponding standard Atlas connection string, removes its credential and
+authentication query material from the endpoint, and publishes the three credential values as
+owner-only private secret files. Unsupported URI query options fail rather than being silently
+discarded.
+
 Reference one collection from `cdf/<namespace>/<resource>.cdf.sql`:
 
 ```sql

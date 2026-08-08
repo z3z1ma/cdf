@@ -251,6 +251,94 @@ fn add_planner_percent_decodes_credentials_and_resource_path() {
 }
 
 #[test]
+fn add_planner_splits_mongodb_aws_uri_into_secret_references() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let proposal = driver
+        .add_planner()
+        .unwrap()
+        .propose_add(&SourceAddRequest {
+            source_name: "atlas".to_owned(),
+            resource_name: "events".to_owned(),
+            location: "mongodb+srv://ACCESS:SECRET@cluster.example/analytics/events?ssl=true&authMechanism=MONGODB-AWS&authSource=%24external&authMechanismProperties=AWS_SESSION_TOKEN%3Asession-token".to_owned(),
+            project_root: "/project".into(),
+            current_dir: "/project".into(),
+            options: BTreeMap::new(),
+            project_options: None,
+        })
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        proposal.source_options["endpoint"],
+        "mongodb+srv://cluster.example"
+    );
+    assert_eq!(proposal.source_options["database"], "analytics");
+    assert_eq!(proposal.source_options["auth_source"], "$external");
+    assert_eq!(proposal.source_options["auth_mechanism"], "MONGODB-AWS");
+    assert_eq!(
+        proposal.source_options["aws_session_token"],
+        "secret://file/.cdf/secrets/sources/atlas.aws_session_token"
+    );
+    assert_eq!(proposal.private_files.len(), 3);
+    let rendered = format!("{proposal:?}");
+    assert!(!rendered.contains("ACCESS"));
+    assert!(!rendered.contains("SECRET"));
+    assert!(!rendered.contains("session-token"));
+}
+
+#[test]
+fn compile_rejects_incomplete_mongodb_aws_authority() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let mut source_options = BTreeMap::from([
+        (
+            "endpoint".to_owned(),
+            serde_json::json!("mongodb+srv://cluster.example"),
+        ),
+        ("database".to_owned(), serde_json::json!("analytics")),
+        (
+            "auth_mechanism".to_owned(),
+            serde_json::json!("MONGODB-AWS"),
+        ),
+        (
+            "username".to_owned(),
+            serde_json::json!("secret://env/MONGODB_USER"),
+        ),
+        (
+            "password".to_owned(),
+            serde_json::json!("secret://env/MONGODB_PASSWORD"),
+        ),
+    ]);
+    let request = |source_options| SourceCompileRequest {
+        source_kind: "mongodb".to_owned(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "atlas".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options,
+        resource_options: BTreeMap::from([("collection".to_owned(), serde_json::json!("events"))]),
+        descriptor: descriptor(false),
+        schema: schema(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    };
+
+    let error = driver.compile(request(source_options.clone())).unwrap_err();
+    assert!(error.message.contains("auth_source `$external`"));
+
+    source_options.insert("auth_source".to_owned(), serde_json::json!("$external"));
+    source_options.insert(
+        "aws_session_token".to_owned(),
+        serde_json::json!("secret://env/MONGODB_AWS_SESSION_TOKEN"),
+    );
+    let plan = driver.compile(request(source_options)).unwrap();
+    let encoded = serde_json::to_string(&plan).unwrap();
+    assert!(encoded.contains("MONGODB-AWS"));
+    assert!(encoded.contains("secret://env/MONGODB_AWS_SESSION_TOKEN"));
+}
+
+#[test]
 fn discovery_infers_exact_bson_shapes_and_nested_missing_fields() {
     let object_id = ObjectId::parse_str("64b64c27f6f1a00f92d66c6a").unwrap();
     let decimal = Decimal128::from_str("1234567890.0123456789").unwrap();

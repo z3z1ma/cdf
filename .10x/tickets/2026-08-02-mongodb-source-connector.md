@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-07
+Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 
@@ -175,6 +175,14 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   Remaining closure work is the ordinary acceptance-criteria sweep plus the two documentation and
   research obligations now recorded under Blockers. A4 MongoDB CDC extends this same crate and
   inherits the same posture.
+- 2026-08-08: A user-authorized live Atlas sandbox exercise exposed that the finite connector's
+  generic username/password fields could not express the supplied temporary `MONGODB-AWS`
+  authority. Added an explicit current-only IAM mechanism, `$external` validation, an optional STS
+  session-token secret reference, and `cdf add` translation from the standard Atlas URI into three
+  owner-only secret files plus a credential-free SRV endpoint. The parser rejects duplicate,
+  conflicting, or unsupported query options without rendering their values. The official driver
+  owns authentication; CDF's existing SDK classifier retains `Auth` ownership and controlled,
+  credential-free diagnostics.
 
 ## Blockers
 
