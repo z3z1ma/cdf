@@ -200,6 +200,55 @@ Confirmed to pass in isolation and fail only under a saturated parallel `--works
 cases. These spawn real child processes. The full list of tests observed flipping between sweeps of
 identical code is above.
 
+## Status after the second pass: 36 → 12
+
+All fixes made a fixture describe what it actually holds. No assertion was weakened, skipped, or
+deleted, and no enforcement was relaxed. **CI is green** (`237583ac`, `9a6e73de`, `bcdcfd87`).
+
+### Additionally resolved
+
+4. **Content-authority cluster — 17 tests.** All failed on `commit_plan.content !=
+   manifest.identity.content` (`cdf-package/src/reader.rs:1086`). Three fixtures stamped packages
+   with placeholder content authority while writing commit plans carrying a different hash:
+   - `crates/cdf-cli/src/tests/mod.rs` — the `package_builder!` macro hardcoded
+     `rows("cli-test-schema")`. It now takes the hash explicitly, and the schema-promote fixture
+     passes its own. 14 schema-promotion tests pass.
+   - `rebuild_correction_package_semantically` preserved the original commit plan verbatim while
+     rebuilding with the default hash. It now stamps `commit.content`, so the repackaged fixture
+     reaches the semantic tampering it exists to test instead of dying on a content mismatch first.
+   - `crates/cdf-benchmarks/src/runners.rs` derived its hash from the *resource* schema while the
+     engine stamps content from the *plan output* schema (`initial_package_content`). Contract
+     evaluation and normalization move these apart. Now uses `plan.output_schema.arrow_schema_hash`.
+     All 31 benchmark tests pass.
+5. **DuckDB doctor drift — 6 tests.** Two layered causes: the content-authority mismatch above, then
+   the `"schema-doctor-1"` placeholder failing the StateDelta schema check. Both fixed by deriving
+   `doctor_schema_hash()` from the fixture payload.
+6. **`receipt::tests::ordinary_draft_maps_typed_request_fields`.** `CommitCounts` became a tagged
+   enum with package-native keyed effects, so serialized `counts` now carries `"kind": "rows"`. The
+   expected JSON predated the tag.
+
+### Remaining 12, classified
+
+**Load-sensitive — pass in isolation, fail only under a saturated parallel sweep (5):** four
+`package_replay` helper-process/crash cases and
+`nebula_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws`. Verified: 11/11 and
+2/2 pass when run alone. These spawn child processes.
+
+**Real, reproduce in isolation (7).** Two distinct causes, neither yet fixed:
+
+- `tests::run_adapters::run_rest_progress_drift_fails_closed_without_parse_coercion` asserts exit
+  code 1 and observes **0** (`crates/cdf-cli/src/tests/run_adapters.rs:148`). The command
+  *succeeded* where the test requires it to fail closed. **This may be a genuine product
+  regression in fail-closed behavior rather than fixture drift, and should be triaged first** —
+  a fail-closed path that silently succeeds is exactly the class of defect a red suite hides.
+  Siblings `active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream`
+  and `governed_quarantines_incompatible_partition_with_exact_arrow_field_evidence` are in the same
+  file and likely related.
+- `live_run::drift_quarantine::*` (2, panic at
+  `crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs:156`),
+  `mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift`, and the two
+  `runtime_tests::live_adapters::*` cases. Not yet diagnosed.
+
 ## Acceptance criteria
 
 - [ ] Every baseline failure is classified: real defect, environment/fixture problem, or flaky.
@@ -228,6 +277,13 @@ identical code is above.
   transition. This is a hypothesis from the error text, not a diagnosis.
 
 ## Journal
+
+- 2026-08-07: Second pass took the suite from 28 to 12 by fixing the content-authority cluster
+  (17 tests), doctor drift (6), and the receipt commit-counts tag. CI is green. Five of the
+  remaining twelve are load flakes proven to pass in isolation; seven are real. The highest-priority
+  one is `run_rest_progress_drift_fails_closed_without_parse_coercion`, which observes exit 0 where
+  it requires 1 — a fail-closed path that appears to succeed, which is a candidate product
+  regression rather than fixture drift.
 
 - 2026-08-07: Classified and fixed three causes, taking the suite from 36 to 28 failing: a stale
   package-hash golden, a placeholder schema hash in the package-replay harness, and stale CLI
