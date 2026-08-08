@@ -13,6 +13,7 @@ mod bulk;
 mod canonical_frontier;
 mod capabilities;
 mod capability_types;
+mod cdc_log_source;
 mod content_reclamation;
 mod context;
 mod controlled_byte_source;
@@ -57,6 +58,10 @@ pub use capabilities::{
     DestinationRuntimeCapabilities,
 };
 pub use capability_types::{DestinationIngressMode, DestinationWriterModel};
+pub use cdc_log_source::{
+    CdcLogSourceRuntime, CompletedSettlementUnit, SettlementClosureCause,
+    SettlementClosureThresholds, SettlementOvershoot, SettlementUnitKind, TransactionByteCeiling,
+};
 pub use cdf_memory::{
     FixedSpillBudget, SpillBudgetCoordinator, SpillBudgetSnapshot, SpillReservation,
 };
