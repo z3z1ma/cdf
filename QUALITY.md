@@ -134,11 +134,28 @@ cargo nextest run -p <package> <test_name> --locked
 cargo test -p <package> <test_name> --locked
 ```
 
-When CLI definitions or error mappings change, verify the committed generated references:
+When CLI definitions or error mappings change, verify **both** committed generated artifact sets.
+There are two, and checking only one lets CI fail on the other — adding a single flag to one
+subcommand touches shell completions, help text, and man pages as well as the docs reference:
 
 ```bash
+# 1. docs/ command and error reference
 cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
+
+# 2. crates/cdf-cli/generated: completions/, help/, man/
+cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
 ```
+
+Drop `--check` from either command to regenerate. The second set is what
+`cli_artifacts::tests::cli_generated_artifacts_match_committed_snapshots` asserts, and that test
+runs only with `--features cli-artifacts`:
+
+```bash
+cargo test -p cdf-cli-core --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
+```
+
+Without the feature the test is silently filtered out, so a plain `cargo test -p cdf-cli-core` will
+report success while the artifacts are stale.
 
 ---
 
