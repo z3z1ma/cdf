@@ -19,12 +19,14 @@
 //! archetype records that crossing as phase-local overshoot so the epoch can report it truthfully.
 
 use cdf_kernel::{
-    CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, KeyedEffectWinnerPolicy, Result,
-    SourcePosition, WatermarkClaim,
+    CdcMetadata, CdfError, EpochClosureCause, EpochClosureTrigger, ExecutionExtent,
+    KeyedEffectWinnerPolicy, Result, SourcePosition, SourcePositionKind, WatermarkClaim,
 };
 use cdf_memory::SpillBudgetCoordinator;
 
-use crate::drain_epoch::{DrainSafeFrontierObservation, EpochTriggerMagnitudes};
+#[cfg(test)]
+use crate::drain_epoch::EpochTriggerMagnitudes;
+use crate::drain_epoch::{DrainEpochController, DrainSafeFrontierObservation};
 
 /// What evidence proves one settlement unit terminal.
 ///
@@ -68,6 +70,15 @@ pub enum SettlementClosureCause {
 pub struct TransactionByteCeiling {
     host_maximum_bytes: u64,
     effective_bytes: u64,
+}
+
+/// Phase-local observations attached to one admitted CDC data batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CdcBatchObservation {
+    pub rows: u64,
+    pub bytes: u64,
+    pub monotonic_milliseconds: u64,
+    pub global_watermark: Option<WatermarkClaim>,
 }
 
 impl TransactionByteCeiling {
@@ -131,6 +142,11 @@ impl TransactionByteCeiling {
         Self::from_spill_budget(coordinator, policy.transaction_limit_bytes)
     }
 
+    /// Reconstructs the runtime ceiling from the concrete value frozen into an executable plan.
+    pub fn from_resolved_plan(effective_bytes: u64) -> Result<Self> {
+        Self::resolve(effective_bytes, Some(effective_bytes))
+    }
+
     #[must_use]
     pub const fn effective_bytes(&self) -> u64 {
         self.effective_bytes
@@ -149,11 +165,13 @@ impl TransactionByteCeiling {
 /// see because it is only ever shown proven boundaries. Both evaluate through the shared
 /// [`EpochTriggerMagnitudes`] predicate, so they cannot disagree about whether a trigger fired.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct SettlementCadencePolicy {
     package_rotation: EpochClosureTrigger,
     checkpoint_cadence: EpochClosureTrigger,
 }
 
+#[cfg(test)]
 impl SettlementCadencePolicy {
     /// Reads both cadence triggers from a compiled drain extent.
     pub fn from_extent(extent: &ExecutionExtent) -> Result<Self> {
@@ -194,6 +212,7 @@ impl SettlementCadencePolicy {
 /// comes from [`DrainEpochController::watermark_advance_since_epoch_start`] — the controller owns
 /// the epoch-start claim, so the archetype never tracks a competing one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct AdmissionObservation {
     pub rows: u64,
     pub bytes: u64,
@@ -212,18 +231,21 @@ struct Counters {
 
 impl Counters {
     fn add(&mut self, batches: u64, rows: u64, bytes: u64) -> Result<()> {
-        self.batches = self
+        let next_batches = self
             .batches
             .checked_add(batches)
-            .ok_or_else(|| CdfError::data("CDC settlement batch count overflow"))?;
-        self.rows = self
+            .ok_or_else(|| CdfError::internal("CDC settlement batch count overflow"))?;
+        let next_rows = self
             .rows
             .checked_add(rows)
-            .ok_or_else(|| CdfError::data("CDC settlement row count overflow"))?;
-        self.bytes = self
+            .ok_or_else(|| CdfError::internal("CDC settlement row count overflow"))?;
+        let next_bytes = self
             .bytes
             .checked_add(bytes)
-            .ok_or_else(|| CdfError::data("CDC settlement byte count overflow"))?;
+            .ok_or_else(|| CdfError::internal("CDC settlement byte count overflow"))?;
+        self.batches = next_batches;
+        self.rows = next_rows;
+        self.bytes = next_bytes;
         Ok(())
     }
 }
@@ -326,6 +348,9 @@ enum UnitState {
     Open(Box<OpenUnit>),
     /// Closure was requested and no unit is open. No further admission is possible.
     Sealed,
+    /// A partial unit failed or was abandoned. Continuing this decoder instance could skip or
+    /// duplicate source history, so only reconstruction from the committed checkpoint may resume.
+    Poisoned,
 }
 
 /// The neutral finite-drain runtime archetype.
@@ -337,6 +362,7 @@ enum UnitState {
 pub struct CdcLogSourceRuntime {
     kind: SettlementUnitKind,
     ceiling: TransactionByteCeiling,
+    #[cfg(test)]
     cadence: SettlementCadencePolicy,
     state: UnitState,
     epoch: Counters,
@@ -349,6 +375,10 @@ pub struct CdcLogSourceRuntime {
     /// a `jobs` setting to reorder. It deliberately survives settlement — the stream outlives the
     /// epoch.
     stream_scope: Option<SourcePosition>,
+    /// Last source-proven terminal position, retained across epoch settlement.
+    last_completed_position: Option<SourcePosition>,
+    /// Exact frontier that must be acknowledged before a sealed epoch can reopen.
+    pending_settlement_frontier: Option<SourcePosition>,
 }
 
 impl CdcLogSourceRuntime {
@@ -358,14 +388,23 @@ impl CdcLogSourceRuntime {
         kind: SettlementUnitKind,
         ceiling: TransactionByteCeiling,
     ) -> Result<Self> {
+        if !matches!(extent, ExecutionExtent::Drain { .. }) {
+            return Err(CdfError::contract(
+                "CDC log-source archetype requires a drain execution extent",
+            ));
+        }
+        extent.validate_for_plan()?;
         Ok(Self {
             kind,
             ceiling,
+            #[cfg(test)]
             cadence: SettlementCadencePolicy::from_extent(extent)?,
             state: UnitState::Idle,
             epoch: Counters::default(),
             units_completed: 0,
             stream_scope: None,
+            last_completed_position: None,
+            pending_settlement_frontier: None,
         })
     }
 
@@ -390,6 +429,29 @@ impl CdcLogSourceRuntime {
         self.stream_scope.as_ref()
     }
 
+    /// Seeds cross-epoch monotonicity from receipt-gated checkpoint authority.
+    pub fn bind_initial_committed_position(
+        &mut self,
+        committed: Option<&SourcePosition>,
+    ) -> Result<()> {
+        if !matches!(self.state, UnitState::Idle)
+            || self.stream_scope.is_some()
+            || self.last_completed_position.is_some()
+            || self.units_completed != 0
+        {
+            return Err(CdfError::contract(
+                "initial CDC committed position must be bound before source admission",
+            ));
+        }
+        if let Some(committed) = committed {
+            committed.validate()?;
+            self.validate_position_kind(committed)?;
+            self.stream_scope = Some(committed.clone());
+            self.last_completed_position = Some(committed.clone());
+        }
+        Ok(())
+    }
+
     /// Whether a settlement unit is currently open.
     #[must_use]
     pub const fn unit_open(&self) -> bool {
@@ -402,6 +464,7 @@ impl CdcLogSourceRuntime {
         match &self.state {
             UnitState::Sealed => true,
             UnitState::Open(unit) => unit.requested.is_some(),
+            UnitState::Poisoned => true,
             UnitState::Idle => false,
         }
     }
@@ -429,10 +492,15 @@ impl CdcLogSourceRuntime {
                     "CDC settlement unit cannot begin after closure was requested",
                 ));
             }
+            UnitState::Poisoned => {
+                return Err(CdfError::data(
+                    "CDC settlement runtime is poisoned by a partial-unit failure; reconstruct it from the last committed checkpoint before resuming",
+                ));
+            }
             UnitState::Idle => {}
         }
         anchor.validate()?;
-        anchor.cdc_protocol_order_identity()?;
+        self.validate_position_kind(anchor)?;
         match &self.stream_scope {
             Some(scope) if !scope.same_scope(anchor)? => {
                 return Err(CdfError::data(
@@ -443,6 +511,9 @@ impl CdcLogSourceRuntime {
             Some(_) => {}
             None => self.stream_scope = Some(anchor.clone()),
         }
+        if let Some(previous) = &self.last_completed_position {
+            self.validate_successor(previous, anchor, "settlement unit anchor")?;
+        }
         self.state = UnitState::Open(Box::new(OpenUnit {
             counters: Counters::default(),
             scope_anchor: anchor.clone(),
@@ -452,11 +523,53 @@ impl CdcLogSourceRuntime {
         Ok(())
     }
 
-    /// Admits one homogeneous CDC batch into the open settlement unit.
+    /// Admits one homogeneous CDC batch using the drain controller as the sole cadence and
+    /// termination authority.
+    pub fn admit_batch_with_controller(
+        &mut self,
+        controller: &DrainEpochController,
+        metadata: &CdcMetadata,
+        batch_position: &SourcePosition,
+        observation: CdcBatchObservation,
+    ) -> Result<()> {
+        let CdcBatchObservation {
+            rows,
+            bytes,
+            monotonic_milliseconds,
+            global_watermark,
+        } = observation;
+        let UnitState::Open(unit) = &self.state else {
+            return Err(CdfError::contract(
+                "CDC batch admission requires an open settlement unit",
+            ));
+        };
+        let mut projected = unit.counters;
+        if let Err(error) = projected.add(1, rows, bytes) {
+            self.state = UnitState::Poisoned;
+            return Err(error);
+        }
+        let cause = match controller.prospective_closure_cause(
+            projected.batches,
+            projected.rows,
+            projected.bytes,
+            monotonic_milliseconds,
+            global_watermark.as_ref(),
+        ) {
+            Ok(cause) => cause.map(Self::settlement_cause),
+            Err(error) => {
+                self.state = UnitState::Poisoned;
+                return Err(error);
+            }
+        };
+        self.admit_batch_with_cause(metadata, batch_position, rows, bytes, cause)
+    }
+
+    /// Unit-test seam for exercising anticipation arithmetic without constructing a controller.
+    #[cfg(test)]
     ///
     /// Validates typed operation and exact position metadata, enforces the byte ceiling before any
     /// publication can occur, and records where a cadence trigger was first reached.
-    pub fn admit_batch(
+    fn admit_batch(
         &mut self,
         metadata: &CdcMetadata,
         batch_position: &SourcePosition,
@@ -468,58 +581,28 @@ impl CdcLogSourceRuntime {
             elapsed_milliseconds,
             watermark_advance,
         } = observation;
-        let ceiling = self.ceiling;
-        let cadence = self.cadence.clone();
-        let epoch_before = self.epoch;
-        let UnitState::Open(unit) = &mut self.state else {
+        let UnitState::Open(unit) = &self.state else {
             return Err(CdfError::contract(
                 "CDC batch admission requires an open settlement unit",
             ));
         };
-
-        metadata.validate(rows, Some(batch_position))?;
-        if !unit.scope_anchor.same_scope(batch_position)? {
-            return Err(CdfError::data(
-                "CDC batch position scope does not match the open settlement unit",
-            ));
-        }
-
-        let mut projected = unit.counters;
-        projected.add(1, rows, bytes)?;
-        if projected.bytes > ceiling.effective_bytes() {
-            return Err(CdfError::data(format!(
-                "CDC settlement unit reached {} bytes, exceeding the admitted maximum {}; no state \
-                 advances",
-                projected.bytes,
-                ceiling.effective_bytes()
-            )));
-        }
-        unit.counters = projected;
-        unit.last_position = batch_position.clone();
-
-        if unit.requested.is_none() {
-            // Cadence triggers are epoch-scoped, so the projection must combine units already
-            // settled in this epoch with everything accumulated by the open unit — not merely this
-            // batch. Comparing one batch against the epoch threshold would silently miss the
-            // crossing and under-report overshoot.
-            let mut epoch_projection = epoch_before;
-            epoch_projection.add(
-                unit.counters.batches,
-                unit.counters.rows,
-                unit.counters.bytes,
-            )?;
-            let magnitudes = EpochTriggerMagnitudes {
-                batches: epoch_projection.batches,
-                rows: epoch_projection.rows,
-                bytes: epoch_projection.bytes,
-                elapsed_milliseconds,
-                watermark_advance,
-            };
-            if let Some(cause) = cadence.reached(&magnitudes) {
-                unit.requested = Some((cause, unit.counters));
-            }
-        }
-        Ok(())
+        let mut unit_projection = unit.counters;
+        unit_projection.add(1, rows, bytes)?;
+        let mut epoch_projection = self.epoch;
+        epoch_projection.add(
+            unit_projection.batches,
+            unit_projection.rows,
+            unit_projection.bytes,
+        )?;
+        let magnitudes = EpochTriggerMagnitudes {
+            batches: epoch_projection.batches,
+            rows: epoch_projection.rows,
+            bytes: epoch_projection.bytes,
+            elapsed_milliseconds,
+            watermark_advance,
+        };
+        let cause = self.cadence.reached(&magnitudes);
+        self.admit_batch_with_cause(metadata, batch_position, rows, bytes, cause)
     }
 
     /// Records an externally requested closure, such as command termination.
@@ -534,7 +617,7 @@ impl CdcLogSourceRuntime {
                     unit.requested = Some((cause, unit.counters));
                 }
             }
-            UnitState::Sealed => {}
+            UnitState::Sealed | UnitState::Poisoned => {}
         }
     }
 
@@ -556,24 +639,36 @@ impl CdcLogSourceRuntime {
         };
         let unit = unit.clone();
 
-        terminal_position.validate()?;
-        terminal_position.cdc_protocol_order_identity()?;
-        if !unit.scope_anchor.same_scope(terminal_position)? {
-            return Err(CdfError::data(
-                "CDC terminal position scope does not match the settlement unit",
-            ));
-        }
-        if unit.counters.rows == 0 {
-            return Err(CdfError::data(
-                "CDC settlement unit cannot complete without an admitted change",
-            ));
-        }
-        if kind == SettlementUnitKind::CommittedTransaction
-            && !terminal_position.reaches(&unit.last_position)?
-        {
-            return Err(CdfError::data(
-                "CDC committed-transaction terminal position regresses against an admitted change",
-            ));
+        let validation = (|| {
+            terminal_position.validate()?;
+            self.validate_position_kind(terminal_position)?;
+            if !unit.scope_anchor.same_scope(terminal_position)? {
+                return Err(CdfError::data(
+                    "CDC terminal position scope does not match the settlement unit",
+                ));
+            }
+            if unit.counters.rows == 0 {
+                return Err(CdfError::data(
+                    "CDC settlement unit cannot complete without an admitted change",
+                ));
+            }
+            self.validate_successor(
+                &unit.last_position,
+                terminal_position,
+                "settlement unit terminal position",
+            )?;
+            if let Some(previous) = &self.last_completed_position {
+                self.validate_successor(
+                    previous,
+                    terminal_position,
+                    "settlement unit terminal position",
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            self.state = UnitState::Poisoned;
+            return Err(error);
         }
 
         let overshoot = unit
@@ -589,16 +684,24 @@ impl CdcLogSourceRuntime {
                 overshoot_bytes: unit.counters.bytes.saturating_sub(at.bytes),
             });
 
-        self.epoch.add(
+        let mut next_epoch = self.epoch;
+        if let Err(error) = next_epoch.add(
             unit.counters.batches,
             unit.counters.rows,
             unit.counters.bytes,
-        )?;
-        self.units_completed = self
-            .units_completed
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("CDC settlement unit count overflow"))?;
+        ) {
+            self.state = UnitState::Poisoned;
+            return Err(error);
+        }
+        let Some(next_units_completed) = self.units_completed.checked_add(1) else {
+            self.state = UnitState::Poisoned;
+            return Err(CdfError::internal("CDC settlement unit count overflow"));
+        };
+        self.epoch = next_epoch;
+        self.units_completed = next_units_completed;
+        self.last_completed_position = Some(terminal_position.clone());
         self.state = if overshoot.is_some() {
+            self.pending_settlement_frontier = Some(terminal_position.clone());
             UnitState::Sealed
         } else {
             UnitState::Idle
@@ -634,21 +737,203 @@ impl CdcLogSourceRuntime {
     /// A partially observed unit has no committed effect: the prior checkpoint stays authoritative
     /// and its accumulated counts never reach the epoch.
     pub fn abandon_unit(&mut self) {
-        if let UnitState::Open(unit) = &self.state {
-            let sealed = unit.requested.is_some();
-            self.state = if sealed {
-                UnitState::Sealed
-            } else {
-                UnitState::Idle
-            };
+        if matches!(self.state, UnitState::Open(_)) {
+            self.state = UnitState::Poisoned;
         }
     }
 
-    /// Resets unit accounting after the epoch's frontier settled.
-    pub fn acknowledge_settlement(&mut self) {
+    /// Seals an otherwise-open epoch at the exact source-proven frontier selected by the drain
+    /// controller. This is used for source exhaustion or termination causes first observed at the
+    /// controller boundary rather than inside a unit.
+    pub fn seal_for_settlement(&mut self, frontier: &SourcePosition) -> Result<()> {
+        if !matches!(self.state, UnitState::Idle | UnitState::Sealed) {
+            return Err(CdfError::contract(
+                "CDC settlement can be sealed only between successfully completed units",
+            ));
+        }
+        let completed = self.last_completed_position.as_ref().ok_or_else(|| {
+            CdfError::contract("CDC settlement requires a completed source-proven frontier")
+        })?;
+        if !completed.equivalent(frontier)? {
+            return Err(CdfError::data(
+                "CDC settlement frontier does not match the last source-proven terminal position",
+            ));
+        }
+        self.pending_settlement_frontier = Some(frontier.clone());
+        self.state = UnitState::Sealed;
+        Ok(())
+    }
+
+    /// Resets epoch accounting only after the exact sealed frontier settled through the
+    /// package/receipt/checkpoint commit gate.
+    pub fn acknowledge_settlement(&mut self, committed_frontier: &SourcePosition) -> Result<()> {
+        if !matches!(self.state, UnitState::Sealed) {
+            return Err(CdfError::contract(
+                "CDC settlement acknowledgement requires a sealed epoch",
+            ));
+        }
+        let pending = self.pending_settlement_frontier.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "CDC sealed epoch has no source-proven frontier available for settlement acknowledgement",
+            )
+        })?;
+        if !pending.equivalent(committed_frontier)? {
+            return Err(CdfError::data(
+                "CDC settlement acknowledgement does not cover the exact pending frontier",
+            ));
+        }
         self.epoch = Counters::default();
-        if matches!(self.state, UnitState::Sealed) {
-            self.state = UnitState::Idle;
+        self.pending_settlement_frontier = None;
+        self.state = UnitState::Idle;
+        Ok(())
+    }
+
+    fn validate_position_kind(&self, position: &SourcePosition) -> Result<()> {
+        let expected = match self.kind {
+            SettlementUnitKind::CommittedTransaction => SourcePositionKind::Log,
+            SettlementUnitKind::EventPrefix => SourcePositionKind::ResumeToken,
+        };
+        if position.kind() != expected {
+            return Err(CdfError::data(format!(
+                "CDC {} settlement requires a {} position, but received {}",
+                match self.kind {
+                    SettlementUnitKind::CommittedTransaction => "committed-transaction",
+                    SettlementUnitKind::EventPrefix => "event-prefix",
+                },
+                expected.as_str(),
+                position.kind().as_str()
+            )));
+        }
+        position.cdc_protocol_order_identity().map(|_| ())
+    }
+
+    fn validate_successor(
+        &self,
+        previous: &SourcePosition,
+        successor: &SourcePosition,
+        label: &str,
+    ) -> Result<()> {
+        match self.kind {
+            SettlementUnitKind::CommittedTransaction => {
+                let joined = SourcePosition::join_pair(previous, successor)?
+                    .ok_or_else(|| CdfError::data(format!("CDC {label} is not comparable")))?;
+                if !joined.equivalent(successor)? {
+                    return Err(CdfError::data(format!(
+                        "CDC {label} regresses against the prior ordered position"
+                    )));
+                }
+                Ok(())
+            }
+            SettlementUnitKind::EventPrefix => {
+                previous.advance_ordered_prefix(successor).map(|_| ())
+            }
+        }
+    }
+
+    fn admit_batch_with_cause(
+        &mut self,
+        metadata: &CdcMetadata,
+        batch_position: &SourcePosition,
+        rows: u64,
+        bytes: u64,
+        closure_cause: Option<SettlementClosureCause>,
+    ) -> Result<()> {
+        let kind = self.kind;
+        let ceiling = self.ceiling;
+        let UnitState::Open(unit) = &mut self.state else {
+            return Err(CdfError::contract(
+                "CDC batch admission requires an open settlement unit",
+            ));
+        };
+        let result = Self::admit_open_unit(
+            kind,
+            unit,
+            metadata,
+            batch_position,
+            rows,
+            bytes,
+            ceiling,
+            closure_cause,
+        );
+        if result.is_err() {
+            self.state = UnitState::Poisoned;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_open_unit(
+        kind: SettlementUnitKind,
+        unit: &mut OpenUnit,
+        metadata: &CdcMetadata,
+        batch_position: &SourcePosition,
+        rows: u64,
+        bytes: u64,
+        ceiling: TransactionByteCeiling,
+        closure_cause: Option<SettlementClosureCause>,
+    ) -> Result<()> {
+        let expected = match kind {
+            SettlementUnitKind::CommittedTransaction => SourcePositionKind::Log,
+            SettlementUnitKind::EventPrefix => SourcePositionKind::ResumeToken,
+        };
+        if batch_position.kind() != expected {
+            return Err(CdfError::data(format!(
+                "CDC batch position kind {} does not match settlement unit kind",
+                batch_position.kind().as_str()
+            )));
+        }
+        metadata.validate(rows, Some(batch_position))?;
+        if !unit.scope_anchor.same_scope(batch_position)? {
+            return Err(CdfError::data(
+                "CDC batch position scope does not match the open settlement unit",
+            ));
+        }
+        if kind == SettlementUnitKind::CommittedTransaction {
+            let joined = SourcePosition::join_pair(&unit.last_position, batch_position)?
+                .ok_or_else(|| CdfError::data("CDC batch position is not comparable"))?;
+            if !joined.equivalent(batch_position)? {
+                return Err(CdfError::data(
+                    "CDC batch position regresses against the prior admitted position",
+                ));
+            }
+        }
+
+        let mut projected = unit.counters;
+        projected.add(1, rows, bytes)?;
+        if projected.bytes > ceiling.effective_bytes() {
+            return Err(CdfError::data(format!(
+                "CDC settlement unit reached {} bytes, exceeding the admitted maximum {}; no state advances",
+                projected.bytes,
+                ceiling.effective_bytes()
+            )));
+        }
+
+        let requested = unit
+            .requested
+            .is_none()
+            .then_some(closure_cause)
+            .flatten()
+            .map(|cause| (cause, projected));
+
+        unit.counters = projected;
+        unit.last_position = batch_position.clone();
+        if let Some(requested) = requested {
+            unit.requested = Some(requested);
+        }
+        Ok(())
+    }
+
+    fn settlement_cause(cause: EpochClosureCause) -> SettlementClosureCause {
+        match cause {
+            EpochClosureCause::PackageRotation { trigger } => {
+                SettlementClosureCause::PackageRotation { trigger }
+            }
+            EpochClosureCause::CheckpointCadence { trigger } => {
+                SettlementClosureCause::CheckpointCadence { trigger }
+            }
+            EpochClosureCause::DrainTermination { .. } | EpochClosureCause::SourceExhausted => {
+                SettlementClosureCause::Termination
+            }
         }
     }
 }
@@ -658,8 +943,8 @@ mod tests {
     use super::*;
     use crate::drain_epoch::{DrainEpochController, DrainEpochDecision};
     use cdf_kernel::{
-        CdcOperation, CommittedLogPosition, DrainTermination, EventTimeDomain, LateDataAction,
-        MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
+        CdcOperation, CommittedLogPosition, DrainTermination, ErrorKind, EventTimeDomain,
+        LateDataAction, MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
         MongoResumeTokenSource, MongoWatchLevel, PartitionWatermarkAggregation,
         PostgresCommitPosition, PostgresLogScope, ResumeTokenPosition, SOURCE_POSITION_VERSION,
         STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, StreamEpochPolicy, WatermarkAuthority,
@@ -967,8 +1252,10 @@ mod tests {
 
         assert_eq!(source.units_completed(), 0);
         assert!(!source.unit_open());
-        // A fresh unit may still begin: nothing was sealed and nothing advanced.
-        assert!(source.begin_unit(&pg(20, "orders")).is_ok());
+        assert!(
+            source.begin_unit(&pg(20, "orders")).is_err(),
+            "a partial decoder state must be reconstructed from the committed checkpoint"
+        );
     }
 
     #[test]
@@ -1059,7 +1346,7 @@ mod tests {
 
         let error = source.complete_unit(&pg(20, "orders")).unwrap_err();
         assert!(
-            error.message.contains("regresses"),
+            error.message.contains("regress"),
             "unexpected message: {}",
             error.message
         );
@@ -1075,6 +1362,86 @@ mod tests {
             .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         assert!(source.complete_unit(&pg(20, "shipments")).is_err());
+    }
+
+    #[test]
+    fn settlement_kind_requires_its_exact_position_category() {
+        let extent = quiet_extent();
+        let mut transaction = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let transaction_error = transaction.begin_unit(&mongo_first()).unwrap_err();
+        assert!(
+            transaction_error
+                .message
+                .contains("requires a log position")
+        );
+
+        let mut prefix = runtime(SettlementUnitKind::EventPrefix, &extent);
+        let prefix_error = prefix.begin_unit(&pg(10, "orders")).unwrap_err();
+        assert!(
+            prefix_error
+                .message
+                .contains("requires a resume_token position")
+        );
+    }
+
+    #[test]
+    fn ordered_batch_positions_cannot_regress_within_or_across_units() {
+        let extent = quiet_extent();
+        let mut within = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let first = pg(20, "orders");
+        let later = pg(30, "orders");
+        within.begin_unit(&first).unwrap();
+        within
+            .admit_batch(&meta(CdcOperation::Insert, &later), &later, obs(1, 10))
+            .unwrap();
+        let error = within
+            .admit_batch(&meta(CdcOperation::Update, &first), &first, obs(1, 10))
+            .unwrap_err();
+        assert!(error.message.contains("regress"));
+        assert!(
+            within.complete_unit(&later).is_err(),
+            "failed admission poisons the partial unit"
+        );
+
+        let mut across = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        across.begin_unit(&later).unwrap();
+        across
+            .admit_batch(&meta(CdcOperation::Insert, &later), &later, obs(1, 10))
+            .unwrap();
+        across.complete_unit(&later).unwrap();
+        let error = across.begin_unit(&first).unwrap_err();
+        assert!(error.message.contains("regress"));
+    }
+
+    #[test]
+    fn admission_failure_poisons_the_decoder_until_reconstruction() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        let other = pg(10, "shipments");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &other), &other, obs(1, 10))
+            .unwrap_err();
+        assert!(!source.unit_open());
+        assert!(!source.admits_further_units());
+        assert!(source.begin_unit(&pg(20, "orders")).is_err());
+    }
+
+    #[test]
+    fn counter_overflow_is_internal_and_transactional() {
+        let mut counters = Counters {
+            batches: u64::MAX,
+            rows: 7,
+            bytes: 9,
+        };
+        let before = counters;
+        let error = counters.add(1, 1, 1).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert_eq!(
+            counters, before,
+            "failed accounting must not partially mutate"
+        );
     }
 
     // --- opaque event prefixes ---------------------------------------------------------------
@@ -1474,7 +1841,7 @@ mod tests {
             "no later unit while the epoch is unsettled"
         );
         controller.acknowledge_settlement(&commit).unwrap();
-        source.acknowledge_settlement();
+        source.acknowledge_settlement(&commit).unwrap();
 
         assert_eq!(controller.committed_frontier(), Some(&commit));
         assert!(source.admits_further_units());
@@ -1752,8 +2119,8 @@ mod tests {
                     .map(|(position, _, _): &(SourcePosition, u64, u64)| position.clone());
                 if let Some(frontier) = frontier {
                     controller.acknowledge_settlement(&frontier).unwrap();
+                    source.acknowledge_settlement(&frontier).unwrap();
                 }
-                source.acknowledge_settlement();
             }
             let index = index as u64;
             let anchor = mongo_token(index * 2);
@@ -1808,8 +2175,8 @@ mod tests {
                     .map(|(position, _, _): &(SourcePosition, u64, u64)| position.clone());
                 if let Some(frontier) = frontier {
                     controller.acknowledge_settlement(&frontier).unwrap();
+                    source.acknowledge_settlement(&frontier).unwrap();
                 }
-                source.acknowledge_settlement();
             }
             let lsn = (index as u64 + 1) * 10;
             let position = pg(lsn, "orders");
@@ -2007,7 +2374,7 @@ mod tests {
         controller
             .acknowledge_settlement(&settled_position)
             .unwrap();
-        source.acknowledge_settlement();
+        source.acknowledge_settlement(&settled_position).unwrap();
 
         // A second transaction spools rows but its commit is never observed.
         let interrupted = pg(20, "orders");
@@ -2119,7 +2486,7 @@ mod tests {
             panic!("a 1-row cadence must close");
         };
         controller.acknowledge_settlement(&orders).unwrap();
-        source.acknowledge_settlement();
+        source.acknowledge_settlement(&orders).unwrap();
 
         assert!(
             source.begin_unit(&pg(30, "shipments")).is_err(),
@@ -2193,11 +2560,69 @@ mod tests {
             .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         source.request_closure(SettlementClosureCause::Termination);
-        source.complete_unit(&pg(20, "orders")).unwrap();
+        let terminal = pg(20, "orders");
+        source.complete_unit(&terminal).unwrap();
         assert!(!source.admits_further_units());
 
-        source.acknowledge_settlement();
+        source.acknowledge_settlement(&terminal).unwrap();
         assert!(source.admits_further_units());
         assert!(source.begin_unit(&pg(30, "orders")).is_ok());
+    }
+
+    #[test]
+    fn settlement_acknowledgement_requires_the_exact_pending_frontier() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        let terminal = pg(20, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
+            .unwrap();
+        source.request_closure(SettlementClosureCause::Termination);
+        source.complete_unit(&terminal).unwrap();
+
+        assert!(source.acknowledge_settlement(&pg(30, "orders")).is_err());
+        assert!(!source.admits_further_units());
+        source.acknowledge_settlement(&terminal).unwrap();
+        assert!(source.admits_further_units());
+    }
+
+    #[test]
+    fn controller_is_the_production_termination_authority() {
+        let mut extent = quiet_extent();
+        let ExecutionExtent::Drain { termination, .. } = &mut extent else {
+            unreachable!();
+        };
+        *termination = DrainTermination::Records { count: 2 };
+        let controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let position = pg(10, "orders");
+        source.begin_unit(&position).unwrap();
+        source
+            .admit_batch_with_controller(
+                &controller,
+                &meta(CdcOperation::Insert, &position),
+                &position,
+                CdcBatchObservation {
+                    rows: 3,
+                    bytes: 30,
+                    monotonic_milliseconds: 0,
+                    global_watermark: None,
+                },
+            )
+            .unwrap();
+        source
+            .admit_batch(
+                &meta(CdcOperation::Update, &position),
+                &position,
+                obs(1, 10),
+            )
+            .unwrap();
+        let completed = source.complete_unit(&position).unwrap();
+        assert_eq!(
+            completed.overshoot.unwrap().cause,
+            SettlementClosureCause::Termination
+        );
     }
 }

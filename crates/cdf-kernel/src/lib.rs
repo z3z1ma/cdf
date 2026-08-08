@@ -40,9 +40,10 @@ mod stratified_selection;
 pub use arrow_type::parse_arrow_field_type;
 pub use async_types::{BatchStream, BoxFuture};
 pub use batch::{
-    Batch, BatchHeader, BatchPayload, CdcMetadata, CdcOperation, PayloadRef,
-    PhysicalObservationRepresentation, PreContractObservedValue, PreContractPhysicalReconciliation,
-    PreContractQuarantineFact, PreContractResidualCandidate, RecordBatchPayload,
+    Batch, BatchHeader, BatchPayload, CdcMetadata, CdcOperation, CdcSettlementBoundary,
+    CdcSettlementMarker, CdcSettlementUnitKind, PayloadRef, PhysicalObservationRepresentation,
+    PreContractObservedValue, PreContractPhysicalReconciliation, PreContractQuarantineFact,
+    PreContractResidualCandidate, RecordBatchPayload,
 };
 pub use canonical_arrow::{
     CanonicalArrowDateUnit, CanonicalArrowField, CanonicalArrowIntervalUnit, CanonicalArrowSchema,

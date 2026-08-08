@@ -14,6 +14,12 @@ where
     R: cdf_kernel::ResourceStream + ?Sized,
 {
     plan.validate_execution_extent_for_execution()?;
+    plan.validate_resolved_transaction_limit(
+        options
+            .services
+            .as_ref()
+            .map(|services| services.spill().snapshot().budget_bytes),
+    )?;
     match (&plan.execution_extent, drain_controller.is_some()) {
         (cdf_kernel::ExecutionExtent::Bounded { .. }, false)
         | (cdf_kernel::ExecutionExtent::Drain { .. }, true) => {}
@@ -40,6 +46,15 @@ where
     plan.validate_partition_schedule()?;
     plan.validate_compiled_source_resource(resource)?;
     let planned_partition_count = plan.scan.partition_count()?;
+    if matches!(
+        plan.write_disposition,
+        cdf_kernel::WriteDisposition::CdcApply
+    ) && planned_partition_count > 1
+    {
+        return Err(CdfError::contract(
+            "cdc_apply currently requires one ordered source partition so settlement and key order cannot be interleaved by jobs",
+        ));
+    }
     if let Some(scheduler) = &options.scheduler {
         let source = plan.compiled_source_execution.as_ref().ok_or_else(|| {
             CdfError::contract("package execution requires a compiled source execution plan")

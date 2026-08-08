@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-03
-Updated: 2026-08-07
+Updated: 2026-08-08
 
 # CDC, semantic, and SQL-project foundation program
 
@@ -369,6 +369,11 @@ Depends-On: D3.
   performance/admission floor;
 - refresh Wasmtime/WASI research and resolve or safely exclude recursive control values from WIT.
 
+Status: complete. The active authority is
+`.10x/decisions/python-in-process-batch-transform-hooks.md`; the first runtime is first-party
+in-process PyO3, the attach/schema/row/watermark rules are active, WASM is excluded from E1, and the
+performance ratio remains an evidence-backed E1 closure gate rather than an E0 semantic blocker.
+
 **E1. Batch transform hook runtime**
 
 - activate `.10x/specs/batch-transform-hooks.md`;
@@ -577,10 +582,11 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- E0 hook runtime detail only: the user ratified superseding VISION D-23 for execution-time Python
-  transform hooks on 2026-08-07, but substrate locality (in-process PyO3 on the D-25 Python pool
-  versus out-of-process over `cdf-subprocess`), sandbox enforcement posture, and what enters
-  compiled plan/replay identity are still open and block E1.
+- Hook E0 has no remaining unratified blocker. The in-process PyO3 substrate, first-party trust
+  boundary, compile-time-audited purity posture, attach point, environment identity, and replay
+  behavior are governed by `.10x/decisions/python-in-process-batch-transform-hooks.md` and
+  `.10x/specs/batch-transform-hooks.md`. E1 still owns declaration syntax and measured closure
+  evidence as implementation work.
 - Whether to reorder the remaining MongoDB destination around C1 is resolved by fact, not
   ratification: C1 closed at
   `.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`, so the MongoDB
@@ -594,6 +600,12 @@ disposition/merge keys, semantics, execution policy, relational exclusions, iden
 diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
+
+- 2026-08-08: Reconciled the hook authority after review found stale shaping text. E0 is complete:
+  the active decision already selects in-process PyO3, first-party-only trust, compile-time-audited
+  rather than runtime-enforced purity, `uv.lock` plus CPython identity, and a measured/ratified
+  performance gate. Updated VISION D-23 with the narrow exception and removed resolved blockers
+  from the hook spec; no runtime behavior changed in this record-only repair.
 
 - 2026-08-07: The user ratified four remaining program-level choices in one shaping checkpoint.
   (1) MongoDB `mongodb+srv` and topology discovery ship as advertised, explicitly accepting that

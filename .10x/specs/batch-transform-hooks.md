@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-07
+Updated: 2026-08-08
 
 # Plan-declared batch transform hooks
 
@@ -213,8 +213,11 @@ mutable virtualenvs, runtime import-path lookup, and network-fetched code remain
 lock-format stability and cross-platform resolution reproducibility are **unverified** and MUST be
 confirmed by recorded evidence before the environment hash is treated as authoritative.
 
-**Capability policy.** Declared and compile-time audited, per the determinism section. Secrets MUST
-NOT be reachable from hook code and MUST NOT enter hook identity.
+**Capability policy.** Declared and compile-time audited, per the determinism section. CDF MUST NOT
+resolve, inject, render, or place secret material into hook inputs or hook identity. Because the
+ratified host is in-process, CDF cannot truthfully prevent trusted project code from reading ambient
+process state; doing so violates the hook's declared purity and is the accepted residual risk in the
+governing decision, not an isolation guarantee.
 
 **Output capture.** `stdout`/`stderr` MUST be captured with a bounded buffer and pass through the
 existing redaction path; unbounded capture is forbidden.
@@ -305,8 +308,8 @@ not implement an ad hoc REST-only Python hook.
    authoritative.
 6. Given a finalized package replay, no hook runtime or source is contacted.
 7. Given the same input/code/environment twice, golden output and error behavior match.
-8. Given a Python hook without D-23 supersession, compilation rejects it with the governing
-   authority conflict.
+8. Given a Python hook that is not plan-declared first-party project code, compilation rejects it
+   before importing or executing the module.
 9. Given a WASM hook before WIT/runtime activation, compilation rejects it rather than treating the
    placeholder crate as support.
 10. Given `records_transform` in REST before hooks activate, config fails early and never pretends a
@@ -324,15 +327,15 @@ not implement an ad hoc REST-only Python hook.
   plans;
 - post-load warehouse transformation graphs.
 
-## Open blockers
+## Implementation closure prerequisites
 
-1. User ratification to supersede or retain D-23 for Python execution.
-2. First runtime kind and sandbox boundary.
-3. Exact first attach point and allowed row-count behavior.
-4. Hook declaration/file syntax in the SQL/project front-end.
-5. Exact schema-effect declaration and lineage model.
-6. WIT recursive-value resolution or proof the narrow transform interface excludes it safely.
-7. Performance/admission thresholds.
+- E1 must choose and compile one concrete SQL/project declaration syntax for the hook fields above.
+- Recorded evidence must verify `uv.lock` identity stability for supported hosts before that hash is
+  authoritative.
+- The measured native/Python pass-through ratio must be ratified before it becomes the performance
+  gate. No numeric floor is invented by this specification.
+
+WIT recursive-value work is not an E1 blocker because WASM is explicitly outside the first runtime.
 
 ## References
 

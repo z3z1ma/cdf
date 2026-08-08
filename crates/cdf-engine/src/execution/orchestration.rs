@@ -1144,6 +1144,26 @@ fn validate_cdc_batch_authority(
     disposition: &WriteDisposition,
     header: &cdf_kernel::BatchHeader,
 ) -> Result<()> {
+    if let Some(marker) = &header.cdc_settlement {
+        if !matches!(disposition, WriteDisposition::CdcApply) {
+            return Err(CdfError::contract(
+                "CDC settlement boundaries require cdc_apply disposition",
+            ));
+        }
+        marker.validate()?;
+        if header.row_count != 0
+            || header.byte_count != 0
+            || header.cdc.is_some()
+            || header.partition_idleness.is_some()
+            || !header.watermarks.is_empty()
+            || header.source_position.as_ref() != Some(&marker.position)
+        {
+            return Err(CdfError::data(
+                "CDC settlement boundary must be a zero-row, zero-byte control batch with matching source position and no operation, idleness, or watermark metadata",
+            ));
+        }
+        return Ok(());
+    }
     match (&header.cdc, disposition) {
         (Some(metadata), WriteDisposition::Merge | WriteDisposition::CdcApply) => {
             metadata.validate(header.row_count, header.source_position.as_ref())
@@ -1156,6 +1176,19 @@ fn validate_cdc_batch_authority(
         )),
         (None, WriteDisposition::Append | WriteDisposition::Replace | WriteDisposition::Merge) => {
             Ok(())
+        }
+    }
+}
+
+fn settlement_unit_kind(
+    kind: cdf_kernel::CdcSettlementUnitKind,
+) -> cdf_runtime::SettlementUnitKind {
+    match kind {
+        cdf_kernel::CdcSettlementUnitKind::CommittedTransaction => {
+            cdf_runtime::SettlementUnitKind::CommittedTransaction
+        }
+        cdf_kernel::CdcSettlementUnitKind::EventPrefix => {
+            cdf_runtime::SettlementUnitKind::EventPrefix
         }
     }
 }
@@ -3683,6 +3716,7 @@ where
     let mut pending_dedup_batches = Vec::new();
     let mut next_package_output_row_ordinal = 0_u64;
     let mut cdc_order_identity = None::<(String, String)>;
+    let mut cdc_settlement_runtime = None::<cdf_runtime::CdcLogSourceRuntime>;
     let mut phase_measurements = PhaseMeasurements::new(options.phase_metrics);
     let memory = options
         .services
@@ -3809,6 +3843,7 @@ where
         _ => None,
     };
     let drain_batch_frontiers_enabled = drain_controller.is_some()
+        && !matches!(plan.write_disposition, WriteDisposition::CdcApply)
         && !plan
             .compiled_source_execution
             .as_ref()
@@ -4282,9 +4317,17 @@ where
                     break;
                 }
                 let decode_started = phase_measurements.start();
+                let timer_controller = if cdc_settlement_runtime
+                    .as_ref()
+                    .is_some_and(cdf_runtime::CdcLogSourceRuntime::unit_open)
+                {
+                    None
+                } else {
+                    drain_controller.as_deref_mut()
+                };
                 let next_batch = match poll_with_drain_timer(
                     opened_partition.next_batch(),
-                    drain_controller.as_deref_mut(),
+                    timer_controller,
                     options.services.as_ref(),
                     &run_cancellation,
                     &drain_clock,
@@ -4321,20 +4364,126 @@ where
                 let decode_duration_ns = elapsed_ns(decode_started, "resource decode")?;
                 let Some(batch) = next_batch else {
                     phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
+                    if cdc_settlement_runtime
+                        .as_ref()
+                        .is_some_and(cdf_runtime::CdcLogSourceRuntime::unit_open)
+                    {
+                        return Err(CdfError::data(
+                            "CDC source ended before the open settlement unit exposed its terminal boundary; no state advances",
+                        ));
+                    }
                     break;
                 };
                 let mut batch = batch;
                 source_progress_observed = true;
-                partition_input_batch_count = partition_input_batch_count.saturating_add(1);
-                partition_input_bytes = partition_input_bytes
-                    .checked_add(batch.header.byte_count)
-                    .ok_or_else(|| CdfError::data("drain partition input byte count overflow"))?;
                 validate_batch_partition_ownership(
                     &batch,
                     &plan.scan.request.resource_id,
                     &partition,
                 )?;
                 validate_cdc_batch_authority(&plan.write_disposition, &batch.header)?;
+                if let Some(marker) = batch.header.cdc_settlement.clone() {
+                    phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
+                    let kind = settlement_unit_kind(marker.unit_kind);
+                    match marker.boundary {
+                        cdf_kernel::CdcSettlementBoundary::Begin => {
+                            if cdc_settlement_runtime.is_none() {
+                                let limit = plan.resolved_transaction_limit_bytes.ok_or_else(|| {
+                                    CdfError::data(
+                                        "CDC settlement boundary requires a plan-frozen transaction byte limit",
+                                    )
+                                })?;
+                                let mut runtime = cdf_runtime::CdcLogSourceRuntime::new(
+                                    &plan.execution_extent,
+                                    kind,
+                                    cdf_runtime::TransactionByteCeiling::from_resolved_plan(limit)?,
+                                )?;
+                                runtime.bind_initial_committed_position(
+                                    drain_controller
+                                        .as_deref()
+                                        .and_then(cdf_runtime::DrainEpochController::committed_frontier),
+                                )?;
+                                cdc_settlement_runtime = Some(runtime);
+                            }
+                            let runtime = cdc_settlement_runtime.as_mut().ok_or_else(|| {
+                                CdfError::internal("CDC settlement runtime disappeared")
+                            })?;
+                            if runtime.kind() != kind {
+                                return Err(CdfError::data(
+                                    "one CDC stream cannot mix committed-transaction and event-prefix settlement",
+                                ));
+                            }
+                            runtime.begin_unit(&marker.position)?;
+                        }
+                        cdf_kernel::CdcSettlementBoundary::Terminal => {
+                            let runtime = cdc_settlement_runtime.as_mut().ok_or_else(|| {
+                                CdfError::data(
+                                    "CDC terminal boundary arrived before a begin boundary",
+                                )
+                            })?;
+                            if runtime.kind() != kind {
+                                return Err(CdfError::data(
+                                    "CDC terminal boundary kind does not match the open settlement unit",
+                                ));
+                            }
+                            let completed = runtime.complete_unit(&marker.position)?;
+                            let identity = completed.cdc_order_identity()?;
+                            if cdc_order_identity
+                                .as_ref()
+                                .is_some_and(|current| current != &identity)
+                            {
+                                return Err(CdfError::data(
+                                    "one package cannot combine CDC settlement units from different source-protocol scopes",
+                                ));
+                            }
+                            cdc_order_identity = Some(identity);
+                            record_drain_partition_position(
+                                &mut drain_partition_positions,
+                                &partition,
+                                marker.position.clone(),
+                            )?;
+                            observed_partition_position = Some(marker.position.clone());
+                            partition_batch_frontiers_observed = true;
+                            let monotonic_milliseconds =
+                                drain_clock.monotonic_milliseconds(options.services.as_ref());
+                            let controller = drain_controller.as_deref_mut().ok_or_else(|| {
+                                CdfError::contract(
+                                    "CDC settlement boundary requires the finite drain controller",
+                                )
+                            })?;
+                            let decision = controller.observe_safe_frontier(
+                                completed.into_observation(
+                                    None,
+                                    partition_watermark.clone(),
+                                    false,
+                                    monotonic_milliseconds,
+                                    drain_clock.observed_at_unix_milliseconds(
+                                        options.services.as_ref(),
+                                    )?,
+                                ),
+                            )?;
+                            let resume = Box::new(crate::DrainPartitionResume {
+                                partition_id: partition.partition_id.clone(),
+                                start_position: marker.position,
+                            });
+                            last_drain_partition_resume = Some(resume.clone());
+                            if let cdf_runtime::DrainEpochDecision::Close(closure) = decision {
+                                drain_partition_resume = Some(resume);
+                                drain_epoch_closure = Some(*closure);
+                                fully_processed = false;
+                                partition_epoch_closed = true;
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                partition_input_batch_count = partition_input_batch_count
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::internal("drain partition input batch count overflow"))?;
+                partition_input_bytes = partition_input_bytes
+                    .checked_add(batch.header.byte_count)
+                    .ok_or_else(|| CdfError::internal("drain partition input byte count overflow"))?;
                 observe_cdc_order_identity(&mut cdc_order_identity, &batch.header)?;
                 if let Some(watermarks) = partition_watermarks.as_ref() {
                     for watermark in &batch.header.watermarks {
@@ -4359,6 +4508,38 @@ where
                             "partition idleness must be a zero-row control batch with matching partition/source-position authority and no watermark claim",
                         ));
                     }
+                }
+                if matches!(plan.write_disposition, WriteDisposition::CdcApply) {
+                    let metadata = batch.header.cdc.as_ref().ok_or_else(|| {
+                        CdfError::data("cdc_apply data batch omitted operation metadata")
+                    })?;
+                    let position = batch.header.source_position.as_ref().ok_or_else(|| {
+                        CdfError::data("cdc_apply data batch omitted source position")
+                    })?;
+                    let controller = drain_controller.as_deref().ok_or_else(|| {
+                        CdfError::contract(
+                            "cdc_apply batch admission requires the finite drain controller",
+                        )
+                    })?;
+                    cdc_settlement_runtime
+                        .as_mut()
+                        .ok_or_else(|| {
+                            CdfError::data(
+                                "cdc_apply data batch arrived before a settlement begin boundary",
+                            )
+                        })?
+                        .admit_batch_with_controller(
+                            controller,
+                            metadata,
+                            position,
+                            cdf_runtime::CdcBatchObservation {
+                                rows: batch.header.row_count,
+                                bytes: batch.header.byte_count,
+                                monotonic_milliseconds: drain_clock
+                                    .monotonic_milliseconds(options.services.as_ref()),
+                                global_watermark: partition_watermark.clone(),
+                            },
+                        )?;
                 }
                 let decoded_input_bytes = batch.header.byte_count;
                 phase_measurements.add(

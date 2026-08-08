@@ -18,10 +18,10 @@ use super::support::{
     coercion_decision, collect_quarantine_records, compile_resource_validation_program,
     compile_validation_program, execute_to_package, execute_to_package_with_run_id,
     execute_to_package_with_segment_positions_and_pre_finalize, fmt, incompatible_sample_schema,
-    plan_input, plan_input_for_schema, preview_resource, read_package_segment, reconcile_schema,
-    rename_column_program_output, sample_batches, sample_schema, sample_stream_epoch_policy,
-    semantic_field, stream_admission_coercion, terminal_effective_schema_runtime,
-    terminal_file_position,
+    mock_unbounded_source_plan, plan_input, plan_input_for_schema, preview_resource,
+    read_package_segment, reconcile_schema, rename_column_program_output, sample_batches,
+    sample_schema, sample_stream_epoch_policy, semantic_field, stream_admission_coercion,
+    terminal_effective_schema_runtime, terminal_file_position,
 };
 use super::support::{Array, ResourceStream};
 
@@ -1332,6 +1332,30 @@ fn cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_familie
         batch
     }
 
+    fn settlement_boundary(
+        batch_id: &str,
+        position: SourcePosition,
+        boundary: cdf_kernel::CdcSettlementBoundary,
+    ) -> Batch {
+        let schema = sample_schema();
+        let mut batch = Batch::from_record_batch(
+            BatchId::new(batch_id).unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+            RecordBatch::new_empty(schema),
+        )
+        .unwrap();
+        batch.header.source_position = Some(position.clone());
+        batch.header.byte_count = 0;
+        batch.header.cdc_settlement = Some(cdf_kernel::CdcSettlementMarker {
+            unit_kind: cdf_kernel::CdcSettlementUnitKind::CommittedTransaction,
+            boundary,
+            position,
+        });
+        batch
+    }
+
     let initial = cdc_batch(
         batch_for_partition(
             "cdc-upsert-0",
@@ -1343,9 +1367,23 @@ fn cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_familie
         cdf_kernel::CdcOperation::Insert,
         10,
     );
-    let mut resource = MockResource::tier_a(vec![initial.clone()])
+    let mut resource = MockResource::tier_b(vec![initial.clone()])
+        .with_partition_count(1)
         .with_write_disposition(WriteDisposition::CdcApply);
-    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 100 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            transaction_limit_bytes: Some(1 << 20),
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 6 },
+    };
+    let mut input = plan_input(vec![], None, None, extent.clone());
     input.keyed_effects = cdf_kernel::KeyedEffectPlanAuthority {
         deletion_capture: cdf_kernel::DeletionCaptureAuthority {
             support: cdf_kernel::DeletionCaptureSupport::Inherent,
@@ -1356,28 +1394,137 @@ fn cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_familie
             policy: cdf_kernel::DeleteApplicationPolicy::Hard,
         },
     };
-    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let source = mock_unbounded_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    let plan = Planner::new()
+        .plan_tier_a(&resource, input)
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap()
+        .bind_resolved_transaction_limit(services.spill().snapshot().budget_bytes)
+        .unwrap();
+    assert_eq!(plan.resolved_transaction_limit_bytes, Some(1 << 20));
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap()["resolved_transaction_limit_bytes"],
+        1 << 20,
+        "portable plan bytes must carry the concrete CDC ceiling"
+    );
+    plan.validate_resolved_transaction_limit(Some(1 << 20))
+        .unwrap();
+    plan.validate_resolved_transaction_limit(Some(2 << 20))
+        .unwrap();
+    assert_eq!(
+        plan.resolved_transaction_limit_bytes,
+        Some(1 << 20),
+        "a larger execution host must not recalculate the accepted plan bound"
+    );
+    assert!(
+        plan.validate_resolved_transaction_limit(Some((1 << 20) - 1))
+            .is_err(),
+        "execution must reject a host that cannot honor the plan-frozen ceiling"
+    );
     let key_field = plan.output_arrow_schema().unwrap().field(0).clone();
-    resource.batches = vec![
-        initial,
-        delete_batch("cdc-delete-1", key_field.clone(), 1, 20),
-        cdc_batch(
-            batch_for_partition(
-                "cdc-upsert-2",
-                "part-0",
-                vec![1, 2],
-                vec!["one-new", "two"],
-                vec![true, true],
-            ),
-            cdf_kernel::CdcOperation::Update,
-            30,
+    let positioned_batches = vec![
+        (initial, postgres_position(10, 10)),
+        (
+            delete_batch("cdc-delete-1", key_field.clone(), 1, 20),
+            postgres_position(20, 20),
         ),
-        delete_batch("cdc-delete-3", key_field, 3, 40),
+        (
+            cdc_batch(
+                batch_for_partition(
+                    "cdc-upsert-2",
+                    "part-0",
+                    vec![1, 2],
+                    vec!["one-new", "two"],
+                    vec![true, true],
+                ),
+                cdf_kernel::CdcOperation::Update,
+                30,
+            ),
+            postgres_position(30, 30),
+        ),
+        (
+            delete_batch("cdc-delete-3", key_field, 3, 40),
+            postgres_position(40, 40),
+        ),
     ];
+    resource.batches = positioned_batches
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, (batch, position))| {
+            [
+                settlement_boundary(
+                    &format!("cdc-begin-{index}"),
+                    position.clone(),
+                    cdf_kernel::CdcSettlementBoundary::Begin,
+                ),
+                batch,
+                settlement_boundary(
+                    &format!("cdc-terminal-{index}"),
+                    position,
+                    cdf_kernel::CdcSettlementBoundary::Terminal,
+                ),
+            ]
+        })
+        .collect();
     let temp = TempDir::new().unwrap();
-
-    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
-    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let mut runs = Vec::new();
+    for jobs in [1_u16, 2, 8] {
+        let (_, run_services) =
+            StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+        let scheduler = cdf_runtime::resolve_runtime_scheduler(
+            plan.scan.partition_count().unwrap(),
+            &source.execution_capabilities,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+            &run_services,
+            Some(jobs),
+        )
+        .unwrap();
+        assert_eq!(scheduler.effective_jobs.jobs, 1);
+        let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+        let package_path = temp.path().join(format!("jobs-{jobs}"));
+        let output = block_on(super::execute_drain_epoch_with_hooks(
+            &plan,
+            &resource,
+            &package_path,
+            &pre_finalize,
+            super::DrainEpochExecution::new(&mut controller),
+            EngineExecutionConfig::default()
+                .with_execution_services(run_services)
+                .with_scheduler_resolution(scheduler)
+                .new_invocation(),
+        ))
+        .unwrap()
+        .into_package()
+        .unwrap()
+        .output;
+        runs.push((package_path, output));
+    }
+    let baseline = (
+        runs[0].1.manifest.package_hash.clone(),
+        runs[0].1.identity_segments().to_vec(),
+    );
+    for (_, run) in &runs[1..] {
+        assert_eq!(
+            (
+                run.manifest.package_hash.clone(),
+                run.identity_segments().to_vec()
+            ),
+            baseline,
+            "actual jobs configuration changed CDC package identity"
+        );
+    }
+    let (package_path, output) = runs.pop().unwrap();
+    let reader = cdf_package::PackageReader::open(package_path).unwrap();
     let cdf_kernel::PackageContentAuthority::KeyedChanges {
         reduction,
         deletion_capture,

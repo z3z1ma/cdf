@@ -324,6 +324,7 @@ fn scan_one_with_portable(
         None,
         committed_frontier,
         &resolved.destination.runtime_capabilities(),
+        execution,
     )?;
     let portable = portable
         .then(|| {
@@ -404,6 +405,7 @@ pub(crate) fn preview(
         None,
         None,
         &resolved.destination.runtime_capabilities(),
+        execution,
     )?;
     match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot, host) {
         Ok(report) => CommandOutput::rendered("preview", render::preview_document(&report), report),
@@ -610,6 +612,7 @@ pub(crate) fn build_engine_plan_for_resource(
     run_package_id: Option<&str>,
     committed_frontier: Option<SourcePosition>,
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<EnginePlan, CliError> {
     let resource = source.as_queryable();
     let logical_schema = source
@@ -643,6 +646,9 @@ pub(crate) fn build_engine_plan_for_resource(
     let source_plan = source.source_plan();
     plan.bind_compiled_source(source_plan)
         .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
+        .and_then(|plan| {
+            plan.bind_resolved_transaction_limit(execution.spill().snapshot().budget_bytes)
+        })
         .map_err(CliError::from)
 }
 

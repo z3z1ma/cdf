@@ -53,6 +53,9 @@ pub struct EnginePlan {
     pub operator_graph: Option<cdf_runtime::CompiledOperatorGraph>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_stream_policy: Option<cdf_runtime::CompiledStreamPolicy>,
+    /// Plan-frozen hard ceiling for one CDC settlement unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transaction_limit_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
@@ -86,6 +89,72 @@ impl EnginePlan {
             ));
         }
         self.execution_extent.validate_for_execution()
+    }
+
+    /// Freezes the effective CDC transaction ceiling into this exact executable plan.
+    pub fn bind_resolved_transaction_limit(mut self, host_spill_budget_bytes: u64) -> Result<Self> {
+        let declared = match &self.execution_extent {
+            ExecutionExtent::Drain { policy, .. } => policy.transaction_limit_bytes,
+            ExecutionExtent::Bounded { .. } | ExecutionExtent::Resident { .. } => None,
+        };
+        match self.write_disposition {
+            WriteDisposition::CdcApply => {
+                if !matches!(self.execution_extent, ExecutionExtent::Drain { .. }) {
+                    return Err(CdfError::contract(
+                        "cdc_apply requires drain execution with a plan-frozen transaction byte limit",
+                    ));
+                }
+                self.resolved_transaction_limit_bytes = Some(
+                    cdf_runtime::TransactionByteCeiling::resolve(
+                        host_spill_budget_bytes,
+                        declared,
+                    )?
+                    .effective_bytes(),
+                );
+            }
+            _ if declared.is_some() => {
+                return Err(CdfError::contract(
+                    "TRANSACTION LIMIT BYTES is valid only for a cdc_apply resource",
+                ));
+            }
+            _ => self.resolved_transaction_limit_bytes = None,
+        }
+        Ok(self)
+    }
+
+    /// Verifies host compatibility without recalculating the plan-frozen CDC ceiling.
+    pub fn validate_resolved_transaction_limit(
+        &self,
+        host_spill_budget_bytes: Option<u64>,
+    ) -> Result<()> {
+        match (
+            &self.write_disposition,
+            self.resolved_transaction_limit_bytes,
+        ) {
+            (WriteDisposition::CdcApply, Some(0)) => Err(CdfError::data(
+                "compiled CDC transaction byte limit must be greater than zero",
+            )),
+            (WriteDisposition::CdcApply, Some(limit)) => {
+                let host = host_spill_budget_bytes.ok_or_else(|| {
+                    CdfError::contract(
+                        "CDC execution requires host spill authority to validate the compiled transaction byte limit",
+                    )
+                })?;
+                if host < limit {
+                    return Err(CdfError::environment(format!(
+                        "execution host spill budget {host} bytes is below the plan-frozen CDC transaction limit {limit} bytes; run with at least the planned spill budget or create a new plan"
+                    )));
+                }
+                Ok(())
+            }
+            (WriteDisposition::CdcApply, None) => Err(CdfError::data(
+                "executable cdc_apply plan omitted its resolved transaction byte limit; create a new plan",
+            )),
+            (_, Some(_)) => Err(CdfError::data(
+                "non-CDC executable plan carries a CDC transaction byte limit",
+            )),
+            (_, None) => Ok(()),
+        }
     }
 
     pub fn validate_compiled_expression_plan(&self) -> Result<()> {

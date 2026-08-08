@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CompiledResourceArtifact, CompiledSchemaAuthority, ProjectResourceSelection};
 
-pub const PORTABLE_PLAN_VERSION: u16 = 1;
+pub const PORTABLE_PLAN_VERSION: u16 = 2;
 pub const PORTABLE_PLAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

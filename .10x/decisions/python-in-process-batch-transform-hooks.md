@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-07
-Updated: 2026-08-07
+Updated: 2026-08-08
 
 # In-process Python is admitted as the first batch transform hook substrate
 
@@ -81,10 +81,13 @@ have closed the program without touching a foundational stance. Rejected by expl
 - E1 becomes executable once `.10x/specs/batch-transform-hooks.md` is revised to active with the
   narrowed determinism and error clauses above.
 - **Accepted residual risk — declaration is not enforcement.** A first-party hook that performs
-  network I/O, reads the clock, or uses randomness will run. Determinism becomes a convention backed
-  by compile-time audit and golden/repeatability tests, not a runtime guarantee. Replay is protected
-  structurally rather than by confinement: packages record post-hook batches, so replaying a
-  finalized package never re-executes the hook.
+  network I/O, reads the clock, uses randomness, or reads ambient process state (including
+  environment-carried secret material) will run. CDF does not inject or render secrets into hook
+  inputs, but the in-process first-party trust decision cannot truthfully promise isolation from
+  ambient state. Determinism becomes a convention backed by compile-time audit and
+  golden/repeatability tests, not a runtime guarantee. Replay is protected structurally rather
+  than by confinement: packages record post-hook batches, so replaying a finalized package never
+  re-executes the hook.
 - **Accepted residual risk — crash blast radius.** A segfault or OOM in hook code terminates the
   run. This is bounded by existing authority rather than new work: VISION §20.2's chaos layer kills
   the process at every lifecycle boundary on every merge, and the five-row crash matrix already
@@ -97,9 +100,9 @@ have closed the program without touching a foundational stance. Rejected by expl
 - `uv` enters the build and CI graph. Its lock-format stability and cross-platform resolution
   reproducibility are **unverified** and must be confirmed during E0/E1 execution before the
   environment hash is treated as authoritative.
-- VISION.md D-23 does not yet carry a pointer to this narrowing. Updating it is a separate action
-  requiring user authorization, since VISION.md is canonical product doctrine rather than a `.10x/`
-  record.
+- VISION.md D-23 carries the same narrow first-party hook exception and points back to this
+  decision; the user authorized that reconciliation while accepting the review repair on
+  2026-08-08.
 - Revisit if: hooks are opened to untrusted or third-party authors; `cdf-wasm` and the WIT recursive
   projection become viable; or measured IPC cost proves lower than the in-process risk premium.
 

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-07
-Updated: 2026-08-07
+Updated: 2026-08-08
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 Depends-On: `.10x/tickets/done/2026-08-03-cdc-source-position-artifact-transition.md`, `.10x/tickets/2026-08-07-a1-5-package-native-keyed-effects.md`
 
@@ -119,40 +119,9 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 
 ## Blockers
 
-**AC8 is blocked on the workspace baseline, discovered 2026-08-07.**
-`.10x/tickets/2026-08-07-workspace-suite-failing-and-flaky-baseline.md` records 33 pre-existing
-failures on `main`. Two clusters sit directly under AC8's subject matter:
-
-- 10 `package_replay` tests, including every crash-matrix helper-process case — AC8 must prove
-  "package finalization, exact receipt settlement, checkpoint advancement, and crash recovery";
-- `tests::determinism::package_identity_is_invariant_to_source_batch_rechunking`, a determinism
-  invariant the settlement archetype's rechunk guarantees build on.
-
-A finite-drain conformance certificate written on top of a red package-replay suite would not be
-evidence — it would be a claim resting on unverified ground, and the flakiness confirmed in that
-ticket means a green result could not be trusted either. AC8 therefore waits for classification of
-those two clusters, not for more A2 implementation.
-
-`jobs` invariance remains unblocked and is ordinary remaining work.
-
-The former AC4 authoring blocker was ratified on 2026-08-07 and implemented; the record of it is kept
-below because it explains the grammar choice.
-
-**AC4 authoring half — RESOLVED 2026-08-07.** The CDC foundation spec requires
-`transaction_limit_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
-lower". The runtime half is implemented and proven (`TransactionByteCeiling::from_spill_budget`),
-but `.10x/specs/cdc-resource-authoring-and-continuous-run.md` defines `mode`, `bootstrap`,
-`DISPOSITION CDC_APPLY`, and the `DELETE` clause and **does not define any surface through which a
-resource declares this value**. No other active spec does either.
-
-Where it is declared is a user-visible semantic choice, so it is not filled here. Candidates: a
-driver-owned `upstream(...)` argument, a resource execution clause in the SQL envelope, a
-project-level `cdf.toml` setting, or deliberately not authorable in v1 so the host spill budget is
-the only authority. The runtime already behaves correctly under the last option, which is why this
-blocks only the authoring half of AC4 and nothing else in the ticket.
-
-The remaining criteria — crash-recovery proof, `jobs` invariance, and the AC8 conformance
-certificate — are unblocked and are ordinary remaining work.
+None. The former workspace-baseline blocker was classified: the package-replay crash cases pass in
+isolation and the rechunking invariant itself was intact. AC8 remains ordinary unimplemented work,
+not a blocked condition. The resolved AC4 authoring history is preserved in the journal below.
 
 ## Evidence
 
@@ -430,14 +399,95 @@ timeout test panics parsing an empty descendant-PID file, so its fixture races o
 never reaches the assertion it exists to make. Recorded in the workspace-baseline ticket.
 
 **Remaining for closure:** the AC8 finite-drain conformance certificate including real crash
-recovery — blocked on the workspace baseline, see Blockers. AC5's physical construction is **already satisfied by A1.5** — the
-archetype now feeds it rather than duplicating it, which is a correction to increment 2's status
-table.
+recovery. AC5's physical construction is **already satisfied by A1.5** — the archetype now feeds it
+rather than duplicating it, which is a correction to increment 2's status table.
+
+### Increment 8 — external-review remediation and production composition (2026-08-08)
+
+An external review found nine defects or evidence/record inconsistencies in the implementation
+since `e961900a`. All nine were repaired in one bounded pass:
+
+1. Settlement kind is now checked against the exact position category at kernel control markers,
+   unit begin, batch admission, terminal completion, and checkpoint seeding.
+2. Committed-log positions must advance monotonically within and across units, including against
+   the receipt-gated initial checkpoint. A regression poisons the partial decoder state.
+3. Explicit zero-row begin/terminal control batches connect the archetype to real engine execution.
+   Only a terminal marker can publish a CDC safe frontier; timer and generic per-batch frontier
+   paths cannot close inside an open unit. Settlement acknowledgement requires the exact pending
+   frontier.
+4. The effective transaction limit is resolved once while building the executable plan, serialized
+   as `resolved_transaction_limit_bytes`, and checked against the execution host without
+   recalculation. A smaller host fails preflight; a larger host does not change plan identity. The
+   portable-plan artifact version advances coherently because its embedded engine-plan shape
+   changed; no compatibility reader is retained.
+5. The MongoDB fixture listens, publishes, and advertises port `27020`; its setup is rerunnable and
+   validation proves topology, resume tokens, and required before/after images.
+6. Any admission, unsupported-event, abandonment, or completion failure poisons the partial unit;
+   callers must reconstruct from the last committed checkpoint rather than reuse ambiguous state.
+7. The CDC package evidence test now executes the real drain path with explicit boundaries under
+   requested job counts 1, 2, and 8. The one-partition capability resolves each safely to one job,
+   package hashes/segment identities are equal, and the physical upsert and key-only delete row
+   shapes are read back from the package and asserted.
+8. The hook decision, spec, VISION exception, and parent-program status now agree: the bounded
+   first-party pre-contract Python hook is the ratified exception; ambient secret access is an
+   accepted trusted-code residual risk; E1 remains gated by syntax, uv-lock stability, and measured
+   performance evidence.
+9. Impossible counter/deadline/ordinal overflows are `Internal`, and counter updates are
+   transactional so an error cannot leave partially advanced accounting.
+
+The review also exposed that the prior workspace-baseline blocker text was stale. Package replay is
+classified and passes in isolation, so AC8 is unblocked but still not implemented. This ticket
+therefore remains `active`; none of this repair claims the finite package/receipt/checkpoint crash
+certificate.
+
+Focused observations:
+
+```text
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-runtime --locked cdc_log_source
+  50 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine --locked \
+  cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families
+  1 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --locked \
+  query_compiler_rejects_transaction_limit_for_non_cdc_disposition
+  1 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-cli --lib --locked portable_plan
+  3 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-kernel -p cdf-runtime -p cdf-engine \
+  -p cdf-project -p cdf-cli --all-targets --locked
+  exit 0
+
+DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-kernel -p cdf-runtime -p cdf-engine \
+  -p cdf-project -p cdf-cli --all-targets --locked -- -D warnings
+  exit 0
+
+cargo fmt --all -- --check; git diff --check; canonical/mirrored fixture skill cmp
+  all exit 0
+```
+
+The changed-package cognitive-complexity diagnostic reported no changed function; its warnings are
+pre-existing functions in `cdf-kernel`, `cdf-state-sqlite`, `cdf-contract`, `cdf-subprocess`, and
+`cdf-engine::preview_resource`. MongoDB live validation reported host port `27020`, replica-set
+member `localhost:27020`, and two events with resume tokens plus update `before=a`, `after=b`.
 
 ## Review
 
-Pending implementation and the program-level review barrier.
+The nine external-review findings were reproduced against code or active records and repaired.
+Focused behavioral tests and affected-package static gates pass. Verdict for this repair: **pass**.
+Residual risk belongs to unchecked AC8, which remains visibly open rather than being laundered into
+this review result.
 
 ## Retrospective
 
-Pending implementation.
+The central failure was evidence substituting structural resemblance for production composition:
+unit tests exercised a runtime archetype, but no source batch could drive it through the engine.
+Explicit settlement control batches made the safety boundary executable and testable without
+embedding database branches in generic orchestration. A second recurring failure was resolving a
+host-dependent bound at execution time; freezing it into plan bytes restores portability and makes
+host compatibility a preflight assertion. Finally, a requested `jobs` value is not evidence of
+parallel invariance unless the real scheduler and package path are executed and the resolved
+concurrency is stated.

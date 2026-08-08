@@ -163,6 +163,35 @@ fn query_compiler_requires_all_configured_sources_to_be_referenced() {
 }
 
 #[test]
+fn query_compiler_rejects_transaction_limit_for_non_cdc_disposition() {
+    let root = TempDir::new().unwrap();
+    let config = project(
+        &root,
+        "RESOURCE\nDISPOSITION APPEND\nEXECUTION DRAIN (\n CHECKPOINT ROWS 100,\n PACKAGE BYTES 1048576,\n UNTIL RECORDS 1000,\n WATERMARK DISABLED,\n LATE DATA QUARANTINE,\n SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION,\n TRANSACTION LIMIT BYTES 524288\n)\nAS SELECT * FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "",
+    );
+    let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
+
+    let error = compile_query_project_resources(
+        &registry(),
+        &config,
+        root.path(),
+        "dev",
+        &destination(),
+        &SemanticCatalog::builtins().unwrap(),
+        &schemas,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT"),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
 fn query_compiler_rejects_unknown_resource_options_before_analysis() {
     let root = TempDir::new().unwrap();
     let config = project(

@@ -107,22 +107,26 @@ struct Counts {
 
 impl Counts {
     fn checked_add(&mut self, observation: &DrainSafeFrontierObservation) -> Result<()> {
-        self.batches = self
+        let batches = self
             .batches
             .checked_add(observation.admitted_batches)
-            .ok_or_else(|| CdfError::data("drain epoch batch count overflow"))?;
-        self.rows = self
+            .ok_or_else(|| CdfError::internal("drain epoch batch count overflow"))?;
+        let rows = self
             .rows
             .checked_add(observation.admitted_rows)
-            .ok_or_else(|| CdfError::data("drain epoch row count overflow"))?;
-        self.bytes = self
+            .ok_or_else(|| CdfError::internal("drain epoch row count overflow"))?;
+        let bytes = self
             .bytes
             .checked_add(observation.admitted_bytes)
-            .ok_or_else(|| CdfError::data("drain epoch byte count overflow"))?;
-        self.positions = self
+            .ok_or_else(|| CdfError::internal("drain epoch byte count overflow"))?;
+        let positions = self
             .positions
             .checked_add(observation.admitted_positions)
-            .ok_or_else(|| CdfError::data("drain epoch position count overflow"))?;
+            .ok_or_else(|| CdfError::internal("drain epoch position count overflow"))?;
+        self.batches = batches;
+        self.rows = rows;
+        self.bytes = bytes;
+        self.positions = positions;
         Ok(())
     }
 
@@ -342,7 +346,7 @@ impl DrainEpochController {
             DrainTermination::Duration { milliseconds } => Some(
                 self.command_started_monotonic_milliseconds
                     .checked_add(*milliseconds)
-                    .ok_or_else(|| CdfError::data("drain command deadline overflow"))?,
+                    .ok_or_else(|| CdfError::internal("drain command deadline overflow"))?,
             ),
             _ => None,
         };
@@ -355,7 +359,7 @@ impl DrainEpochController {
                     let candidate = self
                         .epoch_started_monotonic_milliseconds
                         .checked_add(*milliseconds)
-                        .ok_or_else(|| CdfError::data("drain epoch deadline overflow"))?;
+                        .ok_or_else(|| CdfError::internal("drain epoch deadline overflow"))?;
                     deadline = Some(deadline.map_or(candidate, |current| current.min(candidate)));
                 }
             }
@@ -444,8 +448,12 @@ impl DrainEpochController {
         // Normalize the safe frontier to the controller's monotone authority before it can be
         // retained, tested by a trigger, or serialized into an epoch closure.
         observation.global_watermark = self.last_observed_watermark.clone();
-        self.epoch.checked_add(&observation)?;
-        self.total.checked_add(&observation)?;
+        let mut next_epoch = self.epoch;
+        next_epoch.checked_add(&observation)?;
+        let mut next_total = self.total;
+        next_total.checked_add(&observation)?;
+        self.epoch = next_epoch;
+        self.total = next_total;
         self.last_safe_frontier = Some(observation.clone());
 
         let closure = self.closure_at(&observation)?;
@@ -513,7 +521,7 @@ impl DrainEpochController {
         self.epoch_ordinal = self
             .epoch_ordinal
             .checked_add(1)
-            .ok_or_else(|| CdfError::data("drain epoch ordinal overflow"))?;
+            .ok_or_else(|| CdfError::internal("drain epoch ordinal overflow"))?;
         self.epoch_started_monotonic_milliseconds = self.monotonic_milliseconds();
         self.state = if terminate {
             ControllerState::Finished
@@ -639,6 +647,76 @@ impl DrainEpochController {
             elapsed_milliseconds: self.epoch_elapsed(monotonic_milliseconds)?,
             watermark_advance: self.watermark_advance_since_epoch_start(watermark),
         })
+    }
+
+    /// Evaluates the first closure cause that would be reached if one still-open source
+    /// settlement unit admitted the supplied counts.
+    ///
+    /// This is the sole anticipation path for transaction-aligned CDC. It derives elapsed time,
+    /// watermark advance, epoch totals, and command totals from this controller so an adapter
+    /// cannot supply a second, disagreeing interpretation of the same policy. Source-frontier and
+    /// quiescence termination remain terminal-boundary observations and therefore do not fire
+    /// here.
+    pub fn prospective_closure_cause(
+        &self,
+        additional_batches: u64,
+        additional_rows: u64,
+        additional_bytes: u64,
+        monotonic_milliseconds: u64,
+        watermark: Option<&WatermarkClaim>,
+    ) -> Result<Option<EpochClosureCause>> {
+        self.validate_ready_for_epoch()?;
+        if self
+            .last_monotonic_milliseconds
+            .is_some_and(|last| monotonic_milliseconds < last)
+        {
+            return Err(CdfError::internal(
+                "drain epoch monotonic clock moved backwards",
+            ));
+        }
+        let checked = |current: u64, additional: u64, label: &str| {
+            current
+                .checked_add(additional)
+                .ok_or_else(|| CdfError::internal(format!("drain {label} count overflow")))
+        };
+        let epoch_batches = checked(self.epoch.batches, additional_batches, "epoch batch")?;
+        let epoch_rows = checked(self.epoch.rows, additional_rows, "epoch row")?;
+        let epoch_bytes = checked(self.epoch.bytes, additional_bytes, "epoch byte")?;
+        let total_rows = checked(self.total.rows, additional_rows, "total row")?;
+        let total_bytes = checked(self.total.bytes, additional_bytes, "total byte")?;
+
+        let termination_reached = match &self.termination {
+            DrainTermination::Duration { milliseconds } => {
+                self.command_elapsed(monotonic_milliseconds)? >= *milliseconds
+            }
+            DrainTermination::Records { count } => total_rows >= *count,
+            DrainTermination::Bytes { count } => total_bytes >= *count,
+            DrainTermination::Quiescent | DrainTermination::SourceFrontier { .. } => false,
+        };
+        if termination_reached {
+            return Ok(Some(EpochClosureCause::DrainTermination {
+                termination: self.termination.clone(),
+            }));
+        }
+
+        let magnitudes = EpochTriggerMagnitudes {
+            batches: epoch_batches,
+            rows: epoch_rows,
+            bytes: epoch_bytes,
+            elapsed_milliseconds: self.epoch_elapsed(monotonic_milliseconds)?,
+            watermark_advance: self.watermark_advance_since_epoch_start(watermark),
+        };
+        if magnitudes.trips(&self.policy.package_rotation) {
+            return Ok(Some(EpochClosureCause::PackageRotation {
+                trigger: self.policy.package_rotation.clone(),
+            }));
+        }
+        if magnitudes.trips(&self.policy.checkpoint_cadence) {
+            return Ok(Some(EpochClosureCause::CheckpointCadence {
+                trigger: self.policy.checkpoint_cadence.clone(),
+            }));
+        }
+        Ok(None)
     }
 
     /// Watermark advance from this epoch's start claim to `observed`.

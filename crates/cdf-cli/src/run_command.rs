@@ -338,6 +338,12 @@ fn validate_portable_plan_environment(
         ))
         .into());
     }
+    let host_spill_budget_bytes = services.spill().snapshot().budget_bytes;
+    for resource in &artifact.resources {
+        resource
+            .engine_plan
+            .validate_resolved_transaction_limit(Some(host_spill_budget_bytes))?;
+    }
     Ok(())
 }
 
@@ -778,6 +784,7 @@ fn prepare_single(
         Some(&explicit.package_id),
         committed_frontier,
         &resolved.destination.runtime_capabilities(),
+        &run_services,
     )?;
     let destination = resolved.destination;
     let source = prepared.resource.source_plan();

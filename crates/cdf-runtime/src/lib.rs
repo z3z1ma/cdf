@@ -59,8 +59,8 @@ pub use capabilities::{
 };
 pub use capability_types::{DestinationIngressMode, DestinationWriterModel};
 pub use cdc_log_source::{
-    AdmissionObservation, CdcLogSourceRuntime, CompletedSettlementUnit, SettlementCadencePolicy,
-    SettlementClosureCause, SettlementOvershoot, SettlementUnitKind, TransactionByteCeiling,
+    CdcBatchObservation, CdcLogSourceRuntime, CompletedSettlementUnit, SettlementClosureCause,
+    SettlementOvershoot, SettlementUnitKind, TransactionByteCeiling,
 };
 pub use cdf_memory::{
     FixedSpillBudget, SpillBudgetCoordinator, SpillBudgetSnapshot, SpillReservation,

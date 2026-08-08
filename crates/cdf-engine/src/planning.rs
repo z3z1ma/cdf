@@ -373,6 +373,7 @@ impl Planner {
             partition_schedule: None,
             operator_graph: None,
             compiled_stream_policy: None,
+            resolved_transaction_limit_bytes: None,
             effective_schema_evidence: None,
             final_projection,
             final_limit,

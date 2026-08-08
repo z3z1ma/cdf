@@ -3,7 +3,7 @@ name: provision-cdc-live-fixtures
 description: "Use when running, writing, or debugging CDF tests that need live PostgreSQL logical replication, MySQL binlog, or MongoDB change streams — the CDC prerequisites the ordinary connector fixtures do not provide."
 metadata:
   created: 2026-08-07
-  updated: 2026-08-07
+  updated: 2026-08-08
 ---
 
 # Provision CDC live fixtures
@@ -83,19 +83,24 @@ sleep a fixed interval.
 Change streams require a replica set; a standalone `mongod` returns `NoReplicationEnabled`.
 
 ```bash
-docker run -d --name cdf-cdc-mongo -p 27020:27017 \
+docker run -d --name cdf-cdc-mongo -p 27020:27020 \
   mongo@sha256:cf340b1e5283843c63eb12999922f20c463ae31285f746d30f05dcc21cd1d47c \
-  --replSet rs0 --bind_ip_all
+  --replSet rs0 --bind_ip_all --port 27020
 
-docker exec cdf-cdc-mongo mongosh --quiet --eval \
-  'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+docker exec cdf-cdc-mongo mongosh --port 27020 --quiet --eval \
+  'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27020"}]})'
 ```
 
 Pre- and post-images are a **per-collection** option, not a server setting:
 
 ```bash
-docker exec cdf-cdc-mongo mongosh --quiet --eval \
-  'db.getSiblingDB("cdf").createCollection("t", { changeStreamPreAndPostImages: { enabled: true } })'
+docker exec cdf-cdc-mongo mongosh --port 27020 --quiet --eval \
+  'db = db.getSiblingDB("cdf");
+   if (!db.getCollectionNames().includes("t")) {
+     db.createCollection("t", { changeStreamPreAndPostImages: { enabled: true } });
+   } else {
+     db.runCommand({collMod:"t", changeStreamPreAndPostImages:{enabled:true}});
+   }'
 ```
 
 ## Validation
@@ -124,19 +129,36 @@ docker exec cdf-cdc-mysql mysql -uroot -pcdf-cdc-password -N -B -e \
 **MongoDB** — expect two events with resume tokens present and `before="a"` on the update, proving
 both change streams and pre-images:
 
+First prove the replica-set address matches the host-published port. Expect both values to name
+`27020`; advertising the container-only `27017` makes a host client reconnect to the wrong port.
+
 ```bash
-docker exec cdf-cdc-mongo mongosh --quiet --eval '
+docker inspect cdf-cdc-mongo --format '{{(index (index .NetworkSettings.Ports "27020/tcp") 0).HostPort}}'
+docker exec cdf-cdc-mongo mongosh --port 27020 --quiet --eval 'print(rs.conf().members[0].host)'
+```
+
+```bash
+docker exec cdf-cdc-mongo mongosh --port 27020 --quiet --eval '
 db = db.getSiblingDB("cdf");
-const cs = db.t.watch([], { fullDocument: "whenAvailable", fullDocumentBeforeChange: "whenAvailable" });
+db.t.deleteOne({_id: 99});
+const cs = db.t.watch([], { fullDocument: "required", fullDocumentBeforeChange: "required" });
 db.t.insertOne({_id: 99, v: "a"});
 db.t.updateOne({_id: 99}, {$set: {v: "b"}});
 let n = 0;
+let after = null;
+let before = null;
 while (n < 2 && cs.hasNext()) { const e = cs.next(); n++;
+  if (e.operationType === "update") {
+    after = e.fullDocument ? e.fullDocument.v : null;
+    before = e.fullDocumentBeforeChange ? e.fullDocumentBeforeChange.v : null;
+  }
   print("event " + n + ": op=" + e.operationType
       + " resumeToken=" + (e._id._data ? "present" : "MISSING")
-      + " before=" + (e.fullDocumentBeforeChange ? JSON.stringify(e.fullDocumentBeforeChange.v) : "n/a")); }
+      + " before=" + (e.fullDocumentBeforeChange ? JSON.stringify(e.fullDocumentBeforeChange.v) : "n/a")
+      + " after=" + (e.fullDocument ? JSON.stringify(e.fullDocument.v) : "n/a")); }
 cs.close();
-print("events observed = " + n);'
+if (n !== 2 || before !== "a" || after !== "b") throw new Error("change stream did not return the required update images");
+print("events observed = " + n + ", update before=" + before + ", update after=" + after);'
 ```
 
 Write the loop as `while (n < counter_limit && cs.hasNext())`, never `cs.hasNext() && n < limit`. A

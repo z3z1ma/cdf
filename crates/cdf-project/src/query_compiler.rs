@@ -723,6 +723,18 @@ fn validate_effective_applicability(
             "[CDF-EXECUTION-BOUNDED] bounded execution requires a source that truthfully advertises bounded completion",
         ));
     }
+    let declared_transaction_limit = match &effective.execution.value {
+        cdf_kernel::ExecutionExtent::Drain { policy, .. } => policy.transaction_limit_bytes,
+        cdf_kernel::ExecutionExtent::Bounded { .. }
+        | cdf_kernel::ExecutionExtent::Resident { .. } => None,
+    };
+    if declared_transaction_limit.is_some()
+        && effective.disposition.value != cdf_kernel::WriteDisposition::CdcApply
+    {
+        return Err(CdfError::contract(
+            "[CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT] TRANSACTION LIMIT BYTES is valid only with DISPOSITION CDC_APPLY",
+        ));
+    }
     Ok(())
 }
 

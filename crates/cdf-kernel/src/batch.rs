@@ -144,6 +144,8 @@ pub struct BatchHeader {
     pub stats: BatchStats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cdc: Option<CdcMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_settlement: Option<CdcSettlementMarker>,
     #[serde(skip, default)]
     pre_contract_evidence: PreContractEvidence,
 }
@@ -180,6 +182,7 @@ impl BatchHeader {
             partition_idleness: None,
             stats: BatchStats::default(),
             cdc: None,
+            cdc_settlement: None,
             pre_contract_evidence: PreContractEvidence::default(),
         }
     }
@@ -668,6 +671,50 @@ pub enum CdcOperation {
     Insert,
     Update,
     Delete,
+}
+
+/// Source-proven settlement category carried by CDC control batches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdcSettlementUnitKind {
+    CommittedTransaction,
+    EventPrefix,
+}
+
+/// Boundary represented by one zero-row CDC control batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdcSettlementBoundary {
+    Begin,
+    Terminal,
+}
+
+/// Explicit source boundary that prevents generic batch and timer cadence from manufacturing a
+/// checkpoint inside a transaction or opaque ordered event prefix.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CdcSettlementMarker {
+    pub unit_kind: CdcSettlementUnitKind,
+    pub boundary: CdcSettlementBoundary,
+    pub position: SourcePosition,
+}
+
+impl CdcSettlementMarker {
+    pub fn validate(&self) -> Result<()> {
+        self.position.validate()?;
+        let expected = match self.unit_kind {
+            CdcSettlementUnitKind::CommittedTransaction => crate::SourcePositionKind::Log,
+            CdcSettlementUnitKind::EventPrefix => crate::SourcePositionKind::ResumeToken,
+        };
+        if self.position.kind() != expected {
+            return Err(crate::CdfError::data(format!(
+                "CDC settlement marker kind requires a {} position, but received {}",
+                expected.as_str(),
+                self.position.kind().as_str()
+            )));
+        }
+        self.position.cdc_protocol_order_identity().map(|_| ())
+    }
 }
 
 /// Source-proven operation and ordering authority for one homogeneous CDC batch.
