@@ -319,6 +319,13 @@ impl PackageBuilder {
         Ok(())
     }
 
+    pub fn content_authority(&self) -> Result<PackageContentAuthority> {
+        self.content
+            .lock()
+            .map_err(|_| CdfError::internal("package content authority lock is poisoned"))
+            .map(|content| content.clone())
+    }
+
     /// Discards an owner-private package construction directory before it becomes an artifact.
     ///
     /// This is reserved for executions that prove they have no package to publish (for example,

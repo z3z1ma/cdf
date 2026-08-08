@@ -2,8 +2,8 @@ use std::{cell::Cell, path::Path};
 
 use cdf_engine::EnginePlan;
 use cdf_kernel::{
-    CdfError, CheckpointStatus, CheckpointStore, IdempotencySupport, PipelineId, QueryableResource,
-    Receipt, ResourceId, Result, ScopeKey,
+    CdfError, CheckpointStatus, CheckpointStore, IdempotencySupport, KeyedEffectCounts, PipelineId,
+    QueryableResource, Receipt, ResourceId, Result, ScopeKey,
 };
 use cdf_package::PackageReader;
 use cdf_package_contract::PackageStatus;
@@ -70,7 +70,18 @@ pub(crate) fn assert_run_report(
     );
     assert_eq!(report.row_count, ROW_COUNT);
     assert_eq!(report.segment_count, SEGMENT_COUNT);
-    assert_eq!(report.receipt.counts.row_write_outcome(), Some(ROW_COUNT));
+    match cell.disposition {
+        MatrixDisposition::Merge => assert_eq!(
+            report.receipt.counts.keyed_intent(),
+            Some(KeyedEffectCounts {
+                upserts: ROW_COUNT,
+                deletes: 0,
+            })
+        ),
+        MatrixDisposition::Append | MatrixDisposition::Replace => {
+            assert_eq!(report.receipt.counts.row_write_outcome(), Some(ROW_COUNT));
+        }
+    }
     assert_eq!(
         report
             .receipt

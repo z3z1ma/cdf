@@ -65,7 +65,8 @@ pub(super) fn write_run_state_commit_artifacts(
             )?,
         )?;
     }
-    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token_with_content(
+        builder.content_authority()?,
         context.target.clone(),
         context.descriptor.write_disposition.clone(),
         context.descriptor.merge_key.clone(),

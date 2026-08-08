@@ -49,6 +49,21 @@ clears the required 0.90 ratio.
   discovery-time heterogeneous values decode as deterministic Canonical Extended JSON UTF-8 under
   three exact MongoDB semantic tags; they remain subject to the existing structural and memory
   bounds. Later type changes against a primitive pin still produce governed residual evidence.
+- The first post-change connector certificate correctly rejected the stale built-in catalog
+  fixture after the MongoDB option-schema identity changed; refreshing only the two MongoDB hashes
+  made the catalog integrity check pass. The certificate then exposed a pre-existing keyed-package
+  defect: merge execution finalized `KeyedChanges` content while its destination commit preimage
+  still stamped ordinary `Rows` content. The package builder now supplies its finalized content
+  authority to the commit preimage. Focused DuckDB and Postgres drift/quarantine runs and a merge
+  dedup run plus artifact-only replay pass with exact keyed intent, canonical key order, receipt,
+  and checkpoint evidence.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo nextest run -p cdf-conformance --locked --no-fail-fast` now executes
+  all 92 selected tests: 91 pass and one pre-existing MVP CLI demo fails because `cdf plan` attempts
+  live discovery against the intentionally synthetic `api.github.test` endpoint. A detached
+  `cf37cc5c` worktree reproduces that exact failure before the MongoDB depth implementation. The
+  same worktree also reproduced the keyed-package failure before its repair. Thus the connector
+  certificate's leaf, catalog, and 91 local conformance laws pass; its aggregate verdict remains
+  failed solely on the separately owned CLI fixture/contact mismatch.
 - The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
   existing frozen source scope. Focused tests prove URI credential/session-token splitting,
   secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
@@ -116,9 +131,11 @@ clears the required 0.90 ratio.
   materialization/evidence path, and MongoDB decoder. The performance repair rereview found one
   overlapping-source payload undercount; the repair routes every equality/prefix overlap and all
   Lists to exact estimation, adds a 36 MiB duplicate-payload boundary test, and passed rereview.
-- The final `tools/certify-connector.py --kind source --id mongodb --core-impact` remains pending
-  this ticket's final integration barrier. The former endpoint/egress semantic blocker is resolved
-  by the accepted residual-risk decision cited in the owning ticket.
+- `tools/certify-connector.py --kind source --id mongodb --core-impact` passes format, all 42
+  connector leaf laws, and built-in catalog integrity. General conformance passes 91/92; the
+  remaining synthetic REST contact failure predates this change and is recorded above. The former
+  endpoint/egress semantic blocker is resolved by the accepted residual-risk decision cited in the
+  owning ticket.
 
 ## What this supports or challenges
 

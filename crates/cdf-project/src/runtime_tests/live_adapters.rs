@@ -640,7 +640,13 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(report.row_count, 2);
     assert_eq!(report.segment_count, 1);
     assert_eq!(report.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(report.receipt.counts.row_write_outcome(), Some(2));
+    assert_eq!(
+        report.receipt.counts.keyed_intent(),
+        Some(cdf_kernel::KeyedEffectCounts {
+            upserts: 2,
+            deletes: 0,
+        })
+    );
     assert_eq!(
         report.receipt_source,
         ProjectReceiptSource::DestinationCommit {
@@ -657,8 +663,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(
         package_id_name_rows(&reader),
         vec![
-            (2, Some("two".to_owned())),
-            (1, Some("one-last".to_owned()))
+            (1, Some("one-last".to_owned())),
+            (2, Some("two".to_owned()))
         ]
     );
     assert!(package_identity_file_paths(&reader).contains(DEDUP_SUMMARY_FILE));
@@ -712,7 +718,13 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
 
     assert_eq!(replay.checkpoint.delta, report.checkpoint.delta);
     assert_eq!(replay.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(replay.receipt.counts.row_write_outcome(), Some(2));
+    assert_eq!(
+        replay.receipt.counts.keyed_intent(),
+        Some(cdf_kernel::KeyedEffectCounts {
+            upserts: 2,
+            deletes: 0,
+        })
+    );
     assert_eq!(
         replay
             .receipt

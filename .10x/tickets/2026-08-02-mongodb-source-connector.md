@@ -247,6 +247,18 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   governed residuals. All 42 MongoDB unit tests, six semantic-registry tests, strict affected-
   package Clippy, dependency hygiene, and diff checks passed. The refreshed error ledger contains
   320 rows: 277 production and 43 test.
+- 2026-08-08: The connector certificate caught the expected stale MongoDB catalog hashes and then
+  exposed a pre-existing shared keyed-package correctness bug. Merge execution finalized exact
+  `KeyedChanges` authority, but the destination commit preimage still carried ordinary `Rows`
+  authority, making verified replay fail before destination mutation. The package builder now
+  exposes its finalized content authority to the project artifact writer, and the commit preimage,
+  manifest, state delta, destination request, and receipt agree. DuckDB and Postgres drift/
+  quarantine conformance plus merge dedup and artifact-only replay pass with keyed intent and
+  canonical key order. Full conformance now passes 91/92; the sole failure is the pre-existing MVP
+  CLI fixture contacting synthetic `api.github.test` during plan discovery, reproduced unchanged
+  in a detached `cf37cc5c` worktree. Package passed 94 executable unit tests with four performance
+  tests ignored, strict affected-package Clippy passed, and the complexity diagnostic added no
+  finding in changed production code.
 
 ## Blockers
 
@@ -281,8 +293,10 @@ Two obligations follow from that decision and belong to this ticket's closure:
   in `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json`.
 - Workspace integration, strict Clippy, duplication, and dependency-hygiene observations are
   recorded in the journal and `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
-- All historical implementation and performance rereviews pass. The final connector certificate
-  and fresh default-depth Atlas release lifecycle remain this ticket's closure barrier.
+- All historical implementation and performance rereviews pass. The certificate's MongoDB leaf
+  and catalog gates pass; 91/92 general conformance laws pass, with the remaining pre-existing CLI
+  fixture failure recorded in the journal. A fresh default-depth Atlas release lifecycle remains
+  this ticket's implementation closure barrier.
 
 ## Review
 

@@ -4,8 +4,8 @@ use arrow_array::{Int64Array, StringArray};
 use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::CDF_QUARANTINE_TABLE;
 use cdf_kernel::{
-    CapabilitySupport, CheckpointStatus, CheckpointStore, DestinationProtocol, SourcePosition,
-    WriteDisposition,
+    CapabilitySupport, CheckpointStatus, CheckpointStore, DestinationProtocol, KeyedEffectCounts,
+    SourcePosition, WriteDisposition,
 };
 use cdf_package::{PackageReader, STATISTICS_PROFILE_FILE, StatisticsProfileGrain};
 use cdf_package_contract::{DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue};
@@ -26,7 +26,13 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(report.row_count, 1);
     assert_eq!(report.segment_count, 1);
     assert_eq!(report.receipt.disposition, WriteDisposition::Merge);
-    assert_eq!(report.receipt.counts.row_write_outcome(), Some(1));
+    assert_eq!(
+        report.receipt.counts.keyed_intent(),
+        Some(KeyedEffectCounts {
+            upserts: 1,
+            deletes: 0,
+        })
+    );
     assert_eq!(
         report
             .receipt
