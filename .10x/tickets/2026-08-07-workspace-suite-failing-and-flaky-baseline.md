@@ -72,11 +72,22 @@ A second, distinct flake family surfaced on 2026-08-07 in `cdf-subprocess`:
 - `tests::cancellation_before_first_frame_kills_descendants_and_joins`
 - `tests::timeout_terminates_the_entire_subprocess_process_group`
 
-Both failed during a fully parallel `--workspace` sweep and **passed in isolation immediately
-after**. They spawn real child processes with `sleep 30` and assert on process-group termination, so
-they are load-sensitive by construction rather than fixture-dependent. `cdf-subprocess` contains no
-reference to any type changed in that sweep, which rules out the change under test as a cause.
-Wall-clock assertions on a saturated host need either generous bounds or a deterministic clock.
+Both failed during a fully parallel `--workspace` sweep. They spawn real child processes with
+`sleep 30` and assert on process-group termination. `cdf-subprocess` contains no reference to any
+type changed in that sweep, which rules out the change under test as a cause; no orphaned child
+processes were present either, so this is not leaked state from repeated runs.
+
+`timeout_terminates_the_entire_subprocess_process_group` was observed passing in isolation once and
+failing in isolation later, so it is flaky independent of load. **Diagnosed:** it panics at
+`crates/cdf-subprocess/src/tests.rs:908`, on `pid.trim().parse::<i32>().unwrap()` — the descendant
+PID file is *empty*. The fixture shell is `sleep 30 & child=$!; printf '%s' "$child" > "$1"; wait`,
+so the test's timeout can elapse before the child has written its PID. The failure is a **startup
+race in the fixture**, not a process-group termination defect: the assertion it exists to make is
+never reached. Fixing it means waiting for the PID file to become non-empty (or failing with a
+clear message when it does not) before asserting on descendant death.
+
+This one is worth prioritising with the determinism invariant: a test that panics before its real
+assertion cannot protect the behavior it names.
 
 A flaky suite is worse than a failing one: it teaches readers to discount red, which is exactly how
 a real regression ships unnoticed.

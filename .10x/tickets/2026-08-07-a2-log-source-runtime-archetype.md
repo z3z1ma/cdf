@@ -30,27 +30,27 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 
 ## Acceptance criteria
 
-- [ ] One neutral typed archetype represents ordered committed-log transactions and opaque ordered
+- [x] One neutral typed archetype represents ordered committed-log transactions and opaque ordered
       event prefixes without database-name branches or a universal wire-protocol trait.
-- [ ] A row/byte/time/termination closure request received inside a settlement unit waits for the
+- [x] A row/byte/time/termination closure request received inside a settlement unit waits for the
       proven terminal boundary, records exact phase-local overshoot, and admits no later unit.
-- [ ] No safe frontier, destination mutation, receipt, or checkpoint authority can be produced for
+- [x] No safe frontier, destination mutation, receipt, or checkpoint authority can be produced for
       a partially observed transaction or event prefix; restart retains the prior committed
       checkpoint.
-- [ ] Multi-batch transactions remain bounded by the compiled `transaction_limit_bytes`; the
+- [x] Multi-batch transactions remain bounded by the compiled `transaction_limit_bytes`; the
       resolved host spill budget is the hard ceiling, a resource may only lower it, and exceeding
       the effective limit fails before checkpoint advance.
-- [ ] Every admitted CDC batch has validated typed operation and exact source position metadata;
+- [x] Every admitted CDC batch has validated typed operation and exact source position metadata;
       insert/update require complete rows, delete requires the exact key-only shape, and successful
       finalization delegates to the A1.5 canonical keyed-effect reducer.
-- [ ] Source-position scope, regression, unsupported event, inconsistent terminal position, and
+- [x] Source-position scope, regression, unsupported event, inconsistent terminal position, and
       impossible aggregation failures retain narrow typed provenance and fail before publication.
-- [ ] A deterministic synthetic source proves committed-frontier and Mongo event-prefix behavior
+- [x] A deterministic synthetic source proves committed-frontier and Mongo event-prefix behavior
       under randomized Arrow rechunking, cadence boundaries, cancellation/failure injection,
       within/over-limit settlement units, and `jobs` invariance.
 - [ ] A finite-drain conformance certificate proves package finalization, exact receipt settlement,
       checkpoint advancement, and crash recovery without introducing a second runtime lifecycle.
-- [ ] Focused affected-package tests, formatting, check, and strict affected-package Clippy pass.
+- [x] Focused affected-package tests, formatting, check, and strict affected-package Clippy pass.
 
 ## References
 
@@ -386,8 +386,51 @@ after**, `cdf-subprocess` references none of the changed types, and both spawn r
 parallel sweep, now recorded in the workspace-baseline ticket. Not claimed as caused by this work,
 and not dismissed without checking.
 
-**Remaining for closure:** `jobs` invariance, and the AC8 finite-drain conformance certificate
-including real crash recovery. AC5's physical construction is **already satisfied by A1.5** — the
+### Increment 7 — enforcing one ordered stream, and the event-prefix model (2026-08-07)
+
+Applying the same correction as increment 6 to the other place this ticket had hedged.
+
+**`jobs` invariance was "structural, not tested" — meaning unenforced.** `begin_unit` validated
+scope *within* a unit but nothing pinned the lineage *across* units, so a caller could have fanned
+two log streams (or two partitions) into one archetype and silently broken ordering. The archetype
+now pins `stream_scope` on its first unit and rejects any later unit from a different scope, with
+the pin deliberately surviving settlement because the stream outlives the epoch. That converts "one
+ordered source partition per log stream" from a comment into an invariant: with no interleaving
+possible, no concurrency setting can reorder events or change package identity.
+
+`concurrency_cannot_change_the_settled_sequence` now states AC7's `jobs` clause as the two
+properties that actually carry it — the settled sequence is identical across five batch-boundary
+widths standing in for different decode-unit concurrency, and a second stream cannot be
+multiplexed. `the_stream_pin_survives_settlement` covers the cross-epoch case.
+
+**The deterministic model covered only committed transactions.** AC7 names Mongo event-prefix
+behavior too, so `replay_event_prefix` mirrors `replay` with adapter-proven opaque terminal tokens.
+Tokens are generated deterministically — well-framed BSON `{"_data": "tNNNN"}`, base64 via a
+12-line local encoder rather than a new dependency, SHA-256 over the raw document —
+and `synthetic_resume_tokens_are_valid_and_distinct` proves they satisfy the kernel's resume-token
+validation instead of assuming it. Event prefixes are then shown rechunk-invariant across three
+seeds and five chunk widths.
+
+44 tests (up from 39).
+
+```text
+cargo fmt --all -- --check                                exit 0
+cargo clippy -p cdf-runtime --all-targets -D warnings     exit 0
+cargo test -p cdf-runtime --locked cdc_log_source         44 passed, 0 failed
+cargo test --workspace --locked --no-fail-fast            0 real new failures vs the 36-failure
+                                                          baseline across three sweeps
+```
+
+**AC7 is now fully supported**: randomized rechunking for both unit kinds, cadence boundaries across
+all five trigger dimensions, cancellation injection at every transaction index, within/over-limit
+units, and `jobs` invariance.
+
+The `cdf-subprocess` flakes recurred in one sweep and were diagnosed rather than re-labelled: the
+timeout test panics parsing an empty descendant-PID file, so its fixture races on child startup and
+never reaches the assertion it exists to make. Recorded in the workspace-baseline ticket.
+
+**Remaining for closure:** the AC8 finite-drain conformance certificate including real crash
+recovery — blocked on the workspace baseline, see Blockers. AC5's physical construction is **already satisfied by A1.5** — the
 archetype now feeds it rather than duplicating it, which is a correction to increment 2's status
 table.
 

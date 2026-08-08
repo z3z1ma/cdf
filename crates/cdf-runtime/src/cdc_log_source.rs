@@ -341,6 +341,14 @@ pub struct CdcLogSourceRuntime {
     state: UnitState,
     epoch: Counters,
     units_completed: u64,
+    /// The one ordered log lineage this archetype serves, pinned by the first unit.
+    ///
+    /// This makes "one ordered source partition per log stream" enforced rather than assumed. It is
+    /// what prevents a concurrency configuration from changing event order or package identity: two
+    /// partitions cannot be fanned into a single settlement stream, so there is no interleaving for
+    /// a `jobs` setting to reorder. It deliberately survives settlement — the stream outlives the
+    /// epoch.
+    stream_scope: Option<SourcePosition>,
 }
 
 impl CdcLogSourceRuntime {
@@ -357,6 +365,7 @@ impl CdcLogSourceRuntime {
             state: UnitState::Idle,
             epoch: Counters::default(),
             units_completed: 0,
+            stream_scope: None,
         })
     }
 
@@ -373,6 +382,12 @@ impl CdcLogSourceRuntime {
     #[must_use]
     pub const fn units_completed(&self) -> u64 {
         self.units_completed
+    }
+
+    /// The ordered log lineage this archetype is pinned to, once a first unit has opened.
+    #[must_use]
+    pub const fn stream_scope(&self) -> Option<&SourcePosition> {
+        self.stream_scope.as_ref()
     }
 
     /// Whether a settlement unit is currently open.
@@ -418,6 +433,16 @@ impl CdcLogSourceRuntime {
         }
         anchor.validate()?;
         anchor.cdc_protocol_order_identity()?;
+        match &self.stream_scope {
+            Some(scope) if !scope.same_scope(anchor)? => {
+                return Err(CdfError::data(
+                    "CDC archetype serves one ordered log stream; a settlement unit from a \
+                     different scope cannot be multiplexed into it",
+                ));
+            }
+            Some(_) => {}
+            None => self.stream_scope = Some(anchor.clone()),
+        }
         self.state = UnitState::Open(Box::new(OpenUnit {
             counters: Counters::default(),
             scope_anchor: anchor.clone(),
@@ -1657,6 +1682,110 @@ mod tests {
         (0..count).map(|_| 1 + rng.next_in(9)).collect()
     }
 
+    /// Minimal standard base64 so the synthetic Mongo tokens need no extra dependency.
+    fn base64_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = u32::from(chunk[0]);
+            let b1 = chunk.get(1).copied().map_or(0, u32::from);
+            let b2 = chunk.get(2).copied().map_or(0, u32::from);
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+            out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                ALPHABET[((triple >> 6) & 0x3F) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHABET[(triple & 0x3F) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// A deterministic, well-framed resume token for index `n`.
+    ///
+    /// The BSON document is `{"_data": "tNNNN"}`; CDF validates the envelope and the hash but never
+    /// interprets the token's internals, which is exactly the opacity the contract requires.
+    fn mongo_token(index: u64) -> SourcePosition {
+        let label = format!("t{index:04}");
+        assert_eq!(
+            label.len(),
+            5,
+            "token label must keep the document 22 bytes"
+        );
+        let mut raw = Vec::with_capacity(22);
+        raw.extend_from_slice(&22_u32.to_le_bytes());
+        raw.push(0x02);
+        raw.extend_from_slice(b"_data\0");
+        raw.extend_from_slice(&6_u32.to_le_bytes());
+        raw.extend_from_slice(label.as_bytes());
+        raw.push(0x00);
+        raw.push(0x00);
+        assert_eq!(raw.len(), 22);
+        let digest = format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(&raw));
+        mongo(&base64_encode(&raw), &digest)
+    }
+
+    /// The event-prefix twin of [`replay`]: opaque tokens terminate each prefix, and no numeric
+    /// ordering is ever claimed between them.
+    fn replay_event_prefix(prefixes: &[u64], chunk: u64) -> Vec<(SourcePosition, u64, u64)> {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 25 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::EventPrefix, &extent);
+        let mut settled = Vec::new();
+
+        for (index, rows) in prefixes.iter().enumerate() {
+            if !source.admits_further_units() {
+                let frontier = settled
+                    .last()
+                    .map(|(position, _, _): &(SourcePosition, u64, u64)| position.clone());
+                if let Some(frontier) = frontier {
+                    controller.acknowledge_settlement(&frontier).unwrap();
+                }
+                source.acknowledge_settlement();
+            }
+            let index = index as u64;
+            let anchor = mongo_token(index * 2);
+            source.begin_unit(&anchor).unwrap();
+
+            let mut remaining = *rows;
+            while remaining > 0 {
+                let batch = remaining.min(chunk.max(1));
+                source
+                    .admit_batch(
+                        &meta(CdcOperation::Insert, &anchor),
+                        &anchor,
+                        obs(batch, batch * 10),
+                    )
+                    .unwrap();
+                remaining -= batch;
+            }
+
+            // The adapter proves the terminal token of the prefix it accumulated.
+            let terminal = mongo_token(index * 2 + 1);
+            let completed = source.complete_unit(&terminal).unwrap();
+            let record = (
+                completed.terminal_position.clone(),
+                completed.rows,
+                completed.bytes,
+            );
+            let _ = observe(&mut controller, completed, 1_000 + index);
+            settled.push(record);
+        }
+        settled
+    }
+
     /// Replays a transaction schedule through the archetype and a real controller, returning the
     /// settled frontier sequence. `chunk` controls how each transaction's rows are split into Arrow
     /// batches — the dimension a source cannot control.
@@ -1723,6 +1852,40 @@ mod tests {
                     replay(&transactions, chunk),
                     baseline,
                     "seed {seed} chunk {chunk} changed the settled sequence"
+                );
+            }
+        }
+    }
+
+    /// The generated tokens must actually satisfy the kernel's resume-token validation, or the
+    /// event-prefix model would be proving nothing.
+    #[test]
+    fn synthetic_resume_tokens_are_valid_and_distinct() {
+        let first = mongo_token(0);
+        first.validate().expect("generated token must validate");
+        first
+            .cdc_protocol_order_identity()
+            .expect("generated token must carry CDC order identity");
+        assert_ne!(first, mongo_token(1));
+        assert!(first.same_scope(&mongo_token(1)).unwrap());
+    }
+
+    /// Event prefixes must be as rechunk-invariant as committed transactions. This is the half of
+    /// AC7 the committed-log model cannot reach.
+    #[test]
+    fn event_prefix_settled_sequence_is_invariant_under_rechunking() {
+        for seed in [3_u64, 11, 64_206] {
+            let prefixes = synthetic_transactions(seed, 10);
+            let baseline = replay_event_prefix(&prefixes, 1);
+            assert!(
+                !baseline.is_empty(),
+                "the event-prefix model must actually settle units"
+            );
+            for chunk in [2_u64, 3, 7, 128] {
+                assert_eq!(
+                    replay_event_prefix(&prefixes, chunk),
+                    baseline,
+                    "seed {seed} chunk {chunk} changed the settled event-prefix sequence"
                 );
             }
         }
@@ -1896,6 +2059,108 @@ mod tests {
         let replayed = source.complete_unit(&interrupted).unwrap();
         assert_eq!(replayed.rows, 99);
         let _ = observe(&mut controller, replayed, 200);
+    }
+
+    // --- one ordered stream / `jobs` invariance -------------------------------------------------
+
+    /// Two log lineages must never be fanned into one settlement stream. This is the structural
+    /// half of `jobs` invariance: with no interleaving possible, no concurrency setting can reorder
+    /// events or change package identity.
+    #[test]
+    fn a_second_stream_scope_cannot_be_multiplexed_into_one_archetype() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let orders = pg(10, "orders");
+        source.begin_unit(&orders).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &orders), &orders, obs(1, 10))
+            .unwrap();
+        source.complete_unit(&orders).unwrap();
+        assert!(
+            source
+                .stream_scope()
+                .expect("the first unit pins the stream")
+                .same_scope(&orders)
+                .unwrap()
+        );
+
+        let error = source.begin_unit(&pg(20, "shipments")).unwrap_err();
+        assert!(
+            error.message.contains("cannot be multiplexed"),
+            "unexpected message: {}",
+            error.message
+        );
+
+        // The pinned stream still accepts its own later units.
+        assert!(source.begin_unit(&pg(20, "orders")).is_ok());
+    }
+
+    /// The pin survives settlement: a new epoch continues the same stream, and still refuses a
+    /// different one.
+    #[test]
+    fn the_stream_pin_survives_settlement() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 1 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let orders = pg(10, "orders");
+        source.begin_unit(&orders).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &orders), &orders, obs(2, 20))
+            .unwrap();
+        let completed = source.complete_unit(&orders).unwrap();
+        let DrainEpochDecision::Close(_) = observe(&mut controller, completed, 100) else {
+            panic!("a 1-row cadence must close");
+        };
+        controller.acknowledge_settlement(&orders).unwrap();
+        source.acknowledge_settlement();
+
+        assert!(
+            source.begin_unit(&pg(30, "shipments")).is_err(),
+            "settlement must not release the stream pin"
+        );
+        assert!(source.begin_unit(&pg(30, "orders")).is_ok());
+    }
+
+    /// `jobs` invariance, stated as the two properties that actually carry it: the settled sequence
+    /// depends only on the admitted schedule (proven across chunkings), and no second stream can be
+    /// interleaved. The archetype exposes no concurrency parameter, so there is nothing else for a
+    /// `jobs` setting to influence.
+    #[test]
+    fn concurrency_cannot_change_the_settled_sequence() {
+        let transactions = synthetic_transactions(7, 10);
+        let baseline = replay(&transactions, 1);
+        // Each chunk width stands for a different decode-unit concurrency producing different
+        // Arrow batch boundaries for the same ordered source events.
+        for chunk in [1_u64, 2, 4, 16, 512] {
+            assert_eq!(
+                replay(&transactions, chunk),
+                baseline,
+                "batch boundaries from a different jobs setting changed the settled sequence"
+            );
+        }
+
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        source.begin_unit(&pg(10, "orders")).unwrap();
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &pg(10, "orders")),
+                &pg(10, "orders"),
+                obs(1, 10),
+            )
+            .unwrap();
+        source.complete_unit(&pg(10, "orders")).unwrap();
+        assert!(
+            source.begin_unit(&pg(20, "shipments")).is_err(),
+            "no jobs setting may fan a second partition into this stream"
+        );
     }
 
     #[test]
