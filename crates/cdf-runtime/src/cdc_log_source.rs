@@ -24,7 +24,7 @@ use cdf_kernel::{
 };
 use cdf_memory::SpillBudgetCoordinator;
 
-use crate::drain_epoch::DrainSafeFrontierObservation;
+use crate::drain_epoch::{DrainSafeFrontierObservation, EpochTriggerMagnitudes};
 
 /// What evidence proves one settlement unit terminal.
 ///
@@ -45,23 +45,23 @@ pub enum SettlementUnitKind {
 }
 
 /// Why closure was requested while a settlement unit was still open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The cadence variants mirror [`cdf_kernel::EpochClosureCause`] and carry the exact trigger that
+/// was reached, so an overshoot record names the same policy member the controller will cite when
+/// it closes the epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettlementClosureCause {
-    /// An accumulated row threshold was crossed.
-    Rows,
-    /// An accumulated byte threshold was crossed.
-    Bytes,
-    /// An accumulated batch threshold was crossed.
-    Batches,
-    /// Elapsed wall time crossed the configured cadence.
-    Elapsed,
+    /// The compiled package-rotation trigger was reached.
+    PackageRotation { trigger: EpochClosureTrigger },
+    /// The compiled checkpoint-cadence trigger was reached.
+    CheckpointCadence { trigger: EpochClosureTrigger },
     /// The command asked to terminate.
     Termination,
 }
 
 /// The hard byte ceiling for one settlement unit.
 ///
-/// `maximum_transaction_bytes` is a mandatory compiled CDC capability bounded by host spill and
+/// `transaction_limit_bytes` is a mandatory compiled CDC capability bounded by host spill and
 /// replay policy. A resource may lower it but never raise it above host authority, and the kernel
 /// invents no numeric default — the host profile supplies the concrete bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,19 +79,19 @@ impl TransactionByteCeiling {
     pub fn resolve(host_maximum_bytes: u64, resource_maximum_bytes: Option<u64>) -> Result<Self> {
         if host_maximum_bytes == 0 {
             return Err(CdfError::contract(
-                "CDC maximum transaction bytes requires a non-zero resolved host spill budget",
+                "CDC transaction limit bytes requires a non-zero resolved host spill budget",
             ));
         }
         let effective_bytes = match resource_maximum_bytes {
             None => host_maximum_bytes,
             Some(0) => {
                 return Err(CdfError::contract(
-                    "CDC resource maximum transaction bytes must be greater than zero",
+                    "CDC resource transaction limit bytes must be greater than zero",
                 ));
             }
             Some(requested) if requested > host_maximum_bytes => {
                 return Err(CdfError::contract(format!(
-                    "CDC resource maximum transaction bytes {requested} exceeds the resolved host \
+                    "CDC resource transaction limit bytes {requested} exceeds the resolved host \
                      spill budget {host_maximum_bytes}; a resource may only lower this bound"
                 )));
             }
@@ -116,7 +116,7 @@ impl TransactionByteCeiling {
 
     /// Resolves the ceiling from a compiled drain extent against live host spill authority.
     ///
-    /// This is the production path: the resource's `MAXIMUM TRANSACTION BYTES` declaration travels
+    /// This is the production path: the resource's `TRANSACTION LIMIT BYTES` declaration travels
     /// in the compiled `StreamEpochPolicy`, and the host budget remains the hard bound it can only
     /// lower.
     pub fn from_extent(
@@ -128,7 +128,7 @@ impl TransactionByteCeiling {
                 "CDC transaction ceiling requires a drain execution extent",
             ));
         };
-        Self::from_spill_budget(coordinator, policy.maximum_transaction_bytes)
+        Self::from_spill_budget(coordinator, policy.transaction_limit_bytes)
     }
 
     #[must_use]
@@ -142,74 +142,65 @@ impl TransactionByteCeiling {
     }
 }
 
-/// Cadence thresholds the archetype evaluates itself so a mid-unit crossing is observable.
+/// The compiled cadence policy the archetype anticipates closure against.
 ///
-/// The [`DrainEpochController`](crate::DrainEpochController) remains the closure authority. These
-/// thresholds exist only to locate *where* inside a unit a trigger was crossed, which the
-/// controller cannot see because it is only ever shown proven boundaries.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SettlementClosureThresholds {
-    rows: Option<u64>,
-    bytes: Option<u64>,
-    batches: Option<u64>,
-    elapsed_milliseconds: Option<u64>,
+/// The [`DrainEpochController`](crate::DrainEpochController) remains the closure authority. This
+/// exists only to locate *where inside a unit* a trigger was reached, which the controller cannot
+/// see because it is only ever shown proven boundaries. Both evaluate through the shared
+/// [`EpochTriggerMagnitudes`] predicate, so they cannot disagree about whether a trigger fired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementCadencePolicy {
+    package_rotation: EpochClosureTrigger,
+    checkpoint_cadence: EpochClosureTrigger,
 }
 
-impl SettlementClosureThresholds {
-    /// Derives thresholds from a drain extent's checkpoint cadence and package rotation.
-    ///
-    /// When both triggers constrain the same dimension the smaller bound wins, because either one
-    /// crossing is enough to make the epoch want to close.
+impl SettlementCadencePolicy {
+    /// Reads both cadence triggers from a compiled drain extent.
     pub fn from_extent(extent: &ExecutionExtent) -> Result<Self> {
         let ExecutionExtent::Drain { policy, .. } = extent else {
             return Err(CdfError::contract(
                 "CDC log-source archetype requires a drain execution extent",
             ));
         };
-        let mut thresholds = Self::default();
-        thresholds.absorb(&policy.checkpoint_cadence);
-        thresholds.absorb(&policy.package_rotation);
-        Ok(thresholds)
+        Ok(Self {
+            package_rotation: policy.package_rotation.clone(),
+            checkpoint_cadence: policy.checkpoint_cadence.clone(),
+        })
     }
 
-    fn absorb(&mut self, trigger: &EpochClosureTrigger) {
-        fn lower(slot: &mut Option<u64>, value: u64) {
-            *slot = Some(slot.map_or(value, |current| current.min(value)));
+    /// Which trigger, if any, the given magnitudes have reached.
+    ///
+    /// Package rotation is tested first to match `DrainEpochController::closure_at`, so the cause
+    /// recorded here is the cause the controller will report.
+    fn reached(&self, magnitudes: &EpochTriggerMagnitudes) -> Option<SettlementClosureCause> {
+        if magnitudes.trips(&self.package_rotation) {
+            return Some(SettlementClosureCause::PackageRotation {
+                trigger: self.package_rotation.clone(),
+            });
         }
-        match trigger {
-            EpochClosureTrigger::Rows { count } => lower(&mut self.rows, *count),
-            EpochClosureTrigger::Bytes { count } => lower(&mut self.bytes, *count),
-            EpochClosureTrigger::Batches { count } => lower(&mut self.batches, *count),
-            EpochClosureTrigger::Elapsed { milliseconds } => {
-                lower(&mut self.elapsed_milliseconds, *milliseconds);
-            }
-            // Watermark advance is not a settlement-unit-local dimension: it is evaluated by the
-            // controller against canonical watermark claims, which only exist at boundaries.
-            EpochClosureTrigger::WatermarkAdvance { .. } => {}
+        if magnitudes.trips(&self.checkpoint_cadence) {
+            return Some(SettlementClosureCause::CheckpointCadence {
+                trigger: self.checkpoint_cadence.clone(),
+            });
         }
+        None
     }
+}
 
-    fn crossing_cause(
-        &self,
-        epoch: Counters,
-        elapsed_milliseconds: Option<u64>,
-    ) -> Option<SettlementClosureCause> {
-        if self.rows.is_some_and(|limit| epoch.rows >= limit) {
-            return Some(SettlementClosureCause::Rows);
-        }
-        if self.bytes.is_some_and(|limit| epoch.bytes >= limit) {
-            return Some(SettlementClosureCause::Bytes);
-        }
-        if self.batches.is_some_and(|limit| epoch.batches >= limit) {
-            return Some(SettlementClosureCause::Batches);
-        }
-        match (self.elapsed_milliseconds, elapsed_milliseconds) {
-            (Some(limit), Some(elapsed)) if elapsed >= limit => {
-                Some(SettlementClosureCause::Elapsed)
-            }
-            _ => None,
-        }
-    }
+/// What the caller observed alongside one admitted CDC batch.
+///
+/// Every magnitude a cadence trigger can measure is supplied here, including watermark advance, so
+/// no trigger dimension is silently unobservable inside a settlement unit. `watermark_advance`
+/// comes from [`DrainEpochController::watermark_advance_since_epoch_start`] — the controller owns
+/// the epoch-start claim, so the archetype never tracks a competing one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AdmissionObservation {
+    pub rows: u64,
+    pub bytes: u64,
+    /// Elapsed milliseconds since the epoch began.
+    pub elapsed_milliseconds: u64,
+    /// Watermark advance since the epoch's start claim, when measurable.
+    pub watermark_advance: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -241,7 +232,7 @@ impl Counters {
 ///
 /// Row and batch counts are telemetry; bytes are the dimension bounded by
 /// [`TransactionByteCeiling`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementOvershoot {
     pub cause: SettlementClosureCause,
     /// Unit-local counts observed at the moment closure was requested.
@@ -346,7 +337,7 @@ enum UnitState {
 pub struct CdcLogSourceRuntime {
     kind: SettlementUnitKind,
     ceiling: TransactionByteCeiling,
-    thresholds: SettlementClosureThresholds,
+    cadence: SettlementCadencePolicy,
     state: UnitState,
     epoch: Counters,
     units_completed: u64,
@@ -362,7 +353,7 @@ impl CdcLogSourceRuntime {
         Ok(Self {
             kind,
             ceiling,
-            thresholds: SettlementClosureThresholds::from_extent(extent)?,
+            cadence: SettlementCadencePolicy::from_extent(extent)?,
             state: UnitState::Idle,
             epoch: Counters::default(),
             units_completed: 0,
@@ -439,17 +430,21 @@ impl CdcLogSourceRuntime {
     /// Admits one homogeneous CDC batch into the open settlement unit.
     ///
     /// Validates typed operation and exact position metadata, enforces the byte ceiling before any
-    /// publication can occur, and records where a cadence threshold was first crossed.
+    /// publication can occur, and records where a cadence trigger was first reached.
     pub fn admit_batch(
         &mut self,
         metadata: &CdcMetadata,
         batch_position: &SourcePosition,
-        rows: u64,
-        bytes: u64,
-        elapsed_milliseconds: Option<u64>,
+        observation: AdmissionObservation,
     ) -> Result<()> {
+        let AdmissionObservation {
+            rows,
+            bytes,
+            elapsed_milliseconds,
+            watermark_advance,
+        } = observation;
         let ceiling = self.ceiling;
-        let thresholds = self.thresholds;
+        let cadence = self.cadence.clone();
         let epoch_before = self.epoch;
         let UnitState::Open(unit) = &mut self.state else {
             return Err(CdfError::contract(
@@ -478,17 +473,24 @@ impl CdcLogSourceRuntime {
         unit.last_position = batch_position.clone();
 
         if unit.requested.is_none() {
-            // Thresholds are epoch-scoped, so the projection must combine units already settled in
-            // this epoch with everything accumulated by the open unit — not merely this batch.
-            // Comparing one batch against the epoch limit would silently miss the crossing and
-            // under-report overshoot.
+            // Cadence triggers are epoch-scoped, so the projection must combine units already
+            // settled in this epoch with everything accumulated by the open unit — not merely this
+            // batch. Comparing one batch against the epoch threshold would silently miss the
+            // crossing and under-report overshoot.
             let mut epoch_projection = epoch_before;
             epoch_projection.add(
                 unit.counters.batches,
                 unit.counters.rows,
                 unit.counters.bytes,
             )?;
-            if let Some(cause) = thresholds.crossing_cause(epoch_projection, elapsed_milliseconds) {
+            let magnitudes = EpochTriggerMagnitudes {
+                batches: epoch_projection.batches,
+                rows: epoch_projection.rows,
+                bytes: epoch_projection.bytes,
+                elapsed_milliseconds,
+                watermark_advance,
+            };
+            if let Some(cause) = cadence.reached(&magnitudes) {
                 unit.requested = Some((cause, unit.counters));
             }
         }
@@ -549,15 +551,18 @@ impl CdcLogSourceRuntime {
             ));
         }
 
-        let overshoot = unit.requested.map(|(cause, at)| SettlementOvershoot {
-            cause,
-            requested_at_batches: at.batches,
-            requested_at_rows: at.rows,
-            requested_at_bytes: at.bytes,
-            overshoot_batches: unit.counters.batches.saturating_sub(at.batches),
-            overshoot_rows: unit.counters.rows.saturating_sub(at.rows),
-            overshoot_bytes: unit.counters.bytes.saturating_sub(at.bytes),
-        });
+        let overshoot = unit
+            .requested
+            .clone()
+            .map(|(cause, at)| SettlementOvershoot {
+                cause,
+                requested_at_batches: at.batches,
+                requested_at_rows: at.rows,
+                requested_at_bytes: at.bytes,
+                overshoot_batches: unit.counters.batches.saturating_sub(at.batches),
+                overshoot_rows: unit.counters.rows.saturating_sub(at.rows),
+                overshoot_bytes: unit.counters.bytes.saturating_sub(at.bytes),
+            });
 
         self.epoch.add(
             unit.counters.batches,
@@ -628,11 +633,12 @@ mod tests {
     use super::*;
     use crate::drain_epoch::{DrainEpochController, DrainEpochDecision};
     use cdf_kernel::{
-        CdcOperation, CommittedLogPosition, DrainTermination, LateDataAction,
+        CdcOperation, CommittedLogPosition, DrainTermination, EventTimeDomain, LateDataAction,
         MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
-        MongoResumeTokenSource, MongoWatchLevel, PostgresCommitPosition, PostgresLogScope,
-        ResumeTokenPosition, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION,
-        SafeFrontierPolicy, StreamEpochPolicy, WatermarkPolicy,
+        MongoResumeTokenSource, MongoWatchLevel, PartitionWatermarkAggregation,
+        PostgresCommitPosition, PostgresLogScope, ResumeTokenPosition, SOURCE_POSITION_VERSION,
+        STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, StreamEpochPolicy, WatermarkAuthority,
+        WatermarkPolicy,
     };
     use cdf_memory::FixedSpillBudget;
 
@@ -652,7 +658,7 @@ mod tests {
                 watermark: WatermarkPolicy::Disabled,
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-                maximum_transaction_bytes: None,
+                transaction_limit_bytes: None,
             },
             termination: DrainTermination::Records { count: 1_000_000 },
         }
@@ -720,6 +726,40 @@ mod tests {
         )
     }
 
+    /// An admission with no elapsed time and no measurable watermark advance.
+    fn obs(rows: u64, bytes: u64) -> AdmissionObservation {
+        AdmissionObservation {
+            rows,
+            bytes,
+            elapsed_milliseconds: 0,
+            watermark_advance: None,
+        }
+    }
+
+    /// An admission at a specific epoch-elapsed time.
+    fn obs_at(rows: u64, bytes: u64, elapsed_milliseconds: u64) -> AdmissionObservation {
+        AdmissionObservation {
+            rows,
+            bytes,
+            elapsed_milliseconds,
+            watermark_advance: None,
+        }
+    }
+
+    /// An admission carrying a measured watermark advance.
+    fn obs_watermark(
+        rows: u64,
+        bytes: u64,
+        watermark_advance: Option<u64>,
+    ) -> AdmissionObservation {
+        AdmissionObservation {
+            rows,
+            bytes,
+            elapsed_milliseconds: 0,
+            watermark_advance,
+        }
+    }
+
     fn meta(operation: CdcOperation, position: &SourcePosition) -> CdcMetadata {
         CdcMetadata {
             operation,
@@ -776,9 +816,7 @@ mod tests {
             .admit_batch(
                 &meta(CdcOperation::Insert, &position),
                 &position,
-                1,
-                101,
-                None,
+                obs(1, 101),
             )
             .unwrap_err();
         assert!(
@@ -807,12 +845,12 @@ mod tests {
         source.begin_unit(&start).unwrap();
 
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 4, 40, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(4, 40))
             .unwrap();
         assert!(!source.closure_requested(), "threshold not yet crossed");
 
         source
-            .admit_batch(&meta(CdcOperation::Update, &start), &start, 8, 80, None)
+            .admit_batch(&meta(CdcOperation::Update, &start), &start, obs(8, 80))
             .unwrap();
         assert!(
             source.closure_requested(),
@@ -825,7 +863,7 @@ mod tests {
 
         // The transaction continues past the request; this is the overshoot.
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 5, 50, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(5, 50))
             .unwrap();
 
         let commit = pg(20, "orders");
@@ -837,7 +875,14 @@ mod tests {
         assert_eq!(completed.terminal_position, commit);
 
         let overshoot = completed.overshoot.expect("overshoot must be recorded");
-        assert_eq!(overshoot.cause, SettlementClosureCause::Rows);
+        // The 10-row limit is the checkpoint cadence; package rotation is set far above it, so the
+        // recorded cause must name the cadence trigger specifically rather than a bare dimension.
+        assert_eq!(
+            overshoot.cause,
+            SettlementClosureCause::CheckpointCadence {
+                trigger: EpochClosureTrigger::Rows { count: 10 }
+            }
+        );
         assert_eq!(overshoot.requested_at_rows, 12);
         assert_eq!(overshoot.requested_at_bytes, 120);
         assert_eq!(overshoot.requested_at_batches, 2);
@@ -853,7 +898,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         source.request_closure(SettlementClosureCause::Termination);
 
@@ -891,7 +936,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 9, 90, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(9, 90))
             .unwrap();
         source.abandon_unit();
 
@@ -938,9 +983,7 @@ mod tests {
             .admit_batch(
                 &meta(CdcOperation::Insert, &other_scope),
                 &other_scope,
-                1,
-                10,
-                None,
+                obs(1, 10),
             )
             .unwrap_err();
         assert!(
@@ -960,7 +1003,7 @@ mod tests {
         let drifted = pg(11, "orders");
         assert!(
             source
-                .admit_batch(&meta(CdcOperation::Insert, &drifted), &start, 1, 10, None)
+                .admit_batch(&meta(CdcOperation::Insert, &drifted), &start, obs(1, 10))
                 .is_err(),
             "operation position must corroborate the batch source position"
         );
@@ -974,7 +1017,7 @@ mod tests {
         source.begin_unit(&start).unwrap();
         assert!(
             source
-                .admit_batch(&meta(CdcOperation::Delete, &start), &start, 0, 0, None)
+                .admit_batch(&meta(CdcOperation::Delete, &start), &start, obs(0, 0))
                 .is_err()
         );
     }
@@ -986,7 +1029,7 @@ mod tests {
         let start = pg(30, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
 
         let error = source.complete_unit(&pg(20, "orders")).unwrap_err();
@@ -1004,7 +1047,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         assert!(source.complete_unit(&pg(20, "shipments")).is_err());
     }
@@ -1018,7 +1061,7 @@ mod tests {
         let first = mongo_first();
         source.begin_unit(&first).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 3, 30, None)
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, obs(3, 30))
             .unwrap();
 
         // A different opaque token terminates the prefix. No numeric reachability is asserted,
@@ -1037,7 +1080,7 @@ mod tests {
         let first = mongo_first();
         source.begin_unit(&first).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, obs(1, 10))
             .unwrap();
         assert!(source.complete_unit(&pg(10, "orders")).is_err());
     }
@@ -1060,9 +1103,7 @@ mod tests {
                     .admit_batch(
                         &meta(CdcOperation::Insert, &start),
                         &start,
-                        *rows,
-                        rows * 10,
-                        None,
+                        obs(*rows, rows * 10),
                     )
                     .unwrap();
             }
@@ -1090,18 +1131,160 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, Some(10))
+            .admit_batch(
+                &meta(CdcOperation::Insert, &start),
+                &start,
+                obs_at(1, 10, 10),
+            )
             .unwrap();
         assert!(!source.closure_requested());
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, Some(80))
+            .admit_batch(
+                &meta(CdcOperation::Insert, &start),
+                &start,
+                obs_at(1, 10, 80),
+            )
             .unwrap();
         assert!(source.closure_requested());
 
         let completed = source.complete_unit(&pg(20, "orders")).unwrap();
         let overshoot = completed.overshoot.expect("overshoot must be recorded");
-        assert_eq!(overshoot.cause, SettlementClosureCause::Elapsed);
+        assert_eq!(
+            overshoot.cause,
+            SettlementClosureCause::CheckpointCadence {
+                trigger: EpochClosureTrigger::Elapsed { milliseconds: 50 }
+            }
+        );
         assert_eq!(overshoot.overshoot_rows, 0);
+    }
+
+    // --- watermark-advance cadence --------------------------------------------------------------
+
+    /// A drain extent whose checkpoint cadence is watermark-driven. The policy must enable
+    /// watermarks or `StreamEpochPolicy::validate` rejects the combination.
+    fn watermark_extent(units: u64) -> ExecutionExtent {
+        ExecutionExtent::Drain {
+            version: 1,
+            policy: StreamEpochPolicy {
+                version: STREAM_EPOCH_POLICY_VERSION,
+                checkpoint_cadence: EpochClosureTrigger::WatermarkAdvance { units },
+                package_rotation: EpochClosureTrigger::Bytes {
+                    count: 1_000_000_000,
+                },
+                watermark: WatermarkPolicy::Enabled {
+                    event_time_field: "occurred_at".into(),
+                    domain: EventTimeDomain::UnsignedInteger,
+                    authority: WatermarkAuthority::Source,
+                    partition_aggregation: PartitionWatermarkAggregation::MinimumAll,
+                },
+                late_data: LateDataAction::Quarantine,
+                safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                transaction_limit_bytes: None,
+            },
+            termination: DrainTermination::Records { count: 1_000_000 },
+        }
+    }
+
+    #[test]
+    fn watermark_extent_is_a_valid_policy() {
+        watermark_extent(100)
+            .validate()
+            .expect("watermark-advance cadence with an enabled watermark policy must validate");
+    }
+
+    /// Watermark advance is a first-class settlement-unit dimension: crossing it inside a
+    /// transaction must request closure exactly like rows, bytes, or elapsed time.
+    #[test]
+    fn watermark_advance_crossing_inside_a_unit_requests_closure() {
+        let extent = watermark_extent(100);
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &start),
+                &start,
+                obs_watermark(1, 10, Some(40)),
+            )
+            .unwrap();
+        assert!(
+            !source.closure_requested(),
+            "40 units is below the 100-unit cadence"
+        );
+
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &start),
+                &start,
+                obs_watermark(1, 10, Some(140)),
+            )
+            .unwrap();
+        assert!(
+            source.closure_requested(),
+            "crossing the watermark cadence must request closure like any other dimension"
+        );
+
+        let completed = source.complete_unit(&pg(20, "orders")).unwrap();
+        let overshoot = completed.overshoot.expect("overshoot must be recorded");
+        assert_eq!(
+            overshoot.cause,
+            SettlementClosureCause::CheckpointCadence {
+                trigger: EpochClosureTrigger::WatermarkAdvance { units: 100 }
+            }
+        );
+    }
+
+    /// An unmeasurable advance must neither trip nor suppress: it simply is not evidence.
+    #[test]
+    fn unmeasurable_watermark_advance_never_trips() {
+        let extent = watermark_extent(1);
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        for _ in 0..5 {
+            source
+                .admit_batch(
+                    &meta(CdcOperation::Insert, &start),
+                    &start,
+                    obs_watermark(100, 1_000, None),
+                )
+                .unwrap();
+        }
+        assert!(
+            !source.closure_requested(),
+            "a missing watermark claim must not manufacture a crossing, even at a 1-unit cadence"
+        );
+        assert!(
+            source
+                .complete_unit(&pg(20, "orders"))
+                .unwrap()
+                .overshoot
+                .is_none()
+        );
+    }
+
+    /// When both cadence triggers are reached, package rotation wins — matching
+    /// `DrainEpochController::closure_at`'s evaluation order.
+    #[test]
+    fn package_rotation_outranks_checkpoint_cadence_when_both_are_reached() {
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 5 },
+            EpochClosureTrigger::Rows { count: 5 },
+        );
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+        let start = pg(10, "orders");
+        source.begin_unit(&start).unwrap();
+        source
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(6, 60))
+            .unwrap();
+        let completed = source.complete_unit(&pg(20, "orders")).unwrap();
+        assert_eq!(
+            completed.overshoot.unwrap().cause,
+            SettlementClosureCause::PackageRotation {
+                trigger: EpochClosureTrigger::Rows { count: 5 }
+            }
+        );
     }
 
     // --- integration with the real drain epoch controller -------------------------------------
@@ -1139,7 +1322,7 @@ mod tests {
         source.begin_unit(&start).unwrap();
         for _ in 0..3 {
             source
-                .admit_batch(&meta(CdcOperation::Insert, &start), &start, 6, 60, None)
+                .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(6, 60))
                 .unwrap();
         }
         let commit = pg(20, "orders");
@@ -1176,7 +1359,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 50, 500, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(50, 500))
             .unwrap();
         source.abandon_unit();
 
@@ -1207,9 +1390,7 @@ mod tests {
                 .admit_batch(
                     &meta(CdcOperation::Insert, &position),
                     &position,
-                    4,
-                    40,
-                    None,
+                    obs(4, 40),
                 )
                 .unwrap();
             let completed = source.complete_unit(&position).unwrap();
@@ -1227,7 +1408,7 @@ mod tests {
         let third = pg(30, "orders");
         source.begin_unit(&third).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &third), &third, 4, 40, None)
+            .admit_batch(&meta(CdcOperation::Insert, &third), &third, obs(4, 40))
             .unwrap();
         let completed = source.complete_unit(&third).unwrap();
         assert!(
@@ -1255,7 +1436,7 @@ mod tests {
         let first = pg(10, "orders");
         source.begin_unit(&first).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 3, 30, None)
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, obs(3, 30))
             .unwrap();
         let completed = source.complete_unit(&first).unwrap();
         let commit = completed.terminal_position.clone();
@@ -1284,7 +1465,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Delete, &start), &start, 2, 20, None)
+            .admit_batch(&meta(CdcOperation::Delete, &start), &start, obs(2, 20))
             .unwrap();
         let completed = source.complete_unit(&pg(20, "orders")).unwrap();
 
@@ -1306,7 +1487,7 @@ mod tests {
         let first = mongo_first();
         source.begin_unit(&first).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Update, &first), &first, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Update, &first), &first, obs(1, 10))
             .unwrap();
         let completed = source.complete_unit(&mongo_second()).unwrap();
 
@@ -1324,7 +1505,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         let completed = source.complete_unit(&pg(20, "orders")).unwrap();
 
@@ -1360,7 +1541,7 @@ mod tests {
 
         let mut lowered = quiet_extent();
         if let ExecutionExtent::Drain { policy, .. } = &mut lowered {
-            policy.maximum_transaction_bytes = Some(1_024);
+            policy.transaction_limit_bytes = Some(1_024);
         }
         assert_eq!(
             TransactionByteCeiling::from_extent(&lowered, &budget)
@@ -1371,7 +1552,7 @@ mod tests {
 
         let mut raised = quiet_extent();
         if let ExecutionExtent::Drain { policy, .. } = &mut raised {
-            policy.maximum_transaction_bytes = Some(8_192);
+            policy.transaction_limit_bytes = Some(8_192);
         }
         assert!(
             TransactionByteCeiling::from_extent(&raised, &budget).is_err(),
@@ -1382,6 +1563,60 @@ mod tests {
             TransactionByteCeiling::from_extent(&ExecutionExtent::bounded(), &budget).is_err(),
             "a bounded extent has no CDC settlement unit to bound"
         );
+    }
+
+    /// The archetype anticipates a cause; the controller declares one. They must name the same
+    /// policy member, or the overshoot record would attribute the closure to the wrong trigger.
+    /// This is the property the shared `EpochTriggerMagnitudes` predicate exists to guarantee.
+    #[test]
+    fn archetype_and_controller_name_the_same_cadence_cause() {
+        // Package rotation is the tighter bound here, so both must attribute the closure to it
+        // rather than to the checkpoint cadence that also eventually trips.
+        for (rotation, cadence) in [
+            (
+                EpochClosureTrigger::Rows { count: 5 },
+                EpochClosureTrigger::Rows { count: 50 },
+            ),
+            (
+                EpochClosureTrigger::Bytes { count: 40 },
+                EpochClosureTrigger::Rows { count: 50 },
+            ),
+            (
+                EpochClosureTrigger::Batches { count: 1 },
+                EpochClosureTrigger::Rows { count: 50 },
+            ),
+        ] {
+            let extent = extent(cadence.clone(), rotation.clone());
+            let mut controller = DrainEpochController::new(&extent).unwrap();
+            let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+            let start = pg(10, "orders");
+            source.begin_unit(&start).unwrap();
+            source
+                .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(6, 60))
+                .unwrap();
+            let completed = source.complete_unit(&pg(20, "orders")).unwrap();
+
+            let archetype_cause = completed
+                .overshoot
+                .clone()
+                .expect("the archetype must anticipate this crossing")
+                .cause;
+            let DrainEpochDecision::Close(closure) = observe(&mut controller, completed, 100)
+            else {
+                panic!("the controller must close for rotation {rotation:?}");
+            };
+
+            match (&archetype_cause, &closure.evidence.cause) {
+                (
+                    SettlementClosureCause::PackageRotation { trigger: mine },
+                    cdf_kernel::EpochClosureCause::PackageRotation { trigger: theirs },
+                ) => assert_eq!(mine, theirs, "trigger mismatch for rotation {rotation:?}"),
+                (mine, theirs) => panic!(
+                    "cause disagreement for rotation {rotation:?}: archetype {mine:?} vs controller {theirs:?}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -1458,9 +1693,7 @@ mod tests {
                     .admit_batch(
                         &meta(CdcOperation::Insert, &position),
                         &position,
-                        batch,
-                        batch * 10,
-                        None,
+                        obs(batch, batch * 10),
                     )
                     .unwrap();
                 remaining -= batch;
@@ -1514,9 +1747,7 @@ mod tests {
                     .admit_batch(
                         &meta(CdcOperation::Insert, &position),
                         &position,
-                        *rows,
-                        rows * 10,
-                        None,
+                        obs(*rows, rows * 10),
                     )
                     .unwrap();
 
@@ -1555,7 +1786,7 @@ mod tests {
         let first = pg(10, "orders");
         source.begin_unit(&first).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &first), &first, 10, 100, None)
+            .admit_batch(&meta(CdcOperation::Insert, &first), &first, obs(10, 100))
             .unwrap();
         assert!(
             source.complete_unit(&first).is_ok(),
@@ -1567,7 +1798,7 @@ mod tests {
         source.begin_unit(&second).unwrap();
         assert!(
             source
-                .admit_batch(&meta(CdcOperation::Insert, &second), &second, 11, 101, None)
+                .admit_batch(&meta(CdcOperation::Insert, &second), &second, obs(11, 101))
                 .is_err(),
             "one byte over the ceiling must fail"
         );
@@ -1605,9 +1836,7 @@ mod tests {
             .admit_batch(
                 &meta(CdcOperation::Insert, &settled_position),
                 &settled_position,
-                4,
-                40,
-                None,
+                obs(4, 40),
             )
             .unwrap();
         let completed = source.complete_unit(&settled_position).unwrap();
@@ -1624,9 +1853,7 @@ mod tests {
             .admit_batch(
                 &meta(CdcOperation::Insert, &interrupted),
                 &interrupted,
-                99,
-                990,
-                None,
+                obs(99, 990),
             )
             .unwrap();
         let durable_frontier = controller.committed_frontier().cloned();
@@ -1663,9 +1890,7 @@ mod tests {
             .admit_batch(
                 &meta(CdcOperation::Insert, &interrupted),
                 &interrupted,
-                99,
-                990,
-                None,
+                obs(99, 990),
             )
             .unwrap();
         let replayed = source.complete_unit(&interrupted).unwrap();
@@ -1680,7 +1905,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
 
         let error = source.reject_unsupported_event("TRUNCATE");
@@ -1700,7 +1925,7 @@ mod tests {
         let start = pg(10, "orders");
         source.begin_unit(&start).unwrap();
         source
-            .admit_batch(&meta(CdcOperation::Insert, &start), &start, 1, 10, None)
+            .admit_batch(&meta(CdcOperation::Insert, &start), &start, obs(1, 10))
             .unwrap();
         source.request_closure(SettlementClosureCause::Termination);
         source.complete_unit(&pg(20, "orders")).unwrap();

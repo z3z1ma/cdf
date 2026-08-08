@@ -37,7 +37,7 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 - [ ] No safe frontier, destination mutation, receipt, or checkpoint authority can be produced for
       a partially observed transaction or event prefix; restart retains the prior committed
       checkpoint.
-- [ ] Multi-batch transactions remain bounded by the compiled `maximum_transaction_bytes`; the
+- [ ] Multi-batch transactions remain bounded by the compiled `transaction_limit_bytes`; the
       resolved host spill budget is the hard ceiling, a resource may only lower it, and exceeding
       the effective limit fails before checkpoint advance.
 - [ ] Every admitted CDC batch has validated typed operation and exact source position metadata;
@@ -94,7 +94,7 @@ event-prefix resume tokens without branching on source kind in generic runtime c
   - `CdcMetadata` (`crates/cdf-kernel/src/batch.rs:679`) already carries
     `{ operation, position }` and validates one homogeneous operation per batch against the batch
     source position. A2 consumes this rather than redefining it.
-  - `maximum_transaction_bytes` exists in the specification only; there is no code for it. A2
+  - `transaction_limit_bytes` exists in the specification only; there is no code for it. A2
     introduces it, bounded by the existing `SpillBudgetCoordinator`/`FixedSpillBudget` authority in
     `cdf-runtime`, with no kernel numeric default.
 
@@ -139,7 +139,7 @@ The former AC4 authoring blocker was ratified on 2026-08-07 and implemented; the
 below because it explains the grammar choice.
 
 **AC4 authoring half — RESOLVED 2026-08-07.** The CDC foundation spec requires
-`maximum_transaction_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
+`transaction_limit_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
 lower". The runtime half is implemented and proven (`TransactionByteCeiling::from_spill_budget`),
 but `.10x/specs/cdc-resource-authoring-and-continuous-run.md` defines `mode`, `bootstrap`,
 `DISPOSITION CDC_APPLY`, and the `DELETE` clause and **does not define any surface through which a
@@ -177,7 +177,7 @@ The 20 new tests in `cdc_log_source::tests` are the observation; what each prove
 | 1. Neutral typed archetype, no database branches | **Supported** | Both `CommittedTransaction` and `EventPrefix` drive the same code path; the module names no database in any control-flow position. Limit: proven by construction and review, not by a lint. |
 | 2. Closure inside a unit waits, records exact overshoot, admits no later unit | **Supported** | `closure_requested_mid_unit_waits_for_the_boundary_and_records_exact_overshoot` asserts exact requested-at and overshoot counts; `no_later_unit_is_admitted_once_closure_was_requested` asserts the seal. Limit: unit-level; not yet driven through `DrainEpochController`. |
 | 3. No frontier/mutation/receipt/checkpoint for a partial unit; restart retains prior checkpoint | **Partial** | `abandoned_unit_publishes_nothing_and_retains_prior_authority` proves the archetype publishes nothing. The restart/checkpoint half is **not proven** — it needs package/receipt/checkpoint integration. |
-| 4. Bounded by `maximum_transaction_bytes`, host spill is the hard ceiling, resource may only lower | **Partial** | Four ceiling tests prove resolution and fail-closed admission. **Not yet wired** into the compiled plan or to a real `SpillBudgetCoordinator` snapshot. |
+| 4. Bounded by `transaction_limit_bytes`, host spill is the hard ceiling, resource may only lower | **Partial** | Four ceiling tests prove resolution and fail-closed admission. **Not yet wired** into the compiled plan or to a real `SpillBudgetCoordinator` snapshot. |
 | 5. Validated typed operation and exact position; finalization delegates to the A1.5 reducer | **Partial** | Operation/position validation and scope checks are proven. Delegation to the keyed-effect reducer is **not implemented**. |
 | 6. Narrow typed provenance for scope, regression, and aggregation failures | **Partial** | Scope mismatch, position drift, zero-row, and committed-log regression are typed and asserted. Unsupported-event and inconsistent-terminal-position paths are **not yet covered**. |
 | 7. Deterministic synthetic source under randomized rechunking, cadence, cancellation, `jobs` invariance | **Partial** | `arbitrary_arrow_rechunking_yields_an_identical_settled_unit` covers rechunking across three splits; the elapsed-cadence test covers one cadence boundary. Cancellation/failure injection, a full synthetic source, and `jobs` invariance are **not yet written**. |
@@ -280,15 +280,15 @@ frontier. It does **not** exercise the SQLite checkpoint store, the package work
 recovery, or a real process kill, so it does not discharge acceptance scenarios 2 and 3 of the CDC
 foundation spec — those need the chaos layer, and they belong to AC8.
 
-### Increment 5 — compiled `maximum_transaction_bytes` authority (2026-08-07)
+### Increment 5 — compiled `transaction_limit_bytes` authority (2026-08-07)
 
 The user ratified the execution clause as the declaration site. Implemented end to end:
 
-- `StreamEpochPolicy` gains `maximum_transaction_bytes: Option<u64>`, rejecting a declared zero;
+- `StreamEpochPolicy` gains `transaction_limit_bytes: Option<u64>`, rejecting a declared zero;
   `STREAM_EPOCH_POLICY_VERSION` bumped 1 → 2 as a coherent artifact replacement with no compatibility
   reader, per `.10x/knowledge/pre-production-current-only-policy.md`.
 - `ExecutionDeclaration::Drain` and the declarative compiler thread the value into the compiled plan.
-- Grammar: an optional trailing `MAXIMUM TRANSACTION BYTES n` member of `EXECUTION DRAIN`. It follows
+- Grammar: an optional trailing `TRANSACTION LIMIT BYTES n` member of `EXECUTION DRAIN`. It follows
   the existing positional keyword vocabulary (`PACKAGE BYTES n`) rather than the `key => value` form
   sketched during ratification, which would have clashed with the strict member grammar. Absence is
   distinct from a declared value.
@@ -326,6 +326,65 @@ include `tests::determinism::package_identity_is_invariant_to_source_batch_rechu
 differed between sweeps in both directions, so that suite contains flaky live-database tests. This
 is a discovered condition with its own owner:
 `.10x/tickets/2026-08-07-workspace-suite-failing-and-flaky-baseline.md`.
+
+### Increment 6 — rename, and closing the ignored trigger dimension (2026-08-07)
+
+**Rename.** `MAXIMUM TRANSACTION BYTES` → `TRANSACTION LIMIT BYTES`, ratified by the user because
+the old name read like a sibling of `PACKAGE BYTES` when it is a different species: not
+epoch-scoped, not a cadence request, and fatal rather than advisory. Renamed coherently across the
+grammar, the `transaction_limit_bytes` field, the `CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT` diagnostic
+code, error prose, and the authoring spec. Nothing had shipped, so no compatibility path exists or
+is wanted. The mention inside
+`.10x/research/2026-08-03-cdc-protocol-position-contract.md` was deliberately **not** renamed and
+was reverted after an over-broad pass touched it: that record is `Status: done`, and editing terminal
+research rewrites what the investigation actually recommended.
+
+**The ignored dimension.** Increment 2 stated that the archetype "deliberately ignores"
+`EpochClosureTrigger::WatermarkAdvance` because it is not unit-local. That was wrong, and the user
+was right to reject the reasoning: a configured watermark cadence would have been silently
+invisible inside a settlement unit, so a crossing would produce no overshoot record at all — a
+correctness hole precisely in the mechanism this ticket exists to provide.
+
+Rather than bolt a fifth case onto a private threshold matcher, the predicate is now shared:
+
+- `EpochClosureTrigger::threshold()` (kernel) is the one definition of a trigger's magnitude, reused
+  by `validate`.
+- `EpochTriggerMagnitudes` (`cdf-runtime`) holds every magnitude a trigger can measure — batches,
+  rows, bytes, elapsed, and watermark advance — with `measured()`/`trips()`. An unmeasurable
+  magnitude never trips, so a missing watermark can neither force nor suppress closure.
+- `DrainEpochController::epoch_magnitudes` snapshots them **once** per observation, so package
+  rotation and checkpoint cadence cannot disagree about the same instant, and
+  `watermark_advance_since_epoch_start` keeps the epoch-start claim in exactly one place.
+- `trigger_observation` now only *shapes evidence*; the trip decision is the shared predicate.
+- The archetype's `SettlementClosureThresholds` is replaced by `SettlementCadencePolicy`, which
+  evaluates the real triggers in the controller's order.
+
+This also fixed the cause-granularity limitation recorded in increment 3: `SettlementClosureCause`
+now mirrors `EpochClosureCause` with `PackageRotation { trigger }` / `CheckpointCadence { trigger }`
+instead of a bare dimension, and `AdmissionObservation` carries the full magnitude set at admission.
+
+39 tests (up from 33). New coverage: watermark crossing inside a unit requests closure and records
+the watermark cause; an unmeasurable advance never trips even at a 1-unit cadence; package rotation
+outranks checkpoint cadence when both are reached; and — the property the shared predicate exists
+for — `archetype_and_controller_name_the_same_cadence_cause` drives both across three trigger shapes
+and asserts they cite the identical policy member.
+
+```text
+cargo fmt --all -- --check                                exit 0
+cargo clippy -D warnings: cdf-kernel, cdf-runtime, cdf-declarative, cdf-project, cdf-engine
+                                                          all exit 0
+cargo test -p cdf-runtime --locked cdc_log_source         39 passed, 0 failed
+cargo test --workspace --locked --no-fail-fast            35 failing, 0 real new vs the 36-failure
+                                                          baseline
+```
+
+The sweep showed two entries absent from the baseline —
+`cdf-subprocess::tests::cancellation_before_first_frame_kills_descendants_and_joins` and
+`::timeout_terminates_the_entire_subprocess_process_group`. Both **passed in isolation immediately
+after**, `cdf-subprocess` references none of the changed types, and both spawn real processes with
+`sleep 30` and assert on process-group termination. They are load-sensitive flakes under a saturated
+parallel sweep, now recorded in the workspace-baseline ticket. Not claimed as caused by this work,
+and not dismissed without checking.
 
 **Remaining for closure:** `jobs` invariance, and the AC8 finite-drain conformance certificate
 including real crash recovery. AC5's physical construction is **already satisfied by A1.5** — the

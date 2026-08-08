@@ -173,7 +173,7 @@ may stream transaction rows into the existing rolling package workspace, but it 
 commit the destination before the transaction boundary.
 
 One transaction can exceed the configured package-rotation target. Rotation is therefore a soft
-target for CDC and the overshoot MUST be reported. `maximum_transaction_bytes` MUST be a mandatory
+target for CDC and the overshoot MUST be reported. `transaction_limit_bytes` MUST be a mandatory
 compiled CDC capability bounded by host spill/replay policy. A project/resource MAY lower it but
 MUST NOT raise it above host authority. Byte count is the hard resource limit; row count is
 telemetry. Exceeding the bound MUST fail closed without advancing state. The kernel MUST NOT invent

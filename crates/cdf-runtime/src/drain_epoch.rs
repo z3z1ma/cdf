@@ -55,6 +55,48 @@ pub enum DrainEpochDecision {
     FinishedNoOp,
 }
 
+/// Every magnitude an [`EpochClosureTrigger`] can be evaluated against, at one instant.
+///
+/// This exists so the epoch controller and any component that must anticipate a closure compare
+/// against **one** definition of "has this trigger been reached". Two independent evaluators of the
+/// same policy is the drift hazard the CDC foundation names directly: separate pattern matches with
+/// subtly different semantics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EpochTriggerMagnitudes {
+    pub batches: u64,
+    pub rows: u64,
+    pub bytes: u64,
+    /// Elapsed milliseconds since the epoch began.
+    pub elapsed_milliseconds: u64,
+    /// Watermark advance since the epoch's start claim.
+    ///
+    /// `None` when no advance is measurable — no epoch-start claim, no current claim, or two claims
+    /// whose value domains cannot be differenced. An unmeasurable magnitude never trips a trigger,
+    /// which keeps a missing watermark from silently forcing or suppressing closure.
+    pub watermark_advance: Option<u64>,
+}
+
+impl EpochTriggerMagnitudes {
+    /// The magnitude this trigger measures, or `None` when it is not currently measurable.
+    #[must_use]
+    pub const fn measured(&self, trigger: &EpochClosureTrigger) -> Option<u64> {
+        match trigger {
+            EpochClosureTrigger::Batches { .. } => Some(self.batches),
+            EpochClosureTrigger::Rows { .. } => Some(self.rows),
+            EpochClosureTrigger::Bytes { .. } => Some(self.bytes),
+            EpochClosureTrigger::Elapsed { .. } => Some(self.elapsed_milliseconds),
+            EpochClosureTrigger::WatermarkAdvance { .. } => self.watermark_advance,
+        }
+    }
+
+    /// Whether this trigger has been reached.
+    #[must_use]
+    pub fn trips(&self, trigger: &EpochClosureTrigger) -> bool {
+        self.measured(trigger)
+            .is_some_and(|observed| observed >= trigger.threshold())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Counts {
     batches: u64,
@@ -553,11 +595,15 @@ impl DrainEpochController {
                 true,
             )));
         }
-        if let Some(observed) = self.trigger_observation(
-            &self.policy.package_rotation,
+        // One magnitude snapshot drives both triggers, so package rotation and checkpoint cadence
+        // can never disagree about what was observed at this instant.
+        let magnitudes = self.epoch_magnitudes(
             observation.monotonic_milliseconds,
             observation.global_watermark.as_ref(),
-        )? {
+        )?;
+        if let Some(observed) =
+            Self::trigger_observation(&self.policy.package_rotation, &magnitudes)
+        {
             return Ok(Some((
                 EpochClosureCause::PackageRotation {
                     trigger: self.policy.package_rotation.clone(),
@@ -566,11 +612,9 @@ impl DrainEpochController {
                 false,
             )));
         }
-        if let Some(observed) = self.trigger_observation(
-            &self.policy.checkpoint_cadence,
-            observation.monotonic_milliseconds,
-            observation.global_watermark.as_ref(),
-        )? {
+        if let Some(observed) =
+            Self::trigger_observation(&self.policy.checkpoint_cadence, &magnitudes)
+        {
             return Ok(Some((
                 EpochClosureCause::CheckpointCadence {
                     trigger: self.policy.checkpoint_cadence.clone(),
@@ -582,61 +626,70 @@ impl DrainEpochController {
         Ok(None)
     }
 
-    fn trigger_observation(
+    /// Snapshots every trigger magnitude for this epoch at one instant.
+    pub fn epoch_magnitudes(
         &self,
-        trigger: &EpochClosureTrigger,
         monotonic_milliseconds: u64,
         watermark: Option<&WatermarkClaim>,
-    ) -> Result<Option<EpochClosureObservation>> {
-        let observed = match trigger {
-            EpochClosureTrigger::Batches { count } => {
-                threshold_observation(self.epoch.batches, *count, |observed, overshoot| {
-                    EpochClosureObservation::Batches {
-                        observed,
-                        overshoot,
-                    }
-                })
+    ) -> Result<EpochTriggerMagnitudes> {
+        Ok(EpochTriggerMagnitudes {
+            batches: self.epoch.batches,
+            rows: self.epoch.rows,
+            bytes: self.epoch.bytes,
+            elapsed_milliseconds: self.epoch_elapsed(monotonic_milliseconds)?,
+            watermark_advance: self.watermark_advance_since_epoch_start(watermark),
+        })
+    }
+
+    /// Watermark advance from this epoch's start claim to `observed`.
+    ///
+    /// The epoch-start claim lives here, so this is the single place that measures advance. A
+    /// component anticipating closure must ask the controller rather than track its own start.
+    #[must_use]
+    pub fn watermark_advance_since_epoch_start(
+        &self,
+        observed: Option<&WatermarkClaim>,
+    ) -> Option<u64> {
+        self.epoch_watermark_start
+            .as_ref()
+            .zip(observed)
+            .and_then(|(start, observed)| watermark_distance(&start.value, &observed.value))
+    }
+
+    /// Builds the typed observation for a trigger that has been reached.
+    ///
+    /// The trip decision itself belongs to [`EpochTriggerMagnitudes::trips`]; this only shapes the
+    /// evidence, so the two can never disagree about *whether* a trigger fired.
+    fn trigger_observation(
+        trigger: &EpochClosureTrigger,
+        magnitudes: &EpochTriggerMagnitudes,
+    ) -> Option<EpochClosureObservation> {
+        let observed = magnitudes.measured(trigger)?;
+        let overshoot = observed.checked_sub(trigger.threshold())?;
+        Some(match trigger {
+            EpochClosureTrigger::Batches { .. } => EpochClosureObservation::Batches {
+                observed,
+                overshoot,
+            },
+            EpochClosureTrigger::Rows { .. } => EpochClosureObservation::Rows {
+                observed,
+                overshoot,
+            },
+            EpochClosureTrigger::Bytes { .. } => EpochClosureObservation::Bytes {
+                observed,
+                overshoot,
+            },
+            EpochClosureTrigger::Elapsed { .. } => EpochClosureObservation::Elapsed {
+                observed_milliseconds: observed,
+                overshoot_milliseconds: overshoot,
+            },
+            EpochClosureTrigger::WatermarkAdvance { .. } => {
+                EpochClosureObservation::WatermarkAdvance {
+                    observed_units: observed,
+                    overshoot_units: overshoot,
+                }
             }
-            EpochClosureTrigger::Rows { count } => {
-                threshold_observation(self.epoch.rows, *count, |observed, overshoot| {
-                    EpochClosureObservation::Rows {
-                        observed,
-                        overshoot,
-                    }
-                })
-            }
-            EpochClosureTrigger::Bytes { count } => {
-                threshold_observation(self.epoch.bytes, *count, |observed, overshoot| {
-                    EpochClosureObservation::Bytes {
-                        observed,
-                        overshoot,
-                    }
-                })
-            }
-            EpochClosureTrigger::Elapsed { milliseconds } => {
-                let elapsed = self.epoch_elapsed(monotonic_milliseconds)?;
-                threshold_observation(elapsed, *milliseconds, |observed, overshoot| {
-                    EpochClosureObservation::Elapsed {
-                        observed_milliseconds: observed,
-                        overshoot_milliseconds: overshoot,
-                    }
-                })
-            }
-            EpochClosureTrigger::WatermarkAdvance { units } => self
-                .epoch_watermark_start
-                .as_ref()
-                .zip(watermark)
-                .and_then(|(start, observed)| watermark_distance(&start.value, &observed.value))
-                .and_then(|advance| {
-                    threshold_observation(advance, *units, |observed, overshoot| {
-                        EpochClosureObservation::WatermarkAdvance {
-                            observed_units: observed,
-                            overshoot_units: overshoot,
-                        }
-                    })
-                }),
-        };
-        Ok(observed)
+        })
     }
 
     fn termination_observation(
@@ -1133,7 +1186,7 @@ mod tests {
                 },
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-                maximum_transaction_bytes: None,
+                transaction_limit_bytes: None,
             },
             termination: DrainTermination::Records { count: 100 },
         }
@@ -1153,7 +1206,7 @@ mod tests {
                 watermark: WatermarkPolicy::Disabled,
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-                maximum_transaction_bytes: None,
+                transaction_limit_bytes: None,
             },
             termination,
         }

@@ -60,7 +60,7 @@ replay identity. PostgreSQL and DuckDB are the first required `cdc_apply` destin
 
 ## Settlement-unit byte ceiling
 
-`.10x/specs/cdc-log-source-foundation.md` requires `maximum_transaction_bytes` to be a mandatory
+`.10x/specs/cdc-log-source-foundation.md` requires `transaction_limit_bytes` to be a mandatory
 compiled CDC capability that a project or resource MAY lower but MUST NOT raise above host
 authority. This section defines the authoring surface, ratified 2026-08-07.
 
@@ -77,7 +77,7 @@ EXECUTION DRAIN (
   WATERMARK DISABLED,
   LATE DATA QUARANTINE,
   SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION,
-  MAXIMUM TRANSACTION BYTES 268435456
+  TRANSACTION LIMIT BYTES 268435456
 )
 ```
 

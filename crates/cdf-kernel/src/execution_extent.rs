@@ -141,7 +141,7 @@ pub struct StreamEpochPolicy {
     /// authority. A resource may only *lower* the host bound, so this value is a request that the
     /// runtime resolves against host authority rather than a bound in its own right. The kernel
     /// invents no numeric default.
-    pub maximum_transaction_bytes: Option<u64>,
+    pub transaction_limit_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +153,7 @@ struct UncheckedStreamEpochPolicy {
     watermark: WatermarkPolicy,
     late_data: LateDataAction,
     safe_frontier: SafeFrontierPolicy,
-    maximum_transaction_bytes: Option<u64>,
+    transaction_limit_bytes: Option<u64>,
 }
 
 impl TryFrom<UncheckedStreamEpochPolicy> for StreamEpochPolicy {
@@ -167,7 +167,7 @@ impl TryFrom<UncheckedStreamEpochPolicy> for StreamEpochPolicy {
             watermark: value.watermark,
             late_data: value.late_data,
             safe_frontier: value.safe_frontier,
-            maximum_transaction_bytes: value.maximum_transaction_bytes,
+            transaction_limit_bytes: value.transaction_limit_bytes,
         };
         policy.validate()?;
         Ok(policy)
@@ -184,9 +184,9 @@ impl StreamEpochPolicy {
         self.checkpoint_cadence.validate("checkpoint cadence")?;
         self.package_rotation.validate("package rotation")?;
         self.watermark.validate()?;
-        if self.maximum_transaction_bytes == Some(0) {
+        if self.transaction_limit_bytes == Some(0) {
             return Err(CdfError::contract(
-                "maximum transaction bytes must be greater than zero when declared",
+                "transaction limit bytes must be greater than zero when declared",
             ));
         }
 
@@ -217,12 +217,21 @@ pub enum EpochClosureTrigger {
 }
 
 impl EpochClosureTrigger {
-    fn validate(&self, field: &str) -> Result<()> {
-        let value = match self {
+    /// The magnitude at which this trigger is reached.
+    ///
+    /// Exposed so every evaluator compares against one definition instead of re-matching the
+    /// variants and risking a subtly different threshold.
+    #[must_use]
+    pub const fn threshold(&self) -> u64 {
+        match self {
             Self::Batches { count } | Self::Rows { count } | Self::Bytes { count } => *count,
             Self::Elapsed { milliseconds } => *milliseconds,
             Self::WatermarkAdvance { units } => *units,
-        };
+        }
+    }
+
+    fn validate(&self, field: &str) -> Result<()> {
+        let value = self.threshold();
         if value == 0 {
             return Err(CdfError::contract(format!(
                 "{field} trigger must be greater than zero"
@@ -1323,7 +1332,7 @@ mod tests {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         }
     }
 

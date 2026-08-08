@@ -73,7 +73,7 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 6 },
     };
@@ -201,7 +201,7 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 3 },
     };
@@ -315,7 +315,7 @@ fn duration_drain_closes_while_the_next_batch_poll_is_silent() {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Duration { milliseconds: 25 },
     };
@@ -387,7 +387,7 @@ fn duration_drain_discards_an_empty_package_while_source_open_is_silent() {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Duration { milliseconds: 20 },
     };
@@ -440,7 +440,7 @@ fn immediately_exhausted_drain_is_a_no_op_without_a_package() {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Duration {
             milliseconds: 60_000,
@@ -513,7 +513,7 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 3 },
     };
@@ -659,7 +659,7 @@ fn drain_epoch_records_the_minimum_partition_watermark_not_the_latest_claim() {
             },
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 2 },
     };
@@ -775,7 +775,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 },
                 late_data: action,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-                maximum_transaction_bytes: None,
+                transaction_limit_bytes: None,
             },
             termination: DrainTermination::Records { count: 3 },
         };
@@ -1049,7 +1049,7 @@ fn drain_rejects_an_earlier_regressing_claim_even_when_the_batch_tail_recovers()
             },
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 1 },
     };

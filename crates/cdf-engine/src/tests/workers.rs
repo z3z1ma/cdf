@@ -361,7 +361,7 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
             watermark: WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes: None,
+            transaction_limit_bytes: None,
         },
         termination: DrainTermination::Records { count: 3 },
     };

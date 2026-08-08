@@ -483,15 +483,15 @@ impl<'a> EnvelopeParser<'a> {
         self.expect_word("POSITION", "CDF-RESOURCE-DRAIN-SAFE-FRONTIER")?;
         // Optional trailing CDC member. Only change-data-capture resources bound a settlement unit,
         // so requiring it everywhere would force every finite drain to declare an irrelevant value.
-        let maximum_transaction_bytes = if self
+        let transaction_limit_bytes = if self
             .peek()
             .is_ok_and(|token| token.kind == TokenKind::Punctuation(','))
         {
             self.expect_punctuation(',', "CDF-RESOURCE-DRAIN")?;
-            self.expect_word("MAXIMUM", "CDF-RESOURCE-DRAIN-MAXIMUM-TRANSACTION")?;
-            self.expect_word("TRANSACTION", "CDF-RESOURCE-DRAIN-MAXIMUM-TRANSACTION")?;
-            self.expect_word("BYTES", "CDF-RESOURCE-DRAIN-MAXIMUM-TRANSACTION")?;
-            Some(self.parse_positive_u64("MAXIMUM TRANSACTION BYTES")?)
+            self.expect_word("TRANSACTION", "CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT")?;
+            self.expect_word("LIMIT", "CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT")?;
+            self.expect_word("BYTES", "CDF-RESOURCE-DRAIN-TRANSACTION-LIMIT")?;
+            Some(self.parse_positive_u64("TRANSACTION LIMIT BYTES")?)
         } else {
             None
         };
@@ -503,7 +503,7 @@ impl<'a> EnvelopeParser<'a> {
             watermark: Box::new(WatermarkDeclaration::Disabled),
             late_data,
             safe_frontier: SafeFrontierDeclaration::CanonicalAdmittedSourcePosition,
-            maximum_transaction_bytes,
+            transaction_limit_bytes,
         })
     }
 

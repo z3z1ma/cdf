@@ -59,8 +59,8 @@ pub use capabilities::{
 };
 pub use capability_types::{DestinationIngressMode, DestinationWriterModel};
 pub use cdc_log_source::{
-    CdcLogSourceRuntime, CompletedSettlementUnit, SettlementClosureCause,
-    SettlementClosureThresholds, SettlementOvershoot, SettlementUnitKind, TransactionByteCeiling,
+    AdmissionObservation, CdcLogSourceRuntime, CompletedSettlementUnit, SettlementCadencePolicy,
+    SettlementClosureCause, SettlementOvershoot, SettlementUnitKind, TransactionByteCeiling,
 };
 pub use cdf_memory::{
     FixedSpillBudget, SpillBudgetCoordinator, SpillBudgetSnapshot, SpillReservation,
@@ -78,6 +78,7 @@ pub use destination::{
 };
 pub use drain_epoch::{
     DrainEpochClosure, DrainEpochController, DrainEpochDecision, DrainSafeFrontierObservation,
+    EpochTriggerMagnitudes,
 };
 pub use execution_host::{
     BlockingLaneBinding, BlockingLaneSpec, BlockingTask, BlockingTaskStreamSender,
