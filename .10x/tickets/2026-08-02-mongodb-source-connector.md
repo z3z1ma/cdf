@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-02
 Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
@@ -259,6 +259,17 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   in a detached `cf37cc5c` worktree. Package passed 94 executable unit tests with four performance
   tests ignored, strict affected-package Clippy passed, and the complexity diagnostic added no
   finding in changed production code.
+- 2026-08-08: Closed the implementation barrier with the release binary at `8260bfb9` and a fresh
+  default-depth resource identity against Atlas 7.0.40. `schema_depth` was intentionally omitted,
+  so compile exercised the default of 1 and established generation 1 with four retained fields.
+  The complex `startAfterToken` field compiled as nullable UTF-8 with physical type
+  `bson:document` and semantic `mongodb.document_extended_json@1`, not as recursive fields or
+  residual drift. Plan selected one bounded full replacement. Run read and committed 25 documents
+  in one 5.6 KiB segment, and package
+  `sha256:643320de7c56ab1e677c179af9ad138e88ac2f4239c9b03b50509368b0131f39`
+  verified across 18 identity files. Direct DuckDB checks returned 25 rows, 25 distinct ObjectIds,
+  seven non-null opaque values, seven valid JSON values, zero invalid JSON values, and zero
+  `_cdf_variant` rows. No document value or credential was recorded.
 
 ## Blockers
 
@@ -295,8 +306,8 @@ Two obligations follow from that decision and belong to this ticket's closure:
   recorded in the journal and `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
 - All historical implementation and performance rereviews pass. The certificate's MongoDB leaf
   and catalog gates pass; 91/92 general conformance laws pass, with the remaining pre-existing CLI
-  fixture failure recorded in the journal. A fresh default-depth Atlas release lifecycle remains
-  this ticket's implementation closure barrier.
+  fixture failure recorded in the journal. The fresh default-depth Atlas release lifecycle passed
+  at `8260bfb9` with an opaque document column and no governed residual rows.
 
 ## Review
 
@@ -310,6 +321,9 @@ Two obligations follow from that decision and belong to this ticket's closure:
   decoder/performance rereviews pass on stable pushed commits with no critical or significant
   findings. The topology/egress limitation is explicitly accepted as residual risk in the active
   decision cited under Blockers and is not represented as a stronger transport guarantee.
+- The user explicitly required no additional subagent/red-team pass for the bounded-depth change;
+  closure relies on the existing independent connector reviews plus the focused behavioral,
+  conformance, package-integrity, and live Atlas evidence recorded above.
 
 ## Retrospective
 
@@ -327,3 +341,7 @@ Two obligations follow from that decision and belong to this ticket's closure:
   closure evidence.
 - The topology-learned-host limitation remains an explicit accepted residual risk and a boundary
   for future transport work; it is no longer a closure blocker for the finite source.
+- A schemaless source needs an explicit inference boundary, not merely a sampling limit. Treating
+  complex boundary values as opaque semantic values avoids map-key cardinality explosions while
+  preserving useful top-level primitive typing and ordinary governed drift for later primitive
+  incompatibilities.

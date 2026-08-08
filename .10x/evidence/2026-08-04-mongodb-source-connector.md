@@ -11,8 +11,10 @@ ratified BSON-to-Arrow meanings, carries current source-position authority, and 
 the shared execution host. Its generic source matrix completes package, destination receipt,
 checkpoint, and replay laws. An authorized Atlas 7.0.40 lifecycle additionally proves the current
 IAM authentication, discovery, bounded full-replace, package, DuckDB receipt, checkpoint, and
-verification path against real data. The final clean release roofline for revision `89786e35`
-clears the required 0.90 ratio.
+verification path against real data. A fresh release lifecycle also proves default-depth discovery
+keeps a top-level MongoDB document as opaque Canonical Extended JSON without producing governed
+residual rows. The final clean release roofline for revision `89786e35` clears the required 0.90
+ratio.
 
 ## Procedure
 
@@ -49,6 +51,16 @@ clears the required 0.90 ratio.
   discovery-time heterogeneous values decode as deterministic Canonical Extended JSON UTF-8 under
   three exact MongoDB semantic tags; they remain subject to the existing structural and memory
   bounds. Later type changes against a primitive pin still produce governed residual evidence.
+- The release binary at `8260bfb9` compiled the fresh sandbox resource
+  `mongo_live.change_stream_collections_opaque` against Atlas 7.0.40 with `schema_depth` omitted.
+  Compile established schema generation 1 with four retained fields; `startAfterToken` became
+  nullable UTF-8 carrying physical `bson:document` and semantic
+  `mongodb.document_extended_json@1`. Plan admitted one bounded full replacement. Run completed in
+  936 ms with 25 rows and one 5.6 KiB segment. `cdf package verify` accepted all 18 files for
+  package `sha256:643320de7c56ab1e677c179af9ad138e88ac2f4239c9b03b50509368b0131f39`.
+  Direct read-only DuckDB aggregates found 25 rows, 25 distinct ObjectIds, seven non-null opaque
+  values, seven JSON-valid values, zero invalid JSON values, and zero `_cdf_variant` rows. The
+  procedure inspected only aggregate counts and schema metadata, not document values.
 - The first post-change connector certificate correctly rejected the stale built-in catalog
   fixture after the MongoDB option-schema identity changed; refreshing only the two MongoDB hashes
   made the catalog integrity check pass. The certificate then exposed a pre-existing keyed-package
@@ -149,7 +161,7 @@ their shared authorities without compatibility paths.
 ## Limits
 
 The live evidence covers both a local digest-pinned MongoDB Community 8.0.13 server and an
-authorized Atlas 7.0.40 collection. The Atlas observation is one finite 25-document lifecycle, not
+authorized Atlas 7.0.40 collection. Each Atlas observation is a finite 25-document lifecycle, not
 a load/performance certificate or a cross-shard transaction-snapshot claim. The source is finite
 collection reading only; change streams and resume tokens are explicit non-goals. The
 aggregate workspace run is not globally green because the explicitly separate ergonomics worker
