@@ -577,8 +577,16 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- Python execution-substrate supersession and first hook runtime;
-- whether to reorder the remaining MongoDB destination around C1.
+- E0 hook runtime detail only: the user ratified superseding VISION D-23 for execution-time Python
+  transform hooks on 2026-08-07, but substrate locality (in-process PyO3 on the D-25 Python pool
+  versus out-of-process over `cdf-subprocess`), sandbox enforcement posture, and what enters
+  compiled plan/replay identity are still open and block E1.
+- Whether to reorder the remaining MongoDB destination around C1 is resolved by fact, not
+  ratification: C1 closed at
+  `.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`, so the MongoDB
+  destination is an ordinary open child of the finite connector program.
+- `.10x/specs/sql-source-commons.md` remains `draft` and B2/B3 MySQL specs do not yet exist; both
+  are downstream of the ratified MySQL sequencing and are shaping work, not blockers on lane A.
 
 D3 has no remaining semantic blocker. The user ratified its query-first form, independent identity
 model, explicit source binding, structured values, clause grammar/order, defaults, trust,
@@ -586,6 +594,25 @@ disposition/merge keys, semantics, execution policy, relational exclusions, iden
 diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
+
+- 2026-08-07: The user ratified four remaining program-level choices in one shaping checkpoint.
+  (1) MongoDB `mongodb+srv` and topology discovery ship as advertised, explicitly accepting that
+  driver-learned hosts bypass `SourceEgressAuthorizer`
+  (`crates/cdf-runtime/src/source.rs:424`); this is accepted residual risk requiring its own
+  decision record, and it unblocks both the finite MongoDB source and A4 MongoDB CDC.
+  (2) VISION D-23 is superseded for execution-time Python transform hooks; substrate locality,
+  sandbox posture, and replay-identity rules remain open at the E0 checkpoint.
+  (3) CDC live fixtures use pinned-digest Docker images started with CDC prerequisites
+  (`wal_level=logical` plus `REPLICA IDENTITY FULL`, `binlog_format=ROW` plus
+  `binlog_row_image=FULL` plus GTID, single-node replica set plus
+  `changeStreamPreAndPostImages`), honoring an environment override and skipping when Docker is
+  absent, then distilled into a skill so the pattern stops living in agent memory.
+  (4) `cdf-source-mysql` is built standalone owning finite reads and binlog CDC before B0/B1
+  extraction, so the `cdf-source-sql` seam derives from four real implementations.
+  Source inspection during this checkpoint corrected the D-23 framing: `cdf-python` already
+  executes Python in-process through PyO3 `auto-initialize`, so the supersession admits Python
+  downstream of the C Data Interface rather than introducing Python execution at all.
+  `cdf-wasm` is a one-line placeholder, confirming WASM as the materially more expensive substrate.
 
 - 2026-08-07: The user activated full CDC/MySQL delivery and emphasized indefinite execution plus
   collection of already-settled package buffers. Current-source inspection confirmed A1 and the

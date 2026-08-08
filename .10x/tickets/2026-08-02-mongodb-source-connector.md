@@ -1,6 +1,6 @@
-Status: blocked
+Status: active
 Created: 2026-08-02
-Updated: 2026-08-04
+Updated: 2026-08-07
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 
@@ -169,14 +169,31 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   every cell met the dispersion bound. The mechanically reproducible error ledger contains 295
   rows: 255 production and 40 test, with file-list/classifier/ledger SHA-256 values recorded in
   `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
+- 2026-08-07: Unblocked without code change. The user ratified shipping `mongodb+srv` and topology
+  discovery with the egress bypass accepted as residual risk
+  (`.10x/decisions/mongodb-srv-topology-egress-residual-risk.md`). Status moved `blocked` → `active`.
+  Remaining closure work is the ordinary acceptance-criteria sweep plus the two documentation and
+  research obligations now recorded under Blockers. A4 MongoDB CDC extends this same crate and
+  inherits the same posture.
 
 ## Blockers
 
-- The official MongoDB driver can initiate topology-monitor connections to hosts learned after the
-  initial socket is authorized. The current spec advertises `mongodb+srv` and topology discovery,
-  but the injected egress authority has no pre-connect hook for those learned hosts. Closure needs
-  user ratification to narrow the current release to one explicit direct `mongodb://host[:port]`
-  authority, or a separately shaped egress-aware transport design.
+None.
+
+Resolved on 2026-08-07. The former blocker — the official MongoDB driver initiating topology-monitor
+connections to hosts learned after the initial socket is authorized, which never reach
+`SourceEgressAuthorizer` (`crates/cdf-runtime/src/source.rs:424`) — was closed by user ratification
+rather than by code. `mongodb+srv` and topology discovery ship as advertised, and the bypass is
+recorded as accepted residual risk in
+`.10x/decisions/mongodb-srv-topology-egress-residual-risk.md`.
+
+Two obligations follow from that decision and belong to this ticket's closure:
+
+- any documentation or operator-facing claim that `EgressAllowlist` bounds egress MUST exclude
+  MongoDB, because for this driver it does not;
+- the hypothesis that the MongoDB SRV specification requires returned hosts to share the seed's
+  parent domain is **unverified**. It is not relied upon. Confirming or refuting it is assigned to
+  A4 MongoDB change-stream protocol research, not to this ticket.
 
 ## Evidence
 

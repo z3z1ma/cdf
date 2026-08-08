@@ -1,21 +1,36 @@
-Status: draft
+Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-07
 
 # Plan-declared batch transform hooks
 
-## Status and authority conflict
+## Status and authority
 
-The user wants inline transformation hooks in Python, WASM, or another embedded language. This
-draft defines the safe data-plane contract and separates it from lifecycle side effects.
+This specification defines the safe data-plane contract for inline transformation hooks and
+separates it from lifecycle side effects. It is active.
 
-Implementation is blocked by an explicit active-authority conflict: VISION D-23 and existing
-records state that Python is authoring/interchange only and never the execution substrate. An
-execution-time Python transform host would supersede that rule. The user must ratify a narrower
-replacement, including trust and sandbox expectations, before Python hook execution is authorized.
+The former VISION D-23 authority conflict is resolved by
+`.10x/decisions/python-in-process-batch-transform-hooks.md`, which narrowly supersedes D-23's
+downstream clause for plan-declared batch transform hooks only. That decision ratifies four
+parameters governing every Python-specific rule in this specification:
 
-WASM is also not implementation-ready: `cdf-wasm` is a placeholder, and the canceled WIT
-foundation found no ratified acyclic wire projection for recursive scope/source-position types.
+- hooks are **first-party project code only**, carrying the same trust as the repository's
+  `cdf/<namespace>/<resource>.cdf.sql` resources; registry distribution, third-party modules, and
+  any untrusted authoring tier are out of scope;
+- the substrate is **in-process PyO3 on the D-25 Python pool**, reusing `cdf-python`'s existing
+  PyCapsule zero-copy path under D-25's identical-semantics rule for GIL and free-threaded builds;
+- environment identity is a **fully resolved, hash-pinned `uv.lock` plus an explicit CPython
+  version**;
+- the performance floor is **measured against a native Arrow pass-through roofline, then ratified**
+  from observed data and enforced as a closure gate.
+
+D-23 otherwise stands: Python remains an authoring and interchange surface everywhere else, and the
+kernel's dependency graph contains no Python.
+
+WASM remains out of scope for this version: `cdf-wasm` is a one-line placeholder, and the cancelled
+WIT foundation found no ratified acyclic wire projection for recursive scope/source-position types.
+This specification does not prejudge D-26; WASM remains the preferred portable sandbox if hooks are
+ever opened to untrusted authors.
 
 ## Purpose
 
@@ -154,7 +169,14 @@ Original execution and pre-finalization retry still require determinism:
 
 - same hook identity, input batch, declared environment, and configuration MUST produce byte-
   equivalent Arrow output and the same error/verdict behavior;
-- time, randomness, network, ambient environment, and undeclared filesystem access are denied;
+- time, randomness, network, ambient environment, and undeclared filesystem access are **declared
+  and compile-time audited, not runtime-enforced**. The hook declares purity; CDF audits its
+  declarations and imports at compile time and MUST reject on mismatch. Because the ratified
+  substrate is in-process, the runtime does not confine a hook that violates its own declaration.
+  This is accepted residual risk recorded in
+  `.10x/decisions/python-in-process-batch-transform-hooks.md`, and it is the reason replay is
+  protected structurally — packages record post-hook batches, so replaying a finalized package never
+  re-executes the hook — rather than by confinement;
 - dependency/runtime versions are part of identity;
 - hook output is subject to golden/repeatability tests;
 - a nondeterministic hook mode, if ever allowed, requires explicit package evidence and disables
@@ -163,24 +185,47 @@ Original execution and pre-finalization retry still require determinism:
 Side effects are forbidden in data transform hooks. This includes HTTP calls, database writes,
 email/notifications, arbitrary file writes, and subprocesses.
 
-## Python-specific proposal
+## Python host contract
 
-If D-23 is superseded, a Python host MUST NOT execute arbitrary in-process project code by default.
-The activation decision must choose and evidence:
+The ratified substrate is an in-process PyO3 host on the D-25 Python pool, executing first-party
+project code only. The following are requirements, not open options.
 
-- isolated worker process versus in-process interpreter;
-- supported CPython/free-threaded versions and dependency lock format;
-- PyCapsule/Arrow ownership and GIL behavior;
-- import/filesystem/network/secret capability policy;
-- cancellation/timeout and worker-crash classification;
-- stdout/stderr/log redaction and bounded capture;
-- process reuse without cross-project state leakage;
-- deterministic environment/content identity;
-- performance floor against a native Arrow pass-through roofline.
+**Interpreter and pool.** The host MUST reuse the existing `cdf-python` interpreter and dedicated
+Python pool rather than introducing a second Python entry point. Per D-25, semantics MUST be
+identical on GIL and free-threaded builds; the design MUST NOT depend on free-threading and MUST NOT
+waste it. Supported interpreter versions MUST be declared and pinned as part of environment
+identity.
 
-In-process Python has a larger crash/security/allocator blast radius and is not the recommended
-default for untrusted hooks. An isolated, capability-limited worker is the recommended starting
-research option, not yet a ratified design.
+**Arrow ownership.** Batches cross via the existing PyCapsule zero-copy path
+(`crates/cdf-python/src/arrow_capsule.rs`). Existing release-exactly-once and lease-ownership
+behavior is authority; a hook MUST NOT retain a borrowed batch beyond the call contract, and
+cancellation MUST release every lease exactly once. Hook output buffers enter CDF memory accounting
+before downstream retention.
+
+**Cancellation and timeout.** The host MUST reuse `ForeignCancellation`, budget timeouts, and the
+`Cancelled` terminal status already proven in the Python producer direction
+(`crates/cdf-python/src/driver.rs`), not invent a parallel mechanism. The non-yielding C-extension
+limit recorded in the error section applies.
+
+**Environment identity.** A fully resolved, hash-pinned `uv.lock` plus an explicit CPython version
+hash into the hook's environment identity and enter the compilation manifest. Unpinned `latest`,
+mutable virtualenvs, runtime import-path lookup, and network-fetched code remain forbidden. `uv`'s
+lock-format stability and cross-platform resolution reproducibility are **unverified** and MUST be
+confirmed by recorded evidence before the environment hash is treated as authoritative.
+
+**Capability policy.** Declared and compile-time audited, per the determinism section. Secrets MUST
+NOT be reachable from hook code and MUST NOT enter hook identity.
+
+**Output capture.** `stdout`/`stderr` MUST be captured with a bounded buffer and pass through the
+existing redaction path; unbounded capture is forbidden.
+
+**State isolation.** Interpreter reuse across resources and runs MUST NOT leak module-level or
+cross-project state into hook execution in a way that could change output for identical declared
+inputs.
+
+**Performance.** A hook pass-through roofline MUST be measured against native Arrow pass-through on
+the same host with dispersion bounds, following the discipline used by the existing source
+rooflines. The observed ratio is ratified and then enforced as a closure gate.
 
 ## WASM-specific proposal
 
@@ -207,8 +252,16 @@ proven sufficient and MUST NOT later smuggle mutable control state through opaqu
 - deterministic per-row validation error returned through a declared result channel: may enter the
   ordinary contract/quarantine pipeline only if source row mapping and redaction evidence remain
   exact;
-- worker crash, timeout, OOM, protocol violation, or malformed Arrow: typed Environment/Data error
+- recoverable timeout, protocol violation, or malformed Arrow: typed Environment/Data error
   according to ownership, with hook/runtime provenance;
+- hard in-process fault (segfault, allocator abort, OOM kill): the process terminates and no typed
+  error is produced. This is a decided case, not a gap — VISION §20.2's chaos layer exercises every
+  lifecycle boundary on every merge, and the five-row crash matrix already resolves it: no receipt
+  and no finalized package means the transition never happened and is re-planned. A hook MUST NOT be
+  able to produce a partial receipt or advance a checkpoint by crashing;
+- a hook blocked inside a C extension that never yields to the interpreter is not preemptible; the
+  declared timeout does not fire until control returns. Conformance MUST cover the yielding case and
+  MUST record the non-yielding case as a known limit rather than asserting a bound it cannot hold;
 - CDF host/lease/protocol invariant violation: Internal;
 - hook failure advances no checkpoint and produces no partial destination receipt.
 
