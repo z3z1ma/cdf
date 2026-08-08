@@ -24,6 +24,9 @@ pub const POSTGRES_JSONB_TEXT_SEMANTIC: &str = "postgres.jsonb_text@1";
 pub const POSTGRES_NUMERIC_TEXT_SEMANTIC: &str = "postgres.numeric_text@1";
 pub const MONGODB_OBJECT_ID_SEMANTIC: &str = "mongodb.object_id@1";
 pub const MONGODB_DECIMAL128_TEXT_SEMANTIC: &str = "mongodb.decimal128_value_text@1";
+pub const MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC: &str = "mongodb.document_extended_json@1";
+pub const MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC: &str = "mongodb.array_extended_json@1";
+pub const MONGODB_VALUE_EXTENDED_JSON_SEMANTIC: &str = "mongodb.value_extended_json@1";
 
 pub const POSTGRES_JSON_TEXT_MAPPING_PROFILE: &str = "postgres_exact_json_text_v1";
 pub const POSTGRES_JSONB_TEXT_MAPPING_PROFILE: &str = "postgres_exact_jsonb_text_v1";
@@ -993,6 +996,24 @@ fn builtin_definitions() -> Vec<SemanticDefinition> {
             exact_utf8_pattern(),
             "bson:decimal128",
         ),
+        mongodb_exact_definition(
+            "document_extended_json",
+            "BSON document represented as deterministic Canonical Extended JSON UTF-8",
+            exact_utf8_pattern(),
+            "bson:document",
+        ),
+        mongodb_exact_definition(
+            "array_extended_json",
+            "BSON array represented as deterministic Canonical Extended JSON UTF-8",
+            exact_utf8_pattern(),
+            "bson:array",
+        ),
+        mongodb_exact_definition(
+            "value_extended_json",
+            "Heterogeneous BSON value represented as deterministic Canonical Extended JSON UTF-8",
+            exact_utf8_pattern(),
+            "bson:mixed",
+        ),
     ]
 }
 
@@ -1132,7 +1153,7 @@ mod tests {
             .map(|entry| entry.definition_hash.clone())
             .collect::<Vec<_>>();
         assert_eq!(first, second);
-        assert_eq!(first.len(), 8);
+        assert_eq!(first.len(), 11);
         assert!(first.iter().all(|hash| hash.starts_with("sha256:")));
     }
 
@@ -1191,6 +1212,21 @@ mod tests {
                 )
                 .is_ok()
         );
+        for (physical, semantic) in [
+            ("bson:document", MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC),
+            ("bson:array", MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC),
+            ("bson:mixed", MONGODB_VALUE_EXTENDED_JSON_SEMANTIC),
+        ] {
+            assert!(
+                catalog
+                    .apply_reference(
+                        with_physical_type(Field::new("opaque", DataType::Utf8, true), physical,),
+                        semantic,
+                        SemanticAuthority::Observed,
+                    )
+                    .is_ok()
+            );
+        }
         let object_id = with_physical_type(
             Field::new("id", DataType::FixedSizeBinary(12), false),
             "bson:object_id",

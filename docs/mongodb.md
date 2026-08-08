@@ -49,14 +49,15 @@ TRUST GOVERNED
 EXECUTION BOUNDED
 AS
 SELECT *
-FROM upstream(source => 'warehouse', collection => 'events');
+FROM upstream(source => 'warehouse', collection => 'events', schema_depth => 1);
 ```
 
 Compilation and portable-plan validation do not contact MongoDB. Schema discovery samples at most
 1,000 documents and 16 MiB by default, records those limits, and caches the resulting physical
 observation. A sample is evidence about the sampled documents, not a claim that an unvalidated
 schemaless collection is globally uniform. Execution applies the active state-backed schema and
-compiled drift policy to every later document.
+compiled drift policy to every later document. `schema_depth` is resource-scoped, accepts `1..=32`,
+and defaults to `1`; omit it for the default behavior.
 
 ## Cursor reads
 
@@ -89,9 +90,23 @@ the typed window, and package identity/deduplication governs any overlap.
 
 ## BSON and Arrow types
 
-CDF maps Boolean, signed integer, finite double, string, binary, array, nested document, and null
-values directly to their pinned Arrow forms. BSON DateTime becomes a UTC millisecond timestamp.
-ObjectId becomes 12-byte fixed-size binary with the `mongodb.object_id@1` semantic tag.
+Discovery types consistent top-level primitive fields directly. Boolean, signed integer, double,
+double, string, binary, and null retain their pinned Arrow forms; Int32 and Int64 observations widen
+only to Int64. BSON DateTime becomes a UTC millisecond timestamp. ObjectId becomes 12-byte
+fixed-size binary with the `mongodb.object_id@1` semantic tag.
+
+At the default `schema_depth => 1`, a top-level BSON document or array is deliberately opaque. CDF
+stores it as deterministic Canonical Extended JSON UTF-8 with the
+`mongodb.document_extended_json@1` or `mongodb.array_extended_json@1` semantic tag. Nested keys do
+not become columns and do not create schema drift. This avoids the common failure where UUID-like
+map keys turn into an unbounded inferred schema.
+
+Increasing `schema_depth` expands documents and arrays only through the configured level. A child
+document or array at the boundary remains opaque, so `schema_depth => 2` can expose stable direct
+children while keeping their maps and lists intact. Empty complex values remain opaque. If sampled
+non-null values for one field cannot reconcile to one lossless typed domain, the whole field becomes
+Canonical Extended JSON UTF-8 tagged `mongodb.value_extended_json@1` instead of inventing a lossy
+union.
 
 BSON Decimal128 becomes Arrow Decimal128 only when declared schema or validator authority proves
 one complete precision-and-scale domain. Otherwise it remains canonical exact UTF-8, including
@@ -99,9 +114,10 @@ native special values, with the `mongodb.decimal128_value_text@1` semantic tag. 
 becomes floating point, and the exact text is BSON Decimal128 value spelling rather than Extended
 JSON.
 
-Unsupported BSON kinds, duplicate document keys, heterogeneous arrays, invalid UTF-8, a missing
-non-null field, or a value outside the pin fail under the active variant/quarantine policy. CDF does
-not silently stringify through Extended JSON or widen the compiled schema.
+Unsupported top-level scalar BSON kinds still require an explicit policy. Duplicate document keys,
+invalid UTF-8, a missing non-null field, or a later value outside a primitive pin follow the active
+variant/quarantine policy. Canonical Extended JSON is used only for the explicitly tagged opaque
+domains above; CDF does not silently stringify ordinary typed fields or widen the compiled schema.
 
 ## Runtime and operations
 

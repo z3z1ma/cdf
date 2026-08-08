@@ -16,12 +16,14 @@ clears the required 0.90 ratio.
 
 ## Procedure
 
-- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --all-targets` passed all 32 current
-  unit tests, including residual cardinality, overlapping payload accounting,
-  duplicate/dotted/nested BSON shape, and exact physical-reconciliation subtype evidence
-  boundaries. The contract suite passed 99 tests with two ignored. The engine suite passed 238
-  executable tests plus the updated package-identity golden in a focused rerun, with six
-  release/performance tests ignored.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib --locked` passed all 42 current
+  unit tests. In addition to the existing residual-cardinality, overlapping-payload,
+  duplicate/dotted/nested BSON, and physical-reconciliation boundaries, the suite now proves the
+  default top-level-only schema, configured depth two, opaque Canonical Extended JSON decoding,
+  heterogeneous sampled values, governed later primitive drift, and mixed-pin/homogeneous-
+  observation stability. The contract suite previously passed 99 tests with two ignored. The
+  engine suite previously passed 238 executable tests plus the updated package-identity golden in
+  a focused rerun, with six release/performance tests ignored.
 - The digest-pinned MongoDB 8.0.13 live source matrix executed 15 supported destination/disposition
   cells and recorded three destination-sheet exclusions. Every executed cell verified its package,
   receipt-gated checkpoint, duplicate no-op replay, and fresh-artifact replay.
@@ -34,13 +36,19 @@ clears the required 0.90 ratio.
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 314
-  construction/direct-kind lines: 273 production and 41 test rows. The 48 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 320
+  construction/direct-kind lines: 277 production and 43 test rows. The 50 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
   `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
-  `fc3e39a20b4fd38f505d0f0a0037aef20d6f6e9710973641a246d102d0a22c4e`.
+  `1375863483f3bca5db4ce980f8d9e19b50d89e8ce523d74e69ff158c5f79db9b`.
+- Resource-scoped `schema_depth` now defaults to 1 and is carried through configuration schema,
+  `cdf add`, redacted and physical plans, discovery candidate identity, source evidence, and
+  observed-schema metadata. Depth is validated as `1..=32`. Boundary documents, arrays, and
+  discovery-time heterogeneous values decode as deterministic Canonical Extended JSON UTF-8 under
+  three exact MongoDB semantic tags; they remain subject to the existing structural and memory
+  bounds. Later type changes against a primitive pin still produce governed residual evidence.
 - The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
   existing frozen source scope. Focused tests prove URI credential/session-token splitting,
   secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
@@ -108,9 +116,9 @@ clears the required 0.90 ratio.
   materialization/evidence path, and MongoDB decoder. The performance repair rereview found one
   overlapping-source payload undercount; the repair routes every equality/prefix overlap and all
   Lists to exact estimation, adds a 36 MiB duplicate-payload boundary test, and passed rereview.
-- The final `tools/certify-connector.py --kind source --id mongodb --core-impact` remains pending.
-  Running it before the endpoint/egress semantic blocker is resolved would certify a surface that
-  still changes under either valid decision.
+- The final `tools/certify-connector.py --kind source --id mongodb --core-impact` remains pending
+  this ticket's final integration barrier. The former endpoint/egress semantic blocker is resolved
+  by the accepted residual-risk decision cited in the owning ticket.
 
 ## What this supports or challenges
 

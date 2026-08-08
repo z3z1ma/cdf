@@ -28,7 +28,7 @@ use crate::{
         MongoDbCollectionResource, mongodb_collection_capabilities,
         validate_compiled_schema_evidence, validate_resource_shape,
     },
-    schema::{SchemaInference, compile_source_materializations},
+    schema::{MAXIMUM_SCHEMA_DEPTH, SchemaInference, compile_source_materializations},
 };
 
 const DEFAULT_BATCH_ROWS: u32 = 65_536;
@@ -36,6 +36,7 @@ const DEFAULT_MAX_POOL_SIZE: u32 = 1;
 const DEFAULT_STREAM_BUFFER_BATCHES: usize = 1;
 const DEFAULT_DISCOVERY_RECORDS: u64 = 1_000;
 const DEFAULT_DISCOVERY_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_SCHEMA_DEPTH: u8 = 1;
 
 #[derive(Clone, Debug)]
 pub struct MongoDbSourceDriver {
@@ -71,7 +72,8 @@ impl MongoDbSourceDriver {
                 "additionalProperties": false,
                 "required": ["collection"],
                 "properties": {
-                    "collection": {"type": "string", "minLength": 1}
+                    "collection": {"type": "string", "minLength": 1},
+                    "schema_depth": {"type": "integer", "minimum": 1, "maximum": MAXIMUM_SCHEMA_DEPTH, "default": DEFAULT_SCHEMA_DEPTH}
                 }
             }
         });
@@ -192,6 +194,7 @@ impl SourceDriver for MongoDbSourceDriver {
             stream_buffer_batches: source.stream_buffer_batches,
             discovery_records: source.discovery_records,
             discovery_bytes: source.discovery_bytes,
+            schema_depth: resource.schema_depth,
         };
         physical.validate()?;
         validate_compile_shape(
@@ -225,6 +228,7 @@ impl SourceDriver for MongoDbSourceDriver {
                     "stream_buffer_batches": physical.stream_buffer_batches,
                     "discovery_records": physical.discovery_records,
                     "discovery_bytes": physical.discovery_bytes,
+                    "schema_depth": physical.schema_depth,
                 }),
                 physical_plan: serde_json::to_value(&physical).map_err(|error| {
                     CdfError::internal(format!("serialize MongoDB source plan: {error}"))
@@ -247,6 +251,7 @@ impl SourceDriver for MongoDbSourceDriver {
             collection: physical.collection,
             discovery_records: physical.discovery_records,
             discovery_bytes: physical.discovery_bytes,
+            schema_depth: physical.schema_depth,
             runtime,
             execution: context.execution().clone(),
             egress: context.egress_scope(&plan.driver.driver_id),
@@ -285,13 +290,14 @@ impl SourceAddPlanner for MongoDbSourceDriver {
         if !matches!(scheme, "mongodb" | "mongodb+srv") {
             return Ok(None);
         }
-        const KEYS: [&str; 7] = [
+        const KEYS: [&str; 8] = [
             "auth_source",
             "batch_rows",
             "max_pool_size",
             "stream_buffer_batches",
             "discovery_records",
             "discovery_bytes",
+            "schema_depth",
             "cursor",
         ];
         let unknown = request
@@ -399,13 +405,21 @@ impl SourceAddPlanner for MongoDbSourceDriver {
                 source_options.insert(key.to_owned(), serde_json::json!(value));
             }
         }
+        let mut resource_options = BTreeMap::from([(
+            "collection".to_owned(),
+            serde_json::json!(collection.as_str()),
+        )]);
+        if let Some(value) = request.options.get("schema_depth") {
+            let value = value.parse::<u8>().map_err(|_| {
+                CdfError::contract("MongoDB cdf add schema_depth must be an integer in 1..=32")
+            })?;
+            validate_schema_depth(value)?;
+            resource_options.insert("schema_depth".to_owned(), serde_json::json!(value));
+        }
         Ok(Some(SourceAddProposal {
             source_kind: "mongodb".to_owned(),
             source_options,
-            resource_options: BTreeMap::from([(
-                "collection".to_owned(),
-                serde_json::json!(collection.as_str()),
-            )]),
+            resource_options,
             cursor: request.options.get("cursor").map(|field| SourceAddCursor {
                 field: field.clone(),
                 parameter: None,
@@ -537,6 +551,7 @@ struct MongoDbDiscoverySession {
     collection: MongoDbIdentifier,
     discovery_records: u64,
     discovery_bytes: u64,
+    schema_depth: u8,
     runtime: MongoDbRuntimeConfig,
     execution: cdf_runtime::ExecutionServices,
     egress: SourceEgressScope,
@@ -556,6 +571,7 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
                 ("source_kind".to_owned(), "mongodb".to_owned()),
                 ("database".to_owned(), self.database.as_str().to_owned()),
                 ("collection".to_owned(), self.collection.as_str().to_owned()),
+                ("schema_depth".to_owned(), self.schema_depth.to_string()),
             ]),
         )?])
     }
@@ -580,6 +596,7 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
         let execution = self.execution.clone();
         let egress = self.egress.clone();
         let cancellation = request.cancellation.clone();
+        let schema_depth = self.schema_depth;
         let (schema, records, bytes, server_version, collection_metadata) =
             self.execution.run_io(async move {
                 discover_mongodb_collection(MongoDbDiscoveryInput {
@@ -588,6 +605,7 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
                     collection,
                     maximum_records,
                     maximum_bytes,
+                    schema_depth,
                     memory: execution.memory(),
                     egress,
                     cancellation,
@@ -598,6 +616,7 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
             ("server_version".to_owned(), server_version),
             ("sample_records".to_owned(), records.to_string()),
             ("sample_bytes".to_owned(), bytes.to_string()),
+            ("schema_depth".to_owned(), self.schema_depth.to_string()),
         ]);
         source_identity.extend(collection_metadata.identity());
         SourceSchemaObservation::new(candidate, schema, source_identity, bytes, records)
@@ -610,6 +629,7 @@ struct MongoDbDiscoveryInput {
     collection: MongoDbIdentifier,
     maximum_records: u64,
     maximum_bytes: u64,
+    schema_depth: u8,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     egress: SourceEgressScope,
     cancellation: cdf_runtime::RunCancellation,
@@ -630,6 +650,7 @@ async fn discover_mongodb_collection(
         collection,
         maximum_records,
         maximum_bytes,
+        schema_depth,
         memory,
         egress,
         cancellation,
@@ -677,7 +698,7 @@ async fn discover_mongodb_collection(
                 })
         })
         .await?;
-    let mut inference = SchemaInference::default();
+    let mut inference = SchemaInference::new(schema_depth)?;
     let mut records = 0_u64;
     let mut bytes = 0_u64;
     'batches: while let Some(batch) = cancellation
@@ -716,6 +737,7 @@ async fn discover_mongodb_collection(
         ));
     }
     let mut metadata = schema.metadata().clone();
+    metadata.insert("schema_depth".to_owned(), schema_depth.to_string());
     metadata.extend(collection_metadata.schema_metadata());
     let schema = arrow_schema::Schema::new_with_metadata(schema.fields().clone(), metadata);
     Ok((schema, records, bytes, version, collection_metadata))
@@ -941,6 +963,8 @@ pub(crate) enum MongoDbAuthMechanism {
 #[serde(deny_unknown_fields)]
 struct MongoDbResourceOptions {
     collection: String,
+    #[serde(default = "default_schema_depth")]
+    schema_depth: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -959,6 +983,7 @@ struct MongoDbPhysicalPlan {
     stream_buffer_batches: usize,
     discovery_records: u64,
     discovery_bytes: u64,
+    schema_depth: u8,
 }
 
 impl MongoDbPhysicalPlan {
@@ -978,6 +1003,7 @@ impl MongoDbPhysicalPlan {
                 "MongoDB compiled batch, pool, buffer, or discovery bounds are invalid",
             ));
         }
+        validate_schema_depth(self.schema_depth)?;
         self.username
             .as_ref()
             .map(|value| SecretUri::new(value.clone()))
@@ -1061,6 +1087,15 @@ fn validate_auth_configuration(
             ));
         }
         None => {}
+    }
+    Ok(())
+}
+
+fn validate_schema_depth(value: u8) -> Result<()> {
+    if usize::from(value) > MAXIMUM_SCHEMA_DEPTH || value == 0 {
+        return Err(CdfError::contract(
+            "MongoDB resource schema_depth must be an integer in 1..=32",
+        ));
     }
     Ok(())
 }
@@ -1172,4 +1207,7 @@ const fn default_discovery_records() -> u64 {
 }
 const fn default_discovery_bytes() -> u64 {
     DEFAULT_DISCOVERY_BYTES
+}
+const fn default_schema_depth() -> u8 {
+    DEFAULT_SCHEMA_DEPTH
 }

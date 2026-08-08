@@ -29,9 +29,11 @@ use crate::{
     query::{build_query, scan_from_partition},
     resource::rebind_mongodb_partition_for_resume,
     schema::{
-        MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference,
-        attach_expected_physical_types, compile_source_materializations, decode_batch,
-        decode_batch_with_evidence, decode_batch_with_physical_schema, parse_decimal128,
+        MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC, MONGODB_DECIMAL_TEXT_SEMANTIC,
+        MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC,
+        MONGODB_VALUE_EXTENDED_JSON_SEMANTIC, SchemaInference, attach_expected_physical_types,
+        compile_source_materializations, decode_batch, decode_batch_with_evidence,
+        decode_batch_with_physical_schema, parse_decimal128,
     },
 };
 
@@ -154,10 +156,52 @@ fn compile_is_contact_free_redacted_and_io_owned() {
     assert_eq!(plan.redacted_options["batch_rows"], 65_536);
     assert_eq!(plan.redacted_options["max_pool_size"], 1);
     assert_eq!(plan.redacted_options["stream_buffer_batches"], 1);
+    assert_eq!(plan.redacted_options["schema_depth"], 1);
+    assert_eq!(plan.physical_plan["schema_depth"], 1);
     let encoded = serde_json::to_string(&plan).unwrap();
     assert!(encoded.contains("secret://env/MONGODB_PASSWORD"));
     assert!(!encoded.contains("inline-password"));
     driver.validate_portable_plan(&plan).unwrap();
+}
+
+#[test]
+fn compile_binds_schema_depth_and_rejects_invalid_values() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let request = |schema_depth| SourceCompileRequest {
+        source_kind: "mongodb".to_owned(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "warehouse".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options: BTreeMap::from([
+            (
+                "endpoint".to_owned(),
+                serde_json::json!("mongodb://warehouse.example:27017"),
+            ),
+            ("database".to_owned(), serde_json::json!("analytics")),
+        ]),
+        resource_options: BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            ("schema_depth".to_owned(), schema_depth),
+        ]),
+        descriptor: descriptor(false),
+        schema: schema(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    };
+
+    let plan = driver.compile(request(serde_json::json!(2))).unwrap();
+    assert_eq!(plan.redacted_options["schema_depth"], 2);
+    assert_eq!(plan.physical_plan["schema_depth"], 2);
+    driver.validate_portable_plan(&plan).unwrap();
+
+    for invalid in [serde_json::json!(0), serde_json::json!(33)] {
+        let error = driver.compile(request(invalid)).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert!(error.message.contains("schema_depth"), "{error}");
+    }
 }
 
 #[test]
@@ -217,7 +261,10 @@ fn add_planner_compiles_authority_collection_and_private_credentials() {
             .to_owned(),
         project_root: "/project".into(),
         current_dir: "/project".into(),
-        options: BTreeMap::from([("cursor".to_owned(), "sequence".to_owned())]),
+        options: BTreeMap::from([
+            ("cursor".to_owned(), "sequence".to_owned()),
+            ("schema_depth".to_owned(), "2".to_owned()),
+        ]),
         project_options: None,
     };
     let proposal = driver
@@ -234,10 +281,33 @@ fn add_planner_compiles_authority_collection_and_private_credentials() {
     );
     assert_eq!(proposal.source_options["database"], "analytics");
     assert_eq!(proposal.resource_options["collection"], "events");
+    assert_eq!(proposal.resource_options["schema_depth"], 2);
+    assert!(!proposal.source_options.contains_key("schema_depth"));
     assert_eq!(proposal.cursor.as_ref().unwrap().field, "sequence");
     assert_eq!(proposal.private_files.len(), 2);
     let rendered = format!("{proposal:?}");
     assert!(!rendered.contains("unprintable-password"));
+}
+
+#[test]
+fn add_planner_rejects_invalid_schema_depth() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let error = driver
+        .add_planner()
+        .unwrap()
+        .propose_add(&SourceAddRequest {
+            source_name: "warehouse".to_owned(),
+            resource_name: "events".to_owned(),
+            location: "mongodb://mongo.example:27017/analytics/events".to_owned(),
+            project_root: "/project".into(),
+            current_dir: "/project".into(),
+            options: BTreeMap::from([("schema_depth".to_owned(), "0".to_owned())]),
+            project_options: None,
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert!(error.message.contains("schema_depth"));
 }
 
 #[test]
@@ -360,7 +430,7 @@ fn compile_rejects_incomplete_mongodb_aws_authority() {
 }
 
 #[test]
-fn discovery_infers_exact_bson_shapes_and_nested_missing_fields() {
+fn default_discovery_types_primitives_and_keeps_complex_values_opaque() {
     let object_id = ObjectId::parse_str("64b64c27f6f1a00f92d66c6a").unwrap();
     let decimal = Decimal128::from_str("1234567890.0123456789").unwrap();
     let first = RawDocumentBuf::try_from(&doc! {
@@ -405,10 +475,133 @@ fn discovery_infers_exact_bson_shapes_and_nested_missing_fields() {
         amount.metadata()["cdf:semantic"],
         MONGODB_DECIMAL_TEXT_SEMANTIC
     );
+    let nested = schema.field_with_name("nested").unwrap();
+    assert_eq!(nested.data_type(), &DataType::Utf8);
+    assert_eq!(physical_type(nested), Some("bson:document"));
+    assert_eq!(
+        nested.metadata()["cdf:semantic"],
+        MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC
+    );
+    let tags = schema.field_with_name("tags").unwrap();
+    assert_eq!(tags.data_type(), &DataType::Utf8);
+    assert_eq!(physical_type(tags), Some("bson:array"));
+    assert_eq!(
+        tags.metadata()["cdf:semantic"],
+        MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC
+    );
+
+    let schema = Arc::new(schema);
+    let batch = decode_batch(Arc::clone(&schema), &[first.as_ref(), second.as_ref()]).unwrap();
+    let nested = batch
+        .column(schema.index_of("nested").unwrap())
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(nested.value(0), r#"{"left":{"$numberLong":"1"}}"#);
+    assert_eq!(nested.value(1), r#"{"right":true}"#);
+    let tags = batch
+        .column(schema.index_of("tags").unwrap())
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(tags.value(0), r#"["one","two"]"#);
+    assert_eq!(tags.value(1), r#"["three"]"#);
+}
+
+#[test]
+fn configured_depth_two_infers_direct_children_without_nested_key_explosion() {
+    let first = RawDocumentBuf::try_from(&doc! {
+        "nested": {"left": 1_i64, "map": {"uuid-a": 1_i64}},
+        "tags": ["one", "two"],
+    })
+    .unwrap();
+    let second = RawDocumentBuf::try_from(&doc! {
+        "nested": {"right": true, "map": {"uuid-b": 2_i64}},
+        "tags": ["three"],
+    })
+    .unwrap();
+    let mut inference = SchemaInference::new(2).unwrap();
+    inference.observe(&first).unwrap();
+    inference.observe(&second).unwrap();
+    let (schema, _, _) = inference.finish().unwrap();
+
     let DataType::Struct(fields) = schema.field_with_name("nested").unwrap().data_type() else {
-        panic!("nested document did not infer as a struct");
+        panic!("configured depth two did not infer direct document children");
     };
-    assert!(fields.iter().all(|field| field.is_nullable()));
+    assert_eq!(fields.len(), 3);
+    assert!(fields.find("left").unwrap().1.is_nullable());
+    assert!(fields.find("right").unwrap().1.is_nullable());
+    let (_, map) = fields.find("map").unwrap();
+    assert!(!map.is_nullable());
+    assert_eq!(map.data_type(), &DataType::Utf8);
+    assert_eq!(physical_type(map), Some("bson:document"));
+    assert_eq!(
+        map.metadata()["cdf:semantic"],
+        MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC
+    );
+    assert!(matches!(
+        schema.field_with_name("tags").unwrap().data_type(),
+        DataType::List(_)
+    ));
+
+    let schema = Arc::new(schema);
+    let batch = decode_batch(Arc::clone(&schema), &[first.as_ref(), second.as_ref()]).unwrap();
+    let nested = batch
+        .column(schema.index_of("nested").unwrap())
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap();
+    let map = nested
+        .column_by_name("map")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(map.value(0), r#"{"uuid-a":{"$numberLong":"1"}}"#);
+    assert_eq!(map.value(1), r#"{"uuid-b":{"$numberLong":"2"}}"#);
+}
+
+#[test]
+fn heterogeneous_sampled_values_use_lossless_mixed_extended_json() {
+    let first = RawDocumentBuf::try_from(&doc! {"value": 1_i32}).unwrap();
+    let second = RawDocumentBuf::try_from(&doc! {"value": "text"}).unwrap();
+    let mut inference = SchemaInference::default();
+    inference.observe(&first).unwrap();
+    inference.observe(&second).unwrap();
+    let (schema, _, _) = inference.finish().unwrap();
+    let value = schema.field_with_name("value").unwrap();
+    assert_eq!(value.data_type(), &DataType::Utf8);
+    assert_eq!(physical_type(value), Some("bson:mixed"));
+    assert_eq!(
+        value.metadata()["cdf:semantic"],
+        MONGODB_VALUE_EXTENDED_JSON_SEMANTIC
+    );
+
+    let schema = Arc::new(schema);
+    let batch = decode_batch(Arc::clone(&schema), &[first.as_ref(), second.as_ref()]).unwrap();
+    let values = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(values.value(0), r#"{"$numberInt":"1"}"#);
+    assert_eq!(values.value(1), r#""text""#);
+}
+
+#[test]
+fn future_primitive_mismatch_is_residualized_under_governed_decode() {
+    let sampled = RawDocumentBuf::try_from(&doc! {"sequence": 1_i64}).unwrap();
+    let changed = RawDocumentBuf::try_from(&doc! {"sequence": {"nested": 1_i64}}).unwrap();
+    let mut inference = SchemaInference::default();
+    inference.observe(&sampled).unwrap();
+    let (schema, _, _) = inference.finish().unwrap();
+    let schema = Arc::new(schema);
+
+    let decoded =
+        decode_batch_with_evidence(Arc::clone(&schema), schema, &[changed.as_ref()], 0).unwrap();
+    assert_eq!(decoded.residual_candidates.len(), 1);
+    assert_eq!(decoded.residual_candidates[0].source_path(), ["sequence"]);
+    assert!(decoded.record_batch.column(0).is_null(0));
 }
 
 #[test]
@@ -651,6 +844,47 @@ fn compatible_bson_integer_keeps_catalog_physical_observation_domain() {
 }
 
 #[test]
+fn mixed_pin_accepts_a_later_homogeneous_physical_observation() {
+    let logical = Arc::new(Schema::new(vec![with_physical_type(
+        semantic_field(
+            Field::new("value", DataType::Utf8, false),
+            MONGODB_VALUE_EXTENDED_JSON_SEMANTIC,
+        ),
+        "bson:mixed",
+    )]));
+    let physical = Arc::new(Schema::new(vec![with_physical_type(
+        Field::new("value", DataType::Int32, false),
+        "bson:int32",
+    )]));
+    let decoder = attach_expected_physical_types(logical.as_ref(), physical.as_ref()).unwrap();
+    assert_eq!(decoder.field(0).data_type(), &DataType::Utf8);
+    assert_eq!(physical_type(decoder.field(0)), Some("bson:int32"));
+    let document = RawDocumentBuf::try_from(&doc! {"value": 7_i32}).unwrap();
+
+    let decoded = decode_batch_with_physical_schema(
+        Arc::clone(&decoder),
+        decoder,
+        logical,
+        physical,
+        &[document.as_ref()],
+        0,
+    )
+    .unwrap();
+
+    assert!(decoded.residual_candidates.is_empty());
+    assert_eq!(
+        decoded
+            .record_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0),
+        r#"{"$numberInt":"7"}"#
+    );
+}
+
+#[test]
 fn compatible_physical_reconciliation_is_vectorized_beyond_residual_cardinality() {
     const ROWS: usize = 65_537;
     let pinned = Arc::new(Schema::new(vec![with_physical_type(
@@ -833,7 +1067,7 @@ fn overlapping_source_paths_use_exact_payload_preflight() {
 
 #[test]
 fn discovery_caps_retained_nested_shape_across_documents() {
-    let mut inference = SchemaInference::default();
+    let mut inference = SchemaInference::new(2).unwrap();
     let mut terminal = None;
     for index in 0..4_096 {
         let document = RawDocumentBuf::try_from(&doc! {

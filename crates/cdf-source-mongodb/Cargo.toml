@@ -10,6 +10,7 @@ description = "Finite MongoDB collection source adapter for cdf."
 arrow-array = "58.3.0"
 arrow-buffer = "58.3.0"
 arrow-schema = { version = "58.3.0", features = ["serde"] }
+bson = { version = "3.1.0", features = ["serde_json-1"] }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }

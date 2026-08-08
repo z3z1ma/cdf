@@ -10,6 +10,7 @@ use arrow_array::{
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
+use bson::Bson;
 use cdf_kernel::{
     CanonicalArrowType, CdfError, PHYSICAL_TYPE_METADATA_KEY, PreContractPhysicalReconciliation,
     PreContractResidualCandidate, Result, SEMANTIC_METADATA_KEY, SourceMaterializationRule,
@@ -20,10 +21,16 @@ use mongodb::bson::{RawBsonRef, RawDocument};
 pub(crate) const MONGODB_OBJECT_ID_SEMANTIC: &str = cdf_semantic::MONGODB_OBJECT_ID_SEMANTIC;
 pub(crate) const MONGODB_DECIMAL_TEXT_SEMANTIC: &str =
     cdf_semantic::MONGODB_DECIMAL128_TEXT_SEMANTIC;
+pub(crate) const MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC: &str =
+    cdf_semantic::MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC;
+pub(crate) const MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC: &str =
+    cdf_semantic::MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC;
+pub(crate) const MONGODB_VALUE_EXTENDED_JSON_SEMANTIC: &str =
+    cdf_semantic::MONGODB_VALUE_EXTENDED_JSON_SEMANTIC;
 pub(crate) const MONGODB_DECIMAL128_MATERIALIZER: &str =
     "mongodb.bson_decimal128_to_arrow_decimal128.v1";
 const MAXIMUM_SCHEMA_FIELDS: usize = 4_096;
-const MAXIMUM_SCHEMA_DEPTH: usize = 32;
+pub(crate) const MAXIMUM_SCHEMA_DEPTH: usize = 32;
 const MAXIMUM_RESIDUAL_CANDIDATES: usize = 65_536;
 const MAXIMUM_PHYSICAL_RECONCILIATION_GROUPS: usize = MAXIMUM_SCHEMA_FIELDS;
 const MAXIMUM_DOCUMENT_SHAPE_ELEMENTS: usize = 65_536;
@@ -33,6 +40,16 @@ const MAXIMUM_RESIDUAL_PATH_SEGMENT_BYTES: usize = 1_024;
 const MAXIMUM_RESIDUAL_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_COLUMN_ACCUMULATOR_BYTES: u64 = 32 * 1024 * 1024;
 const RESIDUAL_CANDIDATE_ALLOCATION_OVERHEAD_BYTES: u64 = 512;
+const CANONICAL_EXTENDED_JSON_ALLOCATION_MULTIPLIER: usize = 8;
+
+fn opaque_extended_json_kind(field: &Field) -> Option<OpaqueExtendedJsonKind> {
+    match semantic(field) {
+        Some(MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC) => Some(OpaqueExtendedJsonKind::Document),
+        Some(MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC) => Some(OpaqueExtendedJsonKind::Array),
+        Some(MONGODB_VALUE_EXTENDED_JSON_SEMANTIC) => Some(OpaqueExtendedJsonKind::Value),
+        _ => None,
+    }
+}
 
 pub(crate) fn compile_source_materializations(
     schema: &Schema,
@@ -121,6 +138,11 @@ fn attach_expected_field_physical_type(logical: &Field, observed: &Field) -> Res
         ))
     })?;
     validate_observed_physical_type(observed, physical)?;
+    if logical.data_type() == &DataType::Utf8
+        && opaque_extended_json_kind(logical) == Some(OpaqueExtendedJsonKind::Value)
+    {
+        return Ok(with_physical_type(logical.clone(), physical));
+    }
     match (logical.data_type(), physical) {
         (DataType::Utf8, "bson:decimal128")
             if semantic(logical) != Some(MONGODB_DECIMAL_TEXT_SEMANTIC) =>
@@ -137,6 +159,18 @@ fn attach_expected_field_physical_type(logical: &Field, observed: &Field) -> Res
                 "MongoDB physical string observation for `{}` contradicts its Decimal128 tagged-text semantic",
                 logical.name()
             )));
+        }
+        (DataType::Utf8, observed_physical) => {
+            let expected_opaque = opaque_extended_json_kind(logical);
+            let observed_opaque = opaque_extended_json_kind(observed);
+            if expected_opaque != observed_opaque
+                || expected_opaque.is_some_and(|kind| kind.physical_type() != observed_physical)
+            {
+                return Err(CdfError::data(format!(
+                    "MongoDB physical BSON type `{observed_physical}` contradicts the pinned UTF-8 semantic for `{}`",
+                    logical.name()
+                )));
+            }
         }
         _ => {}
     }
@@ -196,8 +230,16 @@ fn validate_observed_physical_type(field: &Field, physical: &str) -> Result<()> 
         DataType::Int64 => physical == "bson:int64",
         DataType::Float64 => physical == "bson:double",
         DataType::Utf8 => match physical {
-            "bson:string" => semantic(field) != Some(MONGODB_DECIMAL_TEXT_SEMANTIC),
+            "bson:string" => {
+                semantic(field) != Some(MONGODB_DECIMAL_TEXT_SEMANTIC)
+                    && opaque_extended_json_kind(field).is_none()
+            }
             "bson:decimal128" => semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC),
+            "bson:document" => {
+                opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Document)
+            }
+            "bson:array" => opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Array),
+            "bson:mixed" => opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Value),
             _ => false,
         },
         DataType::Binary => physical == "bson:binary",
@@ -238,7 +280,41 @@ enum InferredType {
         fields: BTreeMap<String, InferredField>,
         observed_documents: usize,
     },
+    OpaqueExtendedJson(OpaqueExtendedJsonKind),
     Null,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpaqueExtendedJsonKind {
+    Document,
+    Array,
+    Value,
+}
+
+impl OpaqueExtendedJsonKind {
+    fn physical_type(self) -> &'static str {
+        match self {
+            Self::Document => "bson:document",
+            Self::Array => "bson:array",
+            Self::Value => "bson:mixed",
+        }
+    }
+
+    fn semantic(self) -> &'static str {
+        match self {
+            Self::Document => MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC,
+            Self::Array => MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC,
+            Self::Value => MONGODB_VALUE_EXTENDED_JSON_SEMANTIC,
+        }
+    }
+
+    fn accepts(self, value: RawBsonRef<'_>) -> bool {
+        match self {
+            Self::Document => matches!(value, RawBsonRef::Document(_)),
+            Self::Array => matches!(value, RawBsonRef::Array(_)),
+            Self::Value => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -248,15 +324,40 @@ struct InferredField {
     observed_documents: usize,
 }
 
-#[derive(Default)]
 pub(crate) struct SchemaInference {
     fields: BTreeMap<String, InferredField>,
     retained_shape_elements: usize,
     documents: usize,
     bytes: u64,
+    schema_depth: usize,
+}
+
+impl Default for SchemaInference {
+    fn default() -> Self {
+        Self {
+            fields: BTreeMap::new(),
+            retained_shape_elements: 0,
+            documents: 0,
+            bytes: 0,
+            schema_depth: 1,
+        }
+    }
 }
 
 impl SchemaInference {
+    pub(crate) fn new(schema_depth: u8) -> Result<Self> {
+        let schema_depth = usize::from(schema_depth);
+        if !(1..=MAXIMUM_SCHEMA_DEPTH).contains(&schema_depth) {
+            return Err(CdfError::contract(
+                "MongoDB resource schema_depth must be an integer in 1..=32",
+            ));
+        }
+        Ok(Self {
+            schema_depth,
+            ..Self::default()
+        })
+    }
+
     pub(crate) fn observe(&mut self, document: &RawDocument) -> Result<()> {
         validate_document_shape(document, 0)?;
         self.documents = self
@@ -287,13 +388,10 @@ impl SchemaInference {
                     "MongoDB discovery exceeds the {MAXIMUM_SCHEMA_FIELDS}-field schema bound"
                 )));
             }
-            let inferred = infer_value(value, 0)?;
+            let inferred = infer_value(value, 1, self.schema_depth)?;
             match self.fields.get_mut(&name) {
                 Some(field) => {
-                    self.retained_shape_elements = self
-                        .retained_shape_elements
-                        .checked_add(merge_types(&mut field.value, inferred, &name)?)
-                        .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
+                    merge_types(&mut field.value, inferred)?;
                     field.nullable |= matches!(value, RawBsonRef::Null);
                     field.observed_documents =
                         field.observed_documents.checked_add(1).ok_or_else(|| {
@@ -301,13 +399,6 @@ impl SchemaInference {
                         })?;
                 }
                 None => {
-                    let added = 1_usize
-                        .checked_add(inferred_nested_field_count(&inferred)?)
-                        .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
-                    self.retained_shape_elements = self
-                        .retained_shape_elements
-                        .checked_add(added)
-                        .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
                     self.fields.insert(
                         name,
                         InferredField {
@@ -318,11 +409,12 @@ impl SchemaInference {
                     );
                 }
             }
-            if self.retained_shape_elements > MAXIMUM_SCHEMA_FIELDS {
-                return Err(CdfError::data(format!(
-                    "MongoDB discovery exceeds the {MAXIMUM_SCHEMA_FIELDS}-field retained schema bound"
-                )));
-            }
+        }
+        self.retained_shape_elements = inferred_schema_element_count(&self.fields)?;
+        if self.retained_shape_elements > MAXIMUM_SCHEMA_FIELDS {
+            return Err(CdfError::data(format!(
+                "MongoDB discovery exceeds the {MAXIMUM_SCHEMA_FIELDS}-field retained schema bound"
+            )));
         }
         Ok(())
     }
@@ -365,8 +457,8 @@ impl SchemaInference {
     }
 }
 
-fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
-    if depth >= MAXIMUM_SCHEMA_DEPTH {
+fn infer_value(value: RawBsonRef<'_>, depth: usize, schema_depth: usize) -> Result<InferredType> {
+    if depth > MAXIMUM_SCHEMA_DEPTH {
         return Err(CdfError::data(format!(
             "MongoDB BSON nesting exceeds the {MAXIMUM_SCHEMA_DEPTH}-level schema bound"
         )));
@@ -382,6 +474,9 @@ fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
         RawBsonRef::DateTime(_) => InferredType::DateTime,
         RawBsonRef::Decimal128(_) => InferredType::DecimalText,
         RawBsonRef::Null => InferredType::Null,
+        RawBsonRef::Array(_) if depth >= schema_depth => {
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array)
+        }
         RawBsonRef::Array(array) => {
             let mut element = InferredType::Null;
             for value in array {
@@ -390,13 +485,20 @@ fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
                         "MongoDB discovery encountered malformed array BSON: {error}"
                     ))
                 })?;
-                merge_types(
-                    &mut element,
-                    infer_value(value, depth + 1)?,
-                    "array element",
-                )?;
+                merge_types(&mut element, infer_value(value, depth + 1, schema_depth)?)?;
             }
-            InferredType::List(Box::new(element))
+            if matches!(
+                element,
+                InferredType::Null
+                    | InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value)
+            ) {
+                InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array)
+            } else {
+                InferredType::List(Box::new(element))
+            }
+        }
+        RawBsonRef::Document(_) if depth >= schema_depth => {
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document)
         }
         RawBsonRef::Document(document) => {
             let mut fields = BTreeMap::new();
@@ -416,15 +518,19 @@ fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
                 fields.insert(
                     name,
                     InferredField {
-                        value: infer_value(value, depth + 1)?,
+                        value: infer_value(value, depth + 1, schema_depth)?,
                         nullable: matches!(value, RawBsonRef::Null),
                         observed_documents: 1,
                     },
                 );
             }
-            InferredType::Struct {
-                fields,
-                observed_documents: 1,
+            if fields.is_empty() {
+                InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document)
+            } else {
+                InferredType::Struct {
+                    fields,
+                    observed_documents: 1,
+                }
             }
         }
         other => {
@@ -436,22 +542,58 @@ fn infer_value(value: RawBsonRef<'_>, depth: usize) -> Result<InferredType> {
     })
 }
 
-fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Result<usize> {
+fn merge_types(left: &mut InferredType, right: InferredType) -> Result<()> {
     if matches!(right, InferredType::Null) {
-        return Ok(0);
+        return Ok(());
     }
     if matches!(left, InferredType::Null) {
-        let added = inferred_nested_field_count(&right)?;
         *left = right;
-        return Ok(added);
+        return Ok(());
     }
     match (left, right) {
         (left @ InferredType::Int32, InferredType::Int64) => {
             *left = InferredType::Int64;
-            Ok(0)
+            Ok(())
         }
-        (InferredType::Int64, InferredType::Int32) => Ok(0),
-        (InferredType::List(left), InferredType::List(right)) => merge_types(left, *right, path),
+        (InferredType::Int64, InferredType::Int32) => Ok(()),
+        (left @ InferredType::List(_), InferredType::List(right)) => {
+            let InferredType::List(left_element) = left else {
+                return Err(CdfError::internal(
+                    "MongoDB list inference lost its element authority",
+                ));
+            };
+            merge_types(left_element, *right)?;
+            if matches!(
+                left_element.as_ref(),
+                InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value)
+            ) {
+                *left = InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array);
+            }
+            Ok(())
+        }
+        (
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array),
+            InferredType::List(_) | InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array),
+        ) => Ok(()),
+        (
+            left @ InferredType::List(_),
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array),
+        ) => {
+            *left = InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Array);
+            Ok(())
+        }
+        (
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document),
+            InferredType::Struct { .. }
+            | InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document),
+        ) => Ok(()),
+        (
+            left @ InferredType::Struct { .. },
+            InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document),
+        ) => {
+            *left = InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Document);
+            Ok(())
+        }
         (
             InferredType::Struct {
                 fields: left,
@@ -465,17 +607,10 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
             *left_documents = left_documents
                 .checked_add(right_documents)
                 .ok_or_else(|| CdfError::internal("MongoDB nested document count overflow"))?;
-            let mut added = 0_usize;
             for (name, right) in right {
                 match left.get_mut(&name) {
                     Some(existing) => {
-                        added = added
-                            .checked_add(merge_types(
-                                &mut existing.value,
-                                right.value,
-                                &format!("{path}.{name}"),
-                            )?)
-                            .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
+                        merge_types(&mut existing.value, right.value)?;
                         existing.nullable |= right.nullable;
                         existing.observed_documents = existing
                             .observed_documents
@@ -485,24 +620,22 @@ fn merge_types(left: &mut InferredType, right: InferredType, path: &str) -> Resu
                             })?;
                     }
                     None => {
-                        added = added
-                            .checked_add(1)
-                            .and_then(|count| {
-                                inferred_nested_field_count(&right.value)
-                                    .ok()
-                                    .and_then(|nested| count.checked_add(nested))
-                            })
-                            .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))?;
                         left.insert(name, right);
                     }
                 }
             }
-            Ok(added)
+            Ok(())
         }
-        (left, right) if std::mem::discriminant(left) == std::mem::discriminant(&right) => Ok(0),
-        (left, right) => Err(CdfError::data(format!(
-            "MongoDB discovery observed heterogeneous BSON types at `{path}`: {left:?} and {right:?}; select an explicit variant or quarantine policy"
-        ))),
+        (InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value), _) => Ok(()),
+        (left, InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value)) => {
+            *left = InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value);
+            Ok(())
+        }
+        (left, right) if std::mem::discriminant(left) == std::mem::discriminant(&right) => Ok(()),
+        (left, _right) => {
+            *left = InferredType::OpaqueExtendedJson(OpaqueExtendedJsonKind::Value);
+            Ok(())
+        }
     }
 }
 
@@ -516,8 +649,19 @@ fn inferred_nested_field_count(value: &InferredType) -> Result<usize> {
                 .and_then(|count| count.checked_add(nested))
                 .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))
         }),
+        InferredType::OpaqueExtendedJson(_) => Ok(0),
         _ => Ok(0),
     }
+}
+
+fn inferred_schema_element_count(fields: &BTreeMap<String, InferredField>) -> Result<usize> {
+    fields.values().try_fold(0_usize, |total, field| {
+        let nested = inferred_nested_field_count(&field.value)?;
+        total
+            .checked_add(1)
+            .and_then(|count| count.checked_add(nested))
+            .ok_or_else(|| CdfError::data("MongoDB discovery shape overflow"))
+    })
 }
 
 fn inferred_field(name: String, inferred: InferredField, depth: usize) -> Result<Field> {
@@ -608,6 +752,11 @@ fn inferred_data_type(
                 None,
             )
         }
+        InferredType::OpaqueExtendedJson(kind) => (
+            DataType::Utf8,
+            kind.physical_type().to_owned(),
+            Some(kind.semantic().to_owned()),
+        ),
         InferredType::Null => (DataType::Null, "bson:null".to_owned(), None),
     })
 }
@@ -990,6 +1139,9 @@ fn source_paths_overlap(left: &str, right: &str) -> bool {
 fn field_payload_multiplier(field: &Field) -> usize {
     match field.data_type() {
         DataType::Utf8 if semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC) => 3,
+        DataType::Utf8 if opaque_extended_json_kind(field).is_some() => {
+            CANONICAL_EXTENDED_JSON_ALLOCATION_MULTIPLIER
+        }
         DataType::Utf8 | DataType::Binary => 1,
         DataType::Struct(fields) => fields
             .iter()
@@ -1048,6 +1200,24 @@ fn estimate_field_append(
         DataType::Float64 => budget.charge_growable_entry::<Option<f64>>(),
         DataType::Utf8 => {
             budget.charge_growable_entry::<Option<String>>()?;
+            if opaque_extended_json_kind(field).is_some() {
+                let raw_bytes = match value {
+                    Some(RawBsonRef::Document(value)) => value.as_bytes().len(),
+                    Some(RawBsonRef::Array(value)) => value.as_bytes().len(),
+                    Some(value) => usize::try_from(residual_value_allocation_floor(Some(value))?)
+                        .map_err(|_| {
+                        CdfError::data("MongoDB opaque BSON allocation estimate exceeds usize")
+                    })?,
+                    None => 0,
+                };
+                return budget.charge(
+                    raw_bytes
+                        .checked_mul(CANONICAL_EXTENDED_JSON_ALLOCATION_MULTIPLIER)
+                        .ok_or_else(|| {
+                            CdfError::data("MongoDB opaque BSON allocation estimate overflow")
+                        })?,
+                );
+            }
             match value {
                 Some(RawBsonRef::String(value)) => budget.charge(value.len()),
                 Some(RawBsonRef::Decimal128(value)) => budget.charge(value.to_string().len()),
@@ -1108,18 +1278,23 @@ fn value_matches_field(field: &Field, value: Option<RawBsonRef<'_>>) -> Result<b
     let Some(value) = value.filter(|value| !matches!(value, RawBsonRef::Null)) else {
         return Ok(field.is_nullable());
     };
+    if field.data_type() == &DataType::Utf8 {
+        return Ok(match opaque_extended_json_kind(field) {
+            Some(kind) => kind.accepts(value),
+            None if semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC) => {
+                matches!(value, RawBsonRef::Decimal128(_))
+            }
+            None => matches!(value, RawBsonRef::String(_)),
+        });
+    }
     Ok(match (field.data_type(), value) {
         (DataType::Boolean, RawBsonRef::Boolean(_))
         | (DataType::Int32, RawBsonRef::Int32(_))
         | (DataType::Int64, RawBsonRef::Int32(_) | RawBsonRef::Int64(_))
-        | (DataType::Utf8, RawBsonRef::String(_))
         | (DataType::Binary, RawBsonRef::Binary(_))
         | (DataType::FixedSizeBinary(12), RawBsonRef::ObjectId(_))
         | (DataType::Timestamp(TimeUnit::Millisecond, _), RawBsonRef::DateTime(_)) => true,
         (DataType::Float64, RawBsonRef::Double(_)) => true,
-        (DataType::Utf8, RawBsonRef::Decimal128(_)) => {
-            semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC)
-        }
         (DataType::Date32, RawBsonRef::DateTime(value)) => {
             value.timestamp_millis().rem_euclid(86_400_000) == 0
                 && i32::try_from(value.timestamp_millis().div_euclid(86_400_000)).is_ok()
@@ -1668,7 +1843,7 @@ fn observed_value_field(source: &str, value: RawBsonRef<'_>) -> Result<Field> {
     inferred_field(
         source.to_owned(),
         InferredField {
-            value: infer_value(value, 0)?,
+            value: infer_value(value, 1, 1)?,
             nullable: true,
             observed_documents: 1,
         },
@@ -1695,31 +1870,45 @@ fn value_matches_pinned_physical(field: &Field, value: Option<RawBsonRef<'_>>) -
         | ("bson:object_id", RawBsonRef::ObjectId(_))
         | ("bson:date_time", RawBsonRef::DateTime(_))
         | ("bson:decimal128", RawBsonRef::Decimal128(_)) => true,
-        ("bson:array", RawBsonRef::Array(array)) => {
-            let DataType::List(child) = field.data_type() else {
-                return Ok(false);
-            };
-            for value in array {
-                let value = value.map_err(|error| {
-                    CdfError::data(format!("MongoDB array value is malformed: {error}"))
-                })?;
-                if !value_matches_pinned_physical(child, Some(value))? {
-                    return Ok(false);
-                }
-            }
+        ("bson:array", RawBsonRef::Array(_))
+            if opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Array) =>
+        {
             true
         }
-        ("bson:document", RawBsonRef::Document(document)) => {
-            let DataType::Struct(fields) = field.data_type() else {
-                return Ok(false);
-            };
-            for child in fields {
-                let source = source_name(child).unwrap_or_else(|| child.name());
-                if !value_matches_pinned_physical(child, raw_value_at_path(document, source)?)? {
-                    return Ok(false);
+        ("bson:array", RawBsonRef::Array(array)) => match field.data_type() {
+            DataType::List(child) => {
+                for value in array {
+                    let value = value.map_err(|error| {
+                        CdfError::data(format!("MongoDB array value is malformed: {error}"))
+                    })?;
+                    if !value_matches_pinned_physical(child, Some(value))? {
+                        return Ok(false);
+                    }
                 }
+                true
             }
+            _ => false,
+        },
+        ("bson:document", RawBsonRef::Document(_))
+            if opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Document) =>
+        {
             true
+        }
+        ("bson:document", RawBsonRef::Document(document)) => match field.data_type() {
+            DataType::Struct(fields) => {
+                for child in fields {
+                    let source = source_name(child).unwrap_or_else(|| child.name());
+                    if !value_matches_pinned_physical(child, raw_value_at_path(document, source)?)?
+                    {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            _ => false,
+        },
+        ("bson:mixed", _) => {
+            opaque_extended_json_kind(field) == Some(OpaqueExtendedJsonKind::Value)
         }
         _ => false,
     })
@@ -1912,6 +2101,41 @@ fn raw_value_at_path<'a>(document: &'a RawDocument, path: &str) -> Result<Option
     Ok(None)
 }
 
+#[derive(Clone, Copy)]
+enum Utf8Encoding {
+    String,
+    DecimalText,
+    CanonicalExtendedJson(OpaqueExtendedJsonKind),
+}
+
+impl Utf8Encoding {
+    fn for_field(field: &Field) -> Self {
+        opaque_extended_json_kind(field).map_or_else(
+            || {
+                if semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC) {
+                    Self::DecimalText
+                } else {
+                    Self::String
+                }
+            },
+            Self::CanonicalExtendedJson,
+        )
+    }
+}
+
+fn canonical_extended_json(value: RawBsonRef<'_>) -> Result<String> {
+    let value = Bson::try_from(value).map_err(|error| {
+        CdfError::data(format!(
+            "MongoDB opaque value contains malformed BSON: {error}"
+        ))
+    })?;
+    serde_json::to_string(&value.into_canonical_extjson()).map_err(|error| {
+        CdfError::internal(format!(
+            "serialize MongoDB Canonical Extended JSON value: {error}"
+        ))
+    })
+}
+
 enum ColumnAccumulator {
     Boolean(Vec<Option<bool>>),
     Int32(Vec<Option<i32>>),
@@ -1919,7 +2143,7 @@ enum ColumnAccumulator {
     Float64(Vec<Option<f64>>),
     Utf8 {
         values: Vec<Option<String>>,
-        decimal_text: bool,
+        encoding: Utf8Encoding,
     },
     Binary(Vec<Option<Vec<u8>>>),
     ObjectId(Vec<Option<[u8; 12]>>),
@@ -1965,7 +2189,7 @@ impl ColumnAccumulator {
             (DataType::Float64, DataType::Float64) => Self::Float64(Vec::new()),
             (DataType::Utf8, DataType::Utf8) => Self::Utf8 {
                 values: Vec::new(),
-                decimal_text: semantic(field) == Some(MONGODB_DECIMAL_TEXT_SEMANTIC),
+                encoding: Utf8Encoding::for_field(field),
             },
             (DataType::Binary, DataType::Binary) => Self::Binary(Vec::new()),
             (DataType::FixedSizeBinary(12), DataType::FixedSizeBinary(12)) => {
@@ -2039,11 +2263,22 @@ impl ColumnAccumulator {
             }),
             Self::Utf8 {
                 values,
-                decimal_text,
+                encoding,
             } => values.push(match value {
                 None => None,
-                Some(RawBsonRef::String(value)) if !*decimal_text => Some(value.to_owned()),
-                Some(RawBsonRef::Decimal128(value)) if *decimal_text => Some(value.to_string()),
+                Some(RawBsonRef::String(value)) if matches!(*encoding, Utf8Encoding::String) => {
+                    Some(value.to_owned())
+                }
+                Some(RawBsonRef::Decimal128(value))
+                    if matches!(*encoding, Utf8Encoding::DecimalText) =>
+                {
+                    Some(value.to_string())
+                }
+                Some(value)
+                    if matches!(*encoding, Utf8Encoding::CanonicalExtendedJson(kind) if kind.accepts(value)) =>
+                {
+                    Some(canonical_extended_json(value)?)
+                }
                 Some(other) => return type_mismatch("Utf8", other),
             }),
             Self::Binary(values) => values.push(match value {

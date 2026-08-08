@@ -236,6 +236,17 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   variant/quarantine/fail disposition. The replacement contract is
   `.10x/specs/mongodb-collection-source.md`; the former recursive contract is preserved at
   `.10x/specs/superseded/mongodb-collection-source-recursive-shape-discovery.md`.
+- 2026-08-08: Implemented the ratified bounded discovery model. Resource option `schema_depth`
+  defaults to 1, validates `1..=32`, and is bound into add proposals, compiled plans, candidate
+  identity, discovery evidence, and schema metadata. Default discovery retains typed primitives
+  but converts top-level documents, arrays, and sampled heterogeneous fields to deterministic
+  tagged Canonical Extended JSON UTF-8. Higher depths expand only through their boundary, and
+  retained-shape accounting recomputes the actual surviving schema so a field collapsed to opaque
+  cannot leave phantom nested cardinality. The runtime decoder preserves these values without
+  treating nested key changes as drift, while later mismatches against primitive pins remain
+  governed residuals. All 42 MongoDB unit tests, six semantic-registry tests, strict affected-
+  package Clippy, dependency hygiene, and diff checks passed. The refreshed error ledger contains
+  320 rows: 277 production and 43 test.
 
 ## Blockers
 
@@ -258,7 +269,8 @@ Two obligations follow from that decision and belong to this ticket's closure:
 
 ## Evidence
 
-- Thirty-six focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+- Forty-two focused source unit tests pass, including exact BSON mapping, depth-bounded discovery,
+  opaque Canonical Extended JSON, drift, duplicate-key,
   injection, portability/redaction, cursor, payload-bound, and error-wrapper behavior.
 - The authorized Atlas 7.0.40 finite lifecycle reaches compile, plan, package, DuckDB receipt,
   checkpoint, package verification, and direct destination row-count verification over real data.
@@ -269,8 +281,8 @@ Two obligations follow from that decision and belong to this ticket's closure:
   in `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json`.
 - Workspace integration, strict Clippy, duplication, and dependency-hygiene observations are
   recorded in the journal and `.10x/evidence/2026-08-04-mongodb-source-connector.md`.
-- All implementation and performance rereviews pass. The final connector certificate remains
-  pending the endpoint/egress semantic decision in Blockers.
+- All historical implementation and performance rereviews pass. The final connector certificate
+  and fresh default-depth Atlas release lifecycle remain this ticket's closure barrier.
 
 ## Review
 
@@ -282,8 +294,8 @@ Two obligations follow from that decision and belong to this ticket's closure:
   projection admission and Int32 cursor-domain defects.
 - All non-semantic findings are repaired. Independent shared-authority, evidence/runtime, and
   decoder/performance rereviews pass on stable pushed commits with no critical or significant
-  findings. Residual risk remains the direct-host semantic decision recorded in Blockers; the
-  original topology/egress critical cannot be waived or certified.
+  findings. The topology/egress limitation is explicitly accepted as residual risk in the active
+  decision cited under Blockers and is not represented as a stronger transport guarantee.
 
 ## Retrospective
 
@@ -299,6 +311,5 @@ Two obligations follow from that decision and belong to this ticket's closure:
 - Final performance evidence must use the exact default release profile and a clean committed
   participating snapshot. Faster non-LTO builds were useful iteration signals but never treated as
   closure evidence.
-- The remaining blocker is semantic, not implementation toil: either narrow the current source to
-  one explicit direct authority or shape a transport that can authorize every topology-learned
-  host before connection.
+- The topology-learned-host limitation remains an explicit accepted residual risk and a boundary
+  for future transport work; it is no longer a closure blocker for the finite source.
