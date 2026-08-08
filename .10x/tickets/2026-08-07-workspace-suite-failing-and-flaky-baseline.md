@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-07
 Updated: 2026-08-07
 
@@ -148,6 +148,58 @@ git stash && git checkout f5d4d4c2 && \
 # expect: pass. Then repeat at fe53f2a5 — expect: fail on line 286 only.
 ```
 
+## Classification progress (2026-08-07)
+
+**36 → 28 failing.** Every fix below made a fixture *correct*; no assertion was weakened, skipped,
+or deleted, and no enforcement was relaxed.
+
+### Resolved
+
+1. **Stale package-hash golden** — `package_identity_is_invariant_to_source_batch_rechunking`.
+   Bisect confirmed pass at `f5d4d4c2`, fail at `fe53f2a5`. Intent confirmed: `fe53f2a5` refreshed
+   the sibling golden in `fixed_fixture_hash_is_deterministic_across_repeated_runs` and missed this
+   one, so the content change was deliberate and the propagation incomplete. Golden refreshed with
+   the reasoning recorded inline. All 9 determinism tests pass.
+2. **Placeholder schema hash in the package-replay harness** — 10 tests.
+   `DEFAULT_PREPARED_SCHEMA_HASH = "schema-v1"` (introduced 2026-07-06 by `f763b99c`) was a literal
+   placeholder. `96fd277d feat: complete state-backed schema authority cutover` began enforcing that
+   a package's runtime Arrow schema hashes to exactly its `StateDelta` schema hash
+   (`cdf-project/src/runtime/replay.rs:1087`), which the placeholder could never satisfy. Replaced
+   with `prepared_schema_hash()`, derived from the fixture's own payload — the value it should
+   always have carried.
+3. **Stale CLI generated artifacts** — this was breaking CI, not the local suite. `cdf package gc`
+   gained `--execute` without regenerating either artifact set. Both regenerated; CI green at
+   `84007fb8`. `QUALITY.md` documented only the `docs/` check, so the
+   `crates/cdf-cli/generated` set (completions, help, man) was invisible to the gate — fixed there
+   too, along with the note that its test is silently filtered out without `--features cli-artifacts`.
+
+### Diagnosed, not yet fixed
+
+**Schema-promotion cluster (12 tests) plus `duckdb_replay_case_uses_current_package_authority`
+share one cause.** All fail with `destination commit plan content authority does not match the
+verified package manifest`, raised at `crates/cdf-package/src/reader.rs:1086` where
+`commit_plan.content != manifest.identity.content`.
+
+The CLI test fixtures stamp packages via the `package_builder!` macro
+(`crates/cdf-cli/src/tests/mod.rs:68`) with
+`PackageContentAuthority::rows(SchemaHash("cli-test-schema"))` — another literal placeholder —
+while the commit plan carries the planner-derived authority. A1.5's typed content authority made
+these comparable and therefore enforceable.
+
+The fix is the same shape as #2: derive the fixture's content authority from the schema it actually
+builds rather than a placeholder string. It is larger because `package_builder!` is used by many
+tests and several sibling fixtures hardcode `"schema-status-1"`, `"schema-doctor-1"`, and similar.
+Each must be checked rather than blanket-replaced, because a fixture that is *supposed* to test a
+mismatch must keep mismatching.
+
+### Load-sensitive, not defects
+
+Confirmed to pass in isolation and fail only under a saturated parallel `--workspace` sweep:
+`nebula_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws`, both
+`cdf-subprocess` process-group tests, and intermittently several `package_replay` helper-process
+cases. These spawn real child processes. The full list of tests observed flipping between sweeps of
+identical code is above.
+
 ## Acceptance criteria
 
 - [ ] Every baseline failure is classified: real defect, environment/fixture problem, or flaky.
@@ -176,6 +228,12 @@ git stash && git checkout f5d4d4c2 && \
   transition. This is a hypothesis from the error text, not a diagnosis.
 
 ## Journal
+
+- 2026-08-07: Classified and fixed three causes, taking the suite from 36 to 28 failing: a stale
+  package-hash golden, a placeholder schema hash in the package-replay harness, and stale CLI
+  generated artifacts that were breaking CI. Diagnosed the 13-test content-authority cluster to
+  another placeholder in the CLI test fixtures. Every fix corrected a fixture; none relaxed an
+  assertion.
 
 - 2026-08-07: Traced the determinism failure to a stale golden rather than a broken invariant, and
   identified `fe53f2a5` as the commit that changed package identity without refreshing committed
