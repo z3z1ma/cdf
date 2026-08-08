@@ -35,7 +35,16 @@ pub use cdf_package::{PackageBuilder, PackageReader};
 pub use cdf_project::{PackageReplayReport, ProjectReceiptSource};
 pub use cdf_state_sqlite::SqliteCheckpointStore;
 
-pub const DEFAULT_PREPARED_SCHEMA_HASH: &str = "schema-v1";
+/// The canonical Arrow schema hash of the payload this fixture actually builds.
+///
+/// This MUST be derived rather than hardcoded. Package replay enforces that a package's runtime
+/// Arrow schema hashes to exactly its `StateDelta` schema hash
+/// (`cdf-project/src/runtime/replay.rs`), so a placeholder makes the fixture describe a package it
+/// did not build. The former `DEFAULT_PREPARED_SCHEMA_HASH = "schema-v1"` predated that
+/// enforcement and silently invalidated every prepared-package replay case once it landed.
+pub fn prepared_schema_hash() -> Result<SchemaHash> {
+    cdf_kernel::canonical_arrow_schema_hash(deterministic_orders_batch()?.schema().as_ref())
+}
 pub const DEFAULT_PREPARED_TARGET: &str = "orders";
 pub const DEFAULT_PREPARED_SEGMENT_ID: &str = "seg-000001";
 const PREPARED_PARTITION_ID: &str = "p0";
@@ -60,7 +69,7 @@ impl PreparedPackageFixtureSpec {
             package_id: package_id.into(),
             target: TargetName::new(DEFAULT_PREPARED_TARGET)?,
             disposition: WriteDisposition::Append,
-            schema_hash: SchemaHash::new(DEFAULT_PREPARED_SCHEMA_HASH)?,
+            schema_hash: prepared_schema_hash()?,
             segment_id: SegmentId::new(DEFAULT_PREPARED_SEGMENT_ID)?,
             checkpoint_id: CheckpointId::new("checkpoint-prepared-artifact")?,
             status: PackageStatus::Packaged,
