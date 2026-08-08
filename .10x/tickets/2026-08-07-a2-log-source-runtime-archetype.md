@@ -119,8 +119,24 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 
 ## Blockers
 
-None. The former AC4 authoring blocker was ratified on 2026-08-07 and implemented; the record of it
-is kept below because it explains the grammar choice.
+**AC8 is blocked on the workspace baseline, discovered 2026-08-07.**
+`.10x/tickets/2026-08-07-workspace-suite-failing-and-flaky-baseline.md` records 33 pre-existing
+failures on `main`. Two clusters sit directly under AC8's subject matter:
+
+- 10 `package_replay` tests, including every crash-matrix helper-process case — AC8 must prove
+  "package finalization, exact receipt settlement, checkpoint advancement, and crash recovery";
+- `tests::determinism::package_identity_is_invariant_to_source_batch_rechunking`, a determinism
+  invariant the settlement archetype's rechunk guarantees build on.
+
+A finite-drain conformance certificate written on top of a red package-replay suite would not be
+evidence — it would be a claim resting on unverified ground, and the flakiness confirmed in that
+ticket means a green result could not be trusted either. AC8 therefore waits for classification of
+those two clusters, not for more A2 implementation.
+
+`jobs` invariance remains unblocked and is ordinary remaining work.
+
+The former AC4 authoring blocker was ratified on 2026-08-07 and implemented; the record of it is kept
+below because it explains the grammar choice.
 
 **AC4 authoring half — RESOLVED 2026-08-07.** The CDC foundation spec requires
 `maximum_transaction_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
