@@ -214,6 +214,12 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   the beginning. Focused unit coverage and strict connector Clippy passed. A second real Atlas
   debug run against the existing state produced and verified a fresh 25-row package and left the
   replacement target at exactly 25 rows rather than duplicating or refusing the run.
+- 2026-08-08: The final release binary at `db895465` reran the real Atlas 7.0.40 resource from the
+  existing persisted checkpoint in 3 seconds. It committed and checkpointed one 25-row/5.1 KiB
+  segment, verified package
+  `sha256:ee47de42518efbdf3fad43b9b08ee6ec9feefdcc93a3a9a391b1872d52c3ab92`
+  across 18 identity files, and left DuckDB at 25 rows, 25 distinct IDs, and 25 governed variant
+  rows. Atlas IAM secrets remained outside project artifacts in three owner-only files.
 
 ## Blockers
 

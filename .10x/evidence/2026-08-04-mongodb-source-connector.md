@@ -68,6 +68,13 @@ clears the required 0.90 ratio.
   verified package
   `sha256:78bb0b02ca48ff4d17f94d00c883a042ef84f8fc5e1149fb9fbee837b5f0a62e`,
   and left the DuckDB target at 25 rows, 25 distinct IDs, and 25 governed variant rows.
+- The requested release-binary rerun at revision `db895465` then completed against the same
+  persisted checkpoint and live Atlas 7.0.40 collection in 3 seconds. It read 25 documents into
+  one 5.1 KiB segment, committed and checkpointed package
+  `sha256:ee47de42518efbdf3fad43b9b08ee6ec9feefdcc93a3a9a391b1872d52c3ab92`,
+  and passed `cdf package verify` over all 18 identity files. The direct DuckDB aggregate again
+  returned 25 rows, 25 distinct IDs, and 25 non-null governed variant rows. The three Atlas IAM
+  secret files remained owner-readable only (`0600`).
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
   one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the
