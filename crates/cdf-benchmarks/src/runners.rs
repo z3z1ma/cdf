@@ -1814,7 +1814,6 @@ fn build_replay_package_fixture(
         "memory",
         record_batches_for_spec(spec)?,
     )?;
-    let schema_hash = canonical_arrow_schema_hash(resource.schema().as_ref())?;
     let source_plan = resource.compiled_source_plan();
     let plan = identity_engine_plan(&resource, package_id)?
         .bind_compiled_source(source_plan)?
@@ -1822,6 +1821,12 @@ fn build_replay_package_fixture(
             source_plan,
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
         )?;
+    // The engine stamps package content from the *plan output* schema
+    // (`initial_package_content` in cdf-engine), which contract evaluation and normalization can
+    // move away from the raw resource schema. The fixture's StateDelta and destination commit plan
+    // must use that same hash, or replay rejects the package on a content-authority mismatch before
+    // it can measure anything.
+    let schema_hash = plan.output_schema.arrow_schema_hash.clone();
     let output_position = SourcePosition::Cursor(CursorPosition {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "id".to_owned(),
