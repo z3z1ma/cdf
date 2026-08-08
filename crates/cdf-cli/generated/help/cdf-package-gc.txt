@@ -6,6 +6,7 @@ Arguments:
   [DIR]...  Package directory
 
 Options:
+      --execute                Apply the planned operation
   -q, --quiet                  Suppress progress and non-primary success narration
   -v, --verbose...             Show evidence detail; repeat for diagnostics
       --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]

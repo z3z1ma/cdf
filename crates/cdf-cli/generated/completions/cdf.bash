@@ -1216,7 +1216,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package__subcmd__gc)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --execute --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

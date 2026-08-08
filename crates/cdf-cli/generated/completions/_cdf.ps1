@@ -673,6 +673,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
+            [CompletionResult]::new('--execute', '--execute', [CompletionResultType]::ParameterName, 'Apply the planned operation')
             [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')

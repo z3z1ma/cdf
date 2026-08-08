@@ -4,10 +4,13 @@
 .SH NAME
 cdf\-package\-gc \- Collect packages allowed by retention policy
 .SH SYNOPSIS
-\fBcdf package gc\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIDIR\fR]
+\fBcdf package gc\fR [\fB\-\-execute\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIDIR\fR]
 .SH DESCRIPTION
 Collect packages allowed by retention policy
 .SH OPTIONS
+.TP
+\fB\-\-execute\fR
+Apply the planned operation
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration

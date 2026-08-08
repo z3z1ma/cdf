@@ -681,6 +681,7 @@ always\t''
 never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -l memory-budget -d 'Process memory budget, e.g. 4GiB or 512MiB' -r
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -l spill-budget -d 'Spill/disk budget, e.g. 64GiB or 512MiB' -r
+complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -l execute -d 'Apply the planned operation'
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand package; and __fish_seen_subcommand_from gc" -s h -l help -d 'Print help'
