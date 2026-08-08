@@ -2157,16 +2157,26 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     }
 }
 
+/// The canonical Arrow schema hash of the doctor fixture's payload.
+///
+/// Replay enforces that a package's runtime Arrow schema hashes to exactly its `StateDelta` schema
+/// hash, so this must be derived from `sample_sql_batch` rather than the former `"schema-doctor-1"`
+/// placeholder, which could never satisfy that check once it was enforced.
+fn doctor_schema_hash() -> SchemaHash {
+    cdf_kernel::canonical_arrow_schema_hash(sample_sql_batch().schema().as_ref()).unwrap()
+}
+
 fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureMode) {
     let package_root = project.root.join(".cdf/packages");
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-doctor-1");
-    let builder = package_builder!(&package_dir, "pkg-doctor-1").unwrap();
+    let schema_hash = doctor_schema_hash();
+    let builder = package_builder!(&package_dir, "pkg-doctor-1", schema_hash.as_str()).unwrap();
     let batch = sample_sql_batch();
     write_current_replay_artifacts(
         &builder,
         batch.schema().as_ref(),
-        "schema-doctor-1",
+        schema_hash.as_str(),
         batch.num_rows() as u64,
         doctor_output_position(42),
         WriteDisposition::Append,
@@ -2192,7 +2202,7 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
             TargetName::new("events").unwrap(),
             WriteDisposition::Append,
             Vec::new(),
-            SchemaHash::new("schema-doctor-1").unwrap(),
+            doctor_schema_hash(),
         ))
         .unwrap();
     let manifest = builder.finish_with_status(PackageStatus::Packaged).unwrap();
@@ -2285,7 +2295,7 @@ fn doctor_delta_preimage(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         run_schema_authority: None,
-        schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
+        schema_hash: doctor_schema_hash(),
         segments: vec![segment],
     }
 }
@@ -2299,7 +2309,7 @@ fn doctor_delta(
     segment.output_position = output_position.clone();
     doctor_delta_preimage(output_position, segment).into_state_delta(
         package_hash.clone(),
-        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("schema-doctor-1").unwrap()),
+        cdf_kernel::PackageContentAuthority::rows(doctor_schema_hash()),
     )
 }
 

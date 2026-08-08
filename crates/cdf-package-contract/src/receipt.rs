@@ -492,7 +492,10 @@ mod tests {
                     "system": "test",
                     "values": {}
                 },
+                // `CommitCounts` is a tagged enum since package-native keyed effects landed, so the
+                // serialized form carries its `kind` discriminant alongside the row counts.
                 "counts": {
+                    "kind": "rows",
                     "rows_written": 7,
                     "rows_inserted": 7,
                     "rows_updated": 0,
