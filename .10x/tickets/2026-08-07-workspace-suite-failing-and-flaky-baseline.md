@@ -239,11 +239,11 @@ deleted, and no enforcement was relaxed. **CI is green** (`237583ac`, `9a6e73de`
 - `tests::run_adapters::run_rest_progress_drift_fails_closed_without_parse_coercion` asserts exit
   code 1 and observes **0** (`crates/cdf-cli/src/tests/run_adapters.rs:148`). The command
   *succeeded* where the test requires it to fail closed. **This may be a genuine product
-  regression in fail-closed behavior rather than fixture drift, and should be triaged first** —
-  a fail-closed path that silently succeeds is exactly the class of defect a red suite hides.
-  Siblings `active_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream`
-  and `governed_quarantines_incompatible_partition_with_exact_arrow_field_evidence` are in the same
-  file and likely related.
+  regression rather than fixture drift.** Now owned by
+  `.10x/tickets/2026-08-07-rest-run-stops-after-first-page.md`. Reading the run output reframed it:
+  the run consumed only page one (`accepted_main_rows: 2`) and committed a checkpoint, so the type
+  drift on page two never entered the pipeline and the fail-closed path was never exercised. Its two
+  siblings in the same file are owned by that ticket too.
 - `live_run::drift_quarantine::*` (2, panic at
   `crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs:156`),
   `mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift`, and the two
