@@ -65,13 +65,23 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LIVE_POSTGRES_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
+/// Builds a fixture package.
+///
+/// The three-argument form takes the content schema hash explicitly, and any fixture that also
+/// writes a destination commit plan MUST use it with the same hash. Package replay enforces
+/// `commit_plan.content == manifest.identity.content` (`cdf-package/src/reader.rs`), so a package
+/// stamped with the default while its commit plan carries a different hash describes content it
+/// does not hold.
 macro_rules! package_builder {
     ($path:expr, $package_id:expr $(,)?) => {
+        package_builder!($path, $package_id, "cli-test-schema")
+    };
+    ($path:expr, $package_id:expr, $schema_hash:expr $(,)?) => {
         PackageBuilder::create(
             $path,
             $package_id,
             cdf_kernel::PackageContentAuthority::rows(
-                cdf_kernel::SchemaHash::new("cli-test-schema").unwrap(),
+                cdf_kernel::SchemaHash::new($schema_hash).unwrap(),
             ),
             cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
                 .unwrap(),
@@ -1158,7 +1168,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit_and_residual(
         ],
     )
     .unwrap();
-    let builder = package_builder!(&package_dir, package_id).unwrap();
+    let builder = package_builder!(&package_dir, package_id, schema_hash).unwrap();
     write_current_replay_artifacts(
         &builder,
         batch.schema().as_ref(),
@@ -1493,7 +1503,18 @@ fn rebuild_correction_package_semantically(
     }
     fs::remove_dir_all(package_dir).unwrap();
     let package_id = package_dir.file_name().unwrap().to_str().unwrap();
-    let builder = package_builder!(package_dir, package_id).unwrap();
+    // The rebuild preserves the original destination commit plan verbatim, so it must also preserve
+    // that plan's content authority. Stamping the default here would make the repackaged fixture
+    // fail replay on a content mismatch before it ever reaches the semantic tampering this helper
+    // exists to test.
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        commit.content.clone(),
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder
         .write_json_artifact("plan/promotion-correction.json", &artifact)
         .unwrap();
