@@ -206,6 +206,14 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   and zero updates/deletes. A direct destination query returned 25 rows, 25 distinct ObjectIds,
   and 25 governed variant rows. The obsolete sandbox-only schema-v2 state DB was preserved as
   `.cdf/state.db.v2-backup-20260808` before CDF created current schema v3 state.
+- 2026-08-08: A release-binary rerun against the first full-scan checkpoint exposed that generic
+  resume binding treated the finite replacement's deterministic completion identity as a MongoDB
+  resume cursor. The connector now owns this binding boundary: cursor checkpoints retain their
+  existing field-checked binding, while cursorless full replacements validate the MongoDB
+  completion protocol and clear the next partition's start position so replacement restarts from
+  the beginning. Focused unit coverage and strict connector Clippy passed. A second real Atlas
+  debug run against the existing state produced and verified a fresh 25-row package and left the
+  replacement target at exactly 25 rows rather than duplicating or refusing the run.
 
 ## Blockers
 

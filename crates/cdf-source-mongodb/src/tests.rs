@@ -22,9 +22,12 @@ use crate::{
     MongoDbSourceDriver,
     driver::{collection_metadata_from_response, validate_server_version},
     error::classify_mongodb_error,
-    execution::{cursor_value, full_scan_completion_position},
+    execution::{
+        MONGODB_FULL_SCAN_COMPLETION_PROTOCOL, cursor_value, full_scan_completion_position,
+    },
     identifier::{MongoDbIdentifier, validate_field_path},
     query::{build_query, scan_from_partition},
+    resource::rebind_mongodb_partition_for_resume,
     schema::{
         MONGODB_DECIMAL_TEXT_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC, SchemaInference,
         attach_expected_physical_types, compile_source_materializations, decode_batch,
@@ -1140,15 +1143,11 @@ fn duplicate_javascript_scope_keys_fail_before_residual_materialization() {
 fn cursor_query_uses_numeric_frontier_and_object_id_tie_breaker() {
     let descriptor = descriptor(true);
     let schema = Arc::new(schema());
-    let partition = PartitionPlan {
+    let mut partition = PartitionPlan {
         partition_id: PartitionId::new("mongodb").unwrap(),
         scope: descriptor.state_scope.clone(),
         planned_position: None,
-        start_position: Some(SourcePosition::Cursor(CursorPosition {
-            version: cdf_kernel::SOURCE_POSITION_VERSION,
-            field: "sequence".to_owned(),
-            value: CursorValue::I64(41),
-        })),
+        start_position: None,
         scan_intent: CompiledScanIntent::full_scan(),
         retry_safety: PartitionRetrySafety::Forbidden,
         metadata: BTreeMap::from([
@@ -1157,6 +1156,12 @@ fn cursor_query_uses_numeric_frontier_and_object_id_tie_breaker() {
             ("collection".to_owned(), "events".to_owned()),
         ]),
     };
+    let committed = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "sequence".to_owned(),
+        value: CursorValue::I64(41),
+    });
+    rebind_mongodb_partition_for_resume(&descriptor, &mut partition, &committed).unwrap();
     let collection = MongoDbIdentifier::new("events").unwrap();
     let scan = scan_from_partition(&descriptor, &schema, &collection, &partition).unwrap();
     let query = build_query(&descriptor, &schema, &partition, &scan).unwrap();
@@ -1211,15 +1216,19 @@ fn cursorless_snapshot_has_deterministic_full_scan_completion_authority() {
 
     first.validate().unwrap();
     assert_eq!(first, repeated);
-    let SourcePosition::ForeignState(first) = first else {
+    partition.start_position = Some(first.clone());
+    rebind_mongodb_partition_for_resume(&descriptor, &mut partition, &first).unwrap();
+    assert!(partition.start_position.is_none());
+
+    let SourcePosition::ForeignState(first_state) = first.clone() else {
         panic!("full scan must use explicit foreign-state completion authority");
     };
-    assert_eq!(first.protocol, "mongodb.full_scan_completion.v1");
+    assert_eq!(first_state.protocol, MONGODB_FULL_SCAN_COMPLETION_PROTOCOL);
 
     partition.scan_intent.limit = Some(1);
     let limited =
         full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
-    assert_ne!(SourcePosition::ForeignState(first), limited);
+    assert_ne!(first, limited);
 }
 
 #[test]

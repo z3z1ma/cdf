@@ -31,6 +31,7 @@ use crate::{
 pub(crate) const MONGODB_MAXIMUM_WIRE_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_DECODE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MONGODB_FULL_SCAN_COMPLETION_PROTOCOL: &str = "mongodb.full_scan_completion.v1";
 const MONGODB_CLIENT_POOL_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) struct MongoDbClientHandle {
@@ -287,7 +288,7 @@ pub(crate) fn full_scan_completion_position(
     partition: &PartitionPlan,
 ) -> Result<SourcePosition> {
     let authority = (
-        "mongodb.full_scan_completion.v1",
+        MONGODB_FULL_SCAN_COMPLETION_PROTOCOL,
         descriptor.resource_id.as_str(),
         database.as_str(),
         collection.as_str(),
@@ -299,7 +300,7 @@ pub(crate) fn full_scan_completion_position(
     })?;
     let position = SourcePosition::ForeignState(ForeignState {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
-        protocol: "mongodb.full_scan_completion.v1".to_owned(),
+        protocol: MONGODB_FULL_SCAN_COMPLETION_PROTOCOL.to_owned(),
         blob_sha256: cdf_runtime::artifact_hash(&authority)?,
         opaque_blob,
     });

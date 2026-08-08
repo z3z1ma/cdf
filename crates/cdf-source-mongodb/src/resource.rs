@@ -7,13 +7,16 @@ use cdf_kernel::{
     EstimateSupport, FilterCapabilities, IncrementalShape, PartitionAuthority, PartitionId,
     PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanPredicate, ScanRequest, ScopeKind, source_name,
+    Result, ScanPlan, ScanPredicate, ScanRequest, ScopeKind, SourcePosition, source_name,
 };
 use cdf_runtime::{ExecutionServices, SourceEgressScope};
 
 use crate::{
     driver::MongoDbRuntimeConfig,
-    execution::{MongoDbClientHandle, MongoDbExecutionInput, execute_mongodb_collection},
+    execution::{
+        MONGODB_FULL_SCAN_COMPLETION_PROTOCOL, MongoDbClientHandle, MongoDbExecutionInput,
+        execute_mongodb_collection,
+    },
     identifier::MongoDbIdentifier,
     query::{MONGODB_SOURCE_KIND, predicate_fidelity, scan_from_partition},
     schema::{attach_expected_physical_types, validate_mongodb_schema},
@@ -245,6 +248,24 @@ impl ResourceStream for MongoDbCollectionResource {
         Ok(vec![partition])
     }
 
+    fn rebind_scan_for_resume(
+        &self,
+        mut scan: ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<ScanPlan> {
+        let partitions = scan.inline_partitions_mut().ok_or_else(|| {
+            CdfError::contract("MongoDB resume binding requires one inline partition")
+        })?;
+        let [partition] = partitions.as_mut_slice() else {
+            return Err(CdfError::contract(format!(
+                "MongoDB resume binding requires one partition, found {}",
+                partitions.len()
+            )));
+        };
+        rebind_mongodb_partition_for_resume(&self.descriptor, partition, committed_frontier)?;
+        Ok(scan)
+    }
+
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.clone().open_owned(partition)
     }
@@ -269,6 +290,46 @@ impl QueryableResource for MongoDbCollectionResource {
         }
         Ok(scan)
     }
+}
+
+pub(crate) fn rebind_mongodb_partition_for_resume(
+    descriptor: &ResourceDescriptor,
+    partition: &mut PartitionPlan,
+    committed_frontier: &SourcePosition,
+) -> Result<()> {
+    committed_frontier.validate()?;
+    let Some(cursor) = &descriptor.cursor else {
+        let SourcePosition::ForeignState(state) = committed_frontier else {
+            return Err(CdfError::contract(format!(
+                "MongoDB full replacement for resource `{}` expected its full-scan completion checkpoint, found {}",
+                descriptor.resource_id,
+                committed_frontier.kind().as_str()
+            )));
+        };
+        if state.protocol != MONGODB_FULL_SCAN_COMPLETION_PROTOCOL {
+            return Err(CdfError::contract(format!(
+                "MongoDB full replacement for resource `{}` cannot use foreign-state protocol {:?}",
+                descriptor.resource_id, state.protocol
+            )));
+        }
+        partition.start_position = None;
+        return Ok(());
+    };
+    let SourcePosition::Cursor(position) = committed_frontier else {
+        return Err(CdfError::contract(format!(
+            "MongoDB cursor resource `{}` cannot resume from {} checkpoint authority",
+            descriptor.resource_id,
+            committed_frontier.kind().as_str()
+        )));
+    };
+    if position.field != cursor.field {
+        return Err(CdfError::contract(format!(
+            "MongoDB cursor resource `{}` expected checkpoint field {:?}, found {:?}",
+            descriptor.resource_id, cursor.field, position.field
+        )));
+    }
+    partition.start_position = Some(committed_frontier.clone());
+    Ok(())
 }
 
 pub(crate) fn validate_compiled_schema_evidence(

@@ -34,13 +34,13 @@ clears the required 0.90 ratio.
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 308
-  construction/direct-kind lines: 267 production and 41 test rows. The 48 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 314
+  construction/direct-kind lines: 273 production and 41 test rows. The 48 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
   `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
-  `fe7627f7868fd966695dc5703d02d1719acad6156f06131f9f7c922fd2ba9ea3`.
+  `fc3e39a20b4fd38f505d0f0a0037aef20d6f6e9710973641a246d102d0a22c4e`.
 - The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
   existing frozen source scope. Focused tests prove URI credential/session-token splitting,
   secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
@@ -59,6 +59,15 @@ clears the required 0.90 ratio.
   non-null governed variant rows. The full-scan checkpoint is a deterministic foreign-state
   completion identity over the non-secret scan authority; it does not claim MongoDB transaction
   snapshot isolation or resumable incrementality.
+- A subsequent release-binary preflight against that committed checkpoint exposed a lifecycle
+  defect: generic resume binding copied the full-scan completion identity into the next scan as if
+  it were a cursor. MongoDB now source-owns resume binding. Cursor resources retain their exact
+  cursor behavior; a cursorless full replacement validates the MongoDB completion protocol and
+  deliberately reopens from the beginning. Focused tests and strict connector Clippy passed. A
+  second debug execution against the existing sandbox state completed a fresh 25-row replacement,
+  verified package
+  `sha256:78bb0b02ca48ff4d17f94d00c883a042ef84f8fc5e1149fb9fbee837b5f0a62e`,
+  and left the DuckDB target at 25 rows, 25 distinct IDs, and 25 governed variant rows.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
   one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the
