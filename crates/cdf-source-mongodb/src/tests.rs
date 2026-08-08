@@ -22,7 +22,7 @@ use crate::{
     MongoDbSourceDriver,
     driver::{collection_metadata_from_response, validate_server_version},
     error::classify_mongodb_error,
-    execution::cursor_value,
+    execution::{cursor_value, full_scan_completion_position},
     identifier::{MongoDbIdentifier, validate_field_path},
     query::{build_query, scan_from_partition},
     schema::{
@@ -1188,6 +1188,38 @@ fn cursorless_snapshot_query_uses_stable_object_id_order() {
     let query = build_query(&descriptor, &schema, &partition, &scan).unwrap();
 
     assert_eq!(query.sort, doc! {"_id": 1_i32});
+}
+
+#[test]
+fn cursorless_snapshot_has_deterministic_full_scan_completion_authority() {
+    let descriptor = descriptor(false);
+    let database = MongoDbIdentifier::new("warehouse").unwrap();
+    let collection = MongoDbIdentifier::new("events").unwrap();
+    let mut partition = PartitionPlan {
+        partition_id: PartitionId::new("mongodb").unwrap(),
+        scope: descriptor.state_scope.clone(),
+        planned_position: None,
+        start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::Forbidden,
+        metadata: BTreeMap::new(),
+    };
+    let first =
+        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
+    let repeated =
+        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
+
+    first.validate().unwrap();
+    assert_eq!(first, repeated);
+    let SourcePosition::ForeignState(first) = first else {
+        panic!("full scan must use explicit foreign-state completion authority");
+    };
+    assert_eq!(first.protocol, "mongodb.full_scan_completion.v1");
+
+    partition.scan_intent.limit = Some(1);
+    let limited =
+        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
+    assert_ne!(SourcePosition::ForeignState(first), limited);
 }
 
 #[test]

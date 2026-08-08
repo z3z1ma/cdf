@@ -10,7 +10,7 @@ use std::{
 
 pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) -> Result<()> {
     request.resource.validate_supported()?;
-    validate_checkpointable_source_position(request.resource)?;
+    validate_checkpointable_source_position(request.resource, &request.plan)?;
     validate_run_plan(
         request.resource.stream(),
         &request.plan,
@@ -41,7 +41,10 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
     Ok(())
 }
 
-fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Result<()> {
+fn validate_checkpointable_source_position(
+    resource: ProjectRunSource<'_>,
+    plan: &EnginePlan,
+) -> Result<()> {
     if matches!(
         resource.capabilities().incremental,
         IncrementalShape::File | IncrementalShape::TableSnapshot
@@ -49,6 +52,13 @@ fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Re
         return Ok(());
     }
     let descriptor = resource.descriptor();
+    if permits_cursorless_full_replace(
+        &resource.capabilities().incremental,
+        &descriptor.write_disposition,
+        &plan.execution_extent,
+    ) {
+        return Ok(());
+    }
     let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
         CdfError::contract(format!(
             "cdf run requires resource `{}` without file- or table-snapshot incremental capability to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
@@ -62,6 +72,16 @@ fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Re
         )));
     }
     Ok(())
+}
+
+fn permits_cursorless_full_replace(
+    incremental: &IncrementalShape,
+    disposition: &cdf_kernel::WriteDisposition,
+    execution_extent: &cdf_kernel::ExecutionExtent,
+) -> bool {
+    incremental == &IncrementalShape::Full
+        && disposition == &cdf_kernel::WriteDisposition::Replace
+        && execution_extent.is_bounded()
 }
 
 fn validate_run_plan(
@@ -462,6 +482,25 @@ pub(super) fn validate_explicit_package_id(package_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_bounded_full_replace_may_run_without_an_ordered_cursor() {
+        assert!(permits_cursorless_full_replace(
+            &IncrementalShape::Full,
+            &cdf_kernel::WriteDisposition::Replace,
+            &cdf_kernel::ExecutionExtent::bounded(),
+        ));
+        assert!(!permits_cursorless_full_replace(
+            &IncrementalShape::Full,
+            &cdf_kernel::WriteDisposition::Append,
+            &cdf_kernel::ExecutionExtent::bounded(),
+        ));
+        assert!(!permits_cursorless_full_replace(
+            &IncrementalShape::Cursor,
+            &cdf_kernel::WriteDisposition::Replace,
+            &cdf_kernel::ExecutionExtent::bounded(),
+        ));
+    }
 
     #[test]
     fn state_store_parent_wrong_shape_is_internal() {

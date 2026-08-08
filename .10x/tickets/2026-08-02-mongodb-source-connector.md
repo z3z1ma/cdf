@@ -187,6 +187,25 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   superseded the initial 8.0 minimum with 7.0+ so the finite connector matches the real deployment
   authority. The digest-pinned 8.0.13 fixture remains the deterministic conformance and roofline
   environment; the Atlas sandbox lifecycle supplies the 7.0 compatibility observation.
+- 2026-08-08: The first real Atlas compile exposed three shared integration defects that the
+  synthetic and cursor-based matrices had not covered. Manifest validation incorrectly required
+  nested relational fields to survive governed variant capture; effective-schema output
+  canonicalization deleted exact BSON metadata required by MongoDB semantic types; and project run
+  rejected a bounded full `REPLACE` even though the finite-source spec explicitly supports
+  cursorless snapshot reads. The repairs retain strict scalar/schema checks, strip physical
+  metadata only when an actual coercion plan marks it transient, and admit cursorless execution
+  only for bounded `IncrementalShape::Full` plus `REPLACE`. MongoDB full reads now attach one
+  deterministic foreign-state completion authority binding resource, database, collection,
+  partition, and scan intent; it is completion/checkpoint evidence, not a transaction-snapshot or
+  incremental-resume claim. Existing cursor and page-token guards remain unchanged.
+- 2026-08-08: The real Atlas 7.0.40 sandbox lifecycle completed against
+  `floqast-fq12.changeStreamCollections`: compile established schema generation 1, plan resolved
+  one bounded full-replace partition, and debug execution read 25 documents into one 25-row
+  package segment. Package `sha256:c67ee6a4e7e1a6bf8647281e4f33077c1b46e2efc3dba5b7dcc4f1c539cba596`
+  verified with 18 identity files and status `checkpointed`; its DuckDB receipt recorded 25 inserts
+  and zero updates/deletes. A direct destination query returned 25 rows, 25 distinct ObjectIds,
+  and 25 governed variant rows. The obsolete sandbox-only schema-v2 state DB was preserved as
+  `.cdf/state.db.v2-backup-20260808` before CDF created current schema v3 state.
 
 ## Blockers
 
@@ -209,8 +228,10 @@ Two obligations follow from that decision and belong to this ticket's closure:
 
 ## Evidence
 
-- Thirty-two focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
+- Thirty-six focused source unit tests pass, including exact BSON mapping, drift, duplicate-key,
   injection, portability/redaction, cursor, payload-bound, and error-wrapper behavior.
+- The authorized Atlas 7.0.40 finite lifecycle reaches compile, plan, package, DuckDB receipt,
+  checkpoint, package verification, and direct destination row-count verification over real data.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
   PostgreSQL 17, and the clean digest-pinned ClickHouse fixture.
 - Error inventory and classification are frozen at the paths recorded in the journal.

@@ -6,12 +6,13 @@ Updated: 2026-08-08
 
 ## Observation
 
-The finite MongoDB 8.0+ source uses the official asynchronous raw-BSON cursor, preserves the
+The finite MongoDB 7.0+ source uses the official asynchronous raw-BSON cursor, preserves the
 ratified BSON-to-Arrow meanings, carries current source-position authority, and remains bounded by
 the shared execution host. Its generic source matrix completes package, destination receipt,
-checkpoint, and replay laws. The final clean release roofline for revision `89786e35` clears the
-required 0.90 ratio. The endpoint/egress decision is now ratified; the remaining ticket work is its
-ordinary final acceptance sweep and documentation/research obligations.
+checkpoint, and replay laws. An authorized Atlas 7.0.40 lifecycle additionally proves the current
+IAM authentication, discovery, bounded full-replace, package, DuckDB receipt, checkpoint, and
+verification path against real data. The final clean release roofline for revision `89786e35`
+clears the required 0.90 ratio.
 
 ## Procedure
 
@@ -33,13 +34,13 @@ ordinary final acceptance sweep and documentation/research obligations.
 
   The frozen outputs in
   `.10x/evidence/.storage/2026-08-04-mongodb-source-error-files.nul` and
-  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 307
-  construction/direct-kind lines: 266 production and 41 test rows. The 47 production invariant
+  `.10x/evidence/.storage/2026-08-04-mongodb-source-error-sites.tsv` classify all 308
+  construction/direct-kind lines: 267 production and 41 test rows. The 48 production invariant
   rows are CDF or official-driver invariant failures; SDK and I/O failures retain typed
   provenance, retry delay, and redacted diagnostics. The file-list, classifier, and ledger SHA-256
   values are respectively `7878346fa5a01b9ebe941fb55fa6307042603af82dc0b095ce78e65ec3847ba9`,
   `f5a4a3e5a7b9ca1e31890e665e759a4989430a7fab1017c6b3274d69839fcd9f`, and
-  `d787c35a54cf06c746417905998cce49cefb2e9f496c0b7333dacf3daa4703cc`.
+  `fe7627f7868fd966695dc5703d02d1719acad6156f06131f9f7c922fd2ba9ea3`.
 - The 2026-08-08 `MONGODB-AWS` addition introduced only caller-contract constructions in the
   existing frozen source scope. Focused tests prove URI credential/session-token splitting,
   secret-safe proposal rendering, `$external` validation, and portable-plan retention of secret
@@ -48,6 +49,16 @@ ordinary final acceptance sweep and documentation/research obligations.
 - The user-ratified 7.0 floor changes no SDK/error construction. One new test assertion proves
   7.0 admission and that an older server remains a caller-repairable `Contract` failure with the
   observed major version and 7.0 remediation boundary.
+- The authorized Atlas core cluster reported 7.0.40. The sandbox resource selected the real
+  `floqast-fq12.changeStreamCollections` collection without recording document values. Compile
+  established state-backed schema generation 1 with ObjectId, string, and governed variant output.
+  Plan selected one bounded full-replace partition. Debug execution produced and verified package
+  `sha256:c67ee6a4e7e1a6bf8647281e4f33077c1b46e2efc3dba5b7dcc4f1c539cba596`:
+  one 25-row/5,210-byte segment, 18 identity files, a DuckDB receipt for 25 inserts, and final
+  `checkpointed` lifecycle. A direct DuckDB aggregate returned 25 rows, 25 distinct IDs, and 25
+  non-null governed variant rows. The full-scan checkpoint is a deterministic foreign-state
+  completion identity over the non-secret scan authority; it does not claim MongoDB transaction
+  snapshot isolation or resumable incrementality.
 - `.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json` records five samples over
   100,000 rows from clean fat-LTO revision `89786e35`. The selected 32,768-row batch and
   one-client pool produced a 111,340,625 ns CDF median versus 102,665,917 ns for the
@@ -96,11 +107,10 @@ their shared authorities without compatibility paths.
 
 ## Limits
 
-The live evidence covers a local digest-pinned MongoDB Community 8.0.13 server, not Atlas. Atlas
-was not exercised because no authenticated/cost-authorized Atlas fixture was provided. The source
-is finite collection reading only; change streams and resume tokens are explicit non-goals. The
+The live evidence covers both a local digest-pinned MongoDB Community 8.0.13 server and an
+authorized Atlas 7.0.40 collection. The Atlas observation is one finite 25-document lifecycle, not
+a load/performance certificate or a cross-shard transaction-snapshot claim. The source is finite
+collection reading only; change streams and resume tokens are explicit non-goals. The
 aggregate workspace run is not globally green because the explicitly separate ergonomics worker
 owns three failures and local ClickHouse integration credentials were unavailable; neither limit
-intersects the MongoDB source leaf or its executed generic source matrix. Closure nevertheless
-remains blocked because the current advertised topology-discovery surface exceeds the egress
-authority that can be enforced before connection.
+intersects the MongoDB source leaf or its executed generic source matrix.

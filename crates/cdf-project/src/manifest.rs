@@ -1251,30 +1251,56 @@ fn logical_output_matches_relational(
         .iter()
         .filter(|field| !cdf_contract::is_framework_variant_field(field.as_ref()))
         .collect::<Vec<_>>();
-    if logical.metadata() != relational.metadata()
-        || logical_fields.len() != relational.fields().len()
-    {
+    let has_framework_variant = logical_fields.len() != logical.fields().len();
+    if logical.metadata() != relational.metadata() {
         return Ok(false);
     }
-    Ok(logical_fields
-        .iter()
-        .zip(relational.fields())
-        .all(|(logical, relational)| {
-            if logical == &relational {
-                return true;
-            }
-            let mut logical = logical.as_ref().clone();
-            if cdf_kernel::source_name(&logical) == Some(logical.name())
-                && !relational
-                    .metadata()
-                    .contains_key(cdf_kernel::SOURCE_NAME_METADATA_KEY)
-            {
-                let mut metadata = logical.metadata().clone();
-                metadata.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
-                logical = logical.with_metadata(metadata);
-            }
-            &logical == relational.as_ref()
-        }))
+
+    let mut logical_fields = logical_fields.into_iter().peekable();
+    for relational_field in relational.fields() {
+        if logical_fields
+            .peek()
+            .is_some_and(|logical_field| fields_match(logical_field, relational_field))
+        {
+            logical_fields.next();
+            continue;
+        }
+        if has_framework_variant && is_nested_type(relational_field.data_type()) {
+            continue;
+        }
+        return Ok(false);
+    }
+    Ok(logical_fields.next().is_none())
+}
+
+fn fields_match(logical: &arrow_schema::Field, relational: &arrow_schema::Field) -> bool {
+    if logical == relational {
+        return true;
+    }
+    let mut logical = logical.clone();
+    if cdf_kernel::source_name(&logical) == Some(logical.name())
+        && !relational
+            .metadata()
+            .contains_key(cdf_kernel::SOURCE_NAME_METADATA_KEY)
+    {
+        let mut metadata = logical.metadata().clone();
+        metadata.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
+        logical = logical.with_metadata(metadata);
+    }
+    &logical == relational
+}
+
+fn is_nested_type(data_type: &arrow_schema::DataType) -> bool {
+    matches!(
+        data_type,
+        arrow_schema::DataType::Struct(_)
+            | arrow_schema::DataType::List(_)
+            | arrow_schema::DataType::LargeList(_)
+            | arrow_schema::DataType::FixedSizeList(_, _)
+            | arrow_schema::DataType::ListView(_)
+            | arrow_schema::DataType::LargeListView(_)
+            | arrow_schema::DataType::Map(_, _)
+    )
 }
 
 fn resource_hash(resource: &ManifestResource) -> Result<String> {
@@ -1854,6 +1880,93 @@ fn manifest_owned_error(authority: ManifestErrorAuthority, message: impl Into<St
 
 fn remap(error: CdfError, authority: ManifestErrorAuthority) -> CdfError {
     manifest_owned_error(authority, error.message)
+}
+
+#[cfg(test)]
+mod schema_relation_tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_contract::{
+        CDF_VARIANT_SEMANTIC, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
+        VARIANT_COLUMN_NAME,
+    };
+    use cdf_kernel::{CanonicalArrowSchema, SEMANTIC_METADATA_KEY};
+
+    use super::logical_output_matches_relational;
+
+    fn canonical(schema: Schema) -> CanonicalArrowSchema {
+        CanonicalArrowSchema::from_arrow(&schema).unwrap()
+    }
+
+    fn variant_field() -> Field {
+        Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true).with_metadata(HashMap::from([
+            (
+                SEMANTIC_METADATA_KEY.to_owned(),
+                CDF_VARIANT_SEMANTIC.to_owned(),
+            ),
+            (
+                RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                RESIDUAL_ENCODING_NAME.to_owned(),
+            ),
+        ]))
+    }
+
+    fn nested_field() -> Field {
+        Field::new(
+            "document",
+            DataType::Struct(vec![Arc::new(Field::new("value", DataType::Utf8, false))].into()),
+            true,
+        )
+    }
+
+    #[test]
+    fn logical_output_allows_nested_relational_fields_captured_by_framework_variant() {
+        let metadata = HashMap::from([("source".to_owned(), "mongodb".to_owned())]);
+        let relational = canonical(Schema::new_with_metadata(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                nested_field(),
+                Field::new("name", DataType::Utf8, true),
+            ],
+            metadata.clone(),
+        ));
+        let logical = canonical(Schema::new_with_metadata(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("name", DataType::Utf8, true),
+                variant_field(),
+            ],
+            metadata,
+        ));
+
+        assert!(logical_output_matches_relational(&logical, &relational).unwrap());
+    }
+
+    #[test]
+    fn logical_output_does_not_hide_missing_scalar_relational_fields_in_variant() {
+        let relational = canonical(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let logical = canonical(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            variant_field(),
+        ]));
+
+        assert!(!logical_output_matches_relational(&logical, &relational).unwrap());
+    }
+
+    #[test]
+    fn logical_output_requires_nested_fields_when_no_framework_variant_exists() {
+        let relational = canonical(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            nested_field(),
+        ]));
+        let logical = canonical(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+        assert!(!logical_output_matches_relational(&logical, &relational).unwrap());
+    }
 }
 
 #[cfg(test)]

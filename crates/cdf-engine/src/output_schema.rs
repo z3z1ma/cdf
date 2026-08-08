@@ -77,12 +77,17 @@ pub(crate) fn canonicalize_effective_output_schema(batch: RecordBatch) -> Result
 }
 
 pub(crate) fn canonicalize_expression_input_schema(schema: &Schema) -> Schema {
+    let has_coercion_evidence = schema
+        .metadata()
+        .contains_key(SCHEMA_COERCION_PLAN_METADATA_KEY);
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
             let mut metadata = field.metadata().clone();
-            metadata.remove(PHYSICAL_TYPE_METADATA_KEY);
+            if has_coercion_evidence {
+                metadata.remove(PHYSICAL_TYPE_METADATA_KEY);
+            }
             field.as_ref().clone().with_metadata(metadata)
         })
         .collect::<Vec<_>>();
@@ -93,4 +98,58 @@ pub(crate) fn canonicalize_expression_input_schema(schema: &Schema) -> Schema {
 
 pub(crate) fn canonicalize_expression_input_batch(batch: RecordBatch) -> Result<RecordBatch> {
     canonicalize_effective_output_schema(batch)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_contract::SCHEMA_COERCION_PLAN_METADATA_KEY;
+    use cdf_kernel::{PHYSICAL_TYPE_METADATA_KEY, with_physical_type};
+
+    use super::canonicalize_expression_input_schema;
+
+    #[test]
+    fn exact_source_physical_metadata_survives_without_coercion_evidence() {
+        let schema = Schema::new(vec![with_physical_type(
+            Field::new("id", DataType::FixedSizeBinary(12), false),
+            "bson:object_id",
+        )]);
+
+        let canonical = canonicalize_expression_input_schema(&schema);
+
+        assert_eq!(
+            canonical.field(0).metadata()[PHYSICAL_TYPE_METADATA_KEY],
+            "bson:object_id"
+        );
+    }
+
+    #[test]
+    fn transient_physical_metadata_is_removed_with_coercion_evidence() {
+        let schema = Schema::new_with_metadata(
+            vec![with_physical_type(
+                Field::new("id", DataType::Int64, false),
+                "Int32",
+            )],
+            HashMap::from([(
+                SCHEMA_COERCION_PLAN_METADATA_KEY.to_owned(),
+                "compiled-evidence".to_owned(),
+            )]),
+        );
+
+        let canonical = canonicalize_expression_input_schema(&schema);
+
+        assert!(
+            !canonical
+                .field(0)
+                .metadata()
+                .contains_key(PHYSICAL_TYPE_METADATA_KEY)
+        );
+        assert!(
+            !canonical
+                .metadata()
+                .contains_key(SCHEMA_COERCION_PLAN_METADATA_KEY)
+        );
+    }
 }

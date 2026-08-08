@@ -5,8 +5,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    Batch, BatchId, CdfError, CursorPosition, CursorValue, PartitionPlan, PayloadRetention,
-    ResourceDescriptor, Result, SourcePosition,
+    Batch, BatchId, CdfError, CursorPosition, CursorValue, ForeignState, PartitionPlan,
+    PayloadRetention, ResourceDescriptor, Result, SourcePosition,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
@@ -117,6 +117,19 @@ pub(crate) async fn execute_mongodb_collection(
         &input.partition,
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
+    let full_scan_position = input
+        .descriptor
+        .cursor
+        .is_none()
+        .then(|| {
+            full_scan_completion_position(
+                &input.descriptor,
+                &input.database,
+                &input.collection,
+                &input.partition,
+            )
+        })
+        .transpose()?;
     let decoder_schema = projected_schema(&input.decoder_schema, &scan.projection)?;
     let output_schema = projected_schema(&input.schema, &scan.projection)?;
     let physical_schema = projected_physical_schema(
@@ -222,7 +235,8 @@ pub(crate) async fn execute_mongodb_collection(
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
         batch_index = batch_index.saturating_add(1);
         let source_position =
-            batch_cursor_position(&input.descriptor, &scan.projection, &record_batch)?;
+            batch_cursor_position(&input.descriptor, &scan.projection, &record_batch)?
+                .or_else(|| full_scan_position.clone());
         let mut batch = Batch::from_record_batch(
             BatchId::new(format!(
                 "{}-mongodb-{batch_index:06}",
@@ -264,6 +278,33 @@ pub(crate) async fn execute_mongodb_collection(
     }
     drop(cursor_lease);
     Ok(())
+}
+
+pub(crate) fn full_scan_completion_position(
+    descriptor: &ResourceDescriptor,
+    database: &MongoDbIdentifier,
+    collection: &MongoDbIdentifier,
+    partition: &PartitionPlan,
+) -> Result<SourcePosition> {
+    let authority = (
+        "mongodb.full_scan_completion.v1",
+        descriptor.resource_id.as_str(),
+        database.as_str(),
+        collection.as_str(),
+        partition.partition_id.as_str(),
+        &partition.scan_intent,
+    );
+    let opaque_blob = serde_json::to_vec(&authority).map_err(|error| {
+        CdfError::internal(format!("serialize MongoDB full-scan authority: {error}"))
+    })?;
+    let position = SourcePosition::ForeignState(ForeignState {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        protocol: "mongodb.full_scan_completion.v1".to_owned(),
+        blob_sha256: cdf_runtime::artifact_hash(&authority)?,
+        opaque_blob,
+    });
+    position.validate()?;
+    Ok(position)
 }
 
 fn projected_schema(schema: &SchemaRef, projection: &[String]) -> Result<SchemaRef> {
