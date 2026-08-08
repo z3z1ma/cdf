@@ -241,10 +241,30 @@ Gates after the change: 32 tests pass, `clippy -D warnings` exit 0, `fmt --check
 is a one-line edit, but it belongs to whoever owns that file rather than to A2's diff. Recorded here
 so the hazard has an owner.
 
-**Remaining for closure:** the AC4 authoring surface (see Blockers); crash-recovery proof across
-restart; `jobs` invariance; and the AC8 finite-drain conformance certificate. AC5's physical
-construction is **already satisfied by A1.5** — the archetype now feeds it rather than duplicating
-it, which is a correction to increment 2's status table.
+### Increment 4 — restart resume (2026-08-07)
+
+`restart_after_an_unobserved_commit_resumes_from_the_prior_checkpoint` settles one transaction,
+spools a second whose commit is never observed, drops both the controller and the archetype, then
+rebuilds them from the recovered frontier via `bind_initial_committed_state`. The rebuilt controller
+resumes at the settled position, the rebuilt archetype reports zero completed units, and replaying
+the interrupted transaction settles normally.
+
+```text
+cargo fmt --all -- --check                                          exit 0
+cargo clippy -p cdf-runtime --all-targets --locked -- -D warnings   exit 0
+cargo test -p cdf-runtime --locked --no-fail-fast                   183 passed, 0 failed, 2 ignored
+                                                                    + 7 passed + 1 passed
+```
+
+**Limit, stated precisely.** This proves the runtime boundary reconstructs correctly from a recovered
+frontier. It does **not** exercise the SQLite checkpoint store, the package workspace, receipt
+recovery, or a real process kill, so it does not discharge acceptance scenarios 2 and 3 of the CDC
+foundation spec — those need the chaos layer, and they belong to AC8.
+
+**Remaining for closure:** the AC4 authoring surface (see Blockers); `jobs` invariance; and the AC8
+finite-drain conformance certificate including real crash recovery. AC5's physical construction is
+**already satisfied by A1.5** — the archetype now feeds it rather than duplicating it, which is a
+correction to increment 2's status table.
 
 ## Review
 

@@ -1519,6 +1519,101 @@ mod tests {
         );
     }
 
+    /// Crash before the commit was observed, then restart.
+    ///
+    /// A fresh controller and archetype are rebuilt from the last committed frontier — the state a
+    /// restart would recover — and must resume from it, with the interrupted transaction leaving no
+    /// trace. Limit: this exercises the runtime boundary only. It does not touch the SQLite
+    /// checkpoint store, the package workspace, or a real process restart.
+    #[test]
+    fn restart_after_an_unobserved_commit_resumes_from_the_prior_checkpoint() {
+        // A 4-row cadence so the first transaction actually closes an epoch and can be settled;
+        // a quiet extent would leave the controller open with nothing to acknowledge.
+        let extent = extent(
+            EpochClosureTrigger::Rows { count: 4 },
+            EpochClosureTrigger::Bytes {
+                count: 1_000_000_000,
+            },
+        );
+
+        // --- first process: settle one transaction, then crash inside the next ---
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        let settled_position = pg(10, "orders");
+        source.begin_unit(&settled_position).unwrap();
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &settled_position),
+                &settled_position,
+                4,
+                40,
+                None,
+            )
+            .unwrap();
+        let completed = source.complete_unit(&settled_position).unwrap();
+        let _ = observe(&mut controller, completed, 100);
+        controller
+            .acknowledge_settlement(&settled_position)
+            .unwrap();
+        source.acknowledge_settlement();
+
+        // A second transaction spools rows but its commit is never observed.
+        let interrupted = pg(20, "orders");
+        source.begin_unit(&interrupted).unwrap();
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &interrupted),
+                &interrupted,
+                99,
+                990,
+                None,
+            )
+            .unwrap();
+        let durable_frontier = controller.committed_frontier().cloned();
+        drop(controller);
+        drop(source);
+
+        assert_eq!(
+            durable_frontier.as_ref(),
+            Some(&settled_position),
+            "only the observed commit may be durable"
+        );
+
+        // --- second process: rebuild from the recovered frontier ---
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        controller
+            .bind_initial_committed_state(durable_frontier.clone(), None, None, Vec::new(), 1)
+            .unwrap();
+        let mut source = runtime(SettlementUnitKind::CommittedTransaction, &extent);
+
+        assert_eq!(
+            controller.committed_frontier(),
+            Some(&settled_position),
+            "restart must resume from the prior checkpoint, not the interrupted transaction"
+        );
+        assert_eq!(
+            source.units_completed(),
+            0,
+            "a rebuilt archetype carries no interrupted work"
+        );
+
+        // Replaying the interrupted transaction from the recovered position settles normally.
+        source.begin_unit(&interrupted).unwrap();
+        source
+            .admit_batch(
+                &meta(CdcOperation::Insert, &interrupted),
+                &interrupted,
+                99,
+                990,
+                None,
+            )
+            .unwrap();
+        let replayed = source.complete_unit(&interrupted).unwrap();
+        assert_eq!(replayed.rows, 99);
+        let _ = observe(&mut controller, replayed, 200);
+    }
+
     #[test]
     fn unsupported_events_fail_typed_and_abandon_the_unit() {
         let extent = quiet_extent();
