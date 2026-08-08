@@ -25,6 +25,10 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   `.10x/specs/mongodb-collection-source.md`.
 - Raw BSON mapping and variant/quarantine behavior cover heterogeneous documents, missing/null,
   nested arrays/documents, ObjectId, Decimal128, DateTime, duplicate keys, and unsupported types.
+- Resource-scoped `schema_depth` defaults to 1, accepts only `1..=32`, and bounds retained nested
+  inference. Boundary and discovery-time heterogeneous values use deterministic tagged Canonical
+  Extended JSON without turning nested map keys into schema fields. Generated discovery SQL lists
+  only fields retained by that authority.
 - One reusable client/pool streams byte-accounted batches under injected async host, memory,
   cancellation, retry, and egress authorities without a private runtime or unbounded queue.
 - Built-in catalog integrity, generic source matrix, jobs invariance, package/replay/checkpoint
@@ -49,6 +53,9 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 - Finite source semantics, deferred change streams, MongoDB 7.0+, and the 90% roofline are
   user-ratified.
 - Collection-only authoring is the smallest complete finite document-source surface.
+- Top-level-only discovery by default, optional bounded per-resource depth, opaque boundary values,
+  and a UTF-8 fallback for destinations without proven native semi-structured fidelity are
+  user-ratified.
 
 ## Journal
 
@@ -220,6 +227,15 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   `sha256:ee47de42518efbdf3fad43b9b08ee6ec9feefdcc93a3a9a391b1872d52c3ab92`
   across 18 identity files, and left DuckDB at 25 rows, 25 distinct IDs, and 25 governed variant
   rows. Atlas IAM secrets remained outside project artifacts in three owner-only files.
+- 2026-08-08: The user superseded recursive schemaless inference after identifying the common
+  map-key explosion failure mode. Shaping established resource option `schema_depth = 1..32`,
+  default 1, with the root document's fields at level 1. Consistent retained primitives stay typed;
+  documents, arrays, and heterogeneous values at the boundary become deterministic tagged
+  Canonical Extended JSON. Nested key changes inside opaque values are data, not schema drift;
+  later incompatibility against a typed primitive remains governed by the existing compiled
+  variant/quarantine/fail disposition. The replacement contract is
+  `.10x/specs/mongodb-collection-source.md`; the former recursive contract is preserved at
+  `.10x/specs/superseded/mongodb-collection-source-recursive-shape-discovery.md`.
 
 ## Blockers
 

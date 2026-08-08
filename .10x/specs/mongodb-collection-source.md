@@ -14,7 +14,9 @@ by `.10x/decisions/exact-value-text-fallbacks.md`.
 
 The user ratified finite snapshot/cursor extraction and deferred change streams to a separate CDC
 tranche on 2026-08-02. On 2026-08-08 the user superseded the initial 8.0 floor with MongoDB 7.0+
-after the authorized Atlas environments were observed at 7.0.40.
+after the authorized Atlas environments were observed at 7.0.40. On the same date the user
+superseded recursive schemaless discovery with resource-scoped depth, defaulting to top-level-only
+discovery.
 
 ## Source contract
 
@@ -28,6 +30,25 @@ The initial resource is one collection. Discovery MUST combine bounded collectio
 validator metadata when available, and bounded raw-document observation through the existing
 schema discovery/freeze authority. Discovery MUST report sample limits and cannot imply that an
 unvalidated schemaless collection is globally uniform.
+
+Each resource MAY set `schema_depth` in its `upstream(...)` options. It MUST be an integer in
+`1..=32` and defaults to `1`. The root BSON document's fields are level 1; traversing into a
+document child or array element consumes one level. The resolved value MUST participate in source
+identity, observation evidence, compiled-plan identity, and cache keys. It is not ambient source
+configuration and one configured source MAY serve resources with different depths.
+
+Discovery MUST retain field names only through the configured depth. A document or array at the
+depth boundary is one opaque value; discovery MUST NOT inspect its keys or element shapes for
+schema inference. Structural parsing may still enforce byte, element, nesting, duplicate-key, and
+malformed-BSON safety bounds, but those checks MUST NOT accumulate nested schema fields.
+
+At any retained level, consistent primitive BSON values infer their exact supported Arrow type;
+BSON Int32 and Int64 MAY reconcile to Int64. Null makes the field nullable. Documents and arrays
+within the retained depth may become structs and lists, but their descendants at the boundary are
+opaque. If sampled non-null values for one field cannot reconcile to one typed shape, discovery
+MUST retain the entire field as an opaque BSON value rather than invent a union or fail because of
+ordinary schemaless heterogeneity. Unsupported BSON scalar kinds continue through explicit
+variant/quarantine/fail policy rather than silently becoming strings.
 
 Execution MUST use one reusable official asynchronous Rust `Client` and its native topology and
 connection pools. It MUST consume a raw BSON cursor in wire batches and build byte-accounted Arrow
@@ -60,11 +81,26 @@ one while claiming one server snapshot.
 
 The source MUST map BSON exactly as follows where representable: bool; signed integers; double;
 string; binary; DateTime to UTC millisecond timestamp; ObjectId to 12-byte fixed-size binary with
-`cdf:semantic=mongodb.object_id@1`; arrays to lists; documents to structs/maps under the frozen
-schema; and BSON null to Arrow nullability. Regex, JavaScript,
+`cdf:semantic=mongodb.object_id@1`; arrays and documents within the configured retained depth to
+lists and structs; boundary or heterogeneous values to canonical Extended JSON UTF-8; and BSON
+null to Arrow nullability. Regex, JavaScript,
 DBPointer, MinKey/MaxKey, undefined, symbols, timestamps used as replication tokens, duplicate
 document keys, heterogeneous arrays, and values outside the pin MUST follow explicit variant or
-quarantine policy and otherwise fail. There is no silent Extended JSON stringification.
+quarantine policy and otherwise fail unless the field is already governed by the explicit opaque
+Extended JSON contract. There is no untagged Extended JSON stringification.
+
+Opaque document, array, and heterogeneous-value fields MUST use versioned MongoDB semantic tags
+on Arrow `Utf8` plus exact `cdf:physical_type` evidence. Their encoding MUST be deterministic
+MongoDB Canonical Extended JSON, preserve BSON type/value meaning, reject duplicate document keys,
+and remain bounded by the ordinary decoder/output budgets. A destination with no proven native
+semi-structured mapping receives the UTF-8 value. Native JSON/JSONB/VARIANT selection is allowed
+only through an explicit lossless semantic mapping; destination behavior MUST NOT change discovery
+or package bytes.
+
+Once a consistent primitive field is frozen, a later incompatible source value follows the
+compiled drift disposition: safe capture emits typed null plus exact `_cdf_variant` evidence,
+quarantine rejects the row into quarantine, and fail stops the run. New keys or element shapes
+inside an opaque value are not schema drift and MUST NOT create columns or residual candidates.
 
 BSON Decimal128 maps to Arrow Decimal128 only when validator or user-declared schema authority
 proves that the complete field domain fits one Arrow precision and scale. Schemaless observation
@@ -91,6 +127,16 @@ closes the cursor and joins all admitted tasks. The direct-library roofline foll
 
 - Bounded discovery reports its evidence limit and execution applies the frozen schema to later
   heterogeneous documents without silent widening.
+- With omitted `schema_depth`, a top-level document whose sampled values contain distinct UUID-like
+  keys produces one opaque UTF-8 field and no UUID-named schema fields.
+- With `schema_depth = 2`, direct children of a top-level document may be typed, while documents or
+  arrays below that boundary remain opaque; invalid zero, negative, non-integer, and greater-than-32
+  values fail as resource contract errors without contact.
+- A heterogeneous sampled field becomes one opaque Extended JSON field. A consistent sampled
+  primitive remains typed, and a later incompatible value follows variant/quarantine/fail policy
+  without changing the active schema.
+- Discovery-generated resource SQL enumerates the retained top-level projection. It never emits
+  sampled map keys beyond `schema_depth`.
 - Duplicate cursor values across wire batches remain complete and deterministic through `_id`.
 - A partial cursor/network failure cannot advance the checkpoint; retry uses the same typed window.
 - Projection/filter fidelity covers missing versus null, arrays, collation, numeric subtypes, and
@@ -104,4 +150,5 @@ closes the cursor and joins all admitted tasks. The direct-library roofline foll
 ## Explicit exclusions
 
 Change streams, resume tokens, update/delete CDC operations, `cdc_apply`, ObjectId cursor positions,
-arbitrary aggregation pipelines, map-reduce, and implicit Extended JSON coercion are excluded.
+arbitrary aggregation pipelines, map-reduce, unbounded discovery depth, and untagged Extended JSON
+coercion are excluded.
