@@ -51,9 +51,8 @@ From the baseline sweep (full list in Evidence):
   `destination commit plan content authority does not match the verified package manifest`,
   which points at package content-authority drift, plausibly from the A1.5 package-native
   keyed-effect transition;
-- **`tests::determinism::package_identity_is_invariant_to_source_batch_rechunking`** — a determinism
-  invariant is currently failing. This one deserves priority: it asserts a property the CDC work
-  depends on.
+- **`tests::determinism::package_identity_is_invariant_to_source_batch_rechunking`** — diagnosed
+  below. The determinism invariant itself is **intact**; a committed golden hash is stale.
 
 ## Flakiness is confirmed, not suspected
 
@@ -92,13 +91,72 @@ assertion cannot protect the behavior it names.
 A flaky suite is worse than a failing one: it teaches readers to discount red, which is exactly how
 a real regression ships unnoticed.
 
+## Root-cause finding: `fe53f2a5` changed package identity and left goldens stale
+
+Traced 2026-08-07. This is the strongest lead in the whole failure set and probably explains a large
+share of it.
+
+**Correction to the discovery notes above.** `package_identity_is_invariant_to_source_batch_rechunking`
+was first described here as a failing determinism invariant. That was wrong, and the distinction
+matters for priority. `crates/cdf-engine/src/tests/determinism.rs` asserts two different things:
+
+- lines 276–285 compare the one-batch run against the many-batch run — `identity_segments`,
+  `lineage`, `manifest.identity`, and `manifest.package_hash`. **All of these pass.** Rechunking does
+  not change package identity; the invariant holds.
+- line 286 compares the package hash against a hardcoded golden. **This is the only failing
+  assertion.**
+
+Observed `sha256:55a44f7a…`, committed golden `sha256:ce88efb0…`.
+
+**Where the golden came from.** `git log -L 286,289` shows the golden was last updated by
+`f5d4d4c2 feat: type package keyed effect authority` (A1.5), which also recorded in its ticket that
+this very test *passed* at closure.
+
+**What changed afterwards.** Exactly three commits followed `f5d4d4c2`:
+
+| commit | what it touched |
+|---|---|
+| `3ffc85fd chore: remove graphify ref` | `AGENTS.md` only |
+| `fe53f2a5 feat: lower cdc batches to canonical keyed effects` | 74 files, +3022 lines |
+| `e961900a docs: open log-source runtime archetype` | two `.10x/` records only |
+
+`fe53f2a5` is the only candidate, and it touched precisely the identity-bearing surface:
+`cdf-kernel/src/effect.rs`, `cdf-kernel/src/batch.rs`, `cdf-package-contract/src/receipt.rs`,
+`cdf-package/src/json.rs`, `cdf-package/src/reader.rs`, and
+`cdf-engine/src/execution/orchestration.rs`. It did **not** touch `determinism.rs`, so the golden was
+never updated to match the package content it changed.
+
+**Conclusion.** `fe53f2a5` altered package identity and shipped without refreshing the committed
+package-hash evidence — and, given the size of the failure set, without a green workspace run. The
+schema-promotion, package-replay, and
+`duckdb_replay_case_uses_current_package_authority` clusters are all package-identity-dependent and
+plausibly share this cause; that remains a hypothesis until each is checked.
+
+**Do not simply update the golden.** A package hash is committed evidence, and rewriting it to match
+current output is how a real regression becomes permanently invisible. Two things must be
+established first: that the content change in `fe53f2a5` was intended and ratified (A1.5's spec did
+ratify package-native keyed effects, so this is likely but unconfirmed), and that no *other*
+behavior regressed alongside it. Only then is refreshing the golden a correction rather than a
+cover-up.
+
+Confirming bisect, for whoever picks this up:
+
+```bash
+git stash && git checkout f5d4d4c2 && \
+  DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine --locked \
+  package_identity_is_invariant_to_source_batch_rechunking
+# expect: pass. Then repeat at fe53f2a5 — expect: fail on line 286 only.
+```
+
 ## Acceptance criteria
 
 - [ ] Every baseline failure is classified: real defect, environment/fixture problem, or flaky.
 - [ ] Each real defect has a bounded ticket or a recorded no-action rationale.
 - [ ] Flaky tests are made deterministic or given isolated fixtures; none are simply deleted.
-- [ ] `package_identity_is_invariant_to_source_batch_rechunking` is diagnosed explicitly, since a
-      determinism invariant failing silently undermines package identity claims elsewhere.
+- [x] `package_identity_is_invariant_to_source_batch_rechunking` is diagnosed explicitly. Done: the
+      invariant holds; a golden hash went stale in `fe53f2a5`. See the root-cause finding.
+- [ ] It is established whether `fe53f2a5`'s package-identity change was intended and ratified, and
+      whether anything else regressed with it, before any golden is refreshed.
 - [ ] A documented command reproduces a known-good baseline, and the count is recorded so future
       differential sweeps are cheap.
 - [ ] No assertion was weakened, skipped, or removed to reach green.
@@ -118,6 +176,11 @@ a real regression ships unnoticed.
   transition. This is a hypothesis from the error text, not a diagnosis.
 
 ## Journal
+
+- 2026-08-07: Traced the determinism failure to a stale golden rather than a broken invariant, and
+  identified `fe53f2a5` as the commit that changed package identity without refreshing committed
+  evidence. Corrected the discovery notes, which had mischaracterised it. The `cdf-subprocess`
+  timeout flake was also diagnosed to a fixture startup race rather than left labelled "flaky".
 
 - 2026-08-07: Opened from A2 increment 5. The differential-sweep method is the durable lesson: when
   a change touches a versioned serialized artifact, compare failure *sets* against a stashed
