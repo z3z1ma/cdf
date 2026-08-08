@@ -119,7 +119,21 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 
 ## Blockers
 
-None. The ticket is executable after this record-publication turn.
+**AC4 authoring half — blocked on one ratification.** The CDC foundation spec requires
+`maximum_transaction_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
+lower". The runtime half is implemented and proven (`TransactionByteCeiling::from_spill_budget`),
+but `.10x/specs/cdc-resource-authoring-and-continuous-run.md` defines `mode`, `bootstrap`,
+`DISPOSITION CDC_APPLY`, and the `DELETE` clause and **does not define any surface through which a
+resource declares this value**. No other active spec does either.
+
+Where it is declared is a user-visible semantic choice, so it is not filled here. Candidates: a
+driver-owned `upstream(...)` argument, a resource execution clause in the SQL envelope, a
+project-level `cdf.toml` setting, or deliberately not authorable in v1 so the host spill budget is
+the only authority. The runtime already behaves correctly under the last option, which is why this
+blocks only the authoring half of AC4 and nothing else in the ticket.
+
+The remaining criteria — crash-recovery proof, `jobs` invariance, and the AC8 conformance
+certificate — are unblocked and are ordinary remaining work.
 
 ## Evidence
 
@@ -201,9 +215,36 @@ cargo test -p cdf-runtime --locked --no-fail-fast                   182 passed, 
   archetype takes no concurrency input and owns one ordered stream), and failure injection at the
   package/receipt/checkpoint transitions rather than only at admission.
 
-**Remaining for closure:** compiled-plan wiring for `maximum_transaction_bytes`; physical package
-construction through the A1.5 reducer; crash-recovery proof across restart; `jobs` invariance;
-and the finite-drain conformance certificate. AC8 is untouched.
+### Increment 3 — removing a duplicated authority (2026-08-07)
+
+Inspection before extending AC5 found that **A1.5 already implemented the physical CDC reduction**:
+`crates/cdf-engine/src/execution/orchestration.rs:6717` builds
+`KeyedEffectInputOrder::SourceProtocol` under `KeyedEffectWinnerPolicy::Last` whenever the
+disposition is `CdcApply`, consuming a `(protocol, scope_sha256)` tuple — exactly what
+`SourcePosition::cdc_protocol_order_identity` returns.
+
+The archetype's first cut of `keyed_effect_input_order()` therefore constructed the same authority a
+second time. That is the failure mode the CDC foundation spec names directly — "MUST NOT retain
+separate pattern matches with subtly different log semantics". The two sites agreed on the day they
+were written and had no shared test: the archetype used `KEYED_EFFECT_ORDER_VERSION` while the
+engine hardcodes `version: 1`, so a future bump of the constant would have silently desynchronised
+package reduction evidence from the runtime's claim about it.
+
+Replaced with `CompletedSettlementUnit::cdc_order_identity()`, which returns the identity tuple and
+feeds the engine's existing single construction site. `WINNER_POLICY` remains as a documented
+constant because last-change-wins is what distinguishes CDC from unordered merge.
+
+Gates after the change: 32 tests pass, `clippy -D warnings` exit 0, `fmt --check` exit 0.
+
+**Note, not fixed — outside this ticket's circle.** The engine's `version: 1` literal at
+`orchestration.rs:6719` should be `KEYED_EFFECT_ORDER_VERSION`. It is correct today and changing it
+is a one-line edit, but it belongs to whoever owns that file rather than to A2's diff. Recorded here
+so the hazard has an owner.
+
+**Remaining for closure:** the AC4 authoring surface (see Blockers); crash-recovery proof across
+restart; `jobs` invariance; and the AC8 finite-drain conformance certificate. AC5's physical
+construction is **already satisfied by A1.5** — the archetype now feeds it rather than duplicating
+it, which is a correction to increment 2's status table.
 
 ## Review
 

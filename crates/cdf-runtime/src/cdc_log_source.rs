@@ -19,8 +19,8 @@
 //! archetype records that crossing as phase-local overshoot so the epoch can report it truthfully.
 
 use cdf_kernel::{
-    CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, KEYED_EFFECT_ORDER_VERSION,
-    KeyedEffectInputOrder, KeyedEffectWinnerPolicy, Result, SourcePosition, WatermarkClaim,
+    CdcMetadata, CdfError, EpochClosureTrigger, ExecutionExtent, KeyedEffectWinnerPolicy, Result,
+    SourcePosition, WatermarkClaim,
 };
 use cdf_memory::SpillBudgetCoordinator;
 
@@ -257,18 +257,19 @@ impl CompletedSettlementUnit {
     /// authoritative winner and fails on duplicate keys instead of silently picking one.
     pub const WINNER_POLICY: KeyedEffectWinnerPolicy = KeyedEffectWinnerPolicy::Last;
 
-    /// The canonical keyed-effect input order handed to package finalization.
+    /// The `(protocol, scope_sha256)` order identity this unit hands to package finalization.
     ///
-    /// Derived from the terminal position's protocol order identity, so the reduction is scoped to
-    /// exactly the log lineage that proved the ordering. A position that is not an admitted CDC
-    /// kind cannot produce one.
-    pub fn keyed_effect_input_order(&self) -> Result<KeyedEffectInputOrder> {
-        let (protocol, scope_sha256) = self.terminal_position.cdc_protocol_order_identity()?;
-        Ok(KeyedEffectInputOrder::SourceProtocol {
-            protocol,
-            version: KEYED_EFFECT_ORDER_VERSION,
-            scope_sha256,
-        })
+    /// This deliberately returns the identity tuple rather than a built
+    /// [`KeyedEffectInputOrder`](cdf_kernel::KeyedEffectInputOrder). The engine already owns the
+    /// single construction site for `SourceProtocol` order during package finalization; building a
+    /// second one here would be exactly the "separate pattern matches with subtly different log
+    /// semantics" the CDC foundation forbids, and the two could drift without any test noticing.
+    ///
+    /// The identity comes from the *terminal* position, so the reduction is scoped to the log
+    /// lineage that actually proved the ordering. A position that is not an admitted CDC kind
+    /// cannot produce one.
+    pub fn cdc_order_identity(&self) -> Result<(String, String)> {
+        self.terminal_position.cdc_protocol_order_identity()
     }
 
     /// Lowers a proven terminal unit into the one canonical safe frontier the drain controller
@@ -1269,18 +1270,11 @@ mod tests {
             .unwrap();
         let completed = source.complete_unit(&pg(20, "orders")).unwrap();
 
-        let order = completed.keyed_effect_input_order().unwrap();
-        let KeyedEffectInputOrder::SourceProtocol {
-            protocol,
-            version,
-            scope_sha256,
-        } = order
-        else {
-            panic!("CDC must reduce under source-protocol order, never unordered");
-        };
+        let (protocol, scope_sha256) = completed.cdc_order_identity().unwrap();
         assert_eq!(protocol, "postgresql");
-        assert_eq!(version, KEYED_EFFECT_ORDER_VERSION);
         assert!(scope_sha256.starts_with("sha256:"));
+        // The engine turns this tuple into `KeyedEffectInputOrder::SourceProtocol` under
+        // last-change-wins; CDC must never reduce as unordered.
         assert_eq!(
             CompletedSettlementUnit::WINNER_POLICY,
             KeyedEffectWinnerPolicy::Last
@@ -1298,11 +1292,7 @@ mod tests {
             .unwrap();
         let completed = source.complete_unit(&mongo_second()).unwrap();
 
-        let KeyedEffectInputOrder::SourceProtocol { protocol, .. } =
-            completed.keyed_effect_input_order().unwrap()
-        else {
-            panic!("event prefixes still reduce under source-protocol order");
-        };
+        let (protocol, _) = completed.cdc_order_identity().unwrap();
         assert_eq!(protocol, "mongodb_change_stream");
     }
 
