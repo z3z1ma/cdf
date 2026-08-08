@@ -58,6 +58,9 @@ pub enum ExecutionDeclaration {
         watermark: Box<WatermarkDeclaration>,
         late_data: LateDataDeclaration,
         safe_frontier: SafeFrontierDeclaration,
+        /// Optional CDC settlement-unit ceiling. Absent means the resolved host spill budget is the
+        /// sole authority; a declared value may only lower it.
+        maximum_transaction_bytes: Option<u64>,
     },
 }
 
@@ -72,6 +75,7 @@ enum UncheckedExecutionDeclaration {
         watermark: Option<Box<WatermarkDeclaration>>,
         late_data: Option<LateDataDeclaration>,
         safe_frontier: Option<SafeFrontierDeclaration>,
+        maximum_transaction_bytes: Option<u64>,
     },
 }
 
@@ -91,7 +95,11 @@ impl<'de> Deserialize<'de> for ExecutionDeclaration {
                 watermark,
                 late_data,
                 safe_frontier,
+                maximum_transaction_bytes,
             } => Ok(Self::Drain {
+                // Absent is legal and distinct from zero: it means no resource ceiling was
+                // declared, so host spill authority stands alone.
+                maximum_transaction_bytes,
                 checkpoint_cadence: checkpoint_cadence.ok_or_else(|| {
                     D::Error::custom(
                         "drain execution is missing `checkpoint_cadence`; add a typed cadence such as `{ kind = \"rows\", count = 100000 }`",

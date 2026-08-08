@@ -460,6 +460,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             },
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: DrainTermination::Records { count: 6 },
     };

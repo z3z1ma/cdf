@@ -114,6 +114,23 @@ impl TransactionByteCeiling {
         Self::resolve(coordinator.snapshot().budget_bytes, resource_maximum_bytes)
     }
 
+    /// Resolves the ceiling from a compiled drain extent against live host spill authority.
+    ///
+    /// This is the production path: the resource's `MAXIMUM TRANSACTION BYTES` declaration travels
+    /// in the compiled `StreamEpochPolicy`, and the host budget remains the hard bound it can only
+    /// lower.
+    pub fn from_extent(
+        extent: &ExecutionExtent,
+        coordinator: &dyn SpillBudgetCoordinator,
+    ) -> Result<Self> {
+        let ExecutionExtent::Drain { policy, .. } = extent else {
+            return Err(CdfError::contract(
+                "CDC transaction ceiling requires a drain execution extent",
+            ));
+        };
+        Self::from_spill_budget(coordinator, policy.maximum_transaction_bytes)
+    }
+
     #[must_use]
     pub const fn effective_bytes(&self) -> u64 {
         self.effective_bytes
@@ -635,6 +652,7 @@ mod tests {
                 watermark: WatermarkPolicy::Disabled,
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                maximum_transaction_bytes: None,
             },
             termination: DrainTermination::Records { count: 1_000_000 },
         }
@@ -1322,6 +1340,47 @@ mod tests {
         assert_ne!(
             start.cdc_protocol_order_identity().unwrap(),
             pg(20, "shipments").cdc_protocol_order_identity().unwrap()
+        );
+    }
+
+    /// The compiled declaration must actually reach the runtime bound, and must still be unable to
+    /// raise it above host authority.
+    #[test]
+    fn compiled_declaration_resolves_against_host_authority() {
+        let budget = FixedSpillBudget::new(4_096).unwrap();
+
+        let undeclared = quiet_extent();
+        assert_eq!(
+            TransactionByteCeiling::from_extent(&undeclared, &budget)
+                .unwrap()
+                .effective_bytes(),
+            4_096,
+            "an undeclared resource inherits the host budget"
+        );
+
+        let mut lowered = quiet_extent();
+        if let ExecutionExtent::Drain { policy, .. } = &mut lowered {
+            policy.maximum_transaction_bytes = Some(1_024);
+        }
+        assert_eq!(
+            TransactionByteCeiling::from_extent(&lowered, &budget)
+                .unwrap()
+                .effective_bytes(),
+            1_024
+        );
+
+        let mut raised = quiet_extent();
+        if let ExecutionExtent::Drain { policy, .. } = &mut raised {
+            policy.maximum_transaction_bytes = Some(8_192);
+        }
+        assert!(
+            TransactionByteCeiling::from_extent(&raised, &budget).is_err(),
+            "a compiled declaration may not exceed live host spill authority"
+        );
+
+        assert!(
+            TransactionByteCeiling::from_extent(&ExecutionExtent::bounded(), &budget).is_err(),
+            "a bounded extent has no CDC settlement unit to bound"
         );
     }
 

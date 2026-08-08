@@ -1111,6 +1111,7 @@ mod tests {
                 },
                 late_data: cdf_kernel::LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                maximum_transaction_bytes: None,
             },
             termination: DrainTermination::Records { count: 1_000 },
         };

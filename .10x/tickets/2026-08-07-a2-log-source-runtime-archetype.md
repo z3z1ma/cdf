@@ -119,7 +119,10 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 
 ## Blockers
 
-**AC4 authoring half — blocked on one ratification.** The CDC foundation spec requires
+None. The former AC4 authoring blocker was ratified on 2026-08-07 and implemented; the record of it
+is kept below because it explains the grammar choice.
+
+**AC4 authoring half — RESOLVED 2026-08-07.** The CDC foundation spec requires
 `maximum_transaction_bytes` to be "a mandatory compiled CDC capability" that "a project/resource MAY
 lower". The runtime half is implemented and proven (`TransactionByteCeiling::from_spill_budget`),
 but `.10x/specs/cdc-resource-authoring-and-continuous-run.md` defines `mode`, `bootstrap`,
@@ -261,10 +264,57 @@ frontier. It does **not** exercise the SQLite checkpoint store, the package work
 recovery, or a real process kill, so it does not discharge acceptance scenarios 2 and 3 of the CDC
 foundation spec — those need the chaos layer, and they belong to AC8.
 
-**Remaining for closure:** the AC4 authoring surface (see Blockers); `jobs` invariance; and the AC8
-finite-drain conformance certificate including real crash recovery. AC5's physical construction is
-**already satisfied by A1.5** — the archetype now feeds it rather than duplicating it, which is a
-correction to increment 2's status table.
+### Increment 5 — compiled `maximum_transaction_bytes` authority (2026-08-07)
+
+The user ratified the execution clause as the declaration site. Implemented end to end:
+
+- `StreamEpochPolicy` gains `maximum_transaction_bytes: Option<u64>`, rejecting a declared zero;
+  `STREAM_EPOCH_POLICY_VERSION` bumped 1 → 2 as a coherent artifact replacement with no compatibility
+  reader, per `.10x/knowledge/pre-production-current-only-policy.md`.
+- `ExecutionDeclaration::Drain` and the declarative compiler thread the value into the compiled plan.
+- Grammar: an optional trailing `MAXIMUM TRANSACTION BYTES n` member of `EXECUTION DRAIN`. It follows
+  the existing positional keyword vocabulary (`PACKAGE BYTES n`) rather than the `key => value` form
+  sketched during ratification, which would have clashed with the strict member grammar. Absence is
+  distinct from a declared value.
+- `TransactionByteCeiling::from_extent` resolves the compiled value against live host spill
+  authority — the production path.
+- `.10x/specs/cdc-resource-authoring-and-continuous-run.md` gained a "Settlement-unit byte ceiling"
+  section defining the surface and its rules.
+
+**AC4 is now fully supported.**
+
+#### Regression discipline for the version bump
+
+Bumping a serialized artifact version risks breaking golden hashes across the workspace, so the
+change was verified by differential sweep rather than by inspection.
+
+```text
+baseline (main, changes stashed):  36 failing tests
+with changes, before fix:          36 failing — 1 NEW, 1 flaky-flip
+with changes, after fix:           33 failing — 0 NEW vs baseline
+```
+
+The one genuine regression was mine: `execution_extent::tests::
+every_versioned_nested_artifact_rejects_invalid_deserialization` hardcoded `2` as its
+"invalid version" sentinel, which the bump silently made **valid** — converting a rejection test into
+a vacuous assertion. Fixed by deriving each sentinel from its own constant
+(`STREAM_EPOCH_POLICY_VERSION + 1`, `EPOCH_FRONTIER_VERSION + 1`) so it cannot rot on the next bump.
+This is the same magic-number hazard recorded against `orchestration.rs:6719` in increment 3.
+
+Gates: `fmt --check` exit 0; strict Clippy exit 0 for `cdf-kernel`, `cdf-runtime`, `cdf-declarative`,
+`cdf-project`, `cdf-engine`.
+
+**The 33 remaining workspace failures are pre-existing on `main` and are NOT caused by this ticket.**
+They cluster in schema promotion, package replay, DuckDB doctor drift, and live-run conformance, and
+include `tests::determinism::package_identity_is_invariant_to_source_batch_rechunking`. Three tests
+differed between sweeps in both directions, so that suite contains flaky live-database tests. This
+is a discovered condition with its own owner:
+`.10x/tickets/2026-08-07-workspace-suite-failing-and-flaky-baseline.md`.
+
+**Remaining for closure:** `jobs` invariance, and the AC8 finite-drain conformance certificate
+including real crash recovery. AC5's physical construction is **already satisfied by A1.5** — the
+archetype now feeds it rather than duplicating it, which is a correction to increment 2's status
+table.
 
 ## Review
 

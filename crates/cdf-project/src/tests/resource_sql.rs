@@ -136,3 +136,56 @@ fn resource_file_rejects_incomplete_or_zero_drain_policy() {
         assert!(error.message.contains("CDF-RESOURCE"), "{error:?}");
     }
 }
+
+#[test]
+fn drain_policy_accepts_an_optional_maximum_transaction_bytes() {
+    let parsed = parse_resource_file(
+        "RESOURCE\nEXECUTION DRAIN (\n CHECKPOINT ROWS 100000,\n PACKAGE BYTES 67108864,\n UNTIL DURATION MILLISECONDS 60000,\n WATERMARK DISABLED,\n LATE DATA QUARANTINE,\n SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION,\n MAXIMUM TRANSACTION BYTES 268435456\n)\nAS SELECT * FROM upstream(source => 'events', table => 'activity')",
+        "cdf/analytics/activity.cdf.sql",
+    )
+    .unwrap();
+
+    let ExecutionDeclaration::Drain {
+        maximum_transaction_bytes,
+        ..
+    } = parsed.envelope.execution.unwrap().value
+    else {
+        panic!("expected drain");
+    };
+    assert_eq!(maximum_transaction_bytes, Some(268_435_456));
+}
+
+#[test]
+fn drain_policy_without_maximum_transaction_bytes_declares_none() {
+    let parsed = parse_resource_file(
+        "RESOURCE\nEXECUTION DRAIN (\n CHECKPOINT ROWS 100000,\n PACKAGE BYTES 67108864,\n UNTIL DURATION MILLISECONDS 60000,\n WATERMARK DISABLED,\n LATE DATA QUARANTINE,\n SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION\n)\nAS SELECT * FROM upstream(source => 'events', table => 'activity')",
+        "cdf/analytics/activity.cdf.sql",
+    )
+    .unwrap();
+
+    let ExecutionDeclaration::Drain {
+        maximum_transaction_bytes,
+        ..
+    } = parsed.envelope.execution.unwrap().value
+    else {
+        panic!("expected drain");
+    };
+    assert_eq!(
+        maximum_transaction_bytes, None,
+        "absent must stay distinct from a declared value"
+    );
+}
+
+#[test]
+fn maximum_transaction_bytes_rejects_zero_at_its_token() {
+    let error = parse_resource_file(
+        "RESOURCE\nEXECUTION DRAIN (\n CHECKPOINT ROWS 100000,\n PACKAGE BYTES 67108864,\n UNTIL DURATION MILLISECONDS 60000,\n WATERMARK DISABLED,\n LATE DATA QUARANTINE,\n SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION,\n MAXIMUM TRANSACTION BYTES 0\n)\nAS SELECT * FROM upstream(source => 'events', table => 'activity')",
+        "cdf/analytics/activity.cdf.sql",
+    )
+    .unwrap_err();
+    assert!(
+        error.message.contains("greater than zero"),
+        "unexpected message: {}",
+        error.message
+    );
+}

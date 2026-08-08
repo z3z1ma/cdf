@@ -1133,6 +1133,7 @@ mod tests {
                 },
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                maximum_transaction_bytes: None,
             },
             termination: DrainTermination::Records { count: 100 },
         }
@@ -1152,6 +1153,7 @@ mod tests {
                 watermark: WatermarkPolicy::Disabled,
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                maximum_transaction_bytes: None,
             },
             termination,
         }

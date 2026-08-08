@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{CanonicalArrowTimeUnit, CdfError, PartitionId, Result, SourcePosition};
 
 pub const EXECUTION_EXTENT_VERSION: u16 = 1;
-pub const STREAM_EPOCH_POLICY_VERSION: u16 = 1;
+pub const STREAM_EPOCH_POLICY_VERSION: u16 = 2;
 pub const WATERMARK_CLAIM_VERSION: u16 = 1;
 pub const EPOCH_FRONTIER_VERSION: u16 = 1;
 pub const EPOCH_CLOSURE_EVIDENCE_VERSION: u16 = 1;
@@ -135,6 +135,13 @@ pub struct StreamEpochPolicy {
     pub watermark: WatermarkPolicy,
     pub late_data: LateDataAction,
     pub safe_frontier: SafeFrontierPolicy,
+    /// Resource-declared ceiling on one CDC settlement unit, in bytes.
+    ///
+    /// `None` means the resource declared no ceiling and the resolved host spill budget is the sole
+    /// authority. A resource may only *lower* the host bound, so this value is a request that the
+    /// runtime resolves against host authority rather than a bound in its own right. The kernel
+    /// invents no numeric default.
+    pub maximum_transaction_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +153,7 @@ struct UncheckedStreamEpochPolicy {
     watermark: WatermarkPolicy,
     late_data: LateDataAction,
     safe_frontier: SafeFrontierPolicy,
+    maximum_transaction_bytes: Option<u64>,
 }
 
 impl TryFrom<UncheckedStreamEpochPolicy> for StreamEpochPolicy {
@@ -159,6 +167,7 @@ impl TryFrom<UncheckedStreamEpochPolicy> for StreamEpochPolicy {
             watermark: value.watermark,
             late_data: value.late_data,
             safe_frontier: value.safe_frontier,
+            maximum_transaction_bytes: value.maximum_transaction_bytes,
         };
         policy.validate()?;
         Ok(policy)
@@ -175,6 +184,11 @@ impl StreamEpochPolicy {
         self.checkpoint_cadence.validate("checkpoint cadence")?;
         self.package_rotation.validate("package rotation")?;
         self.watermark.validate()?;
+        if self.maximum_transaction_bytes == Some(0) {
+            return Err(CdfError::contract(
+                "maximum transaction bytes must be greater than zero when declared",
+            ));
+        }
 
         if (matches!(
             self.checkpoint_cadence,
@@ -1244,8 +1258,11 @@ mod tests {
 
     #[test]
     fn every_versioned_nested_artifact_rejects_invalid_deserialization() {
+        // Derive the invalid sentinel from each constant rather than hardcoding a literal. A
+        // hardcoded `2` silently became *valid* when STREAM_EPOCH_POLICY_VERSION was bumped to 2,
+        // turning this rejection test into a no-op assertion.
         let mut policy = serde_json::to_value(sample_policy()).unwrap();
-        policy["version"] = 2.into();
+        policy["version"] = (STREAM_EPOCH_POLICY_VERSION + 1).into();
         assert!(serde_json::from_value::<StreamEpochPolicy>(policy).is_err());
 
         let claim = WatermarkClaim {
@@ -1263,7 +1280,7 @@ mod tests {
             observation_context: WatermarkObservationContext::SourcePoll,
         };
         let mut invalid_claim = serde_json::to_value(&claim).unwrap();
-        invalid_claim["policy_version"] = 2.into();
+        invalid_claim["policy_version"] = (STREAM_EPOCH_POLICY_VERSION + 1).into();
         assert!(serde_json::from_value::<WatermarkClaim>(invalid_claim).is_err());
 
         let frontier = EpochFrontier {
@@ -1277,7 +1294,7 @@ mod tests {
             watermark: Some(claim),
         };
         let mut invalid_frontier = serde_json::to_value(&frontier).unwrap();
-        invalid_frontier["version"] = 2.into();
+        invalid_frontier["version"] = (EPOCH_FRONTIER_VERSION + 1).into();
         assert!(serde_json::from_value::<EpochFrontier>(invalid_frontier).is_err());
 
         let evidence = EpochClosureEvidence {
@@ -1306,6 +1323,7 @@ mod tests {
             watermark: WatermarkPolicy::Disabled,
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         }
     }
 

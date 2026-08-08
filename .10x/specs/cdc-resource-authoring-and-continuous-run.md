@@ -58,6 +58,47 @@ CDC keys follow the same final-output resolution and protection laws as merge ke
 policy, key order, and soft marker are compiled plan, package intent, destination receipt, and
 replay identity. PostgreSQL and DuckDB are the first required `cdc_apply` destinations.
 
+## Settlement-unit byte ceiling
+
+`.10x/specs/cdc-log-source-foundation.md` requires `maximum_transaction_bytes` to be a mandatory
+compiled CDC capability that a project or resource MAY lower but MUST NOT raise above host
+authority. This section defines the authoring surface, ratified 2026-08-07.
+
+The declaration is an **optional trailing member of the `EXECUTION DRAIN` clause**, not a driver
+argument. It bounds the execution envelope's memory and spill behavior rather than protocol
+semantics, so placing it beside the other drain policy members keeps one declaration site instead of
+one per adapter:
+
+```sql
+EXECUTION DRAIN (
+  CHECKPOINT ROWS 100000,
+  PACKAGE BYTES 67108864,
+  UNTIL DURATION MILLISECONDS 60000,
+  WATERMARK DISABLED,
+  LATE DATA QUARANTINE,
+  SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION,
+  MAXIMUM TRANSACTION BYTES 268435456
+)
+```
+
+The member follows the existing purpose-built keyword vocabulary (`PACKAGE BYTES n`), not a
+`key => value` map, because the drain members are typed policy rather than an open option bag.
+
+Rules:
+
+- the member is OPTIONAL and MUST be last when present;
+- omitting it is distinct from declaring a value: absence means no resource ceiling exists and the
+  resolved host spill budget is the sole authority;
+- a declared value MUST be a positive integer; zero MUST be rejected at its own token;
+- a declared value MUST NOT exceed the resolved host spill budget. Exceeding it is a configuration
+  error, not a silent clamp, because raising the bound would let one settlement unit exceed the
+  memory envelope the host proved;
+- the kernel MUST NOT invent a numeric default at any layer;
+- the resolved value is compiled plan authority and travels in `StreamEpochPolicy`.
+
+Only CDC resources bound a settlement unit, which is why the member is optional rather than required
+of every finite drain.
+
 ## Continuous execution
 
 For a CDC resource, `cdf run` repeatedly executes the existing finite `Drain` epoch:

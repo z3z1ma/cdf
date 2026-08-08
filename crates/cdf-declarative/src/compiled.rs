@@ -424,6 +424,7 @@ pub fn compile_execution_extent(
             watermark,
             late_data,
             safe_frontier,
+            maximum_transaction_bytes,
         }) => ExecutionExtent::Drain {
             version: cdf_kernel::EXECUTION_EXTENT_VERSION,
             policy: StreamEpochPolicy {
@@ -441,6 +442,7 @@ pub fn compile_execution_extent(
                         SafeFrontierPolicy::CanonicalAdmittedSourcePosition
                     }
                 },
+                maximum_transaction_bytes: *maximum_transaction_bytes,
             },
             termination: match termination.as_ref() {
                 DrainTerminationDeclaration::Quiescent => DrainTermination::Quiescent,

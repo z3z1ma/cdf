@@ -797,6 +797,7 @@ pub(super) fn sample_stream_epoch_policy() -> StreamEpochPolicy {
         watermark: WatermarkPolicy::Disabled,
         late_data: LateDataAction::Quarantine,
         safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        maximum_transaction_bytes: None,
     }
 }
 

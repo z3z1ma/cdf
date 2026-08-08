@@ -1484,6 +1484,7 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Records { count: 2 },
     };
@@ -1591,6 +1592,7 @@ fn cold_empty_drain_returns_no_op_without_package_destination_or_checkpoint() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Duration {
             milliseconds: 60_000,
@@ -1676,6 +1678,7 @@ fn drain_preserves_committed_summary_when_the_following_epoch_is_empty() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Records { count: 2 },
     };
@@ -1756,6 +1759,7 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Records { count: 2 },
     };
@@ -1863,6 +1867,7 @@ fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Records { count: 3 },
     };
@@ -2046,6 +2051,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
             watermark: cdf_kernel::WatermarkPolicy::Disabled,
             late_data: cdf_kernel::LateDataAction::Quarantine,
             safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            maximum_transaction_bytes: None,
         },
         termination: cdf_kernel::DrainTermination::Records { count: 2 },
     };

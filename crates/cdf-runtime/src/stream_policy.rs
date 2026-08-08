@@ -423,6 +423,7 @@ mod tests {
                 watermark,
                 late_data: LateDataAction::Quarantine,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+                maximum_transaction_bytes: None,
             },
             termination,
         }
