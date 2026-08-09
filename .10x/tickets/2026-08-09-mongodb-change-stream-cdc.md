@@ -107,6 +107,11 @@ retention, and live replica-set/Atlas certification.
   meaning and unknown collections/DDL fail before their token advances. Gapless snapshot bootstrap
   and typed heterogeneous database execution remain open.
 
+- 2026-08-09: Repaired the neutral event-prefix settlement runtime to accept a source-proven empty
+  scanned prefix. This is required for `bootstrap => 'latest'`: MongoDB can issue a post-batch
+  resume token before any event exists, and CDF must durably checkpoint that exact token without
+  inventing a data row. Committed-transaction units still reject empty settlement.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -123,6 +128,10 @@ retention, and live replica-set/Atlas certification.
   receipt/package CDC effect reduction remains green after routed delete-key projection changes.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-source-mongodb -p cdf-kernel -p cdf-engine -p
   cdf-cli --all-targets -- -D warnings` — strict affected-package Clippy passed.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-runtime
+  event_prefix_accepts_a_source_proven_empty_scanned_prefix --lib` — the neutral runtime accepts
+  the MongoDB post-batch-token bootstrap frontier with zero fabricated rows while retaining the
+  existing nonempty requirement for committed-transaction settlement.
 
 ## Review
 

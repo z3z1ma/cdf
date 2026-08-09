@@ -647,7 +647,7 @@ impl CdcLogSourceRuntime {
                     "CDC terminal position scope does not match the settlement unit",
                 ));
             }
-            if unit.counters.rows == 0 {
+            if unit.counters.rows == 0 && kind != SettlementUnitKind::EventPrefix {
                 return Err(CdfError::data(
                     "CDC settlement unit cannot complete without an admitted change",
                 ));
@@ -1463,6 +1463,22 @@ mod tests {
         assert_eq!(completed.terminal_position, mongo_second());
         assert_eq!(completed.rows, 3);
         assert!(completed.overshoot.is_none());
+    }
+
+    #[test]
+    fn event_prefix_accepts_a_source_proven_empty_scanned_prefix() {
+        let extent = quiet_extent();
+        let mut source = runtime(SettlementUnitKind::EventPrefix, &extent);
+        let post_batch = mongo_first();
+
+        source.begin_unit(&post_batch).unwrap();
+        let completed = source.complete_unit(&post_batch).unwrap();
+
+        assert_eq!(completed.kind, SettlementUnitKind::EventPrefix);
+        assert_eq!(completed.terminal_position, post_batch);
+        assert_eq!(completed.batches, 0);
+        assert_eq!(completed.rows, 0);
+        assert_eq!(completed.bytes, 0);
     }
 
     #[test]
