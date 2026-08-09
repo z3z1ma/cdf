@@ -73,6 +73,9 @@ pub struct EnginePlan {
     /// Ordered normalized key authority for merge/CDC package effects.
     pub effect_key: Vec<String>,
     pub keyed_effects: cdf_kernel::KeyedEffectPlanAuthority,
+    /// Complete pre-admitted output family. Runtime observations cannot extend it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_family: Option<cdf_kernel::RouteTargetFamily>,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
     pub output_schema: CompiledArrowSchema,
@@ -82,6 +85,12 @@ pub struct EnginePlan {
 }
 
 impl EnginePlan {
+    pub fn bind_route_family(mut self, family: cdf_kernel::RouteTargetFamily) -> Result<Self> {
+        crate::planning::validate_route_family(Some(&family), &self.output_schema)?;
+        self.route_family = Some(family);
+        Ok(self)
+    }
+
     pub fn validate_execution_extent_for_execution(&self) -> Result<()> {
         if self.execution_extent != self.explain.execution_extent {
             return Err(CdfError::contract(

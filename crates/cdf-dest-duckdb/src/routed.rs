@@ -18,7 +18,7 @@ use crate::{
     package::{field_plan, persistence_fields, validate_field_names, validate_user_schema_fields},
     receipts::build_receipt,
     sql::{duckdb_error, duckdb_version, parse_target, quote_ident, validate_system_ident},
-    table::{create_columns_sql, plan_table},
+    table::{create_columns_sql, plan_absent_table, plan_table},
 };
 
 struct RoutedOutputPlan {
@@ -39,6 +39,16 @@ struct RoutedCounts {
 }
 
 impl crate::DuckDbDestination {
+    pub(crate) fn plan_routed(&self, commit: &DestinationCommitRequest) -> Result<CommitPlan> {
+        let (_, plan) = if self.database_path.exists() {
+            let conn = self.open_read_only_connection()?;
+            prepare_routed_commit(Some(&conn), commit)?
+        } else {
+            prepare_routed_commit(None, commit)?
+        };
+        Ok(plan)
+    }
+
     pub(crate) fn commit_routed(
         &mut self,
         inputs: &PackageReplayInputs,
@@ -86,7 +96,7 @@ fn commit_routed_transaction(
     segments: CommitSegmentIterator,
 ) -> Result<cdf_runtime::DestinationCommitOutcome> {
     let commit = &inputs.destination_commit;
-    let PackageContentAuthority::Routed { family, outputs } = &commit.content else {
+    let PackageContentAuthority::Routed { family, .. } = &commit.content else {
         return Err(CdfError::internal(
             "DuckDB routed commit received ordinary package content",
         ));
@@ -96,39 +106,15 @@ fn commit_routed_transaction(
             "DuckDB routed target family differs from package commit authority",
         ));
     }
-    let plans = plan_outputs(conn, commit, family, outputs)?;
-    let migrations = plans
-        .iter()
-        .flat_map(|plan| {
-            plan.table_plan
-                .ddl
-                .iter()
-                .chain(plan.unique_index_ddl.iter())
-                .map(move |ddl| (plan.binding.output_binding.clone(), ddl.clone()))
-        })
-        .enumerate()
-        .map(|(index, (binding, ddl))| MigrationRecord {
-            migration_id: format!("duckdb-route-{:03}-{}", index + 1, binding.as_str()),
-            description: ddl,
-        })
-        .collect::<Vec<_>>();
-    let plan = CommitPlan {
-        plan_id: PlanId::new(format!(
-            "duckdb-routed:{}:{}",
-            commit.target.as_str(),
-            commit.idempotency_token.as_str()
-        ))?,
-        target: commit.target.clone(),
-        disposition: commit.disposition.clone(),
-        idempotency: IdempotencySupport::PackageToken,
-        migrations,
-        delivery_guarantee: match commit.disposition {
-            WriteDisposition::Append => DeliveryGuarantee::EffectivelyOncePerPackage,
-            WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
-            WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
-            WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
-        },
+    let (plans, plan) = prepare_routed_commit(Some(conn), commit)?;
+    let PackageContentAuthority::Routed { outputs, .. } = &commit.content else {
+        unreachable!("routed commit was validated above")
     };
+    if plan.target != commit.target || plan.disposition != commit.disposition {
+        return Err(CdfError::internal(
+            "DuckDB routed plan changed its commit target or disposition",
+        ));
+    }
     let segment_acks = commit
         .segments
         .iter()
@@ -223,8 +209,58 @@ fn commit_routed_transaction(
     ))
 }
 
+fn prepare_routed_commit(
+    conn: Option<&Connection>,
+    commit: &DestinationCommitRequest,
+) -> Result<(Vec<RoutedOutputPlan>, CommitPlan)> {
+    let PackageContentAuthority::Routed { family, outputs } = &commit.content else {
+        return Err(CdfError::contract(
+            "DuckDB routed planning requires routed package content",
+        ));
+    };
+    if family.logical_target != commit.target {
+        return Err(CdfError::data(
+            "DuckDB routed target family differs from its logical commit target",
+        ));
+    }
+    let plans = plan_outputs(conn, commit, family, outputs)?;
+    let migrations = plans
+        .iter()
+        .flat_map(|plan| {
+            plan.table_plan
+                .ddl
+                .iter()
+                .chain(plan.unique_index_ddl.iter())
+                .map(move |ddl| (plan.binding.output_binding.clone(), ddl.clone()))
+        })
+        .enumerate()
+        .map(|(index, (binding, ddl))| MigrationRecord {
+            migration_id: format!("duckdb-route-{:03}-{}", index + 1, binding.as_str()),
+            description: ddl,
+        })
+        .collect::<Vec<_>>();
+    let plan = CommitPlan {
+        plan_id: PlanId::new(format!(
+            "duckdb-routed:{}:{}",
+            commit.target.as_str(),
+            commit.idempotency_token.as_str()
+        ))?,
+        target: commit.target.clone(),
+        disposition: commit.disposition.clone(),
+        idempotency: IdempotencySupport::PackageToken,
+        migrations,
+        delivery_guarantee: match commit.disposition {
+            WriteDisposition::Append => DeliveryGuarantee::EffectivelyOncePerPackage,
+            WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
+            WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
+            WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
+        },
+    };
+    Ok((plans, plan))
+}
+
 fn plan_outputs(
-    conn: &Connection,
+    conn: Option<&Connection>,
     commit: &DestinationCommitRequest,
     family: &cdf_kernel::RouteTargetFamily,
     outputs: &[cdf_kernel::RoutedOutputContentAuthority],
@@ -244,12 +280,19 @@ fn plan_outputs(
             validate_field_names(&user_fields)?;
             let persisted_fields = persistence_fields(&user_fields);
             let target = parse_target(&binding.physical_target)?;
-            let table_plan = plan_table(
-                conn,
-                target.clone(),
-                &persisted_fields,
-                commit.disposition.clone(),
-            )?;
+            let table_plan = match conn {
+                Some(conn) => plan_table(
+                    conn,
+                    target.clone(),
+                    &persisted_fields,
+                    commit.disposition.clone(),
+                )?,
+                None => plan_absent_table(
+                    target.clone(),
+                    &persisted_fields,
+                    commit.disposition.clone(),
+                )?,
+            };
             let unique_index_ddl = match output.content.as_ref() {
                 PackageContentAuthority::Rows { .. } => None,
                 PackageContentAuthority::KeyedChanges { key, .. } => {

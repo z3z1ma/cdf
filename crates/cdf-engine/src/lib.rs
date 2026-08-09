@@ -37,7 +37,7 @@ pub use execution::{
     execute_to_package_with_progress_hook, execute_to_package_with_run_id,
     execute_to_package_with_segment_positions,
     execute_to_package_with_segment_positions_and_pre_finalize,
-    execute_to_package_with_streaming_hooks, normalize_record_batch,
+    execute_to_package_with_streaming_hooks, normalize_record_batch, planned_empty_package_content,
     preview_partition_selector_candidate, preview_resource,
 };
 pub use expression::{

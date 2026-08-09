@@ -44,6 +44,69 @@ fn zero_limit_finalizes_an_empty_package_without_source_contact() {
 }
 
 #[test]
+fn routed_package_partitions_rows_into_exact_compiled_outputs() {
+    let resource =
+        MockResource::tier_b(sample_batches()).with_write_disposition(WriteDisposition::Append);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let values = StringArray::from(vec!["one", "two", "three"]);
+    let family = cdf_kernel::RouteTargetFamily::new(
+        cdf_kernel::RoutePlan::new("name", 3).unwrap(),
+        cdf_kernel::TargetName::new("events").unwrap(),
+        Some(128),
+        (0..values.len()).map(|row| {
+            (
+                cdf_kernel::RouteScalar::from_array(&values, row).unwrap(),
+                plan.output_schema.arrow_schema_hash.clone(),
+            )
+        }),
+    )
+    .unwrap();
+    let plan = plan.bind_route_family(family.clone()).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let cdf_kernel::PackageContentAuthority::Routed {
+        family: actual,
+        outputs,
+    } = &reader.manifest().identity.content
+    else {
+        panic!("routed package content expected");
+    };
+    assert_eq!(actual, &family);
+    assert_eq!(outputs.len(), 3);
+    assert_eq!(output.profile.output_rows, 6);
+    for (binding, routed) in family.bindings.iter().zip(outputs) {
+        assert_eq!(routed.output_binding, binding.output_binding);
+        assert!(!routed.segment_ids.is_empty());
+        let rows = routed
+            .segment_ids
+            .iter()
+            .flat_map(|segment_id| read_package_segment(&reader, segment_id))
+            .map(|batch| {
+                let names = batch
+                    .column_by_name("name")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                assert!(
+                    (0..names.len())
+                        .all(|row| { names.value(row) == binding.route_value.canonical_value })
+                );
+                batch.num_rows()
+            })
+            .sum::<usize>();
+        assert_eq!(rows, 2);
+    }
+}
+
+#[test]
 fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
     let effective_schema = sample_schema();
     let physical_schema = incompatible_sample_schema();

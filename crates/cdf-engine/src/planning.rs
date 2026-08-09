@@ -394,6 +394,7 @@ impl Planner {
             write_disposition: finish.write_disposition,
             effect_key: finish.effect_key,
             keyed_effects: input.keyed_effects,
+            route_family: None,
             validation_program,
             schema_authority: finish.schema_authority,
             output_schema: finish.output_schema,
@@ -1403,6 +1404,38 @@ fn delivery_guarantee(disposition: WriteDisposition) -> DeliveryGuarantee {
         WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
         WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
     }
+}
+
+pub(crate) fn validate_route_family(
+    family: Option<&cdf_kernel::RouteTargetFamily>,
+    output: &CompiledArrowSchema,
+) -> Result<()> {
+    let Some(family) = family else {
+        return Ok(());
+    };
+    family.validate()?;
+    let schema = output.to_arrow()?;
+    let matches = schema
+        .fields()
+        .iter()
+        .filter(|field| field.name() == &family.route.field)
+        .collect::<Vec<_>>();
+    let [route_field] = matches.as_slice() else {
+        return Err(CdfError::contract(format!(
+            "route field `{}` must resolve exactly once in the compiled package output",
+            family.route.field
+        )));
+    };
+    let route_type = cdf_kernel::CanonicalArrowType::from_arrow(route_field.data_type())?;
+    if family.bindings.iter().any(|binding| {
+        binding.schema_hash != output.arrow_schema_hash
+            || binding.route_value.arrow_type != route_type
+    }) {
+        return Err(CdfError::contract(
+            "routed output family does not match its compiled homogeneous Arrow schema or route field type",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

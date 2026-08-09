@@ -1069,6 +1069,19 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
                     *missing_delete_keys,
                     *ignored_deletes,
                 ),
+                cdf_kernel::CommitCounts::Routed { .. } => (
+                    "routed",
+                    receipt.counts.settled_effect_count(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
             };
             insert_receipt
                 .execute(params![

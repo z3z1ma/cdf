@@ -388,6 +388,13 @@ pub trait DestinationRuntime {
     ///
     /// This path is separate from single-target ingress because one package may contain multiple
     /// Arrow schemas and every physical target must share one destination transaction.
+    fn plan_routed_package(&mut self, _commit: &DestinationCommitRequest) -> Result<CommitPlan> {
+        Err(CdfError::destination(format!(
+            "destination {} does not support routed target-family planning",
+            self.describe().destination_id
+        )))
+    }
+
     fn commit_routed_package(
         &mut self,
         _inputs: &PackageReplayInputs,

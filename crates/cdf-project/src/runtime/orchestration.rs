@@ -794,6 +794,13 @@ async fn run_project_inner(
     if let Some(graph) = &manifest_plan.plan.operator_graph {
         graph.validate_destination_join(&destination_capabilities)?;
     }
+    let package_schema_hash = manifest_plan
+        .plan
+        .route_family
+        .as_ref()
+        .map(|family| &family.schema_family_hash)
+        .unwrap_or(&execution.schema_hash)
+        .clone();
 
     let write_package_pre_finalize_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
@@ -809,33 +816,37 @@ async fn run_project_inner(
                     destination_policy: &destination_policy,
                     run_schema_authority: run_schema_authority.clone(),
                 },
-                &execution.schema_hash,
+                &package_schema_hash,
                 &scope,
                 &head,
             )?;
             write_quarantine_mirror_outcome_artifact(builder, &quarantine_mirror)
         };
-    let mut active_staged = ActiveStagedIngress::begin(
-        execution.destination.runtime_mut(),
-        StagedIngressPlan {
-            checkpoint_id: execution.checkpoint_id.clone(),
-            execution_plan_id: manifest_plan.plan.scan.plan_id.clone(),
-            target: execution.target.clone(),
-            disposition: manifest_plan.plan.write_disposition.clone(),
-            schema_hash: execution.schema_hash.clone(),
-            output_schema: manifest_plan.plan.output_arrow_schema()?.as_ref().clone(),
-            merge_keys: descriptor.merge_key.clone(),
-            workload: cdf_runtime::StagedIngressWorkload::planned_stream(
-                manifest_plan.plan.scan.partition_count()?,
-                manifest_plan
-                    .plan
-                    .scan
-                    .planned_source_bytes
-                    .map(|bytes| bytes.get()),
-            ),
-        },
-        &execution.services,
-    )?;
+    let mut active_staged = if manifest_plan.plan.route_family.is_some() {
+        None
+    } else {
+        ActiveStagedIngress::begin(
+            execution.destination.runtime_mut(),
+            StagedIngressPlan {
+                checkpoint_id: execution.checkpoint_id.clone(),
+                execution_plan_id: manifest_plan.plan.scan.plan_id.clone(),
+                target: execution.target.clone(),
+                disposition: manifest_plan.plan.write_disposition.clone(),
+                schema_hash: package_schema_hash.clone(),
+                output_schema: manifest_plan.plan.output_arrow_schema()?.as_ref().clone(),
+                merge_keys: descriptor.merge_key.clone(),
+                workload: cdf_runtime::StagedIngressWorkload::planned_stream(
+                    manifest_plan.plan.scan.partition_count()?,
+                    manifest_plan
+                        .plan
+                        .scan
+                        .planned_source_bytes
+                        .map(|bytes| bytes.get()),
+                ),
+            },
+            &execution.services,
+        )?
+    };
     let config = EngineExecutionConfig::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
         .with_statistics_profile(execution.telemetry.statistics_profile)

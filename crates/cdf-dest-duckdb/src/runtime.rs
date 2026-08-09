@@ -133,6 +133,13 @@ impl DestinationRuntime for DuckDbDestination {
         self
     }
 
+    fn plan_routed_package(
+        &mut self,
+        commit: &cdf_kernel::DestinationCommitRequest,
+    ) -> Result<cdf_kernel::CommitPlan> {
+        self.plan_routed(commit)
+    }
+
     fn commit_routed_package(
         &mut self,
         inputs: &cdf_package_contract::PackageReplayInputs,

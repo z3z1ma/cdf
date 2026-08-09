@@ -1094,6 +1094,7 @@ fn receipt_count_label(counts: &cdf_kernel::CommitCounts) -> &'static str {
     match counts {
         cdf_kernel::CommitCounts::Rows { .. } => "receipt rows",
         cdf_kernel::CommitCounts::KeyedChanges { .. } => "receipt effects",
+        cdf_kernel::CommitCounts::Routed { .. } => "receipt routed effects",
     }
 }
 
@@ -1103,6 +1104,9 @@ fn receipt_count_value(counts: &cdf_kernel::CommitCounts) -> u64 {
         cdf_kernel::CommitCounts::KeyedChanges { intent, .. } => {
             intent.upserts.saturating_add(intent.deletes)
         }
+        cdf_kernel::CommitCounts::Routed { targets } => targets.iter().fold(0, |total, target| {
+            total.saturating_add(receipt_count_value(&target.counts))
+        }),
     }
 }
 

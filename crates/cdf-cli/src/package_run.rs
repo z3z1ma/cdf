@@ -378,6 +378,18 @@ fn receipt_details(receipt: &Receipt) -> cdf_kernel::Result<RunEventDetails> {
                 }
             }
         }
+        cdf_kernel::CommitCounts::Routed { targets } => {
+            details.insert(
+                "routed_target_count".to_owned(),
+                RunEventValue::U64(u64_from_usize(targets.len())?),
+            );
+            if let Some(settled) = receipt.counts.settled_effect_count() {
+                details.insert(
+                    "settled_effect_count".to_owned(),
+                    RunEventValue::U64(settled),
+                );
+            }
+        }
     }
     details.insert(
         "migration_count".to_owned(),

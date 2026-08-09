@@ -2059,6 +2059,24 @@ struct SegmentOutputSink<'a, 'b> {
     builder: &'a PackageBuilder,
     queue: &'a mut SegmentEncodeQueue,
     durable: &'a mut DurableSegmentObserver<'b>,
+    routing: Option<&'a mut RoutedWriteState>,
+}
+
+struct RoutedWriteState {
+    family: cdf_kernel::RouteTargetFamily,
+    segmentation: crate::CanonicalSegmentationPolicy,
+    outputs: Vec<RoutedOutputWriteState>,
+}
+
+struct RoutedOutputWriteState {
+    active: Option<(
+        u64,
+        cdf_kernel::PackageSegmentKind,
+        crate::CanonicalSegmentAssembler,
+    )>,
+    segment_ids: Vec<cdf_kernel::SegmentId>,
+    input_effects: cdf_kernel::KeyedEffectCounts,
+    surviving_effects: cdf_kernel::KeyedEffectCounts,
 }
 
 struct SegmentEncodeWork {
@@ -3600,7 +3618,7 @@ where
         ExecutionExtent::Bounded { .. } | ExecutionExtent::Resident { .. } => None,
     };
 
-    let initial_content = initial_package_content(plan)?;
+    let initial_content = planned_empty_package_content(plan)?;
     let package_segment_kind = match plan.write_disposition {
         WriteDisposition::Append | WriteDisposition::Replace => cdf_kernel::PackageSegmentKind::Row,
         WriteDisposition::Merge | WriteDisposition::CdcApply => {
@@ -3759,6 +3777,10 @@ where
         None
     };
     let segmentation_policy = plan.segmentation_policy()?.clone();
+    let mut routed_write = plan
+        .route_family
+        .clone()
+        .map(|family| RoutedWriteState::new(family, segmentation_policy.clone()));
     let staged_handoff = durable_segment.is_some();
     let mut durable_segment_observer = DurableSegmentObserver {
         hook: durable_segment,
@@ -3937,6 +3959,9 @@ where
                     .ok_or_else(|| CdfError::data("late-data carryover memory count overflow"))?;
 
                 if apply_package_dedup {
+                    if let Some(routing) = routed_write.as_mut() {
+                        routing.observe_input(package_segment_kind, &batch)?;
+                    }
                     if let Some(external) = &mut external_dedup {
                         let rule = package_dedup_rule.as_ref().ok_or_else(|| {
                             CdfError::internal("package dedup rule is absent")
@@ -3974,6 +3999,7 @@ where
                             memory_lease: lease.clone(),
                         },
                         Some(carryover_frontier.clone()),
+                        carryover_partition_ordinal,
                         &mut carryover_assembler,
                         &mut OutputWriteState {
                             kind: package_segment_kind,
@@ -3993,6 +4019,7 @@ where
                             builder: &builder,
                             queue: &mut segment_queue,
                             durable: &mut durable_segment_observer,
+                            routing: routed_write.as_mut(),
                         },
                     )?;
                 }
@@ -4032,7 +4059,9 @@ where
                     builder: &builder,
                     queue: &mut segment_queue,
                     durable: &mut durable_segment_observer,
+                    routing: routed_write.as_mut(),
                 },
+                None,
             )?;
         }
         carryover_progress_observed = true;
@@ -5375,6 +5404,9 @@ where
                         validation_input_bytes,
                         validation_output_bytes,
                     );
+                    if let Some(routing) = routed_write.as_mut() {
+                        routing.observe_input(package_segment_kind, &output)?;
+                    }
                     if let Some(external) = &mut external_dedup {
                         let rule = package_dedup_rule.as_ref().ok_or_else(|| {
                             CdfError::internal("package dedup rule is absent")
@@ -5422,6 +5454,7 @@ where
                         memory_lease,
                     },
                     batch_output_position,
+                    partition_ordinal,
                     &mut segment_assembler,
                     &mut OutputWriteState {
                         kind: package_segment_kind,
@@ -5441,6 +5474,7 @@ where
                         builder: &builder,
                         queue: &mut segment_queue,
                         durable: &mut durable_segment_observer,
+                        routing: routed_write.as_mut(),
                     },
                 )?;
                 close_drain_epoch_at_batch_frontier!();
@@ -5465,7 +5499,9 @@ where
                     builder: &builder,
                     queue: &mut segment_queue,
                     durable: &mut durable_segment_observer,
+                    routing: routed_write.as_mut(),
                 },
+                None,
             )?;
             let completion = if fully_processed {
                 let (_, completion) = opened_partition.finish()?;
@@ -5624,6 +5660,7 @@ where
                 builder: &builder,
                 queue: &mut segment_queue,
                 durable: &mut durable_segment_observer,
+                routing: routed_write.as_mut(),
             },
         )?;
         if matches!(
@@ -5640,6 +5677,30 @@ where
         }
     }
 
+    if let Some(routing) = routed_write.as_mut() {
+        routing.finish(
+            &mut OutputWriteState {
+                kind: package_segment_kind,
+                profile: &mut profile,
+                segment_positions: &mut segment_positions,
+                phase_measurements: &mut phase_measurements,
+                memory: memory.as_ref(),
+                statistics: statistics_profile_state(
+                    &statistics_memory,
+                    &mut statistics_memory_lease,
+                    &mut statistics_profile,
+                    &statistics_profile_schema_hash,
+                    &mut statistics_segment_ordinal,
+                ),
+            },
+            &mut SegmentOutputSink {
+                builder: &builder,
+                queue: &mut segment_queue,
+                durable: &mut durable_segment_observer,
+                routing: None,
+            },
+        )?;
+    }
     segment_queue.finish(
         &builder,
         &mut OutputWriteState {
@@ -5658,7 +5719,13 @@ where
         },
         &mut durable_segment_observer,
     )?;
-    if let Some(reduction) = keyed_reduction {
+    if let Some(routing) = routed_write.as_ref() {
+        builder.set_content_authority(routed_package_content(
+            plan,
+            routing,
+            keyed_reduction.as_ref(),
+        )?)?;
+    } else if let Some(reduction) = keyed_reduction {
         builder.set_content_authority(keyed_package_content(plan, reduction)?)?;
     }
     for (partition_ordinal, partition, completion) in &completion_positions {
@@ -6472,7 +6539,7 @@ fn apply_dedup_and_write_pending_batches(
             {
                 if let Some((_, kind, mut previous)) = assembler.take() {
                     state.kind = kind;
-                    persist_canonical_segments(previous.finish()?, state, sink)?;
+                    persist_canonical_segments(previous.finish()?, state, sink, None)?;
                 }
                 assembler = Some((
                     payload_batch.partition_ordinal,
@@ -6493,6 +6560,7 @@ fn apply_dedup_and_write_pending_batches(
                     memory_lease: None,
                 },
                 payload_batch.output_position,
+                payload_batch.partition_ordinal,
                 &mut assembler.2,
                 state,
                 sink,
@@ -6505,7 +6573,7 @@ fn apply_dedup_and_write_pending_batches(
         }
         if let Some((_, kind, mut assembler)) = assembler {
             state.kind = kind;
-            persist_canonical_segments(assembler.finish()?, state, sink)?;
+            persist_canonical_segments(assembler.finish()?, state, sink, None)?;
         }
         if let Some(sorter) = effect_sort
             && let Some(mut sorted) = sorter.finish()?
@@ -6518,7 +6586,7 @@ fn apply_dedup_and_write_pending_batches(
                 if assembler.as_ref().map(|(kind, _)| *kind) != Some(effect.kind) {
                     if let Some((kind, mut previous)) = assembler.take() {
                         state.kind = kind;
-                        persist_canonical_segments(previous.finish()?, state, sink)?;
+                        persist_canonical_segments(previous.finish()?, state, sink, None)?;
                     }
                     assembler = Some((
                         effect.kind,
@@ -6535,6 +6603,7 @@ fn apply_dedup_and_write_pending_batches(
                         memory_lease: None,
                     },
                     effect.output_position,
+                    0,
                     assembler,
                     state,
                     sink,
@@ -6542,7 +6611,7 @@ fn apply_dedup_and_write_pending_batches(
             }
             if let Some((kind, mut assembler)) = assembler {
                 state.kind = kind;
-                persist_canonical_segments(assembler.finish()?, state, sink)?;
+                persist_canonical_segments(assembler.finish()?, state, sink, None)?;
             }
         }
         let shard_count = provenance.finish(builder)?;
@@ -6638,7 +6707,7 @@ fn apply_dedup_and_write_pending_batches(
         {
             if let Some((_, kind, mut previous)) = assembler.take() {
                 state.kind = kind;
-                persist_canonical_segments(previous.finish()?, state, sink)?;
+                persist_canonical_segments(previous.finish()?, state, sink, None)?;
             }
             assembler = Some((
                 pending.partition_ordinal,
@@ -6659,6 +6728,7 @@ fn apply_dedup_and_write_pending_batches(
                 memory_lease: None,
             },
             pending.output_position,
+            pending.partition_ordinal,
             &mut assembler.2,
             state,
             sink,
@@ -6666,7 +6736,7 @@ fn apply_dedup_and_write_pending_batches(
     }
     if let Some((_, kind, mut assembler)) = assembler {
         state.kind = kind;
-        persist_canonical_segments(assembler.finish()?, state, sink)?;
+        persist_canonical_segments(assembler.finish()?, state, sink, None)?;
     }
     Ok(AppliedDedup {
         summary: dedup.summary,
@@ -6691,8 +6761,10 @@ fn add_effect_count(
     Ok(())
 }
 
-fn initial_package_content(plan: &EnginePlan) -> Result<cdf_kernel::PackageContentAuthority> {
-    match plan.write_disposition {
+pub fn planned_empty_package_content(
+    plan: &EnginePlan,
+) -> Result<cdf_kernel::PackageContentAuthority> {
+    let content = match plan.write_disposition {
         WriteDisposition::Append | WriteDisposition::Replace => Ok(
             cdf_kernel::PackageContentAuthority::rows(plan.output_schema.arrow_schema_hash.clone()),
         ),
@@ -6703,7 +6775,27 @@ fn initial_package_content(plan: &EnginePlan) -> Result<cdf_kernel::PackageConte
                 keyed_reduction_authority(&rule, &empty_dedup_summary(&rule), plan, None, None)?,
             )
         }
-    }
+    }?;
+    let Some(family) = &plan.route_family else {
+        return Ok(content);
+    };
+    let schema =
+        cdf_kernel::CanonicalArrowSchema::from_arrow(plan.output_schema.to_arrow()?.as_ref())?;
+    let routed = cdf_kernel::PackageContentAuthority::Routed {
+        family: family.clone(),
+        outputs: family
+            .bindings
+            .iter()
+            .map(|binding| cdf_kernel::RoutedOutputContentAuthority {
+                output_binding: binding.output_binding.clone(),
+                schema: schema.clone(),
+                content: Box::new(content.clone()),
+                segment_ids: Vec::new(),
+            })
+            .collect(),
+    };
+    routed.validate()?;
+    Ok(routed)
 }
 
 fn encode_effect_keys(
@@ -6737,7 +6829,26 @@ fn encode_effect_keys(
             }
         }
     }
-    encode_package_dedup_keys(program, rule, batch)
+    let mut keys = encode_package_dedup_keys(program, rule, batch)?;
+    if let Some(family) = &plan.route_family {
+        let assignments = route_output_indices(family, batch)?;
+        let mut row_outputs = vec![0_u32; batch.num_rows()];
+        for (output, rows) in assignments.into_iter().enumerate() {
+            let output = u32::try_from(output)
+                .map_err(|_| CdfError::data("routed output ordinal exceeds u32"))?;
+            for row in rows {
+                row_outputs[row as usize] = output;
+            }
+        }
+        for (key, output) in keys.iter_mut().zip(row_outputs) {
+            let mut namespaced = Vec::with_capacity(key.len() + 5);
+            namespaced.push(b'R');
+            namespaced.extend_from_slice(&output.to_be_bytes());
+            namespaced.append(key);
+            *key = namespaced;
+        }
+    }
+    Ok(keys)
 }
 
 fn prepare_delete_effect_batch(
@@ -6857,6 +6968,65 @@ fn keyed_package_content(
         reduction: Box::new(reduction),
         deletion_capture: plan.keyed_effects.deletion_capture.clone(),
         delete_application: plan.keyed_effects.delete_application.clone(),
+    };
+    content.validate()?;
+    Ok(content)
+}
+
+fn routed_package_content(
+    plan: &EnginePlan,
+    routing: &RoutedWriteState,
+    reduction: Option<&cdf_kernel::KeyedEffectReductionAuthority>,
+) -> Result<cdf_kernel::PackageContentAuthority> {
+    if routing.family
+        != *plan.route_family.as_ref().ok_or_else(|| {
+            CdfError::internal("routed package writer has no matching engine plan family")
+        })?
+    {
+        return Err(CdfError::internal(
+            "routed package writer family changed during execution",
+        ));
+    }
+    if reduction.is_some_and(|reduction| {
+        reduction.duplicate_key_count != 0 || reduction.input != reduction.surviving
+    }) {
+        return Err(CdfError::data(
+            "one routed settlement unit contains repeated destination keys; reduce the CDC/source epoch so each routed key has one effect",
+        ));
+    }
+    let schema =
+        cdf_kernel::CanonicalArrowSchema::from_arrow(plan.output_schema.to_arrow()?.as_ref())?;
+    let outputs = routing
+        .family
+        .bindings
+        .iter()
+        .zip(&routing.outputs)
+        .map(|(binding, output)| {
+            let inner = match plan.write_disposition {
+                WriteDisposition::Append | WriteDisposition::Replace => {
+                    cdf_kernel::PackageContentAuthority::rows(binding.schema_hash.clone())
+                }
+                WriteDisposition::Merge | WriteDisposition::CdcApply => {
+                    let mut route_reduction = reduction.cloned().ok_or_else(|| {
+                        CdfError::internal("routed keyed package omitted its reduction authority")
+                    })?;
+                    route_reduction.input = output.input_effects;
+                    route_reduction.surviving = output.surviving_effects;
+                    route_reduction.duplicate_key_count = 0;
+                    keyed_package_content(plan, route_reduction)?
+                }
+            };
+            Ok(cdf_kernel::RoutedOutputContentAuthority {
+                output_binding: binding.output_binding.clone(),
+                schema: schema.clone(),
+                content: Box::new(inner),
+                segment_ids: output.segment_ids.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let content = cdf_kernel::PackageContentAuthority::Routed {
+        family: routing.family.clone(),
+        outputs,
     };
     content.validate()?;
     Ok(content)
@@ -7559,19 +7729,231 @@ fn prepare_output_batch(
 fn write_normalized_output_batch(
     prepared: PreparedKernelOutput,
     output_position: Option<SourcePosition>,
+    partition_ordinal: u64,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
     sink: &mut SegmentOutputSink<'_, '_>,
 ) -> Result<()> {
+    if sink.routing.is_some() {
+        return route_normalized_output_batch(
+            prepared,
+            output_position,
+            partition_ordinal,
+            state,
+            sink,
+        );
+    }
     let canonical_segments =
         assembler.push_accounted(prepared.output, output_position, prepared.memory_lease)?;
-    persist_canonical_segments(canonical_segments, state, sink)
+    persist_canonical_segments(canonical_segments, state, sink, None)
+}
+
+fn route_normalized_output_batch(
+    prepared: PreparedKernelOutput,
+    output_position: Option<SourcePosition>,
+    partition_ordinal: u64,
+    state: &mut OutputWriteState<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
+) -> Result<()> {
+    let routing = sink
+        .routing
+        .take()
+        .ok_or_else(|| CdfError::internal("routed output state is absent"))?;
+    let result = routing.write_batch(prepared, output_position, partition_ordinal, state, sink);
+    sink.routing = Some(routing);
+    result
+}
+
+impl RoutedWriteState {
+    fn new(
+        family: cdf_kernel::RouteTargetFamily,
+        segmentation: crate::CanonicalSegmentationPolicy,
+    ) -> Self {
+        let outputs = family
+            .bindings
+            .iter()
+            .map(|_| RoutedOutputWriteState {
+                active: None,
+                segment_ids: Vec::new(),
+                input_effects: cdf_kernel::KeyedEffectCounts::default(),
+                surviving_effects: cdf_kernel::KeyedEffectCounts::default(),
+            })
+            .collect();
+        Self {
+            family,
+            segmentation,
+            outputs,
+        }
+    }
+
+    fn observe_input(
+        &mut self,
+        kind: cdf_kernel::PackageSegmentKind,
+        batch: &RecordBatch,
+    ) -> Result<()> {
+        let assignments = route_output_indices(&self.family, batch)?;
+        for (output, indices) in self.outputs.iter_mut().zip(assignments) {
+            add_effect_count(
+                &mut output.input_effects,
+                kind,
+                u64::try_from(indices.len())
+                    .map_err(|_| CdfError::data("routed input row count exceeds u64"))?,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_batch(
+        &mut self,
+        prepared: PreparedKernelOutput,
+        output_position: Option<SourcePosition>,
+        partition_ordinal: u64,
+        state: &mut OutputWriteState<'_>,
+        sink: &mut SegmentOutputSink<'_, '_>,
+    ) -> Result<()> {
+        let assignments = route_output_indices(&self.family, &prepared.output)?;
+        let _input_lease = prepared.memory_lease;
+        for (output_index, indices) in assignments.into_iter().enumerate() {
+            if indices.is_empty() {
+                continue;
+            }
+            let indices = UInt32Array::from(indices);
+            let batch = take_record_batch(&prepared.output, &indices).map_err(CdfError::from)?;
+            let retained = cdf_memory::record_batch_retained_bytes(&batch)?.max(1);
+            let memory_lease = match state.memory.map(Arc::clone) {
+                Some(memory) => {
+                    let request = ReservationRequest::new(
+                        ConsumerKey::new("routed-output-partition", MemoryClass::Package)?,
+                        retained,
+                    )?
+                    .as_minimum_working_set();
+                    let lease = reserve_with_encode_backpressure(
+                        memory,
+                        &request,
+                        state,
+                        sink,
+                        "routed output partition requires accounted Arrow buffers",
+                    )?;
+                    lease.reconcile(retained)?;
+                    Some(lease)
+                }
+                None => None,
+            };
+            let binding = self.family.bindings[output_index].output_binding.clone();
+            let output = &mut self.outputs[output_index];
+            if output.active.as_ref().is_some_and(|(partition, kind, _)| {
+                *partition != partition_ordinal || *kind != state.kind
+            }) && let Some((_, kind, mut assembler)) = output.active.take()
+            {
+                let prior_kind = state.kind;
+                state.kind = kind;
+                persist_routed_segments(assembler.finish()?, &binding, output, state, sink)?;
+                state.kind = prior_kind;
+            }
+            if output.active.is_none() {
+                output.active = Some((
+                    partition_ordinal,
+                    state.kind,
+                    crate::CanonicalSegmentAssembler::new(
+                        self.segmentation.clone(),
+                        partition_ordinal,
+                    )?,
+                ));
+            }
+            let canonical = output
+                .active
+                .as_mut()
+                .ok_or_else(|| CdfError::internal("routed segment assembler is absent"))?
+                .2
+                .push_accounted(batch, output_position.clone(), memory_lease)?;
+            persist_routed_segments(canonical, &binding, output, state, sink)?;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        state: &mut OutputWriteState<'_>,
+        sink: &mut SegmentOutputSink<'_, '_>,
+    ) -> Result<()> {
+        for (binding, output) in self.family.bindings.iter().zip(&mut self.outputs) {
+            if let Some((_, kind, mut assembler)) = output.active.take() {
+                state.kind = kind;
+                persist_routed_segments(
+                    assembler.finish()?,
+                    &binding.output_binding,
+                    output,
+                    state,
+                    sink,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn persist_routed_segments(
+    segments: Vec<crate::CanonicalSegment>,
+    binding: &cdf_kernel::OutputBindingId,
+    output: &mut RoutedOutputWriteState,
+    state: &mut OutputWriteState<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
+) -> Result<()> {
+    for segment in segments {
+        let segment_id = output_segment_id(
+            state.kind,
+            segment.segment_id.clone(),
+            Some(binding),
+            Some(sink.queue.next_submission),
+        )?;
+        output.segment_ids.push(segment_id);
+        add_effect_count(&mut output.surviving_effects, state.kind, segment.row_count)?;
+        persist_canonical_segments(vec![segment], state, sink, Some(binding))?;
+    }
+    Ok(())
+}
+
+fn route_output_indices(
+    family: &cdf_kernel::RouteTargetFamily,
+    batch: &RecordBatch,
+) -> Result<Vec<Vec<u32>>> {
+    let matches = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.name() == &family.route.field)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [route_index] = matches.as_slice() else {
+        return Err(CdfError::data(format!(
+            "route field `{}` must resolve exactly once in every normalized output batch",
+            family.route.field
+        )));
+    };
+    let route = batch.column(*route_index);
+    let mut assignments = vec![Vec::new(); family.bindings.len()];
+    for row in 0..batch.num_rows() {
+        let value = cdf_kernel::RouteScalar::from_array(route.as_ref(), row)?;
+        let index = family
+            .bindings
+            .binary_search_by(|binding| binding.route_value.cmp(&value))
+            .map_err(|_| {
+                CdfError::data(
+                    "normalized output contains a route value absent from compiled output authority; discover and compile the output before retrying",
+                )
+            })?;
+        assignments[index]
+            .push(u32::try_from(row).map_err(|_| CdfError::data("routed batch row exceeds u32"))?);
+    }
+    Ok(assignments)
 }
 
 fn persist_canonical_segments(
     canonical_segments: Vec<crate::CanonicalSegment>,
     state: &mut OutputWriteState<'_>,
     sink: &mut SegmentOutputSink<'_, '_>,
+    output_binding: Option<&cdf_kernel::OutputBindingId>,
 ) -> Result<()> {
     for canonical in canonical_segments {
         let crate::CanonicalSegment {
@@ -7587,7 +7969,12 @@ fn persist_canonical_segments(
             memory_leases: _transform_memory_leases,
             ..
         } = canonical;
-        let segment_id = effect_segment_id(state.kind, canonical_segment_id)?;
+        let segment_id = output_segment_id(
+            state.kind,
+            canonical_segment_id,
+            output_binding,
+            output_binding.map(|_| sink.queue.next_submission),
+        )?;
         let mut _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
                 let canonical_output_allocation_bytes =
@@ -7741,6 +8128,29 @@ fn effect_segment_id(
     cdf_kernel::SegmentId::new(format!("{prefix}-{}", canonical.as_str()))
 }
 
+fn output_segment_id(
+    kind: cdf_kernel::PackageSegmentKind,
+    canonical: cdf_kernel::SegmentId,
+    output_binding: Option<&cdf_kernel::OutputBindingId>,
+    routed_ordinal: Option<u64>,
+) -> Result<cdf_kernel::SegmentId> {
+    let effect = effect_segment_id(kind, canonical)?;
+    match (output_binding, routed_ordinal) {
+        (Some(binding), Some(ordinal)) => cdf_kernel::SegmentId::new(format!(
+            "route-{ordinal:020}-{}-{}",
+            binding.as_str(),
+            effect.as_str()
+        )),
+        (Some(_), None) => Err(CdfError::internal(
+            "routed segment identity omitted its package ordinal",
+        )),
+        (None, Some(_)) => Err(CdfError::internal(
+            "ordinary segment identity carried a routed package ordinal",
+        )),
+        (None, None) => Ok(effect),
+    }
+}
+
 pub(crate) fn canonical_construction_reservation_bytes(
     canonical_output_allocation_bytes: u64,
     row_count: u64,
@@ -7781,6 +8191,7 @@ fn reserve_with_encode_backpressure(
             builder,
             queue,
             durable,
+            routing: _,
         } = sink;
         if !queue.relieve_memory_pressure(builder, state, durable)? {
             return Err(CdfError::data(format!(

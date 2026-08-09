@@ -175,6 +175,14 @@ pub(super) fn package_document(report: &InspectPackageReport) -> RenderDocument 
                 delete_application,
             ),
         ),
+        cdf_kernel::PackageContentAuthority::Routed { family, outputs } => (
+            "routed",
+            format!(
+                "{} admitted target(s) · {} output schema binding(s)",
+                family.bindings.len(),
+                outputs.len()
+            ),
+        ),
     };
     RenderDocument::new()
         .push(StatusLine::new(

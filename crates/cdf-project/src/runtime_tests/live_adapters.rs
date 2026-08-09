@@ -1,13 +1,14 @@
 use super::{
-    Arc, BTreeMap, CheckpointId, CheckpointStatus, ContractPolicy, CursorValue, DEDUP_SUMMARY_FILE,
-    DedupKeep, DeliveryGuarantee, HttpResponse, IdempotencySupport, Ordering,
+    Arc, Array, BTreeMap, CheckpointId, CheckpointStatus, ContractPolicy, CursorValue,
+    DEDUP_SUMMARY_FILE, DedupKeep, DeliveryGuarantee, HttpResponse, IdempotencySupport, Ordering,
     PackageArtifactReplayRequest, PackageReader, PackageStatus, ParquetDestination, Path,
     PipelineId, PostgresDestination, PostgresTarget, ProjectDestinationRegistry,
     ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
     ProjectRunSource, Receipt, ResolvedProjectDestination, ResourceStream, RowRule, RunEventKind,
     RunId, RunTelemetryConfig, SchemaHash, SchemaSource, SegmentEntry, SourcePosition,
-    SqliteCheckpointStore, TargetName, WriteDisposition, fs, replay_package_from_artifacts,
-    resolve_project_run_destination, run_project_with_scheduler_and_telemetry,
+    SqliteCheckpointStore, StringArray, TargetName, WriteDisposition, fs,
+    replay_package_from_artifacts, resolve_project_run_destination,
+    run_project_with_scheduler_and_telemetry,
     support::{
         BackfillMockResource, BoundTestResource, LivePostgres, MockDestination,
         MockProjectDestinationRuntime, OwnedTestResource, RecordingResponse, RecordingTransport,
@@ -345,6 +346,54 @@ fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
     assert!(
         !database_path.exists(),
         "DuckDB plan preview must not create destination data"
+    );
+}
+
+#[test]
+fn destination_planning_facade_previews_every_routed_duckdb_target_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let database_path = temp.path().join("planned-routed.duckdb");
+    let mut destination =
+        crate::test_destinations::duckdb(&database_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = live_plan(&resource, "pkg-plan-preview-routed-duckdb");
+    let routes = StringArray::from(vec!["one", "two"]);
+    let family = cdf_kernel::RouteTargetFamily::new(
+        cdf_kernel::RoutePlan::new("name", 2).unwrap(),
+        TargetName::new("events").unwrap(),
+        Some(128),
+        (0..routes.len()).map(|row| {
+            (
+                cdf_kernel::RouteScalar::from_array(&routes, row).unwrap(),
+                plan.output_schema.arrow_schema_hash.clone(),
+            )
+        }),
+    )
+    .unwrap();
+    let family_hash = family.schema_family_hash.clone();
+    let plan = destination
+        .plan_resource_commit(&resource, &plan.bind_route_family(family).unwrap())
+        .unwrap();
+
+    assert_eq!(plan.schema_hash, family_hash);
+    assert!(plan.synthetic.segment_ids.is_empty());
+    assert_eq!(plan.commit_plan.migrations.len(), 2);
+    assert!(
+        plan.commit_plan
+            .migrations
+            .iter()
+            .any(|migration| migration.description.contains("events__one"))
+    );
+    assert!(
+        plan.commit_plan
+            .migrations
+            .iter()
+            .any(|migration| migration.description.contains("events__two"))
+    );
+    assert!(
+        !database_path.exists(),
+        "routed DuckDB plan preview must not create destination data"
     );
 }
 

@@ -85,6 +85,12 @@ user-ratified authority.
   row/keyed effects in one transaction, records one package receipt, and treats replay of the same
   package token as a verified duplicate rather than a second application. Other destinations do
   not advertise routed support until they implement the same settlement contract.
+- 2026-08-09: Bound homogeneous route families into executable engine plans and partitioned every
+  normalized Arrow batch against the exact compiled scalar map. Unknown/null routes fail before
+  package publication; route-bound segment ids are globally ordered for portable manifest
+  identity; per-output content/count authority is derived from the segments actually persisted.
+  Project planning now asks a destination to plan the complete empty family, rejects unadvertised
+  atomic-family support, and DuckDB previews all target DDL read-only without creating its file.
 
 ## Blockers
 
@@ -113,6 +119,17 @@ must not become a parallel implementation.
   route partition construction or PostgreSQL settlement.
 - Affected strict Clippy passed across kernel, package, runtime, project, DuckDB, PostgreSQL,
   SQLite, and ClickHouse crates with `--all-targets -- -D warnings`; `git diff --check` passed.
+- Engine construction: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine
+  tests::package_evidence::routed_package_partitions_rows_into_exact_compiled_outputs -- --exact`
+  passed and proves six normalized rows become three exact schema-homogeneous output partitions in
+  one valid package. The test exposed and then guards the portable manifest ordering requirement.
+- Routed planning: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project
+  runtime_tests::live_adapters::destination_planning_facade_previews_every_routed_duckdb_target_without_writes
+  -- --exact` passed, proving family-hash planning, complete per-target migrations, and no DuckDB
+  file mutation. `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-dest-duckdb
+  routed::tests::routed_rows_commit_atomically_and_replay_once -- --exact` passed again after the
+  shared planning refactor. Strict affected-package Clippy passed for engine, runtime, project,
+  DuckDB, and CLI with all targets and warnings denied.
 
 ## Review
 

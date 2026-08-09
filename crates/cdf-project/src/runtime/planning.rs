@@ -3,9 +3,10 @@ use super::destinations::{
 };
 use cdf_engine::EnginePlan;
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CommitPlan, DestinationCommitRequest,
-    DestinationSheet, ForeignState, IdempotencyToken, PackageHash, PipelineId, ResourceStream,
-    Result, SchemaHash, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+    CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, CheckpointId, CommitPlan,
+    DestinationCommitRequest, DestinationSheet, ForeignState, IdempotencyToken, PackageHash,
+    PipelineId, ResourceStream, Result, SchemaHash, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName,
 };
 
 const PLAN_PREVIEW_PACKAGE_HASH: &str = "sha256:plan-preview";
@@ -41,12 +42,37 @@ impl ResolvedProjectDestination {
         let description = self.describe();
         let target = self.target().clone();
         let output = self.output_schema(plan)?;
-        let schema_hash = output.schema_hash;
+        let schema_hash = plan.route_family.as_ref().map_or_else(
+            || output.schema_hash.clone(),
+            |family| family.schema_family_hash.clone(),
+        );
         let sheet = self.validate_output_schema_mappings(resource, output.schema.as_ref())?;
-        let inputs = destination_planning_inputs(resource, &target, &schema_hash)?;
-        let outcome =
+        let inputs = if plan.route_family.is_some() {
+            routed_destination_planning_inputs(resource, &target, plan)?
+        } else {
+            destination_planning_inputs(resource, &target, &schema_hash)?
+        };
+        let outcome = if plan.route_family.is_some() {
+            if self
+                .runtime_mut()
+                .protocol()
+                .protocol_capabilities()
+                .routed_target_families
+                != CapabilitySupport::Supported
+            {
+                return Err(CdfError::destination(format!(
+                    "destination {} does not support atomic routed target families",
+                    description.destination_id
+                )));
+            }
+            let commit_plan = self
+                .runtime_mut()
+                .plan_routed_package(&inputs.destination_commit)?;
+            cdf_runtime::DestinationCommitPlanningOutcome::new(sheet.clone(), commit_plan)
+        } else {
             self.runtime_mut()
-                .plan_resource_commit(resource, output.schema.as_ref(), &inputs)?;
+                .plan_resource_commit(resource, output.schema.as_ref(), &inputs)?
+        };
         if outcome.sheet != sheet {
             return Err(CdfError::contract(format!(
                 "destination {} changed its capability sheet between schema mapping and commit planning",
@@ -73,6 +99,47 @@ impl ResolvedProjectDestination {
             commit_plan: outcome.plan,
         })
     }
+}
+
+fn routed_destination_planning_inputs(
+    resource: &dyn ResourceStream,
+    target: &TargetName,
+    plan: &EnginePlan,
+) -> Result<DestinationCommitPlanningInputs> {
+    let content = cdf_engine::planned_empty_package_content(plan)?;
+    let schema_hash = content.logical_schema_hash().clone();
+    let package_hash = PackageHash::new(PLAN_PREVIEW_PACKAGE_HASH)?;
+    let state_delta = StateDelta {
+        checkpoint_id: CheckpointId::new("checkpoint-plan-preview")?,
+        pipeline_id: PipelineId::new("pipeline-plan-preview")?,
+        resource_id: resource.descriptor().resource_id.clone(),
+        scope: resource.descriptor().state_scope.clone(),
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: synthetic_position(),
+        output_watermark: None,
+        partition_watermarks: Vec::new(),
+        late_data_carryover: Vec::new(),
+        source_continuation: None,
+        package_hash: package_hash.clone(),
+        content: content.clone(),
+        schema_hash: schema_hash.clone(),
+        segments: Vec::new(),
+    };
+    let destination_commit = DestinationCommitRequest {
+        package_hash,
+        content,
+        target: target.clone(),
+        disposition: resource.descriptor().write_disposition.clone(),
+        segments: Vec::new(),
+        idempotency_token: IdempotencyToken::new(PLAN_PREVIEW_IDEMPOTENCY_TOKEN)?,
+    };
+    Ok(DestinationCommitPlanningInputs {
+        state_delta,
+        destination_commit,
+        schema_hash,
+    })
 }
 
 fn destination_planning_inputs(
@@ -116,12 +183,7 @@ fn destination_planning_inputs(
 }
 
 fn synthetic_segment(resource: &dyn ResourceStream) -> Result<StateSegment> {
-    let position = SourcePosition::ForeignState(ForeignState {
-        version: cdf_kernel::SOURCE_POSITION_VERSION,
-        protocol: "cdf-plan-preview".to_owned(),
-        opaque_blob: Vec::new(),
-        blob_sha256: EMPTY_SHA256.to_owned(),
-    });
+    let position = synthetic_position();
     Ok(StateSegment {
         kind: cdf_kernel::PackageSegmentKind::Row,
         segment_id: SegmentId::new(PLAN_PREVIEW_SEGMENT_ID)?,
@@ -129,5 +191,14 @@ fn synthetic_segment(resource: &dyn ResourceStream) -> Result<StateSegment> {
         output_position: position,
         row_count: 0,
         byte_count: 0,
+    })
+}
+
+fn synthetic_position() -> SourcePosition {
+    SourcePosition::ForeignState(ForeignState {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        protocol: "cdf-plan-preview".to_owned(),
+        opaque_blob: Vec::new(),
+        blob_sha256: EMPTY_SHA256.to_owned(),
     })
 }
