@@ -2077,6 +2077,7 @@ struct RoutedOutputWriteState {
     segment_ids: Vec<cdf_kernel::SegmentId>,
     input_effects: cdf_kernel::KeyedEffectCounts,
     surviving_effects: cdf_kernel::KeyedEffectCounts,
+    duplicate_winners: BTreeSet<u64>,
 }
 
 struct SegmentEncodeWork {
@@ -6540,6 +6541,7 @@ fn apply_dedup_and_write_pending_batches(
                     .map_err(|_| CdfError::data("dedup payload row count exceeds u64"))?,
             )?;
             let mut retained = Vec::with_capacity(payload_batch.batch.num_rows());
+            let mut batch_decisions = Vec::with_capacity(payload_batch.batch.num_rows());
             let mut retained_count = 0_u64;
             for _ in 0..payload_batch.batch.num_rows() {
                 let decision = decisions.next()?.ok_or_else(|| {
@@ -6560,7 +6562,11 @@ fn apply_dedup_and_write_pending_batches(
                 if !keep {
                     provenance.push(builder, decision.ordinal, decision.kept_ordinal)?;
                 }
+                batch_decisions.push(decision);
                 expected_ordinal += 1;
+            }
+            if let Some(routing) = sink.routing.as_deref_mut() {
+                routing.observe_reduction(&payload_batch.batch, &batch_decisions)?;
             }
             let retained_keys = effect_sort.as_ref().map(|_| {
                 payload_batch
@@ -7082,13 +7088,6 @@ fn routed_package_content(
             "routed package writer family changed during execution",
         ));
     }
-    if reduction.is_some_and(|reduction| {
-        reduction.duplicate_key_count != 0 || reduction.input != reduction.surviving
-    }) {
-        return Err(CdfError::data(
-            "one routed settlement unit contains repeated destination keys; reduce the CDC/source epoch so each routed key has one effect",
-        ));
-    }
     let schema =
         cdf_kernel::CanonicalArrowSchema::from_arrow(plan.output_schema.to_arrow()?.as_ref())?;
     let outputs = routing
@@ -7107,7 +7106,10 @@ fn routed_package_content(
                     })?;
                     route_reduction.input = output.input_effects;
                     route_reduction.surviving = output.surviving_effects;
-                    route_reduction.duplicate_key_count = 0;
+                    route_reduction.duplicate_key_count =
+                        u64::try_from(output.duplicate_winners.len()).map_err(|_| {
+                            CdfError::data("routed duplicate-key count exceeds u64")
+                        })?;
                     keyed_package_content(plan, route_reduction)?
                 }
             };
@@ -7890,6 +7892,7 @@ impl RoutedWriteState {
                 segment_ids: Vec::new(),
                 input_effects: cdf_kernel::KeyedEffectCounts::default(),
                 surviving_effects: cdf_kernel::KeyedEffectCounts::default(),
+                duplicate_winners: BTreeSet::new(),
             })
             .collect();
         Self {
@@ -7912,6 +7915,30 @@ impl RoutedWriteState {
                 u64::try_from(indices.len())
                     .map_err(|_| CdfError::data("routed input row count exceeds u64"))?,
             )?;
+        }
+        Ok(())
+    }
+
+    fn observe_reduction(
+        &mut self,
+        batch: &RecordBatch,
+        decisions: &[crate::dedup_spill::DedupDecision],
+    ) -> Result<()> {
+        if batch.num_rows() != decisions.len() {
+            return Err(CdfError::internal(
+                "routed reduction decisions do not match their input batch",
+            ));
+        }
+        let assignments = route_output_indices(&self.family, batch)?;
+        for (output, rows) in self.outputs.iter_mut().zip(assignments) {
+            for row in rows {
+                let decision = decisions.get(row as usize).ok_or_else(|| {
+                    CdfError::internal("routed reduction row is outside its decision batch")
+                })?;
+                if decision.ordinal != decision.kept_ordinal {
+                    output.duplicate_winners.insert(decision.kept_ordinal);
+                }
+            }
         }
         Ok(())
     }

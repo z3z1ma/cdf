@@ -148,6 +148,15 @@ retention, and live replica-set/Atlas certification.
   input count. The delete path now observes the protected key-plus-route batch before spill/dedup,
   matching the existing upsert path and preserving per-output reduction invariants.
 
+- 2026-08-09: The first multi-event live epoch then exposed a superseded routed-CDC restriction:
+  the engine rejected any repeated destination key even though exact source-protocol reduction is
+  the required behavior. Routed reduction now tracks the distinct kept ordinal for every dropped
+  row per output binding, preserving truthful per-route input, survivor, and duplicate-key counts.
+  The release binary subsequently committed one atomic two-target Atlas package: invoices reduced
+  one upsert plus one delete to one hard-delete effect, while orders reduced two upserts to the
+  final post-image. Both outputs share one package hash, destination receipt, and Mongo resume-token
+  checkpoint; DuckDB contains the final `status=settled` order and no corresponding invoice row.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -176,12 +185,21 @@ retention, and live replica-set/Atlas certification.
   existing exact effect-order/reduction certificate passes after the routed delete count repair.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-engine -p cdf-source-mongodb --all-targets -- -D
   warnings` — strict Clippy passes for the live-runtime repair surface.
-- Release-binary Atlas evidence so far: `cdf compile mongo_live.atlas_database_cdc` and `cdf plan
+- Release-binary Atlas planning evidence: `cdf compile mongo_live.atlas_database_cdc` and `cdf plan
   mongo_live.atlas_database_cdc` succeed against two isolated, post-image-enabled collections in
   the authorized Atlas database. The plan reports one drain partition, `cdc_apply`,
   `effectively_once_per_position`, five logical fields, six routed destination migrations, and
-  `ready 1/1`. Full run settlement remains open: the first execution reached change-stream open
-  and failed through an over-broad MongoDB SDK error classification, which is now being narrowed.
+  `ready 1/1`.
+- Release-binary Atlas acceptance: package
+  `pkg-mongo-live-atlas-database-cdc-35018-1786308101634419000` committed with two routed segments,
+  a single DuckDB receipt, and checkpoint
+  `checkpoint-mongo-live-atlas-database-cdc-35018-1786308101634419000`. Its package authority
+  records per-route `duplicate_key_count=1`; invoice effects are input `{upserts:1,deletes:1}` to
+  surviving `{upserts:0,deletes:1}`, and order effects are input `{upserts:2,deletes:0}` to
+  surviving `{upserts:1,deletes:0}`. The receipt acknowledges both physical targets and both
+  segments, and the proposed checkpoint carries the terminal event resume token. This certifies
+  real Atlas database-watch fan-out, exact update/delete reduction, atomic routed destination
+  settlement, receipt-gated checkpointing, and hard-delete application with the production binary.
 
 ## Review
 
