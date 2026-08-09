@@ -120,7 +120,9 @@ retention, and live replica-set/Atlas certification.
   duplicate physical-plan copy, and compiled/resolved MongoDB CDC uses one capability authority.
   Database envelope planning binds one representative observation only after proving every
   admitted collection has the identical physical envelope schema; the full evidence inventory
-  remains the routing and unknown-collection authority.
+  remains the routing and unknown-collection authority. Active schema reuse now also requires the
+  current schema-binding-stable source semantics, so a driver capability correction cannot keep an
+  obsolete executable source plan merely because its discovery interpretation is unchanged.
 
 ## Blockers
 

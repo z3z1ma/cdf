@@ -584,6 +584,8 @@ fn active_compiled_source_resource(
     let current = context.resource(resource_id)?;
     if compiled.source_plan().discovery_binding_hash()?
         != current.source_plan().discovery_binding_hash()?
+        || compiled.source_plan().schema_binding_stable_hash()?
+            != current.source_plan().schema_binding_stable_hash()?
     {
         return Ok(None);
     }
