@@ -172,10 +172,17 @@ retention, and live replica-set/Atlas certification.
   checkpoint frontiers, target-scoped DuckDB key-index identity, DuckDB catalog type aliases, and
   unique package/checkpoint identities for every portable plan.
 
+- 2026-08-09: Implemented finalized single-target CDC application for collection watches without
+  forcing key-only deletes through DuckDB's row-oriented staged ingress. Upserts, hard deletes,
+  the unique key authority, receipt mirror, and checkpoint proof now share one DuckDB transaction;
+  duplicate package replay returns the committed receipt. Empty latest-bootstrap epochs write only
+  receipt/checkpoint proof and do not create or replace a target. Destination planning now previews
+  keyed package authority for merge/CDC rather than a fictitious row package.
+
 ## Blockers
 
-- `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
-  output schemas and atomic destination family settlement.
+None. Snapshot handoff, continuous epoch execution, and the remaining operational certificates are
+open implementation work, not unresolved semantics.
 
 ## Evidence
 
@@ -238,6 +245,20 @@ retention, and live replica-set/Atlas certification.
   passed after the typed CDC residual-evidence repair. `DUCKDB_DOWNLOAD_LIB=1 cargo clippy` with
   warnings denied passed for kernel, runtime, engine, package, MongoDB, DuckDB, project, and CLI
   across all targets; formatting and `git diff --check` passed without `RUST_MIN_STACK`.
+- Focused DuckDB certificate:
+  `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-dest-duckdb
+  single_target_cdc_applies_upserts_hard_deletes_and_replays_once --lib` passed. It proves two
+  exact upserts, one hard delete, one surviving row, keyed commit counts, and duplicate receipt
+  replay without row-oriented staging.
+- Live Atlas collection-watch iteration: package
+  `pkg-portable-mongo-live-atlas-collection-typed-cdc-e2e-73369-1786318414455677000` resumed from
+  its prior event token and atomically applied one complete post-image update plus one exact hard
+  delete. Its receipt records `rows_updated=1`, `hard_deletes=1`, and
+  `missing_delete_keys=0`; the proposed delta advances from the prior event token to the terminal
+  event-issued resume token. Read-only DuckDB inspection returned only the updated `-a` document
+  (`status=collection-updated-a`, `amount=2201`) and no deleted `-b` document. This run used the
+  debug binary as an integration iteration; the required production-profile final certificate
+  remains separately open.
 
 ## Review
 

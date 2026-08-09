@@ -1866,10 +1866,12 @@ where
     // exact prepared path. Final package binding supplies identities that did not exist earlier;
     // it must not re-plan writer or batching policy. Artifact-only replay has no live attempt and
     // therefore prepares from the verified package inputs here.
-    let selected_bulk_path = if routed {
+    let direct_cdc =
+        !routed && inputs.destination_commit.disposition == cdf_kernel::WriteDisposition::CdcApply;
+    let selected_bulk_path = if routed || direct_cdc {
         if active_staged.is_some() {
             return Err(CdfError::contract(
-                "routed target families cannot bind a single-target staged ingress attempt",
+                "finalized keyed package application cannot bind a row-oriented staged ingress attempt",
             ));
         }
         None
@@ -1925,7 +1927,7 @@ where
             package.reader_mut().update_status(PackageStatus::Loading)?;
         }
 
-        let (receipt, receipt_policy, commit_verification) = if routed {
+        let (receipt, receipt_policy, commit_verification) = if routed || direct_cdc {
             let maximum_segment_bytes = capabilities
                 .max_in_flight_bytes
                 .unwrap_or(64 * 1024 * 1024)
@@ -1938,7 +1940,18 @@ where
             )?;
             let segments =
                 stream.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
-            let outcome = runtime.commit_routed_package(&inputs, Box::new(segments))?;
+            let outcome = if routed {
+                runtime.commit_routed_package(&inputs, Box::new(segments))?
+            } else {
+                runtime.commit_cdc_package(
+                    &inputs,
+                    output_schema
+                        .as_ref()
+                        .ok_or_else(|| CdfError::internal("CDC package schema is absent"))?
+                        .as_ref(),
+                    Box::new(segments),
+                )?
+            };
             (
                 outcome.receipt,
                 outcome.reporting_policy,

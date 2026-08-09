@@ -406,6 +406,22 @@ pub trait DestinationRuntime {
         )))
     }
 
+    /// Atomically applies one finalized single-target CDC package.
+    ///
+    /// Destinations whose ordinary bulk path is row-oriented may override this boundary rather
+    /// than pretending key-only delete segments are row batches. The default remains closed.
+    fn commit_cdc_package(
+        &mut self,
+        _inputs: &PackageReplayInputs,
+        _output_schema: &Schema,
+        _segments: CommitSegmentIterator,
+    ) -> Result<DestinationCommitOutcome> {
+        Err(CdfError::destination(format!(
+            "destination {} does not support finalized single-target CDC application",
+            self.describe().destination_id
+        )))
+    }
+
     fn secret_redaction(&self) -> Option<&str> {
         None
     }

@@ -50,7 +50,7 @@ impl ResolvedProjectDestination {
         let inputs = if plan.route_family.is_some() {
             routed_destination_planning_inputs(resource, &target, plan)?
         } else {
-            destination_planning_inputs(resource, &target, &schema_hash)?
+            destination_planning_inputs(resource, &target, plan, &schema_hash)?
         };
         let outcome = if plan.route_family.is_some() {
             if self
@@ -145,10 +145,16 @@ fn routed_destination_planning_inputs(
 fn destination_planning_inputs(
     resource: &dyn ResourceStream,
     target: &TargetName,
+    plan: &EnginePlan,
     schema_hash: &SchemaHash,
 ) -> Result<DestinationCommitPlanningInputs> {
     let package_hash = PackageHash::new(PLAN_PREVIEW_PACKAGE_HASH)?;
-    let segment = synthetic_segment(resource)?;
+    let content = cdf_engine::planned_empty_package_content(plan)?;
+    let segments = if matches!(content, cdf_kernel::PackageContentAuthority::Rows { .. }) {
+        vec![synthetic_segment(resource)?]
+    } else {
+        Vec::new()
+    };
     let state_delta = StateDelta {
         checkpoint_id: CheckpointId::new("checkpoint-plan-preview")?,
         pipeline_id: PipelineId::new("pipeline-plan-preview")?,
@@ -157,22 +163,24 @@ fn destination_planning_inputs(
         state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
-        output_position: segment.output_position.clone(),
+        output_position: segments.first().map_or_else(synthetic_position, |segment| {
+            segment.output_position.clone()
+        }),
         output_watermark: None,
         partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),
-        content: cdf_kernel::PackageContentAuthority::rows(schema_hash.clone()),
+        content: content.clone(),
         schema_hash: schema_hash.clone(),
-        segments: vec![segment],
+        segments: segments.clone(),
     };
     let destination_commit = DestinationCommitRequest {
         package_hash,
-        content: state_delta.content.clone(),
+        content,
         target: target.clone(),
         disposition: resource.descriptor().write_disposition.clone(),
-        segments: state_delta.segments.clone(),
+        segments,
         idempotency_token: IdempotencyToken::new(PLAN_PREVIEW_IDEMPOTENCY_TOKEN)?,
     };
     Ok(DestinationCommitPlanningInputs {

@@ -216,9 +216,14 @@ fn expected_duckdb_duplicate(
             "DuckDB duplicate receipt content differs from the routed/package authority",
         ));
     }
-    if !plan.migrations.is_empty() && plan.migrations != stored.migrations {
+    if plan.migrations.iter().any(|applicable| {
+        !stored
+            .migrations
+            .iter()
+            .any(|committed| committed.description == applicable.description)
+    }) {
         return Err(CdfError::destination(
-            "DuckDB duplicate receipt migrations differ from the applicable commit plan",
+            "DuckDB duplicate receipt does not cover every currently applicable migration",
         ));
     }
     validate_duckdb_duplicate_counts(stored, segment_acks)?;
@@ -328,6 +333,65 @@ fn validate_duckdb_duplicate_counts(stored: &Receipt, segment_acks: &[SegmentAck
                     && soft_deletes.is_none()
                     && missing_delete_keys.is_none()
                     && ignored_deletes.is_none()
+            }
+            (
+                WriteDisposition::CdcApply,
+                CommitCounts::KeyedChanges {
+                    intent,
+                    rows_inserted,
+                    rows_updated,
+                    hard_deletes,
+                    soft_deletes,
+                    missing_delete_keys,
+                    ignored_deletes,
+                },
+            ) => {
+                let cdf_kernel::PackageContentAuthority::KeyedChanges {
+                    reduction,
+                    delete_application,
+                    ..
+                } = &stored.content
+                else {
+                    return Err(CdfError::destination(
+                        "DuckDB CDC receipt has non-keyed content authority",
+                    ));
+                };
+                let upserts_match =
+                    rows_inserted
+                        .zip(*rows_updated)
+                        .is_some_and(|(inserted, updated)| {
+                            inserted.checked_add(updated) == Some(intent.upserts)
+                        });
+                let deletes_match =
+                    match delete_application {
+                        cdf_kernel::DeleteApplicationAuthority::NotApplicable => false,
+                        cdf_kernel::DeleteApplicationAuthority::Apply {
+                            policy: cdf_kernel::DeleteApplicationPolicy::Ignore,
+                        } => {
+                            *ignored_deletes == Some(intent.deletes)
+                                && hard_deletes.is_none()
+                                && soft_deletes.is_none()
+                                && missing_delete_keys.is_none()
+                        }
+                        cdf_kernel::DeleteApplicationAuthority::Apply {
+                            policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+                        } => hard_deletes.zip(*missing_delete_keys).is_some_and(
+                            |(applied, missing)| {
+                                applied.checked_add(missing) == Some(intent.deletes)
+                            },
+                        ),
+                        cdf_kernel::DeleteApplicationAuthority::Apply {
+                            policy: cdf_kernel::DeleteApplicationPolicy::Soft { .. },
+                        } => soft_deletes.zip(*missing_delete_keys).is_some_and(
+                            |(applied, missing)| {
+                                applied.checked_add(missing) == Some(intent.deletes)
+                            },
+                        ),
+                    };
+                *intent == reduction.surviving
+                    && intent.total().ok() == Some(rows)
+                    && upserts_match
+                    && deletes_match
             }
             _ => false,
         }

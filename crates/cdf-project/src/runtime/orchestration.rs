@@ -517,7 +517,9 @@ where
             package.manifest().lifecycle.status,
             PackageStatus::Planned | PackageStatus::Extracting | PackageStatus::Validated
         ) {
-            if context.plan.route_family.is_none() {
+            if context.plan.route_family.is_none()
+                && context.plan.write_disposition != WriteDisposition::CdcApply
+            {
                 let target = destination.target().clone();
                 let active = ActiveStagedIngress::begin(
                     destination.runtime_mut(),
@@ -824,7 +826,9 @@ async fn run_project_inner(
             )?;
             write_quarantine_mirror_outcome_artifact(builder, &quarantine_mirror)
         };
-    let mut active_staged = if manifest_plan.plan.route_family.is_some() {
+    let mut active_staged = if manifest_plan.plan.route_family.is_some()
+        || manifest_plan.plan.write_disposition == WriteDisposition::CdcApply
+    {
         None
     } else {
         ActiveStagedIngress::begin(

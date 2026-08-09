@@ -350,6 +350,31 @@ fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
 }
 
 #[test]
+fn destination_planning_facade_previews_keyed_package_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
+    let database_path = temp.path().join("planned-merge.duckdb");
+    let mut destination =
+        crate::test_destinations::duckdb(&database_path, TargetName::new("events").unwrap())
+            .unwrap();
+
+    let engine_plan = live_plan(&resource, "pkg-plan-preview-merge");
+    let plan = destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap();
+
+    assert!(matches!(
+        plan.request.content,
+        cdf_kernel::PackageContentAuthority::KeyedChanges { .. }
+    ));
+    assert!(plan.synthetic.segment_ids.is_empty());
+    assert!(
+        !database_path.exists(),
+        "keyed DuckDB plan preview must not create destination data"
+    );
+}
+
+#[test]
 fn destination_planning_facade_previews_every_routed_duckdb_target_without_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);

@@ -143,6 +143,13 @@ impl DuckDbDestination {
         validate_field_names(&fields)?;
         let fields = persistence_fields(&fields);
         let target = parse_target(&request.target)?;
+        let key_index_ddl = (request.disposition == WriteDisposition::CdcApply
+            && matches!(
+                &request.content,
+                cdf_kernel::PackageContentAuthority::KeyedChanges { .. }
+            ))
+        .then(|| crate::routed::single_target_key_index_ddl(&target, &request.content))
+        .transpose()?;
         let table_plan = if self.database_path.exists() {
             let conn = self.open_read_only_connection()?;
             plan_table(&conn, target, &fields, request.disposition.clone())?
@@ -156,8 +163,9 @@ impl DuckDbDestination {
                 ddl: Vec::new(),
             });
         }
-        kernel.migrations = table_plan
-            .ddl
+        let mut ddl = table_plan.ddl;
+        ddl.extend(key_index_ddl);
+        kernel.migrations = ddl
             .iter()
             .enumerate()
             .map(|(index, ddl)| MigrationRecord {
@@ -165,10 +173,7 @@ impl DuckDbDestination {
                 description: ddl.clone(),
             })
             .collect();
-        Ok(DuckDbCommitPlan {
-            kernel,
-            ddl: table_plan.ddl,
-        })
+        Ok(DuckDbCommitPlan { kernel, ddl })
     }
 
     fn start_staged_writer(
