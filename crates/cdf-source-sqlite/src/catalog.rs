@@ -4,13 +4,14 @@ use std::{
     time::Duration,
 };
 
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type};
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::{
     error::{classify_sqlite_error, classify_sqlite_open_error, validate_source_file},
     identifier::SqliteIdentifier,
+    native::arrow_type_for_declared_type,
 };
 
 pub(crate) const SQLITE_STRICT_METADATA_KEY: &str = "cdf:sqlite_strict";
@@ -240,42 +241,6 @@ pub(crate) fn validate_live_unique_stable_key(
         Err(CdfError::data(format!(
             "SQLite stable_key `{stable_key}` is no longer backed by a single-column PRIMARY KEY or UNIQUE constraint"
         )))
-    }
-}
-
-fn arrow_type_for_declared_type(declared_type: &str) -> Option<DataType> {
-    let normalized = declared_type.trim().to_ascii_uppercase();
-    if normalized.is_empty() {
-        return None;
-    }
-    if normalized.contains("BOOL") {
-        Some(DataType::Boolean)
-    } else if normalized == "DATE" {
-        Some(DataType::Date32)
-    } else if normalized.contains("TIMESTAMP") || normalized.contains("DATETIME") {
-        Some(DataType::Timestamp(
-            TimeUnit::Microsecond,
-            Some("UTC".into()),
-        ))
-    } else if normalized.contains("INT") {
-        Some(DataType::Int64)
-    } else if normalized.contains("CHAR")
-        || normalized.contains("CLOB")
-        || normalized.contains("TEXT")
-        || normalized.contains("JSON")
-    {
-        Some(DataType::Utf8)
-    } else if normalized.contains("REAL")
-        || normalized.contains("FLOA")
-        || normalized.contains("DOUB")
-        || normalized.contains("NUMERIC")
-        || normalized.contains("DECIMAL")
-    {
-        Some(DataType::Float64)
-    } else if normalized.contains("BLOB") {
-        Some(DataType::Binary)
-    } else {
-        None
     }
 }
 

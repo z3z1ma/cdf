@@ -31,7 +31,7 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior, params_from_iter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const REPORT_SCHEMA_VERSION: u16 = 2;
+const REPORT_SCHEMA_VERSION: u16 = 3;
 const TIMED_REGION_VERSION: u16 = 1;
 const DIRECT_BATCH_ROWS: usize = 32 * 1024;
 const COLUMN_COUNT: u64 = 3;
@@ -41,6 +41,8 @@ const SAMPLE_TIMEOUT: Duration = Duration::from_secs(120);
 const PASS_RATIO_PPM: u64 = 900_000;
 const MAX_MAD_PERCENT: u64 = 10;
 const RUSQLITE_CRATE_VERSION: &str = "0.40.1";
+const NATIVE_QUERY: &str = "WITH enriched AS (SELECT e.id, e.metric + w.delta AS metric, e.updated_at, row_number() OVER (ORDER BY e.id) AS ordinal FROM events AS e JOIN weights AS w ON w.bucket = e.id % 16) SELECT id, metric + ordinal - id AS metric, updated_at FROM enriched";
+const NATIVE_WRAPPED_QUERY: &str = "SELECT id, metric, updated_at FROM (WITH enriched AS (SELECT e.id, e.metric + w.delta AS metric, e.updated_at, row_number() OVER (ORDER BY e.id) AS ordinal FROM events AS e JOIN weights AS w ON w.bucket = e.id % 16) SELECT id, metric + ordinal - id AS metric, updated_at FROM enriched) AS \"_cdf_native_query\" ORDER BY updated_at ASC, id ASC";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SqliteSourceRooflineSettings {
@@ -70,12 +72,35 @@ pub struct SqliteSourceRooflineReport {
     pub status: String,
     pub reason: Option<String>,
     pub host: HostFingerprint,
-    pub comparability: ComparabilityKey,
     pub measurement_provider: MeasurementProviderIdentity,
     pub settings: SqliteSourceRooflineSettings,
+    pub cells: Vec<SqliteSourceRooflineCell>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqliteSourceRooflineCell {
+    pub shape: String,
+    pub comparability: ComparabilityKey,
     pub cdf: BenchmarkObservation,
     pub direct_rusqlite: BenchmarkObservation,
     pub roofline_ratio_ppm: u64,
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    Table,
+    NativeQuery,
+}
+
+impl Shape {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::NativeQuery => "native_query_cte_join_window",
+        }
+    }
 }
 
 struct NoSecrets;
@@ -244,82 +269,110 @@ pub fn run_sqlite_source_roofline(
     let (workspace_content_sha256, workspace_content_inputs) =
         workspace_content_revision(&workspace_root)?;
     let executable_sha256 = executable_revision(&executable)?;
-    let comparability = ComparabilityKey {
-        dataset_id: format!("sqlite-strict-i64x3-{rows}"),
-        workload_id: "sqlite-table-source-full-projection".to_owned(),
-        timed_region_version: TIMED_REGION_VERSION,
-        cdf_revision: base_git_revision(&workspace_root)?,
-        dependency_tuple: format!(
-            "rusqlite={};sqlite={}",
-            RUSQLITE_CRATE_VERSION,
-            rusqlite::version()
-        ),
-        host_class,
-        os_toolchain: format!(
-            "{}-{};{}",
-            host.os.family, host.os.version, host.rust_version
-        ),
-        io_mode: IoMode::Warm,
-    };
-    let command = |mode: &str| ChildCommand {
+    let cdf_revision = base_git_revision(&workspace_root)?;
+    let command = |shape: Shape, implementation: &str| ChildCommand {
         program: executable.clone(),
         args: vec![
             "worker".to_owned(),
-            mode.to_owned(),
+            format!("{}-{}", implementation, shape.name()),
             database.display().to_string(),
             rows.to_string(),
         ],
         environment: BTreeMap::new(),
         current_dir: std::env::current_dir().ok(),
     };
-    let direct = run_macro_cell(
-        &provider,
-        &MacroRunRequest {
-            comparability: comparability.clone(),
-            expected_host_class: Some(comparability.host_class.clone()),
-            sample_count: samples,
-            timeout: SAMPLE_TIMEOUT,
-            allow_privileged_cache_control: false,
-            command: command("direct"),
-            reference: None,
-            bias: Vec::new(),
-        },
-    )?;
-    let cdf = run_macro_cell(
-        &provider,
-        &MacroRunRequest {
-            comparability: comparability.clone(),
-            expected_host_class: Some(comparability.host_class.clone()),
-            sample_count: samples,
-            timeout: SAMPLE_TIMEOUT,
-            allow_privileged_cache_control: false,
-            command: command("cdf"),
-            reference: Some(ReferenceIdentity {
-                kind: "direct_library".to_owned(),
-                name: "rusqlite".to_owned(),
-                version: RUSQLITE_CRATE_VERSION.to_owned(),
-                semantic_work: "prepared SELECT in one explicit read transaction, identical projection/order/type conversion, and full Arrow consumption".to_owned(),
-            }),
-            bias: vec![
-                BiasLabel {
-                    code: "cdf-governance-overhead".to_owned(),
-                    description: "CDF additionally performs managed-lane admission, memory leasing, schema validation, and canonical batch evidence".to_owned(),
-                },
-                BiasLabel {
-                    code: "child-cpu-scope".to_owned(),
-                    description: "process CPU and peak RSS include untimed child setup; wall time is the explicit query-through-Arrow timed region".to_owned(),
-                },
-            ],
-        },
-    )?;
-    let ratio = ratio_ppm(&cdf, &direct);
-    let (status, reason) = evaluate(&cdf, &direct, ratio);
+    let mut cells = Vec::new();
+    for shape in [Shape::Table, Shape::NativeQuery] {
+        let comparability = ComparabilityKey {
+            dataset_id: format!("sqlite-strict-i64x3-{rows}-{}", shape.name()),
+            workload_id: format!("sqlite-source-{}-full-projection", shape.name()),
+            timed_region_version: TIMED_REGION_VERSION,
+            cdf_revision: cdf_revision.clone(),
+            dependency_tuple: format!(
+                "rusqlite={};sqlite={}",
+                RUSQLITE_CRATE_VERSION,
+                rusqlite::version()
+            ),
+            host_class: host_class.clone(),
+            os_toolchain: format!(
+                "{}-{};{}",
+                host.os.family, host.os.version, host.rust_version
+            ),
+            io_mode: IoMode::Warm,
+        };
+        let direct = run_macro_cell(
+            &provider,
+            &MacroRunRequest {
+                comparability: comparability.clone(),
+                expected_host_class: Some(comparability.host_class.clone()),
+                sample_count: samples,
+                timeout: SAMPLE_TIMEOUT,
+                allow_privileged_cache_control: false,
+                command: command(shape, "direct"),
+                reference: None,
+                bias: Vec::new(),
+            },
+        )?;
+        let cdf = run_macro_cell(
+            &provider,
+            &MacroRunRequest {
+                comparability: comparability.clone(),
+                expected_host_class: Some(comparability.host_class.clone()),
+                sample_count: samples,
+                timeout: SAMPLE_TIMEOUT,
+                allow_privileged_cache_control: false,
+                command: command(shape, "cdf"),
+                reference: Some(ReferenceIdentity {
+                    kind: "direct_library".to_owned(),
+                    name: "rusqlite".to_owned(),
+                    version: RUSQLITE_CRATE_VERSION.to_owned(),
+                    semantic_work: "identical prepared table/native query in one explicit read transaction, identical projection/order/type conversion, and full Arrow consumption".to_owned(),
+                }),
+                bias: vec![
+                    BiasLabel {
+                        code: "cdf-governance-overhead".to_owned(),
+                        description: "CDF additionally performs managed-lane admission, memory leasing, schema validation, and canonical batch evidence".to_owned(),
+                    },
+                    BiasLabel {
+                        code: "child-cpu-scope".to_owned(),
+                        description: "process CPU and peak RSS include untimed child setup; wall time is the explicit query-through-Arrow timed region".to_owned(),
+                    },
+                ],
+            },
+        )?;
+        let ratio = ratio_ppm(&cdf, &direct);
+        let (status, reason) = evaluate(&cdf, &direct, ratio);
+        cells.push(SqliteSourceRooflineCell {
+            shape: shape.name().to_owned(),
+            comparability,
+            cdf,
+            direct_rusqlite: direct,
+            roofline_ratio_ppm: ratio,
+            status,
+            reason,
+        });
+    }
+    let status = if cells.iter().all(|cell| cell.status == "pass") {
+        "pass".to_owned()
+    } else {
+        "fail".to_owned()
+    };
+    let reason = cells
+        .iter()
+        .filter(|cell| cell.status != "pass")
+        .map(|cell| {
+            format!(
+                "{}: {}",
+                cell.shape,
+                cell.reason.as_deref().unwrap_or("failed")
+            )
+        })
+        .reduce(|left, right| format!("{left}; {right}"));
     let report = SqliteSourceRooflineReport {
         schema_version: REPORT_SCHEMA_VERSION,
         status,
         reason,
         host,
-        comparability,
         measurement_provider: provider.process_observer_identity(),
         settings: SqliteSourceRooflineSettings {
             journal_mode: "delete".to_owned(),
@@ -356,9 +409,7 @@ pub fn run_sqlite_source_roofline(
                     .to_owned(),
             ],
         },
-        cdf,
-        direct_rusqlite: direct,
-        roofline_ratio_ppm: ratio,
+        cells,
     };
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
@@ -380,8 +431,14 @@ pub fn run_sqlite_source_roofline_worker(
     expected_rows: u64,
 ) -> cdf_bench_core::BenchResult<serde_json::Value> {
     let measurement = match mode {
-        "cdf" => run_cdf_worker(database, expected_rows),
-        "direct" => run_direct_worker(database, expected_rows),
+        "cdf-table" => run_cdf_worker(database, expected_rows, Shape::Table),
+        "direct-table" => run_direct_worker(database, expected_rows, Shape::Table),
+        "cdf-native_query_cte_join_window" => {
+            run_cdf_worker(database, expected_rows, Shape::NativeQuery)
+        }
+        "direct-native_query_cte_join_window" => {
+            run_direct_worker(database, expected_rows, Shape::NativeQuery)
+        }
         _ => Err(bench_error(format!(
             "unknown SQLite source roofline worker mode `{mode}`"
         ))),
@@ -399,7 +456,15 @@ fn create_fixture(path: &Path, rows: u64) -> cdf_bench_core::BenchResult<()> {
             id INTEGER PRIMARY KEY,
             metric INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
-        ) STRICT;",
+        ) STRICT;
+        CREATE TABLE weights (
+            bucket INTEGER PRIMARY KEY,
+            delta INTEGER NOT NULL
+        ) STRICT;
+        WITH RECURSIVE buckets(value) AS (
+            VALUES(0) UNION ALL SELECT value + 1 FROM buckets WHERE value < 15
+        )
+        INSERT INTO weights SELECT value, value * 3 FROM buckets;",
     )?;
     {
         let mut insert = transaction.prepare("INSERT INTO events VALUES (?1, ?2, ?3)")?;
@@ -415,6 +480,7 @@ fn create_fixture(path: &Path, rows: u64) -> cdf_bench_core::BenchResult<()> {
 fn run_cdf_worker(
     database: &Path,
     expected_rows: u64,
+    shape: Shape,
 ) -> cdf_bench_core::BenchResult<SqliteWorkerMeasurement> {
     let project_root = database
         .parent()
@@ -425,6 +491,10 @@ fn run_cdf_worker(
         .ok_or_else(|| bench_error("SQLite roofline database filename is not UTF-8"))?;
     let mut registry = SourceRegistry::new();
     registry.register(cdf_source_sqlite::SqliteSourceDriver::new()?)?;
+    let input = match shape {
+        Shape::Table => "table = \"events\"".to_owned(),
+        Shape::NativeQuery => format!("query = {NATIVE_QUERY:?}"),
+    };
     let document = cdf_declarative::parse_toml(&format!(
         r#"
 [source.local]
@@ -432,7 +502,8 @@ kind = "sqlite"
 location = "sqlite://{file_name}"
 
 [resource.events]
-table = "events"
+{input}
+output_batch_rows = 32768
 write_disposition = "append"
 trust = "governed"
 schema = {{ fields = [
@@ -502,6 +573,7 @@ async fn read_cdf_batches(
 fn run_direct_worker(
     database: &Path,
     expected_rows: u64,
+    shape: Shape,
 ) -> cdf_bench_core::BenchResult<SqliteWorkerMeasurement> {
     let started = Instant::now();
     let mut connection = Connection::open_with_flags(
@@ -510,8 +582,11 @@ fn run_direct_worker(
     )?;
     connection.busy_timeout(Duration::ZERO)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let mut statement = transaction
-        .prepare("SELECT id, metric, updated_at FROM events ORDER BY updated_at ASC, id ASC")?;
+    let query = match shape {
+        Shape::Table => "SELECT id, metric, updated_at FROM events ORDER BY updated_at ASC, id ASC",
+        Shape::NativeQuery => NATIVE_WRAPPED_QUERY,
+    };
+    let mut statement = transaction.prepare(query)?;
     let mut rows = statement.query(params_from_iter(
         std::iter::empty::<rusqlite::types::Value>(),
     ))?;
@@ -686,6 +761,7 @@ fn workspace_content_revision(
         "crates/cdf-source-sqlite/src/error.rs",
         "crates/cdf-source-sqlite/src/identifier.rs",
         "crates/cdf-source-sqlite/src/lib.rs",
+        "crates/cdf-source-sqlite/src/native.rs",
         "crates/cdf-source-sqlite/src/source.rs",
         "crates/cdf-source-sqlite/src/source/execution.rs",
         "crates/cdf-source-sqlite/src/source/query.rs",

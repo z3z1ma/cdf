@@ -7,16 +7,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arrow_schema::{DataType, Field, Schema};
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
-    CanonicalArrowSchema, CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue,
-    DestinationProtocol, EnvironmentName, PipelineId, QueryableResource, Receipt, ResourceId,
-    Result, RunId, ScanRequest, SchemaAuthorityEstablishment, SchemaAuthorityKey,
-    SchemaAuthorityStore, SchemaSource, SchemaVersion, SchemaVersionProvenance, ScopeKey,
-    SourcePosition, TargetName,
+    CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue, DestinationProtocol,
+    EnvironmentName, PipelineId, QueryableResource, Receipt, ResourceId, Result, RunId,
+    ScanRequest, SchemaAuthorityKey, SchemaAuthorityStore, SchemaSource, ScopeKey, SourcePosition,
+    TargetName,
 };
 use cdf_package::PackageReader;
 use cdf_package_contract::PackageStatus;
@@ -31,6 +29,7 @@ use serde_json::Value;
 
 use crate::{
     live_run::drift_quarantine::{DuckDbDriftQuarantineDemoEvidence, run_duckdb_demo},
+    run_matrix::data_onramp::RecordedHttpServer,
     run_matrix::test_support::{RecordingTransport, StaticSecretProvider, json_response},
 };
 
@@ -46,7 +45,7 @@ const RUN_ID: &str = "run-mvp-acceptance-demo-crash";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct MvpAcceptanceDemoEvidence {
-    cli_plan_before_source_contact: bool,
+    cli_plan_source_observations: usize,
     plan_resource_id: String,
     plan_partition_count: usize,
     plan_endpoint_path: String,
@@ -77,11 +76,14 @@ struct MvpAcceptanceDemoEvidence {
 #[test]
 fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let temp = tempfile::tempdir().unwrap();
-    let project = DemoProject::new(temp.path()).unwrap();
+    let live_fixture = RecordedHttpServer::new([GITHUB_ISSUES_RESPONSE; 8]);
+    let project = DemoProject::new(temp.path(), live_fixture.base_url()).unwrap();
     project.write_files().unwrap();
 
     let plan_human = invoke_human(project.root(), ["plan", RESOURCE_ID]);
     let plan_json = invoke_json(project.root(), ["plan", RESOURCE_ID]);
+    let plan_source_observations = live_fixture.requests().unwrap().len();
+    assert_eq!(plan_source_observations, 2);
     assert_eq!(plan_json["command"], "plan");
     let plan_report = &plan_json["result"]["resources"][0]["report"];
     assert_eq!(plan_report["resource_id"], RESOURCE_ID);
@@ -263,9 +265,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     );
     assert_eq!(mirror.state[0].row_count, head.delta.segments[0].row_count);
 
-    let replay_project = DemoProject::new(temp.path().join("replay-project"))
-        .unwrap()
-        .with_destination(project.replay_destination_path());
+    let replay_project = DemoProject::new(
+        temp.path().join("replay-project"),
+        project.source_base_url.clone(),
+    )
+    .unwrap()
+    .with_destination(project.replay_destination_path());
     replay_project.write_files().unwrap();
     let replay_to = format!("duckdb://{}", replay_project.destination_path().display());
     let replay_json = invoke_json(
@@ -287,9 +292,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let replay_rows = duckdb_row_count(&replay_project.destination_path(), TARGET).unwrap();
     assert_eq!(replay_rows, 2);
 
-    let human_replay_project = DemoProject::new(temp.path().join("human-replay-project"))
-        .unwrap()
-        .with_destination(temp.path().join("human-replay.duckdb"));
+    let human_replay_project = DemoProject::new(
+        temp.path().join("human-replay-project"),
+        project.source_base_url.clone(),
+    )
+    .unwrap()
+    .with_destination(temp.path().join("human-replay.duckdb"));
     human_replay_project.write_files().unwrap();
     let human_replay_to = format!(
         "duckdb://{}",
@@ -348,7 +356,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let requests = transport.requests();
     let request = &requests[0];
     let evidence = MvpAcceptanceDemoEvidence {
-        cli_plan_before_source_contact: true,
+        cli_plan_source_observations: plan_source_observations,
         plan_resource_id: plan_report["resource_id"].as_str().unwrap().to_owned(),
         plan_partition_count: plan_report["will_fetch"]["partitions"]
             .as_array()
@@ -389,11 +397,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         ],
     };
     assert_eq!(evidence.rest_request_method, "Get");
-    assert!(
-        request
-            .url
-            .starts_with("https://api.github.test/repos/acme/cdf/issues?")
-    );
+    assert!(request.url.contains("/repos/acme/cdf/issues?"));
     assert!(request.url.contains("per_page=100"));
     assert!(request.url.contains("state=all"));
     assert_eq!(
@@ -430,13 +434,15 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
 struct DemoProject {
     root: PathBuf,
     destination_path: PathBuf,
+    source_base_url: String,
 }
 
 impl DemoProject {
-    fn new(root: impl AsRef<Path>) -> Result<Self> {
+    fn new(root: impl AsRef<Path>, source_base_url: impl Into<String>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         Ok(Self {
             destination_path: root.join(".cdf/demo.duckdb"),
+            source_base_url: source_base_url.into(),
             root,
         })
     }
@@ -481,31 +487,7 @@ impl DemoProject {
             self.root.join("cdf/github/issues.cdf.sql"),
             GITHUB_ISSUES_SQL,
         )
-        .map_err(|error| crate::conformance_private_io_error("write demo resource SQL", error))?;
-        self.pin_fixture_schema()
-    }
-
-    fn pin_fixture_schema(&self) -> Result<()> {
-        let config = cdf_project::parse_cdf_toml(&self.project_toml())?;
-        let resource_id = ResourceId::new(RESOURCE_ID)?;
-        let schema = github_issues_schema();
-        let store = SqliteSchemaAuthorityStore::open(self.state_store_path())?;
-        let key = SchemaAuthorityKey::new(
-            store.authority_domain_id(),
-            config.project.id,
-            EnvironmentName::new("dev")?,
-            resource_id,
-        )?;
-        let version = SchemaVersion::new(
-            CanonicalArrowSchema::from_arrow(&schema)?,
-            None,
-            None,
-            1_000,
-            SchemaVersionProvenance::FirstUse,
-        )?;
-        store
-            .establish_if_absent(SchemaAuthorityEstablishment::new(key, version)?)
-            .map(drop)
+        .map_err(|error| crate::conformance_private_io_error("write demo resource SQL", error))
     }
 
     fn project_toml(&self) -> String {
@@ -524,11 +506,12 @@ destination = "duckdb://{}"
 
 [sources.github]
 type = "rest"
-base_url = "https://api.github.test"
+base_url = "{}"
 auth = {{ kind = "bearer", token = "secret://file/github-token" }}
-egress_allowlist = ["api.github.test"]
+egress_allowlist = ["127.0.0.1"]
 "#,
-            self.destination_path.display()
+            self.destination_path.display(),
+            self.source_base_url
         )
     }
 }
@@ -604,18 +587,6 @@ fn github_issues_resource(
         &context,
     )?;
     Ok((resource, transport))
-}
-
-fn github_issues_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("number", DataType::Int64, false),
-        Field::new("title", DataType::Utf8, false),
-        Field::new("state", DataType::Utf8, false),
-        Field::new("updated_at", DataType::Int64, false),
-        Field::new("html_url", DataType::Utf8, false),
-        Field::new("user_login", DataType::Utf8, false),
-    ])
 }
 
 fn engine_plan(

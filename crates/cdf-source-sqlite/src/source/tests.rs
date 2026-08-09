@@ -21,20 +21,30 @@ use rusqlite::{
 use crate::{
     catalog::{SQLITE_STRICT_METADATA_KEY, SQLITE_UNIQUE_METADATA_KEY},
     identifier::SqliteIdentifier,
+    native::{
+        SQLITE_DEFAULT_OUTPUT_BATCH_ROWS, SqliteNativeOptions, SqliteSourceInput,
+        discover_sqlite_query,
+    },
 };
 
 use super::{
-    SqliteTableResource,
+    SqliteSourceResource,
     execution::{
-        ColumnBuilder, SQLITE_FETCH_ROWS, SQLITE_MAXIMUM_BATCH_BYTES, classify_execution_error,
+        ColumnBuilder, SQLITE_MAXIMUM_BATCH_BYTES, classify_execution_error,
         install_progress_handler,
     },
-    plan_sqlite_table_partition,
+    plan_sqlite_source_partition,
     query::{build_query, scan_from_partition},
-    schema::{SqliteTemporalEncoding, validate_sqlite_table_resource_shape},
-    sqlite_table_predicate_fidelity,
+    schema::{SqliteTemporalEncoding, validate_sqlite_source_resource_shape},
+    sqlite_source_predicate_fidelity,
     temporal::{decode_timestamp, encode_temporal_cursor},
 };
+
+fn table_input() -> SqliteSourceInput {
+    SqliteSourceInput::Table {
+        table: SqliteIdentifier::new("events").unwrap(),
+    }
+}
 
 fn descriptor(cursor: bool) -> ResourceDescriptor {
     ResourceDescriptor {
@@ -80,17 +90,18 @@ fn resource_with_execution(
     temporal_encodings: BTreeMap<String, SqliteTemporalEncoding>,
 ) -> (
     Arc<cdf_engine::StandaloneExecutionHost>,
-    SqliteTableResource,
+    SqliteSourceResource,
 ) {
     let (host, execution) =
         cdf_engine::StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
-    let resource = SqliteTableResource::new(
+    let resource = SqliteSourceResource::new(
         path.to_owned(),
         descriptor,
         schema,
-        SqliteIdentifier::new("events").unwrap(),
+        table_input(),
         stable_key.map(|key| SqliteIdentifier::new(key).unwrap()),
         temporal_encodings,
+        SqliteNativeOptions::default(),
     )
     .unwrap()
     .with_execution(execution)
@@ -111,7 +122,7 @@ fn full_scan_request(descriptor: &ResourceDescriptor) -> ScanRequest {
 
 fn read_all(
     host: &cdf_engine::StandaloneExecutionHost,
-    resource: &SqliteTableResource,
+    resource: &SqliteSourceResource,
 ) -> Result<Vec<Batch>> {
     let partitions = resource.plan_partitions(&full_scan_request(resource.descriptor()))?;
     host.block_on_root(async {
@@ -201,18 +212,79 @@ fn declared_execution_observes_live_catalog_drift_without_changing_logical_outpu
 }
 
 #[test]
+fn native_query_streams_complex_read_in_configured_batches() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("native-query.sqlite");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE events(id INTEGER PRIMARY KEY, category TEXT, payload TEXT);\
+             INSERT INTO events VALUES\
+               (1, 'a', '{\"value\":2}'),\
+               (2, 'a', '{\"value\":3}'),\
+               (3, 'b', '{\"value\":5}');",
+        )
+        .unwrap();
+    drop(connection);
+    let input = SqliteSourceInput::from_authored(
+        None,
+        Some(
+            "WITH ranked AS (SELECT id, category, json_extract(payload, '$.value') AS value, row_number() OVER (PARTITION BY category ORDER BY id) AS ordinal FROM events) SELECT id, category, value, ordinal FROM ranked"
+                .to_owned(),
+        ),
+    )
+    .unwrap();
+    let options = SqliteNativeOptions {
+        output_batch_rows: 2,
+        ..SqliteNativeOptions::default()
+    };
+    let discovered = discover_sqlite_query(
+        &path,
+        &descriptor(false).resource_id,
+        &input,
+        &options,
+        1_000,
+        16 * 1024 * 1024,
+    )
+    .unwrap();
+    let (host, execution) =
+        cdf_engine::StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let resource = SqliteSourceResource::new(
+        path,
+        descriptor(false),
+        Arc::new(discovered.schema),
+        input,
+        None,
+        BTreeMap::new(),
+        options,
+    )
+    .unwrap()
+    .with_execution(execution)
+    .unwrap();
+    let batches = read_all(&host, &resource).unwrap();
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert_eq!(batches[0].record_batch().unwrap().num_columns(), 4);
+}
+
+#[test]
 fn exact_and_inexact_pushdown_follow_strict_type_authority() {
     let expression = DeclarativeExpression::parse_comparison("updated_at >= 10").unwrap();
     assert_eq!(
-        sqlite_table_predicate_fidelity(&schema(true), &expression),
+        sqlite_source_predicate_fidelity(&schema(true), &expression),
         PushdownFidelity::Exact
     );
     assert_eq!(
-        sqlite_table_predicate_fidelity(&schema(false), &expression),
+        sqlite_source_predicate_fidelity(&schema(false), &expression),
         PushdownFidelity::Inexact
     );
     assert_eq!(
-        sqlite_table_predicate_fidelity(
+        sqlite_source_predicate_fidelity(
             &schema(true),
             &DeclarativeExpression::parse_comparison("name = 'ada'").unwrap()
         ),
@@ -222,7 +294,7 @@ fn exact_and_inexact_pushdown_follow_strict_type_authority() {
 
 #[test]
 fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close() {
-    let table = SqliteIdentifier::new("events").unwrap();
+    let input = table_input();
     let inexact_request = ScanRequest {
         resource_id: descriptor(false).resource_id.clone(),
         projection: None,
@@ -237,12 +309,13 @@ fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close
         order_by: Vec::new(),
         scope: ScopeKey::Resource,
     };
-    let partition = plan_sqlite_table_partition(
+    let partition = plan_sqlite_source_partition(
         &descriptor(false),
         &schema(false),
-        &table,
+        &input,
         None,
         &BTreeMap::new(),
+        None,
         &inexact_request,
     )
     .unwrap();
@@ -250,16 +323,17 @@ fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close
     let scan = scan_from_partition(
         &descriptor(false),
         &schema(false),
-        &table,
+        &input,
         None,
         &BTreeMap::new(),
+        None,
         &partition,
     )
     .unwrap();
     let query = build_query(
         &descriptor(false),
         &schema(false),
-        &table,
+        &input,
         None,
         &BTreeMap::new(),
         &partition,
@@ -277,12 +351,13 @@ fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close
         order_by: Vec::new(),
         scope: ScopeKey::Resource,
     };
-    let partition = plan_sqlite_table_partition(
+    let partition = plan_sqlite_source_partition(
         &descriptor(true),
         &schema(true),
-        &table,
+        &input,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
+        None,
         &cursor_request,
     )
     .unwrap();
@@ -290,16 +365,17 @@ fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close
     let scan = scan_from_partition(
         &descriptor(true),
         &schema(true),
-        &table,
+        &input,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
+        None,
         &partition,
     )
     .unwrap();
     let query = build_query(
         &descriptor(true),
         &schema(true),
-        &table,
+        &input,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
         &partition,
@@ -311,11 +387,10 @@ fn source_limit_is_never_applied_before_residual_filtering_or_cursor_group_close
 
 #[test]
 fn cursor_requires_stable_tie_breaker_and_canonical_order() {
-    let table = SqliteIdentifier::new("events").unwrap();
-    let error = validate_sqlite_table_resource_shape(
+    let input = table_input();
+    let error = validate_sqlite_source_resource_shape(
         &descriptor(true),
         &schema(true),
-        &table,
         None,
         &BTreeMap::new(),
     )
@@ -329,21 +404,23 @@ fn cursor_requires_stable_tie_breaker_and_canonical_order() {
         order_by: Vec::new(),
         scope: ScopeKey::Resource,
     };
-    let partition = plan_sqlite_table_partition(
+    let partition = plan_sqlite_source_partition(
         &descriptor(true),
         &schema(true),
-        &table,
+        &input,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
+        None,
         &request,
     )
     .unwrap();
     let scan = scan_from_partition(
         &descriptor(true),
         &schema(true),
-        &table,
+        &input,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
+        None,
         &partition,
     )
     .unwrap();
@@ -354,10 +431,9 @@ fn cursor_requires_stable_tie_breaker_and_canonical_order() {
         Field::new("id", DataType::Int64, false),
         Field::new("updated_at", DataType::Int64, false),
     ]));
-    validate_sqlite_table_resource_shape(
+    validate_sqlite_source_resource_shape(
         &descriptor(true),
         &unproven_schema,
-        &table,
         Some(&SqliteIdentifier::new("id").unwrap()),
         &BTreeMap::new(),
     )
@@ -387,7 +463,7 @@ fn live_cursor_rejects_duplicate_unconstrained_stable_keys() {
 #[test]
 fn type_policy_controls_dynamic_storage_conversion() {
     let field = Field::new("id", DataType::Int64, false);
-    let mut strict = ColumnBuilder::new(&field).unwrap();
+    let mut strict = ColumnBuilder::new(&field, 1).unwrap();
     assert!(
         strict
             .append(
@@ -399,7 +475,7 @@ fn type_policy_controls_dynamic_storage_conversion() {
             .is_err()
     );
 
-    let mut coercing = ColumnBuilder::new(&field).unwrap();
+    let mut coercing = ColumnBuilder::new(&field, 1).unwrap();
     coercing
         .append(
             &field,
@@ -415,7 +491,7 @@ fn type_policy_controls_dynamic_storage_conversion() {
     let values = values.as_any().downcast_ref::<Int64Array>().unwrap();
     assert_eq!(values.values(), &[42]);
 
-    let mut lossless_only = ColumnBuilder::new(&field).unwrap();
+    let mut lossless_only = ColumnBuilder::new(&field, 1).unwrap();
     assert!(
         lossless_only
             .append(
@@ -429,7 +505,7 @@ fn type_policy_controls_dynamic_storage_conversion() {
             )
             .is_err()
     );
-    let mut lossy = ColumnBuilder::new(&field).unwrap();
+    let mut lossy = ColumnBuilder::new(&field, 1).unwrap();
     lossy
         .append(
             &field,
@@ -536,13 +612,14 @@ fn temporal_encodings_are_explicit_and_round_trip_cursor_units() {
 
 #[test]
 fn debug_redacts_database_path() {
-    let resource = SqliteTableResource::new(
+    let resource = SqliteSourceResource::new(
         PathBuf::from("/private/operator/customer.sqlite"),
         descriptor(false),
         schema(true),
-        SqliteIdentifier::new("events").unwrap(),
+        table_input(),
         None,
         BTreeMap::new(),
+        SqliteNativeOptions::default(),
     )
     .unwrap();
     let debug = format!("{resource:?}");
@@ -718,7 +795,7 @@ fn production_stream_holds_one_snapshot_across_concurrent_wal_commit() {
         let mut insert = transaction
             .prepare("INSERT INTO events VALUES (?1, ?2, 1)")
             .unwrap();
-        let last_id = i64::try_from(SQLITE_FETCH_ROWS).unwrap() + 808;
+        let last_id = i64::try_from(SQLITE_DEFAULT_OUTPUT_BATCH_ROWS).unwrap() + 808;
         for id in 1_i64..=last_id {
             insert.execute((id, format!("original-{id}"))).unwrap();
         }
@@ -736,9 +813,12 @@ fn production_stream_holds_one_snapshot_across_concurrent_wal_commit() {
     host.block_on_root(async {
         let mut stream = resource.open(partition).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();
-        assert_eq!(first.header.row_count, SQLITE_FETCH_ROWS as u64);
+        assert_eq!(
+            first.header.row_count,
+            SQLITE_DEFAULT_OUTPUT_BATCH_ROWS as u64
+        );
 
-        let last_id = i64::try_from(SQLITE_FETCH_ROWS).unwrap() + 808;
+        let last_id = i64::try_from(SQLITE_DEFAULT_OUTPUT_BATCH_ROWS).unwrap() + 808;
         let writer = Connection::open(&path).unwrap();
         writer
             .execute(
@@ -765,7 +845,7 @@ fn production_stream_holds_one_snapshot_across_concurrent_wal_commit() {
     let committed: String = connection
         .query_row(
             "SELECT name FROM events WHERE id = ?1",
-            [i64::try_from(SQLITE_FETCH_ROWS).unwrap() + 808],
+            [i64::try_from(SQLITE_DEFAULT_OUTPUT_BATCH_ROWS).unwrap() + 808],
             |row| row.get(0),
         )
         .unwrap();

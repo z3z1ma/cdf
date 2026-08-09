@@ -25,7 +25,7 @@ Resource controls are:
 | --- | --- |
 | `discovery_records` | `1..=100000`, default `1000`, for dynamic expression types |
 | `discovery_bytes` | `1024..=67108864`, default `16777216` |
-| `output_batch_rows` | `1..=100000`, default `65536` |
+| `output_batch_rows` | `1..=100000`, default `32768` (the measured passing SQLite roofline default) |
 | `busy_timeout_ms` | optional `1..=3600000`, connection-local |
 | `cache_kib` | optional `64..=1048576`, connection-local and non-persistent |
 | `mmap_bytes` | optional `0..=1073741824`, connection-local and non-persistent |

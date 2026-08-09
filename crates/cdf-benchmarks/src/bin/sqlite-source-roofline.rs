@@ -31,7 +31,7 @@ fn run() -> cdf_benchmarks::BenchResult<()> {
     let output = env::var_os("CDF_SQLITE_ROOFLINE_OUTPUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(".10x/evidence/.storage/2026-08-02-sqlite-source-roofline.json")
+            PathBuf::from(".10x/evidence/.storage/2026-08-08-sqlite-source-roofline.json")
         });
     let samples = env::var("CDF_SQLITE_ROOFLINE_SAMPLES")
         .ok()
@@ -44,10 +44,22 @@ fn run() -> cdf_benchmarks::BenchResult<()> {
         .transpose()?
         .unwrap_or(1_000_000);
     let report = cdf_benchmarks::run_sqlite_source_roofline(&output, samples, rows)?;
+    let ratios = report
+        .cells
+        .iter()
+        .map(|cell| {
+            format!(
+                "{}={:.3}",
+                cell.shape,
+                cell.roofline_ratio_ppm as f64 / 1_000_000.0
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     println!(
-        "SQLite source roofline {}: ratio={:.3}, report={}",
+        "SQLite source roofline {}: {}, report={}",
         report.status,
-        report.roofline_ratio_ppm as f64 / 1_000_000.0,
+        ratios,
         output.display()
     );
     Ok(())

@@ -42,8 +42,8 @@
     },
     {
       "id": "sqlite",
-      "descriptor_sha256": "sha256:4e39fc31dddc237b32bd9f4d9df61136303d13433aa6d96e0bb4a63ba6955ff9",
-      "option_schema_sha256": "sha256:784a0be1e072bc511da5f76d0e82c8ddb2ebfcc80a91bb9217ad9f1ea8df571b"
+      "descriptor_sha256": "sha256:149e7e861f160e9e83d4164dad90a6625d86d807435d13aa2a0b239341688af9",
+      "option_schema_sha256": "sha256:b7e6e5bccf316e4146d60e66bb2c29893acddde6cd8344bfe89604d7279eba01"
     }
   ],
   "formats": [

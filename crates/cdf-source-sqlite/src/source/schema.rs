@@ -17,24 +17,23 @@ pub(crate) enum SqliteTemporalEncoding {
     UnixNanoseconds,
 }
 
-pub(crate) fn validate_sqlite_table_resource_shape(
+pub(crate) fn validate_sqlite_source_resource_shape(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    _table: &SqliteIdentifier,
     stable_key: Option<&SqliteIdentifier>,
     temporal_encodings: &BTreeMap<String, SqliteTemporalEncoding>,
 ) -> Result<()> {
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
-            "SQLite table source execution requires a declared schema with at least one field",
+            "SQLite source execution requires a declared schema with at least one field",
         ));
     }
     let mut names = BTreeSet::new();
     for field in schema.fields() {
         if !names.insert(field.name().to_owned()) {
             return Err(CdfError::contract(format!(
-                "SQLite table source schema declares duplicate field `{}`",
+                "SQLite source schema declares duplicate field `{}`",
                 field.name()
             )));
         }
@@ -146,7 +145,7 @@ fn validate_supported_field(field: &Field) -> Result<()> {
         Ok(())
     } else {
         Err(CdfError::data(format!(
-            "SQLite table source does not support Arrow type {:?} for field `{}`",
+            "SQLite source does not support Arrow type {:?} for field `{}`",
             field.data_type(),
             field.name()
         )))
@@ -210,7 +209,7 @@ fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> 
         SchemaSource::Active { schema_hash } => Ok(schema_hash.clone()),
         SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
         _ => Err(CdfError::data(
-            "SQLite table source execution requires an active, declared, or discovered schema hash",
+            "SQLite source execution requires an active, declared, or discovered schema hash",
         )),
     }
 }

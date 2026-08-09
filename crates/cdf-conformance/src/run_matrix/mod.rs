@@ -214,7 +214,7 @@ mod clickhouse_fixture;
 #[cfg(test)]
 mod core;
 #[cfg(test)]
-mod data_onramp;
+pub(crate) mod data_onramp;
 #[cfg(test)]
 mod destinations;
 #[cfg(test)]

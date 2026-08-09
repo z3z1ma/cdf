@@ -4,14 +4,23 @@ use arrow_schema::SchemaRef;
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, CompiledScanIntent,
     CompiledSourcePlanHash, DeliveryGuarantee, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime,
-    EstimateSupport, FilterCapabilities, IncrementalShape, PartitionAuthority, PartitionId,
+    EstimateSupport, FilterCapabilities, IncrementalShape, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    PartitionAttestation, PartitionAttestationAttempt, PartitionAuthority, PartitionId,
     PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanPredicate, ScanRequest, ScopeKind,
+    Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, ScopeKind,
 };
 use cdf_runtime::ExecutionServices;
 
-use crate::{error::validate_source_file, identifier::SqliteIdentifier};
+use crate::{
+    error::validate_source_file,
+    identifier::SqliteIdentifier,
+    native::{
+        SQLITE_SOURCE_GENERATION_PROTOCOL, SqliteNativeOptions, SqliteSourceInput,
+        bind_source_generation, discover_sqlite_query, source_generation_from_schema,
+        sqlite_source_generation_position,
+    },
+};
 
 mod execution;
 mod query;
@@ -22,24 +31,26 @@ pub(crate) use self::{
     execution::{
         SQLITE_MAXIMUM_BATCH_BYTES, SQLITE_SOURCE_BLOCKING_LANE_ID, sqlite_source_blocking_lane,
     },
-    schema::{SqliteTemporalEncoding, validate_sqlite_table_resource_shape},
+    schema::{SqliteTemporalEncoding, validate_sqlite_source_resource_shape},
 };
 use self::{
-    execution::{SqliteExecutionInput, execute_sqlite_table},
+    execution::{SqliteExecutionInput, execute_sqlite_source},
     query::{
-        SQLITE_SOURCE_KIND, SQLITE_SQL_DIALECT, SqliteTableScan, parse_supported_predicate,
+        SQLITE_SOURCE_KIND, SQLITE_SQL_DIALECT, SqliteSourceScan, parse_supported_predicate,
         scan_from_partition, validate_requested_order,
     },
 };
 
 #[derive(Clone)]
-pub(crate) struct SqliteTableResource {
+pub(crate) struct SqliteSourceResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
     database_path: PathBuf,
-    table: SqliteIdentifier,
+    input: SqliteSourceInput,
     stable_key: Option<SqliteIdentifier>,
     temporal_encodings: BTreeMap<String, SqliteTemporalEncoding>,
+    options: SqliteNativeOptions,
+    source_generation: cdf_kernel::SourcePosition,
     capabilities: ResourceCapabilities,
     execution: Option<ExecutionServices>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
@@ -48,30 +59,40 @@ pub(crate) struct SqliteTableResource {
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
-impl SqliteTableResource {
+impl SqliteSourceResource {
     fn new(
         database_path: PathBuf,
         descriptor: ResourceDescriptor,
         schema: SchemaRef,
-        table: SqliteIdentifier,
+        input: SqliteSourceInput,
         stable_key: Option<SqliteIdentifier>,
         temporal_encodings: BTreeMap<String, SqliteTemporalEncoding>,
+        options: SqliteNativeOptions,
     ) -> Result<Self> {
-        validate_sqlite_table_resource_shape(
+        input.validate()?;
+        options.validate()?;
+        let mut authority_schema = schema.as_ref().clone();
+        bind_source_generation(&mut authority_schema, &input, &options)?;
+        validate_sqlite_source_resource_shape(
             &descriptor,
             &schema,
-            &table,
             stable_key.as_ref(),
             &temporal_encodings,
         )?;
-        let capabilities = sqlite_table_capabilities(&descriptor);
+        let source_generation = sqlite_source_generation_position(
+            &descriptor,
+            source_generation_from_schema(&authority_schema)?,
+        )?;
+        let capabilities = sqlite_source_capabilities(&descriptor);
         Ok(Self {
             descriptor,
             schema,
             database_path,
-            table,
+            input,
             stable_key,
             temporal_encodings,
+            options,
+            source_generation,
             capabilities,
             execution: None,
             type_policy_allowances: Default::default(),
@@ -84,18 +105,20 @@ impl SqliteTableResource {
     pub(crate) fn from_compiled_plan(
         compiled: &cdf_runtime::CompiledSourcePlan,
         database_path: PathBuf,
-        table: SqliteIdentifier,
+        input: SqliteSourceInput,
         stable_key: Option<SqliteIdentifier>,
         temporal_encodings: BTreeMap<String, SqliteTemporalEncoding>,
+        options: SqliteNativeOptions,
         execution: ExecutionServices,
     ) -> Result<Self> {
         let mut resource = Self::new(
             database_path,
             compiled.descriptor.clone(),
             Arc::new(compiled.schema.clone()),
-            table,
+            input,
             stable_key,
             temporal_encodings,
+            options,
         )?;
         resource.compiled_source_plan_hash = Some(compiled.compiled_source_plan_hash()?);
         resource.effective_schema_runtime = compiled.effective_schema_runtime.clone();
@@ -121,44 +144,52 @@ impl SqliteTableResource {
                 ))
             }));
         };
-        open_sqlite_table(resource, partition, execution)
+        open_sqlite_source(resource, partition, execution)
     }
 }
 
-fn open_sqlite_table(
-    resource: SqliteTableResource,
+fn open_sqlite_source(
+    resource: SqliteSourceResource,
     partition: PartitionPlan,
     execution: ExecutionServices,
 ) -> cdf_kernel::PartitionOpenAttempt<'static> {
-    let SqliteTableResource {
+    let SqliteSourceResource {
         descriptor,
         schema,
         database_path,
-        table,
+        input,
         stable_key,
         temporal_encodings,
+        options,
+        source_generation,
         type_policy_allowances,
         effective_schema_runtime,
         ..
     } = resource;
-    if let Err(error) = validate_sqlite_table_resource_shape(
-        &descriptor,
-        &schema,
-        &table,
-        stable_key.as_ref(),
-        &temporal_encodings,
-    )
-    .and_then(|()| {
-        scan_from_partition(
-            &descriptor,
-            &schema,
-            &table,
-            stable_key.as_ref(),
-            &temporal_encodings,
-            &partition,
-        )
-        .map(|_| ())
-    }) {
+    if let Err(error) = input
+        .validate()
+        .and_then(|()| options.validate())
+        .and_then(|()| {
+            validate_sqlite_source_resource_shape(
+                &descriptor,
+                &schema,
+                stable_key.as_ref(),
+                &temporal_encodings,
+            )
+        })
+        .and_then(|()| {
+            scan_from_partition(
+                &descriptor,
+                &schema,
+                &input,
+                stable_key.as_ref(),
+                &temporal_encodings,
+                Some(&source_generation),
+                &partition,
+            )
+            .map(|_| ())
+        })
+    {
         return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
     }
     if let Err(error) = execution.ensure_blocking_lanes(&[sqlite_source_blocking_lane()]) {
@@ -170,14 +201,16 @@ fn open_sqlite_table(
         SQLITE_SOURCE_BLOCKING_LANE_ID,
         1,
         move |sender, cancellation| {
-            execute_sqlite_table(
+            execute_sqlite_source(
                 SqliteExecutionInput {
                     database_path,
                     descriptor,
                     schema,
-                    table,
+                    input,
                     stable_key,
                     temporal_encodings,
+                    options,
+                    source_generation,
                     type_policy_allowances,
                     effective_schema_runtime,
                     partition,
@@ -205,23 +238,25 @@ fn open_sqlite_table(
     cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
 }
 
-impl fmt::Debug for SqliteTableResource {
+impl fmt::Debug for SqliteSourceResource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("SqliteTableResource")
+            .debug_struct("SqliteSourceResource")
             .field("descriptor", &self.descriptor)
             .field("schema", &self.schema)
             .field("database_path", &"<redacted-sqlite-database>")
-            .field("table", &self.table)
+            .field("input", &self.input.location_summary())
             .field("stable_key", &self.stable_key)
             .field("temporal_encodings", &self.temporal_encodings)
+            .field("options", &self.options)
+            .field("source_generation", &self.source_generation)
             .field("capabilities", &self.capabilities)
             .field("managed_execution", &self.execution.is_some())
             .finish()
     }
 }
 
-impl ResourceStream for SqliteTableResource {
+impl ResourceStream for SqliteSourceResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         &self.descriptor
     }
@@ -246,12 +281,13 @@ impl ResourceStream for SqliteTableResource {
         validate_source_file(&self.database_path)
     }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let mut partition = plan_sqlite_table_partition(
+        let mut partition = plan_sqlite_source_partition(
             &self.descriptor,
             &self.schema,
-            &self.table,
+            &self.input,
             self.stable_key.as_ref(),
             &self.temporal_encodings,
+            Some(&self.source_generation),
             request,
         )?;
         partition.scan_intent = CompiledScanIntent::full_scan();
@@ -259,7 +295,7 @@ impl ResourceStream for SqliteTableResource {
             cdf_kernel::bind_partition_schema_observation(
                 &mut partition,
                 runtime,
-                self.table.as_str(),
+                &self.input.location_summary(),
             )?;
         }
         Ok(vec![partition])
@@ -270,19 +306,100 @@ impl ResourceStream for SqliteTableResource {
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.clone().open_owned(partition)
     }
+    fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        if partition.planned_position.as_ref() != Some(&self.source_generation) {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "SQLite partition generation differs from compiled source authority",
+                ))
+            }));
+        }
+        if let Err(error) = scan_from_partition(
+            &self.descriptor,
+            &self.schema,
+            &self.input,
+            self.stable_key.as_ref(),
+            &self.temporal_encodings,
+            Some(&self.source_generation),
+            &partition,
+        ) {
+            return PartitionAttestationAttempt::materialized(Box::pin(async move { Err(error) }));
+        }
+        let physical_schema_hash = match partition
+            .metadata
+            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+            .map(|value| SchemaHash::new(value.clone()))
+            .transpose()
+        {
+            Ok(hash) => hash,
+            Err(error) => {
+                return PartitionAttestationAttempt::materialized(Box::pin(
+                    async move { Err(error) },
+                ));
+            }
+        };
+        let Some(execution) = self.execution.as_ref() else {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "SQLite source attestation requires injected execution services",
+                ))
+            }));
+        };
+        let database_path = self.database_path.clone();
+        let descriptor = self.descriptor.clone();
+        let input = self.input.clone();
+        let options = self.options.clone();
+        let cancellation = execution.run_cancellation();
+        let attestation = execution.run_blocking(SQLITE_SOURCE_BLOCKING_LANE_ID, move || {
+            cancellation.check()?;
+            let mut schema = match &input {
+                SqliteSourceInput::Table { table } => {
+                    crate::catalog::discover_sqlite_table(
+                        &database_path,
+                        &descriptor.resource_id,
+                        table,
+                    )?
+                    .schema
+                }
+                SqliteSourceInput::Query { .. } => {
+                    discover_sqlite_query(
+                        &database_path,
+                        &descriptor.resource_id,
+                        &input,
+                        &options,
+                        options.discovery_records,
+                        options.discovery_bytes,
+                    )?
+                    .schema
+                }
+            };
+            bind_source_generation(&mut schema, &input, &options)?;
+            cancellation.check()?;
+            let position = sqlite_source_generation_position(
+                &descriptor,
+                source_generation_from_schema(&schema)?,
+            )?;
+            Ok(Some(PartitionAttestation::new(
+                position,
+                physical_schema_hash,
+            )))
+        });
+        PartitionAttestationAttempt::materialized(Box::pin(async move { attestation }))
+    }
 }
 
-impl QueryableResource for SqliteTableResource {
+impl QueryableResource for SqliteSourceResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         &self.capabilities
     }
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        let mut scan = negotiate_sqlite_table_scan(
+        let mut scan = negotiate_sqlite_source_scan(
             &self.descriptor,
             &self.schema,
-            &self.table,
+            &self.input,
             self.stable_key.as_ref(),
             &self.temporal_encodings,
+            Some(&self.source_generation),
             request,
         )?;
         if let Some(runtime) = &self.effective_schema_runtime {
@@ -294,13 +411,17 @@ impl QueryableResource for SqliteTableResource {
                         "SQLite negotiation omitted its single inline partition authority",
                     )
                 })?;
-            cdf_kernel::bind_partition_schema_observation(partition, runtime, self.table.as_str())?;
+            cdf_kernel::bind_partition_schema_observation(
+                partition,
+                runtime,
+                &self.input.location_summary(),
+            )?;
         }
         Ok(scan)
     }
 }
 
-pub(crate) fn sqlite_table_capabilities(descriptor: &ResourceDescriptor) -> ResourceCapabilities {
+pub(crate) fn sqlite_source_capabilities(descriptor: &ResourceDescriptor) -> ResourceCapabilities {
     ResourceCapabilities {
         projection: CapabilitySupport::Supported,
         filters: FilterCapabilities {
@@ -339,7 +460,7 @@ pub(crate) fn sqlite_table_capabilities(descriptor: &ResourceDescriptor) -> Reso
 }
 
 #[cfg(test)]
-pub(crate) fn sqlite_table_predicate_fidelity(
+pub(crate) fn sqlite_source_predicate_fidelity(
     schema: &SchemaRef,
     expression: &cdf_kernel::DeclarativeExpression,
 ) -> PushdownFidelity {
@@ -349,7 +470,7 @@ pub(crate) fn sqlite_table_predicate_fidelity(
         })
 }
 
-pub(crate) fn classify_sqlite_table_predicates(
+pub(crate) fn classify_sqlite_source_predicates(
     schema: &SchemaRef,
     predicates: &[ScanPredicate],
 ) -> (Vec<PushedPredicate>, Vec<ScanPredicate>) {
@@ -367,12 +488,13 @@ pub(crate) fn classify_sqlite_table_predicates(
     (pushed, unsupported)
 }
 
-pub(crate) fn negotiate_sqlite_table_scan(
+pub(crate) fn negotiate_sqlite_source_scan(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    table: &SqliteIdentifier,
+    input: &SqliteSourceInput,
     stable_key: Option<&SqliteIdentifier>,
     temporal_encodings: &BTreeMap<String, SqliteTemporalEncoding>,
+    source_generation: Option<&cdf_kernel::SourcePosition>,
     request: &ScanRequest,
 ) -> Result<ScanPlan> {
     if request.resource_id != descriptor.resource_id {
@@ -381,23 +503,19 @@ pub(crate) fn negotiate_sqlite_table_scan(
             request.resource_id, descriptor.resource_id
         )));
     }
-    validate_sqlite_table_resource_shape(
-        descriptor,
-        schema,
-        table,
-        stable_key,
-        temporal_encodings,
-    )?;
-    let (pushed, unsupported) = classify_sqlite_table_predicates(schema, &request.filters);
+    input.validate()?;
+    validate_sqlite_source_resource_shape(descriptor, schema, stable_key, temporal_encodings)?;
+    let (pushed, unsupported) = classify_sqlite_source_predicates(schema, &request.filters);
     Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("sqlite-scan-{}", descriptor.resource_id))?,
         request.clone(),
-        PartitionAuthority::Inline(vec![plan_sqlite_table_partition(
+        PartitionAuthority::Inline(vec![plan_sqlite_source_partition(
             descriptor,
             schema,
-            table,
+            input,
             stable_key,
             temporal_encodings,
+            source_generation,
             request,
         )?]),
         pushed,
@@ -408,12 +526,13 @@ pub(crate) fn negotiate_sqlite_table_scan(
     ))
 }
 
-pub(crate) fn plan_sqlite_table_partition(
+pub(crate) fn plan_sqlite_source_partition(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    table: &SqliteIdentifier,
+    input: &SqliteSourceInput,
     stable_key: Option<&SqliteIdentifier>,
     temporal_encodings: &BTreeMap<String, SqliteTemporalEncoding>,
+    source_generation: Option<&cdf_kernel::SourcePosition>,
     request: &ScanRequest,
 ) -> Result<PartitionPlan> {
     if request.resource_id != descriptor.resource_id {
@@ -422,15 +541,10 @@ pub(crate) fn plan_sqlite_table_partition(
             request.resource_id, descriptor.resource_id
         )));
     }
-    validate_sqlite_table_resource_shape(
-        descriptor,
-        schema,
-        table,
-        stable_key,
-        temporal_encodings,
-    )?;
+    input.validate()?;
+    validate_sqlite_source_resource_shape(descriptor, schema, stable_key, temporal_encodings)?;
     validate_requested_order(descriptor, stable_key, &request.order_by)?;
-    let (pushed, _) = classify_sqlite_table_predicates(schema, &request.filters);
+    let (pushed, _) = classify_sqlite_source_predicates(schema, &request.filters);
     let scan_intent = CompiledScanIntent {
         version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
         projection: request.projection.clone(),
@@ -439,20 +553,31 @@ pub(crate) fn plan_sqlite_table_partition(
         order_by: request.order_by.clone(),
     };
     scan_intent.validate()?;
-    SqliteTableScan::from_intent(descriptor, schema, stable_key, &scan_intent)?;
+    SqliteSourceScan::from_intent(descriptor, schema, stable_key, &scan_intent)?;
     let mut metadata = BTreeMap::from([
         ("kind".to_owned(), SQLITE_SOURCE_KIND.to_owned()),
         ("dialect".to_owned(), SQLITE_SQL_DIALECT.to_owned()),
-        ("table".to_owned(), table.as_str().to_owned()),
+        ("input".to_owned(), input.location_summary()),
         ("resource_id".to_owned(), descriptor.resource_id.to_string()),
     ]);
     if let Some(key) = stable_key {
         metadata.insert("stable_key".to_owned(), key.as_str().to_owned());
     }
+    if let Some(cdf_kernel::SourcePosition::ForeignState(authority)) = source_generation {
+        if authority.protocol != SQLITE_SOURCE_GENERATION_PROTOCOL {
+            return Err(CdfError::contract(
+                "SQLite source generation uses an unexpected source-position protocol",
+            ));
+        }
+        metadata.insert(
+            "source_generation".to_owned(),
+            authority.blob_sha256.clone(),
+        );
+    }
     Ok(PartitionPlan {
         partition_id: PartitionId::new("sqlite")?,
         scope: descriptor.state_scope.clone(),
-        planned_position: None,
+        planned_position: source_generation.cloned(),
         start_position: None,
         scan_intent,
         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

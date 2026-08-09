@@ -547,7 +547,7 @@ fn project_tree_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     entries
 }
 
-struct RecordedHttpServer {
+pub(crate) struct RecordedHttpServer {
     base_url: String,
     requests: Arc<Mutex<Vec<String>>>,
     failure: Arc<Mutex<Option<String>>>,
@@ -800,7 +800,7 @@ fn recorded_http_header_capture_retries_would_block_and_bounds_incomplete_reques
 }
 
 impl RecordedHttpServer {
-    fn new<I, S>(bodies: I) -> Self
+    pub(crate) fn new<I, S>(bodies: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -831,11 +831,11 @@ impl RecordedHttpServer {
         }
     }
 
-    fn base_url(&self) -> &str {
+    pub(crate) fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    fn requests(&self) -> std::result::Result<Vec<String>, String> {
+    pub(crate) fn requests(&self) -> std::result::Result<Vec<String>, String> {
         if let Some(failure) = self
             .failure
             .lock()

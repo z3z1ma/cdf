@@ -107,9 +107,9 @@ impl SecretProvider for EnvSecretProvider {
         if self.inherit_process {
             return env::var(key)
                 .map(SecretValue::new)
-                .map_err(|_| CdfError::auth(format!("secret {uri} is not resolvable")));
+                .map_err(|_| CdfError::auth("environment secret is not resolvable"));
         }
-        Err(CdfError::auth(format!("secret {uri} is not resolvable")))
+        Err(CdfError::auth("environment secret is not resolvable"))
     }
 }
 
@@ -146,7 +146,7 @@ impl SecretProvider for FileSecretProvider {
             PathBuf::from(key)
         };
         let value = fs::read_to_string(&path)
-            .map_err(|error| CdfError::auth(format!("secret {uri} is not resolvable: {error}")))?;
+            .map_err(|_| CdfError::auth("file secret is not resolvable"))?;
         Ok(SecretValue::new(value.trim_end_matches(['\r', '\n'])))
     }
 }

@@ -275,12 +275,11 @@ fn doctor_later_secret_failure_does_not_leak_already_resolved_secrets() {
     let json = stderr_or_stdout_json(&result.stdout);
     let secrets = named_check(&json, "secrets");
     assert_eq!(secrets["status"], "failed");
-    assert!(
-        secrets["message"]
-            .as_str()
-            .unwrap()
-            .contains("secret://env/CDF_CLI_MISSING_SQL_AFTER_RESOLVED")
+    assert_eq!(
+        secrets["message"].as_str().unwrap(),
+        "Auth: environment secret is not resolvable"
     );
+    assert_secret_absent(&result, "CDF_CLI_MISSING_SQL_AFTER_RESOLVED");
 }
 
 #[test]

@@ -10,12 +10,14 @@ use cdf_kernel::{
 };
 use rusqlite::types::Value;
 
-use crate::{catalog::SQLITE_STRICT_METADATA_KEY, identifier::SqliteIdentifier};
+use crate::{
+    catalog::SQLITE_STRICT_METADATA_KEY, identifier::SqliteIdentifier, native::SqliteSourceInput,
+};
 
 use super::{
     schema::{
         SqliteTemporalEncoding, field_by_name, field_by_source_or_output_name,
-        source_column_identifier, temporal_encoding, validate_sqlite_table_resource_shape,
+        source_column_identifier, temporal_encoding, validate_sqlite_source_resource_shape,
     },
     temporal::bind_cursor_value,
 };
@@ -26,22 +28,24 @@ pub(super) const SQLITE_SQL_DIALECT: &str = "sqlite";
 pub(super) fn scan_from_partition(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    table: &SqliteIdentifier,
+    input: &SqliteSourceInput,
     stable_key: Option<&SqliteIdentifier>,
     temporal_encodings: &BTreeMap<String, SqliteTemporalEncoding>,
+    source_generation: Option<&SourcePosition>,
     partition: &PartitionPlan,
-) -> Result<SqliteTableScan> {
+) -> Result<SqliteSourceScan> {
     if partition.partition_id.as_str() != "sqlite"
         || partition.metadata.get("kind").map(String::as_str) != Some(SQLITE_SOURCE_KIND)
         || partition.metadata.get("dialect").map(String::as_str) != Some(SQLITE_SQL_DIALECT)
     {
         return Err(CdfError::contract(
-            "SQLite table source requires its canonical sqlite SQL partition",
+            "SQLite source requires its canonical sqlite SQL partition",
         ));
     }
     if partition.metadata.get("resource_id").map(String::as_str)
         != Some(descriptor.resource_id.as_str())
-        || partition.metadata.get("table").map(String::as_str) != Some(table.as_str())
+        || partition.metadata.get("input").map(String::as_str)
+            != Some(input.location_summary().as_str())
         || partition.metadata.get("stable_key").map(String::as_str)
             != stable_key.map(SqliteIdentifier::as_str)
         || partition.scope != descriptor.state_scope
@@ -50,15 +54,15 @@ pub(super) fn scan_from_partition(
             "SQLite source partition authority does not match the compiled resource",
         ));
     }
-    validate_sqlite_table_resource_shape(
-        descriptor,
-        schema,
-        table,
-        stable_key,
-        temporal_encodings,
-    )?;
+    if partition.planned_position.as_ref() != source_generation {
+        return Err(CdfError::contract(
+            "SQLite source partition generation differs from compiled source authority",
+        ));
+    }
+    input.validate()?;
+    validate_sqlite_source_resource_shape(descriptor, schema, stable_key, temporal_encodings)?;
     let scan =
-        SqliteTableScan::from_intent(descriptor, schema, stable_key, &partition.scan_intent)?;
+        SqliteSourceScan::from_intent(descriptor, schema, stable_key, &partition.scan_intent)?;
     if let Some(cursor) = &descriptor.cursor
         && !scan.projection.iter().any(|field| field == &cursor.field)
     {
@@ -71,13 +75,13 @@ pub(super) fn scan_from_partition(
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct SqliteTableScan {
+pub(super) struct SqliteSourceScan {
     pub(super) projection: Vec<String>,
     pub(super) predicates: Vec<SqliteStoredPredicate>,
     pub(super) order_by: Vec<SqliteStoredOrder>,
 }
 
-impl SqliteTableScan {
+impl SqliteSourceScan {
     pub(super) fn from_intent(
         descriptor: &ResourceDescriptor,
         schema: &SchemaRef,
@@ -185,11 +189,11 @@ pub(super) struct SqliteQuery {
 pub(super) fn build_query(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    table: &SqliteIdentifier,
+    input: &SqliteSourceInput,
     stable_key: Option<&SqliteIdentifier>,
     temporal_encodings: &BTreeMap<String, SqliteTemporalEncoding>,
     partition: &PartitionPlan,
-    scan: &SqliteTableScan,
+    scan: &SqliteSourceScan,
 ) -> Result<SqliteQuery> {
     let projection = projected_fields(schema, &scan.projection)?
         .iter()
@@ -201,34 +205,42 @@ pub(super) fn build_query(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut sql = format!("SELECT {} FROM {}", projection.join(", "), table.quoted());
+    let mut sql = format!(
+        "SELECT {} FROM {}",
+        projection.join(", "),
+        input.relation_sql()
+    );
     let mut clauses = Vec::new();
     let mut params = Vec::new();
     if let Some(position) = &partition.start_position {
-        let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
-            CdfError::contract("SQLite snapshot resource cannot resume from a cursor position")
-        })?;
-        let SourcePosition::Cursor(position) = position else {
-            return Err(CdfError::contract(
-                "SQLite source start position must be a cursor",
-            ));
-        };
-        if position.field != cursor.field {
-            return Err(CdfError::contract(
-                "SQLite source start cursor field changed",
+        if matches!(position, SourcePosition::ForeignState(_)) && descriptor.cursor.is_none() {
+            // A replacement checkpoint proves the same source generation; it is not a row cursor.
+        } else {
+            let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
+                CdfError::contract("SQLite snapshot resource cannot resume from a cursor position")
+            })?;
+            let SourcePosition::Cursor(position) = position else {
+                return Err(CdfError::contract(
+                    "SQLite source start position must be a cursor",
+                ));
+            };
+            if position.field != cursor.field {
+                return Err(CdfError::contract(
+                    "SQLite source start cursor field changed",
+                ));
+            }
+            let field = field_by_name(schema, &cursor.field).expect("cursor validated");
+            params.push(bind_cursor_value(
+                field,
+                &position.value,
+                temporal_encoding(field, temporal_encodings),
+            )?);
+            clauses.push(format!(
+                "{} > ?{}",
+                source_column_identifier(field)?.quoted(),
+                params.len()
             ));
         }
-        let field = field_by_name(schema, &cursor.field).expect("cursor validated");
-        params.push(bind_cursor_value(
-            field,
-            &position.value,
-            temporal_encoding(field, temporal_encodings),
-        )?);
-        clauses.push(format!(
-            "{} > ?{}",
-            source_column_identifier(field)?.quoted(),
-            params.len()
-        ));
     }
     for predicate in &scan.predicates {
         if predicate.fidelity != PushdownFidelity::Exact {

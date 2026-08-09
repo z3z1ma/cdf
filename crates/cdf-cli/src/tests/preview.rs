@@ -208,7 +208,7 @@ fn preview_postgres_table_resource_uses_postgres_runtime_without_writes() {
 }
 
 #[test]
-fn preview_postgres_query_resource_fails_closed_without_writes() {
+fn preview_postgres_query_resource_requires_credentials_without_writes() {
     let project = TestProject::new();
     write_secret_project(
         &project,
@@ -241,14 +241,9 @@ FROM upstream(source => 'warehouse', query => 'SELECT * FROM public.orders');
     assert_ne!(result.exit_code, 0);
     assert_no_preview_writes(&project);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires field `table`"),
-        "{}",
-        result.stderr
-    );
+    assert_eq!(json["error"]["kind"], "auth");
+    assert_eq!(json["error"]["message"], "file secret is not resolvable");
+    assert!(!result.stderr.contains("secret://file/postgres-dsn"));
 }
 
 #[test]

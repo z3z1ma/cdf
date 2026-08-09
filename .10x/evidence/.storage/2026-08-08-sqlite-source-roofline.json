@@ -1,0 +1,894 @@
+{
+  "schema_version": 3,
+  "status": "pass",
+  "reason": null,
+  "host": {
+    "schema_version": 1,
+    "architecture": "aarch64",
+    "cpu_label": "Apple M5 Pro",
+    "advertised_logical_cores": 18,
+    "advertised_physical_cores": {
+      "status": "supported",
+      "value": 18,
+      "method": "os-cpu-topology",
+      "provider_version": "system-host-v1"
+    },
+    "advertised_memory_bytes": {
+      "status": "supported",
+      "value": 25769803776,
+      "method": "os-memory-authority",
+      "provider_version": "system-host-v1"
+    },
+    "effective_cpu": {
+      "status": "supported",
+      "value": {
+        "logical_cores": 18,
+        "quota_millicores": null,
+        "affinity_cores": 18
+      },
+      "method": "process-available-parallelism",
+      "provider_version": "system-host-v1"
+    },
+    "effective_memory_bytes": {
+      "status": "unavailable",
+      "reason": "no container memory overlay on this platform",
+      "method": "container-memory-overlay",
+      "provider_version": "system-host-v1"
+    },
+    "storage": {
+      "status": "supported",
+      "value": {
+        "medium": "unknown",
+        "filesystem": "apfs",
+        "label": "apfs-storage-class",
+        "free_bytes": null
+      },
+      "method": "filesystem-target-probe",
+      "provider_version": "system-host-v1"
+    },
+    "os": {
+      "family": "macos",
+      "version": "26.5.2",
+      "kernel": "25.5.0"
+    },
+    "rust_version": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "cdf_version": "0.2.0-alpha.1",
+    "dependency_versions": {
+      "rusqlite": "0.40.1",
+      "sqlite": "3.53.2"
+    },
+    "benchmark_profile": "release-sqlite-source-roofline"
+  },
+  "measurement_provider": {
+    "method": "sqlite-worker-monotonic-with-rusage-self",
+    "version": "sqlite-roofline-observer-v2",
+    "observes_cpu_time": true,
+    "observes_peak_rss": true
+  },
+  "settings": {
+    "journal_mode": "delete",
+    "durability": "fixture commit synchronous=full; read-only explicit transaction",
+    "projection": [
+      "id:int64",
+      "metric:int64",
+      "updated_at:int64"
+    ],
+    "arrow_batch_rows": 32768,
+    "maximum_emitted_batch_bytes": 33554432,
+    "in_flight_batch_bound": 1,
+    "connection_count": 1,
+    "writer_count": 0,
+    "compression": "none",
+    "database_file_bytes": 16576512,
+    "physical_io_bytes_observed": false,
+    "physical_io_bytes_reason": "portable per-process physical read-byte counters are unavailable; samples record zero and make no physical-throughput claim",
+    "workspace_content_sha256": "sha256:c9b60c50d2a8037dae8815a611b355d8622163e6aa17b0620fe0a72fd175bdcd",
+    "workspace_content_inputs": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "crates/cdf-benchmarks/Cargo.toml",
+      "crates/cdf-benchmarks/src/bin/sqlite-source-roofline.rs",
+      "crates/cdf-benchmarks/src/sqlite_source_roofline.rs",
+      "crates/cdf-source-sqlite/Cargo.toml",
+      "crates/cdf-source-sqlite/src/catalog.rs",
+      "crates/cdf-source-sqlite/src/driver.rs",
+      "crates/cdf-source-sqlite/src/error.rs",
+      "crates/cdf-source-sqlite/src/identifier.rs",
+      "crates/cdf-source-sqlite/src/lib.rs",
+      "crates/cdf-source-sqlite/src/native.rs",
+      "crates/cdf-source-sqlite/src/source.rs",
+      "crates/cdf-source-sqlite/src/source/execution.rs",
+      "crates/cdf-source-sqlite/src/source/query.rs",
+      "crates/cdf-source-sqlite/src/source/schema.rs",
+      "crates/cdf-source-sqlite/src/source/temporal.rs",
+      "crates/cdf-source-sqlite/src/source/tests.rs"
+    ],
+    "executable_sha256": "sha256:1754a6029ce36c537c81ff4acd031677c9c80cec9927f30c899b274735d33d02",
+    "sqlite_version": "3.53.2",
+    "rusqlite_version": "0.40.1",
+    "semantic_bias": [
+      "direct runner omits CDF governance work and is therefore a favorable roofline",
+      "both cells use warm OS cache in isolated child processes",
+      "CPU time and peak RSS come from each isolated worker's final RUSAGE_SELF snapshot; they include untimed worker setup",
+      "physical I/O bytes are unavailable and intentionally recorded as zero rather than inferred from database file length"
+    ]
+  },
+  "cells": [
+    {
+      "shape": "table",
+      "comparability": {
+        "dataset_id": "sqlite-strict-i64x3-1000000-table",
+        "workload_id": "sqlite-source-table-full-projection",
+        "timed_region_version": 1,
+        "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+        "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+        "host_class": "host-class-cbcf96c8010a9c6f",
+        "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+        "io_mode": "warm"
+      },
+      "cdf": {
+        "comparability": {
+          "dataset_id": "sqlite-strict-i64x3-1000000-table",
+          "workload_id": "sqlite-source-table-full-projection",
+          "timed_region_version": 1,
+          "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+          "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+          "host_class": "host-class-cbcf96c8010a9c6f",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 120405708,
+            "cpu_time_ns": 129615000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22347776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 120405708,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 118773583,
+            "cpu_time_ns": 130734000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22331392,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 118773583,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 117261542,
+            "cpu_time_ns": 129445000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22413312,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 117261542,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 120736666,
+            "cpu_time_ns": 128886000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22364160,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 120736666,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 124670500,
+            "cpu_time_ns": 131335000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22413312,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 124670500,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 121857708,
+            "cpu_time_ns": 131966000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22691840,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 121857708,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 118975625,
+            "cpu_time_ns": 130136000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22380544,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 118975625,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 120179792,
+            "cpu_time_ns": 131694000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22364160,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 120179792,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 123258791,
+            "cpu_time_ns": 134041000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 23134208,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 123258791,
+                "bytes": 24000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 9,
+          "median_wall_time_ns": 120405708,
+          "median_absolute_deviation_ns": 1452000,
+          "median_rows_per_second": 8305254,
+          "median_logical_bytes_per_second": 199326098,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 23134208,
+          "spill_bytes": 0
+        },
+        "reference": {
+          "kind": "direct_library",
+          "name": "rusqlite",
+          "version": "0.40.1",
+          "semantic_work": "identical prepared table/native query in one explicit read transaction, identical projection/order/type conversion, and full Arrow consumption"
+        },
+        "bias": [
+          {
+            "code": "cdf-governance-overhead",
+            "description": "CDF additionally performs managed-lane admission, memory leasing, schema validation, and canonical batch evidence"
+          },
+          {
+            "code": "child-cpu-scope",
+            "description": "process CPU and peak RSS include untimed child setup; wall time is the explicit query-through-Arrow timed region"
+          }
+        ],
+        "measurement_provider": {
+          "method": "sqlite-worker-monotonic-with-rusage-self",
+          "version": "sqlite-roofline-observer-v2",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "direct_rusqlite": {
+        "comparability": {
+          "dataset_id": "sqlite-strict-i64x3-1000000-table",
+          "workload_id": "sqlite-source-table-full-projection",
+          "timed_region_version": 1,
+          "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+          "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+          "host_class": "host-class-cbcf96c8010a9c6f",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 114325917,
+            "cpu_time_ns": 119082000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18202624,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 114325917,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 109936750,
+            "cpu_time_ns": 118679000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18284544,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 109936750,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 110159417,
+            "cpu_time_ns": 118560000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 110159417,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 112034709,
+            "cpu_time_ns": 120198000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 112034709,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 110988875,
+            "cpu_time_ns": 118771000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 110988875,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 114347875,
+            "cpu_time_ns": 117832000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 114347875,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 109960542,
+            "cpu_time_ns": 118396000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 109960542,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 110461500,
+            "cpu_time_ns": 118902000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18251776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 110461500,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 110185792,
+            "cpu_time_ns": 118787000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18235392,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 110185792,
+                "bytes": 24000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 9,
+          "median_wall_time_ns": 110461500,
+          "median_absolute_deviation_ns": 524750,
+          "median_rows_per_second": 9052927,
+          "median_logical_bytes_per_second": 217270270,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 18284544,
+          "spill_bytes": 0
+        },
+        "reference": null,
+        "bias": [],
+        "measurement_provider": {
+          "method": "sqlite-worker-monotonic-with-rusage-self",
+          "version": "sqlite-roofline-observer-v2",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "roofline_ratio_ppm": 917410,
+      "status": "pass",
+      "reason": null
+    },
+    {
+      "shape": "native_query_cte_join_window",
+      "comparability": {
+        "dataset_id": "sqlite-strict-i64x3-1000000-native_query_cte_join_window",
+        "workload_id": "sqlite-source-native_query_cte_join_window-full-projection",
+        "timed_region_version": 1,
+        "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+        "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+        "host_class": "host-class-cbcf96c8010a9c6f",
+        "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+        "io_mode": "warm"
+      },
+      "cdf": {
+        "comparability": {
+          "dataset_id": "sqlite-strict-i64x3-1000000-native_query_cte_join_window",
+          "workload_id": "sqlite-source-native_query_cte_join_window-full-projection",
+          "timed_region_version": 1,
+          "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+          "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+          "host_class": "host-class-cbcf96c8010a9c6f",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 335521125,
+            "cpu_time_ns": 339040000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22462464,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 335521125,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 501703292,
+            "cpu_time_ns": 363338000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22953984,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 501703292,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 327673375,
+            "cpu_time_ns": 339743000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22495232,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 327673375,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 324451791,
+            "cpu_time_ns": 336361000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22495232,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 324451791,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 325171834,
+            "cpu_time_ns": 337342000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22478848,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 325171834,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 340629125,
+            "cpu_time_ns": 337201000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22495232,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 340629125,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 322287875,
+            "cpu_time_ns": 334621000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22478848,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 322287875,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 321812250,
+            "cpu_time_ns": 334624000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22511616,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 321812250,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 326176042,
+            "cpu_time_ns": 339205000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 22429696,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 326176042,
+                "bytes": 24000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 9,
+          "median_wall_time_ns": 326176042,
+          "median_absolute_deviation_ns": 3888167,
+          "median_rows_per_second": 3065829,
+          "median_logical_bytes_per_second": 73579898,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 22953984,
+          "spill_bytes": 0
+        },
+        "reference": {
+          "kind": "direct_library",
+          "name": "rusqlite",
+          "version": "0.40.1",
+          "semantic_work": "identical prepared table/native query in one explicit read transaction, identical projection/order/type conversion, and full Arrow consumption"
+        },
+        "bias": [
+          {
+            "code": "cdf-governance-overhead",
+            "description": "CDF additionally performs managed-lane admission, memory leasing, schema validation, and canonical batch evidence"
+          },
+          {
+            "code": "child-cpu-scope",
+            "description": "process CPU and peak RSS include untimed child setup; wall time is the explicit query-through-Arrow timed region"
+          }
+        ],
+        "measurement_provider": {
+          "method": "sqlite-worker-monotonic-with-rusage-self",
+          "version": "sqlite-roofline-observer-v2",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "direct_rusqlite": {
+        "comparability": {
+          "dataset_id": "sqlite-strict-i64x3-1000000-native_query_cte_join_window",
+          "workload_id": "sqlite-source-native_query_cte_join_window-full-projection",
+          "timed_region_version": 1,
+          "cdf_revision": "269b5d5a86f1cc7830a2d2311ba24d57530d14f8",
+          "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+          "host_class": "host-class-cbcf96c8010a9c6f",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 317682709,
+            "cpu_time_ns": 326023000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18333696,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 317682709,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 324014500,
+            "cpu_time_ns": 332675000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18317312,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 324014500,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 316731084,
+            "cpu_time_ns": 325191000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18333696,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 316731084,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 331252291,
+            "cpu_time_ns": 327167000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18268160,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 331252291,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 317909666,
+            "cpu_time_ns": 326627000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18317312,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 317909666,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 322152125,
+            "cpu_time_ns": 330690000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18317312,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 322152125,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 323054292,
+            "cpu_time_ns": 332003000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18333696,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 323054292,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 321984875,
+            "cpu_time_ns": 330565000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18350080,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 321984875,
+                "bytes": 24000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 317432375,
+            "cpu_time_ns": 326895000,
+            "rows": 1000000,
+            "logical_bytes": 24000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 18333696,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "query_through_arrow_consumption",
+                "duration_ns": 317432375,
+                "bytes": 24000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 9,
+          "median_wall_time_ns": 321984875,
+          "median_absolute_deviation_ns": 4075209,
+          "median_rows_per_second": 3105735,
+          "median_logical_bytes_per_second": 74537662,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 18350080,
+          "spill_bytes": 0
+        },
+        "reference": null,
+        "bias": [],
+        "measurement_provider": {
+          "method": "sqlite-worker-monotonic-with-rusage-self",
+          "version": "sqlite-roofline-observer-v2",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "roofline_ratio_ppm": 987150,
+      "status": "pass",
+      "reason": null
+    }
+  ]
+}

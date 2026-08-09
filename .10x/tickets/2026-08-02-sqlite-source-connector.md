@@ -60,6 +60,13 @@ network-filesystem support, parallel-connection snapshot claims, and generic dia
 
 ## Journal
 
+- 2026-08-08: Execution resumed for the ratified native-query/control tranche. The user explicitly
+  required preserving roofline-derived performant defaults, superseding the draft 65,536-row
+  SQLite default with the measured passing 32,768-row table-source default while making it an
+  identity-bearing resource override. The rusqlite boundary remains in the mandatory error audit;
+  the pre-change inventory found 181 constructor/wrapper/expect sites across the exact adapter
+  production and test scope and will be reconciled after implementation.
+
 - 2026-08-08: The user superseded table-only authoring and rejected a universal connector grammar.
   This ticket now owns SQLite-native read queries and connection-local resource controls under
   `.10x/specs/sqlite-native-query-source.md`; read-only statement proof and snapshot semantics
@@ -293,13 +300,48 @@ network-filesystem support, parallel-connection snapshot claims, and generic dia
   roofline measurement and one fresh workspace/core-impact certificate are deferred to parent
   final integration rather than repeated here.
 
+- 2026-08-08: Completed the ratified SQLite-native resource surface. A resource now selects exactly
+  one of `table` or read-only `query`; query discovery is bounded by record and byte controls, and
+  execution accepts joins, aggregates, windows, JSON functions, CTEs, and read-only virtual tables
+  while rejecting mutation, pragmas, attachment, extension loading, multiple statements, and
+  parameters. Resource identity now carries bounded discovery, 32,768-row output-batch, busy
+  timeout, cache, and mmap controls. The measured 32,768-row default was preserved.
+- 2026-08-08: Repaired two integration defects found while exercising the production authoring
+  path: source registration no longer overwrites compiler-owned explicit schema, and missing
+  environment/file secrets no longer echo the secret reference or path. SQLite query errors retain
+  Contract/Data/Auth/Environment/Retry/Internal ownership without echoing authored SQL or SQLite's
+  unsafe literal-bearing message. The refreshed exact audit covers 12 Rust files and 145 direct
+  constructors: 79 Contract, 54 production Data, seven production Internal, one cancellation
+  Internal, two classified-boundary constructors, and two typed fixtures.
+- 2026-08-08: A release CLI executed two real sandbox resources from one portable `plan.json`: a
+  native CTE/join/window query and its table-scan control, each with 100,000 rows and four Arrow
+  batches. Both committed to DuckDB; independent queries verified row counts, ranges, category
+  cardinality, and exact first-row values. Native/table read phases completed at approximately
+  326K/455K rows per second on this host.
+- 2026-08-08: The fresh connector certificate passed formatting, all 32 SQLite leaf laws, catalog
+  integrity, all 92 general-conformance tests, all 15 supported SQLite destination cells (three
+  declared unsupported cells excluded), and the source-extension graph. Its workspace phase then
+  reproduced two Parquet schema-governance failures already recorded as pre-existing `main`
+  failures in `.10x/tickets/2026-08-07-workspace-suite-failing-and-flaky-baseline.md`; no protective
+  assertion was changed. The strict affected-package lint gate is recorded below.
+- 2026-08-08: A five-sample `bench-max` run measured the table path at 0.887, and a nine-sample
+  repeat barely passed at 0.901. Evidence inspection then found that the workspace digest omitted
+  the new `native.rs`, so that artifact was rejected. After adding the missing input, the exact
+  run measured 0.881 and drove a real hot-path repair: invariant physical schema conversion/hash
+  now occurs once per snapshot rather than once per batch, and exact non-null Int64 snapshot
+  projections use prevalidated typed builders without per-cell dynamic policy dispatch. The final
+  nine-sample schema-v3 certificate passes at table 0.917410 and native CTE/join/window 0.987150
+  with the unchanged gate, 32,768-row default, cancellation cadence, and memory ceilings. It binds
+  the exact executable and all 18 enumerated inputs, records low MAD, CPU/RSS, zero spill, and
+  explicitly makes no physical-I/O claim.
+
 ## Blockers
 
-Implementation blockers are resolved and the focused independent repair re-review passes. The
-latest current-source roofline observations remain below the 0.900 gate; one fresh measurement is
-deferred to parent final integration together with the fresh workspace/core-impact certificate.
-The earlier 0.917027 roofline and eight-phase certificate remain baseline evidence, not current
-closure evidence. This ticket stays active until those parent-owned gates resolve.
+Implementation blockers are resolved. The current source passes the expanded table/native-query
+roofline and every connector-specific certificate gate. Formal ticket closure remains deferred to
+the user-directed single independent review at the end of the wider connector tranche; the full
+workspace certificate also remains red only on the separately owned, pre-existing Parquet
+schema-governance baseline failures.
 
 ## Evidence
 
@@ -405,6 +447,27 @@ closure evidence. This ticket stays active until those parent-owned gates resolv
   selected SQLite source matrix (14.845s), source-extension policy (1.057s), workspace core (2,108
   tests, 172.828s), and workspace Clippy (1.382s). It predates the final declared-observation and
   directional-module repairs; a fresh certificate is deferred to parent final integration.
+
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-sqlite`: 32 passed, including native query,
+  bounded controls, mutation rejection, registry schema ownership, drift, cancellation, and batch
+  bounds.
+- `CDF_CLICKHOUSE_ENDPOINT=clickhouse://127.0.0.1:18124 DUCKDB_DOWNLOAD_LIB=1 python3
+  tools/certify-connector.py --kind source --id sqlite --core-impact --report
+  target/quality/connector-sqlite-core-impact-2026-08-08.json`: all six connector-specific gates
+  passed. The workspace profile ran 285 passing tests before reproducing the two previously owned
+  Parquet baseline failures; the report truthfully retains verdict `failed` rather than laundering
+  that known workspace state into a connector pass.
+- `CDF_SQLITE_ROOFLINE_ROWS=1000000 CDF_SQLITE_ROOFLINE_SAMPLES=9 DUCKDB_DOWNLOAD_LIB=1 cargo run
+  --profile bench-max -p cdf-benchmarks --bin sqlite-source-roofline`: schema-v3 roofline passed at
+  0.917410 for table and 0.987150 for native query with the unchanged 32,768-row default. Artifact:
+  `.10x/evidence/.storage/2026-08-08-sqlite-source-roofline.json`.
+- Release sandbox path: `cdf compile 'sqlite_native.*_release'`, `cdf plan
+  'sqlite_native.*_release' --out .cdf/sqlite-native-release.plan.json`, and `cdf run --plan
+  .cdf/sqlite-native-release.plan.json` all passed for two 100,000-row resources; DuckDB
+  verification observed exact row counts and values.
+- Strict all-target/all-feature Clippy passed for SQLite, benchmarks, built-in drivers,
+  conformance, project, and CLI. `cargo machete --with-metadata` found no unused dependencies;
+  formatting and diff hygiene passed.
 
 ## Review
 

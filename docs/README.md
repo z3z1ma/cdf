@@ -10,7 +10,7 @@ contributors.
   active specs for the full contract.
 - [Iceberg source](iceberg.md) documents catalog bindings, snapshot selectors,
   append-only incrementality, and the explicit capability boundary.
-- [SQLite table source](sqlite.md) documents portable local configuration, discovery, snapshot
+- [SQLite source](sqlite.md) documents portable table/native-query configuration, discovery, snapshot
   isolation, stable cursors, explicit temporal encodings, failure ownership, and the measured
   direct-library roofline.
 - [ClickHouse source and destination](clickhouse.md) documents credential-safe HTTP configuration,
