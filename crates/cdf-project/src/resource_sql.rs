@@ -41,10 +41,18 @@ pub struct AuthoredSemanticBinding {
     pub reference: SpannedResourceValue<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoredRoute {
+    pub field: SpannedResourceValue<String>,
+    pub maximum_targets: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoredResourceEnvelope {
     pub target: Option<SpannedResourceValue<TargetName>>,
+    pub route: Option<SpannedResourceValue<AuthoredRoute>>,
     pub disposition: Option<SpannedResourceValue<AuthoredDisposition>>,
     pub cursor: Option<SpannedResourceValue<String>>,
     pub trust: Option<SpannedResourceValue<TrustPreset>>,
@@ -102,7 +110,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
                 "CDF-RESOURCE-CLAUSE",
                 file,
                 Some(&token.span),
-                "RESOURCE takes no identifier; expected TARGET, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION, or AS",
+                "RESOURCE takes no identifier; expected TARGET, ROUTE, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION, or AS",
             )
         })?;
         if rank <= previous_rank {
@@ -111,7 +119,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
                 file,
                 Some(&token.span),
                 format!(
-                    "{clause} is repeated or out of order; canonical order is TARGET, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION"
+                    "{clause} is repeated or out of order; canonical order is TARGET, ROUTE, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION"
                 ),
             ));
         }
@@ -119,6 +127,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
         parser.advance();
         match clause {
             "TARGET" => envelope.target = Some(parser.parse_target(&token.span)?),
+            "ROUTE" => envelope.route = Some(parser.parse_route(&token.span)?),
             "DISPOSITION" => envelope.disposition = Some(parser.parse_disposition(&token.span)?),
             "CURSOR" => envelope.cursor = Some(parser.parse_name("cursor column")?),
             "TRUST" => envelope.trust = Some(parser.parse_trust()?),
@@ -151,11 +160,12 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
 fn clause_rank(token: &Token) -> Option<(u8, &'static str)> {
     [
         (1, "TARGET"),
-        (2, "DISPOSITION"),
-        (3, "CURSOR"),
-        (4, "TRUST"),
-        (5, "SEMANTICS"),
-        (6, "EXECUTION"),
+        (2, "ROUTE"),
+        (3, "DISPOSITION"),
+        (4, "CURSOR"),
+        (5, "TRUST"),
+        (6, "SEMANTICS"),
+        (7, "EXECUTION"),
     ]
     .into_iter()
     .find(|(_, clause)| token.is_word(clause))
@@ -267,6 +277,33 @@ impl<'a> EnvelopeParser<'a> {
             )
         })?;
         Ok(SpannedResourceValue { value, span })
+    }
+
+    fn parse_route(
+        &mut self,
+        clause_span: &ProjectSqlSpan,
+    ) -> Result<SpannedResourceValue<AuthoredRoute>> {
+        self.expect_word("BY", "CDF-RESOURCE-ROUTE")?;
+        let field = self.parse_name("route field")?;
+        self.expect_word("MAX", "CDF-RESOURCE-ROUTE")?;
+        self.expect_word("TARGETS", "CDF-RESOURCE-ROUTE")?;
+        let maximum_targets =
+            self.parse_positive_u64_with_code("MAX TARGETS", "CDF-RESOURCE-ROUTE-MAX-TARGETS")?;
+        let maximum_targets = u32::try_from(maximum_targets).map_err(|_| {
+            resource_sql_error(
+                "CDF-RESOURCE-ROUTE-MAX-TARGETS",
+                self.file,
+                Some(&field.span),
+                "MAX TARGETS must fit in an unsigned 32-bit integer",
+            )
+        })?;
+        Ok(SpannedResourceValue {
+            span: union_span(clause_span, &field.span),
+            value: AuthoredRoute {
+                field,
+                maximum_targets,
+            },
+        })
     }
 
     fn parse_disposition(
@@ -591,10 +628,14 @@ impl<'a> EnvelopeParser<'a> {
     }
 
     fn parse_positive_u64(&mut self, label: &str) -> Result<u64> {
+        self.parse_positive_u64_with_code(label, "CDF-RESOURCE-DRAIN-NUMBER")
+    }
+
+    fn parse_positive_u64_with_code(&mut self, label: &str, code: &str) -> Result<u64> {
         let token = self.take()?;
         let TokenKind::Number(value) = &token.kind else {
             return Err(resource_sql_error(
-                "CDF-RESOURCE-DRAIN-NUMBER",
+                code,
                 self.file,
                 Some(&token.span),
                 format!("{label} must be a positive integer"),
@@ -602,7 +643,7 @@ impl<'a> EnvelopeParser<'a> {
         };
         let value = value.parse::<u64>().map_err(|error| {
             resource_sql_error(
-                "CDF-RESOURCE-DRAIN-NUMBER",
+                code,
                 self.file,
                 Some(&token.span),
                 format!("{label} is invalid: {error}"),
@@ -610,7 +651,7 @@ impl<'a> EnvelopeParser<'a> {
         })?;
         if value == 0 {
             return Err(resource_sql_error(
-                "CDF-RESOURCE-DRAIN-NUMBER",
+                code,
                 self.file,
                 Some(&token.span),
                 format!("{label} must be greater than zero"),

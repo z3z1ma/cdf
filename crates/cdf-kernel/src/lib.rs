@@ -28,6 +28,7 @@ mod position;
 mod position_aggregation;
 mod resource;
 mod retention;
+mod routing;
 mod run_event;
 mod schema_authority;
 mod schema_fingerprint;
@@ -119,9 +120,9 @@ pub use ids::{
     ContentDigestValue, ContentObjectKey, ContentProviderGeneration, ContentPublicationClaimId,
     ContentReclamationCandidateSource, ContentReclamationReservationId, ContentRootShardRef,
     ContentStoreNamespace, ContractRef, DestinationId, DiscoveryManifestHash, EnvironmentName,
-    IdempotencyToken, LeaseAuthorityDomainId, LeaseOwnerId, PackageHash, PartitionId, PipelineId,
-    PlanId, PredicateId, ProjectId, PromotionId, ReceiptId, ResourceId, RunId, SchemaHash,
-    SegmentId, SourceId, TargetName, ValidationProgramHash,
+    IdempotencyToken, LeaseAuthorityDomainId, LeaseOwnerId, OutputBindingId, PackageHash,
+    PartitionId, PipelineId, PlanId, PredicateId, ProjectId, PromotionId, ReceiptId, ResourceId,
+    RunId, SchemaHash, SegmentId, SourceId, TargetName, ValidationProgramHash,
 };
 pub use lease::{
     ExpiredScopeLeaseProof, FencingToken, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
@@ -174,6 +175,10 @@ pub use resource::{
     validate_scan_partition_observation_identities,
 };
 pub use retention::PayloadRetention;
+pub use routing::{
+    PRIMARY_OUTPUT_BINDING, ROUTE_FOLD_VERSION, RoutePlan, RouteScalar, RouteTargetBinding,
+    RouteTargetFamily,
+};
 pub use run_event::{
     RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventSinkResult,
     RunEventValue, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,

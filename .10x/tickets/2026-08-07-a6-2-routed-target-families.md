@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-08-07
-Updated: 2026-08-07
+Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 Depends-On: `.10x/tickets/2026-08-07-a1-5-package-native-keyed-effects.md`
 
@@ -61,15 +61,31 @@ user-ratified authority.
 - 2026-08-09: Scope extended after explicit ratification to support generic heterogeneous output
   schema families. Schema authority is keyed by resource plus output binding, not physical target;
   one package/receipt/checkpoint still settles the complete family atomically.
+- 2026-08-09: Status `open` → `active` after A1.5 and the neutral finite-drain certificate closed.
+  Execution starts from the current typed query/package/destination authorities; no compatibility
+  surface or parallel routed lifecycle will be introduced.
+- 2026-08-09: Added the ordered `ROUTE BY <field> MAX TARGETS <n>` envelope, compiled route/fold
+  authority, exact privacy classification rejection, and neutral typed-scalar route folding.
+  Route values preserve exact safe project tokens; all other admitted scalar values receive a
+  bounded human slug plus a typed SHA-256 suffix. Generic output-binding ids are derived from the
+  typed value rather than destination names, and complete route families reject null/nested
+  values, duplicate/colliding targets, ceiling overflow, and identifier-budget loss.
 
 ## Blockers
 
-Dependency A1.5 must close before keyed CDC route application. Ordinary-row route identity shares
-the same package/destination model and must not become a parallel implementation.
+None. A1.5 is complete. Ordinary-row route identity shares the same package/destination model and
+must not become a parallel implementation.
 
 ## Evidence
 
-Pending implementation.
+- Focused parser/compiler/kernel tests: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project
+  resource_file_ --lib`, `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project query_compiler_ --lib`,
+  and `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-kernel routing::tests --lib` passed. These prove the
+  authored route contract, compiled manifest-visible authority, sensitive/non-scalar rejection,
+  deterministic folds, typed output binding, ceiling enforcement, and identifier bounds; they do
+  not yet prove package or destination settlement.
+- Affected strict Clippy passed: `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-kernel -p cdf-project
+  --all-targets -- -D warnings`. `cargo fmt --all -- --check` and `git diff --check` passed.
 
 ## Review
 

@@ -21,7 +21,7 @@ fn resource_file_accepts_bare_select_as_normal_form() {
 #[test]
 fn resource_file_parses_ordered_metadata_envelope() {
     let parsed = parse_resource_file(
-        "RESOURCE\nTARGET warehouse.orders\nDISPOSITION MERGE(id, tenant_id)\nCURSOR id\nTRUST GOVERNED\nSEMANTICS (id => 'example.identifier@1', tenant_id => 'example.tenant@1')\nEXECUTION BOUNDED\nAS\nSELECT id, tenant_id FROM upstream(source => 'warehouse', table => 'orders')",
+        "RESOURCE\nTARGET warehouse.orders\nROUTE BY tenant_id MAX TARGETS 256\nDISPOSITION MERGE(id, tenant_id)\nCURSOR id\nTRUST GOVERNED\nSEMANTICS (id => 'example.identifier@1', tenant_id => 'example.tenant@1')\nEXECUTION BOUNDED\nAS\nSELECT id, tenant_id FROM upstream(source => 'warehouse', table => 'orders')",
         "cdf/analytics/orders.cdf.sql",
     )
     .unwrap();
@@ -31,6 +31,9 @@ fn resource_file_parses_ordered_metadata_envelope() {
         parsed.envelope.target.unwrap().value.as_str(),
         "warehouse.orders"
     );
+    let route = parsed.envelope.route.unwrap().value;
+    assert_eq!(route.field.value, "tenant_id");
+    assert_eq!(route.maximum_targets, 256);
     let AuthoredDisposition::Merge { keys } = parsed.envelope.disposition.unwrap().value else {
         panic!("expected merge");
     };
@@ -44,7 +47,23 @@ fn resource_file_parses_ordered_metadata_envelope() {
         parsed.envelope.execution.unwrap().value,
         ExecutionDeclaration::Bounded
     );
-    assert_eq!(parsed.query_span.start_line, 9);
+    assert_eq!(parsed.query_span.start_line, 10);
+}
+
+#[test]
+fn resource_file_requires_a_positive_bounded_route_ceiling() {
+    for sql in [
+        "RESOURCE ROUTE BY tenant_id MAX TARGETS 0 AS SELECT tenant_id FROM upstream(source => 'warehouse')",
+        "RESOURCE ROUTE BY tenant_id MAX TARGETS 4294967296 AS SELECT tenant_id FROM upstream(source => 'warehouse')",
+        "RESOURCE ROUTE tenant_id MAX TARGETS 10 AS SELECT tenant_id FROM upstream(source => 'warehouse')",
+        "RESOURCE ROUTE BY tenant_id TARGETS 10 AS SELECT tenant_id FROM upstream(source => 'warehouse')",
+    ] {
+        let error = parse_resource_file(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
+        assert!(
+            error.message.contains("CDF-RESOURCE-ROUTE"),
+            "unexpected error: {error:?}"
+        );
+    }
 }
 
 #[test]

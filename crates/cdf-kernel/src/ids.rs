@@ -60,6 +60,7 @@ string_id!(DestinationId);
 string_id!(IdempotencyToken);
 string_id!(LeaseOwnerId);
 string_id!(LeaseAuthorityDomainId);
+string_id!(OutputBindingId);
 string_id!(PackageHash);
 string_id!(PartitionId);
 string_id!(PipelineId);

@@ -269,6 +269,65 @@ fn query_compiler_accepts_namespace_source_mismatch_and_path_target_default() {
 }
 
 #[test]
+fn query_compiler_carries_validated_route_authority_and_allows_ordinary_semantics() {
+    let root = TempDir::new().unwrap();
+    let config = project(
+        &root,
+        "RESOURCE\nTARGET warehouse.orders\nROUTE BY name MAX TARGETS 32\nDISPOSITION APPEND\nSEMANTICS (name => 'cdf.variant@1')\nAS SELECT id, name FROM upstream(source => 'warehouse', table => 'public.orders')",
+        "",
+    );
+    let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
+
+    let compiled = compile_query_project_resources(
+        &registry(),
+        &config,
+        root.path(),
+        "dev",
+        &destination(),
+        &SemanticCatalog::builtins().unwrap(),
+        &schemas,
+    )
+    .unwrap();
+
+    let route = compiled[0].query.effective.route.value.as_ref().unwrap();
+    assert_eq!(route.field, "name");
+    assert_eq!(route.maximum_targets, 32);
+    assert_eq!(route.fold_version, cdf_kernel::ROUTE_FOLD_VERSION);
+}
+
+#[test]
+fn query_compiler_rejects_sensitive_or_non_scalar_route_authority() {
+    let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
+    for (sql, expected) in [
+        (
+            "RESOURCE ROUTE BY name MAX TARGETS 32 DISPOSITION APPEND SEMANTICS (name => 'cdf.pii@1(class=\"name\")') AS SELECT name FROM upstream(source => 'warehouse', table => 'public.orders')",
+            "CDF-ROUTE-SENSITIVE",
+        ),
+        (
+            "RESOURCE ROUTE BY nested MAX TARGETS 32 DISPOSITION APPEND AS SELECT struct(id) AS nested FROM upstream(source => 'warehouse', table => 'public.orders')",
+            "CDF-ROUTE-TYPE",
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        let config = project(&root, sql, "");
+        let error = compile_query_project_resources(
+            &registry(),
+            &config,
+            root.path(),
+            "dev",
+            &destination(),
+            &SemanticCatalog::builtins().unwrap(),
+            &schemas,
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains(expected),
+            "unexpected error: {error:?}"
+        );
+    }
+}
+
+#[test]
 fn authored_envelope_does_not_pollute_equivalent_execution_identity() {
     let bare_root = TempDir::new().unwrap();
     let explicit_root = TempDir::new().unwrap();
@@ -308,6 +367,10 @@ fn authored_envelope_does_not_pollute_equivalent_execution_identity() {
     assert_eq!(
         bare.query.effective.target.canonical_identity,
         explicit.query.effective.target.canonical_identity
+    );
+    assert_eq!(
+        bare.query.effective.route.canonical_identity,
+        explicit.query.effective.route.canonical_identity
     );
     assert_eq!(
         bare.query.effective.disposition.canonical_identity,

@@ -70,6 +70,7 @@ where
 #[serde(deny_unknown_fields)]
 pub struct EffectiveResourceEnvelope {
     pub target: ResolvedResourceValue<TargetName>,
+    pub route: ResolvedResourceValue<Option<cdf_kernel::RoutePlan>>,
     pub disposition: ResolvedResourceValue<WriteDisposition>,
     pub merge_keys: ResolvedResourceValue<Vec<String>>,
     pub cursor: ResolvedResourceValue<Option<String>>,
@@ -557,7 +558,11 @@ pub fn finalize_query_project_resource(
         &compiled.query.effective.semantics.value,
         semantic_catalog,
     )?;
-    validate_output_bindings(&compiled.query.effective, &relational_plan.output_schema)?;
+    validate_output_bindings(
+        &compiled.query.effective,
+        &relational_plan.output_schema,
+        semantic_catalog,
+    )?;
     compiled.resource = compiled
         .resource
         .with_relational_expression_plan(relational_plan.clone())?;
@@ -579,6 +584,21 @@ fn resolve_envelope(
         None => ResolvedResourceValue::new(
             default_target.clone(),
             ResolutionOrigin::ResourcePathDefault,
+            None,
+        )?,
+    };
+    let route = match &authored.route {
+        Some(value) => ResolvedResourceValue::new(
+            Some(cdf_kernel::RoutePlan::new(
+                value.value.field.value.clone(),
+                value.value.maximum_targets,
+            )?),
+            ResolutionOrigin::Authored,
+            Some(value.span.clone()),
+        )?,
+        None => ResolvedResourceValue::new(
+            None::<cdf_kernel::RoutePlan>,
+            ResolutionOrigin::Absent,
             None,
         )?,
     };
@@ -677,6 +697,7 @@ fn resolve_envelope(
     )?;
     Ok(EffectiveResourceEnvelope {
         target,
+        route,
         disposition,
         merge_keys,
         cursor,
@@ -741,11 +762,21 @@ fn validate_effective_applicability(
 fn validate_output_bindings(
     effective: &EffectiveResourceEnvelope,
     schema: &CanonicalArrowSchema,
+    semantic_catalog: &SemanticCatalog,
 ) -> Result<()> {
     let schema = schema.to_arrow()?;
     for (label, fields) in [
         ("merge key", effective.merge_keys.value.as_slice()),
         ("cursor", effective.cursor.value.as_slice()),
+        (
+            "route field",
+            effective
+                .route
+                .value
+                .as_ref()
+                .map(|route| std::slice::from_ref(&route.field))
+                .unwrap_or_default(),
+        ),
     ] {
         for field in fields {
             let matches = schema
@@ -760,7 +791,62 @@ fn validate_output_bindings(
             }
         }
     }
+    if let Some(route) = &effective.route.value {
+        route.validate()?;
+        let field = schema.field_with_name(&route.field).map_err(|_| {
+            CdfError::contract(format!(
+                "[CDF-ROUTE-FIELD] route field {:?} is absent from the final output schema",
+                route.field
+            ))
+        })?;
+        if !route_data_type_supported(field.data_type()) {
+            return Err(CdfError::contract(format!(
+                "[CDF-ROUTE-TYPE] route field {:?} has unsupported type {}; use a Boolean, integer, decimal, UTF-8, date, time, or timestamp scalar",
+                route.field,
+                field.data_type()
+            )));
+        }
+        let resolved_semantic =
+            semantic_catalog.resolve_field(field, SemanticAuthority::Authored)?;
+        if resolved_semantic
+            .as_ref()
+            .is_some_and(|semantic| semantic.pii_class().is_some())
+        {
+            return Err(CdfError::contract(format!(
+                "[CDF-ROUTE-SENSITIVE] route field {:?} is classified as sensitive and cannot be exposed in physical target names",
+                route.field
+            )));
+        }
+    }
     Ok(())
+}
+
+fn route_data_type_supported(data_type: &arrow_schema::DataType) -> bool {
+    use arrow_schema::DataType;
+    matches!(
+        data_type,
+        DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+            | DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Utf8View
+            | DataType::Date32
+            | DataType::Date64
+            | DataType::Time32(_)
+            | DataType::Time64(_)
+            | DataType::Timestamp(_, _)
+    )
 }
 
 fn apply_semantics(
