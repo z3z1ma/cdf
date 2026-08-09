@@ -410,7 +410,7 @@ pub struct MongoChangeStreamScope {
 }
 
 impl MongoChangeStreamScope {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         require_text("MongoDB source binding", &self.source_binding)?;
         validate_sha256("MongoDB change-stream pipeline", &self.pipeline_sha256)?;
         validate_sha256("MongoDB change-stream options", &self.options_sha256)?;

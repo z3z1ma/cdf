@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-09
 Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
-Depends-On: `.10x/tickets/2026-08-07-a2-log-source-runtime-archetype.md`, `.10x/tickets/2026-08-07-a6-2-routed-target-families.md`
+Depends-On: `.10x/tickets/done/2026-08-07-a2-log-source-runtime-archetype.md`, `.10x/tickets/2026-08-07-a6-2-routed-target-families.md`
 
 # MongoDB change-stream CDC
 
@@ -49,8 +49,10 @@ retention, and live replica-set/Atlas certification.
       destination settlement/checkpoint/retention authority.
 - [ ] Driver/codec/network errors preserve typed ownership, source provenance, retry metadata, and
       redaction; no URI credentials, BSON payload, pipeline, or resume token is displayed.
-- [ ] Synthetic, local replica-set, crash/replay, jobs/rechunking, bounded-memory, release sandbox,
-      Atlas collection/database fan-out, and same-semantics throughput certificates pass.
+- [ ] Synthetic, local replica-set, crash/replay, jobs/rechunking, bounded-memory, and
+      same-semantics throughput certificates pass. Final acceptance includes a production-binary
+      sandbox run against the authorized Atlas deployment watching the full admitted database and
+      proving real multi-collection fan-out; a synthetic or single-collection run is insufficient.
 
 ## References
 
@@ -72,6 +74,8 @@ retention, and live replica-set/Atlas certification.
   with default `1`.
 - User-ratified: generic routed schema authority belongs to resource plus output binding; a newly
   matching collection fails before its token advances until explicit discovery/compile.
+- User-ratified: final acceptance requires a production binary to run full admitted-database CDC
+  against the authorized Atlas deployment.
 - Record-backed: MongoDB event-prefix resume tokens, exact post-images, destination receipts,
   checkpoints, and package retention are the only safe advancement/collection authorities.
 
@@ -81,10 +85,12 @@ retention, and live replica-set/Atlas certification.
   extension were explicitly ratified. Implementation waits for the neutral finite-drain
   certificate and generic routed-family dependency; no behavior-changing assumptions remain.
 
+- 2026-08-09: The neutral finite-drain dependency closed with a production package/receipt/
+  checkpoint crash certificate for MongoDB event-prefix resume tokens. Generic routed target
+  families are now the sole implementation dependency.
+
 ## Blockers
 
-- `.10x/tickets/2026-08-07-a2-log-source-runtime-archetype.md` must close its finite-drain
-  package/receipt/checkpoint crash certificate.
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
   output schemas and atomic destination family settlement.
 

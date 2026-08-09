@@ -780,6 +780,14 @@ impl SourceStreamCapabilities {
                 SourceFrontierCapability::ForeignState { protocols },
                 SourcePosition::ForeignState(position),
             ) => protocols.binary_search(&position.protocol).is_ok(),
+            (
+                SourceFrontierCapability::ResumeToken { scopes },
+                SourcePosition::ResumeToken(position),
+            ) => match position.as_ref() {
+                cdf_kernel::ResumeTokenPosition::MongoChangeStream(position) => {
+                    scopes.binary_search(&position.scope).is_ok()
+                }
+            },
             _ => false,
         }
     }
@@ -815,6 +823,9 @@ pub enum SourceFrontierCapability {
     ForeignState {
         protocols: Vec<String>,
     },
+    ResumeToken {
+        scopes: Vec<cdf_kernel::MongoChangeStreamScope>,
+    },
 }
 
 impl SourceFrontierCapability {
@@ -826,6 +837,7 @@ impl SourceFrontierCapability {
             Self::PageToken => SourcePositionKind::PageToken,
             Self::Composite => SourcePositionKind::Composite,
             Self::ForeignState { .. } => SourcePositionKind::ForeignState,
+            Self::ResumeToken { .. } => SourcePositionKind::ResumeToken,
         }
     }
 
@@ -848,6 +860,20 @@ impl SourceFrontierCapability {
             }
             Self::ForeignState { protocols } => {
                 validate_frontier_dimensions("foreign-state protocol", protocols)
+            }
+            Self::ResumeToken { scopes } if scopes.is_empty() => Err(CdfError::contract(
+                "source-frontier resume-token capability requires at least one exact source scope",
+            )),
+            Self::ResumeToken { scopes } if scopes.windows(2).any(|pair| pair[0] >= pair[1]) => {
+                Err(CdfError::contract(
+                    "source-frontier resume-token scopes must be unique and canonically sorted",
+                ))
+            }
+            Self::ResumeToken { scopes } => {
+                for scope in scopes {
+                    scope.validate()?;
+                }
+                Ok(())
             }
             Self::FileManifest | Self::PageToken | Self::Composite => Ok(()),
         }

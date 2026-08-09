@@ -20,7 +20,7 @@ use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
     CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeclarativeExpression,
     DeclarativeExpressionLiteral, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
-    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
+    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, ForeignState, IncrementalShape,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAuthority,
     PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
     PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
@@ -28,6 +28,8 @@ use cdf_kernel::{
     ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
     WriteDisposition, source_name,
 };
+
+const REST_FULL_SCAN_COMPLETION_PROTOCOL: &str = "rest.full_scan_completion.v1";
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
     BoundedFormatRequest, CpuTaskSpec, DecodeSchemaPlan, ExecutionServices, FormatDiscoveryKind,
@@ -313,6 +315,7 @@ impl ResourceStream for RestResource {
         let plan = self.plan.clone();
         let dependencies = self.dependencies.clone();
         let observed_physical_schema = self.observed_physical_schema();
+        let compiled_source_plan_hash = self.compiled_source_plan_hash.clone();
         let execution = dependencies.execution.clone();
         let task = execution.spawn_cpu_stream(
             "rest-source-open",
@@ -332,6 +335,7 @@ impl ResourceStream for RestResource {
                         partition,
                         dependencies,
                         observed_physical_schema,
+                        compiled_source_plan_hash,
                         cancellation: cancellation.clone(),
                     },
                     sender,
@@ -571,6 +575,7 @@ struct RestExecutionInvocation {
     partition: PartitionPlan,
     dependencies: RestRuntimeDependencies,
     observed_physical_schema: Option<SchemaRef>,
+    compiled_source_plan_hash: CompiledSourcePlanHash,
     cancellation: RunCancellation,
 }
 
@@ -590,11 +595,19 @@ async fn execute_rest(
         partition,
         dependencies,
         observed_physical_schema,
+        compiled_source_plan_hash,
         cancellation,
     } = invocation;
     let descriptor = &descriptor;
     let plan = &plan;
     let partition = &partition;
+    let full_scan_position = descriptor
+        .cursor
+        .is_none()
+        .then(|| {
+            rest_full_scan_completion_position(descriptor, partition, &compiled_source_plan_hash)
+        })
+        .transpose()?;
     validate_partition(descriptor, plan, partition)?;
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
@@ -737,7 +750,8 @@ async fn execute_rest(
                 &mut batch,
                 page_row_offset,
             )?;
-            batch.header.source_position = rest_batch_cursor_position(&schema, descriptor, &batch)?;
+            batch.header.source_position = rest_batch_cursor_position(&schema, descriptor, &batch)?
+                .or_else(|| full_scan_position.clone());
             page_row_offset = page_row_offset
                 .checked_add(batch.header.row_count)
                 .ok_or_else(|| CdfError::data("REST page row ordinal overflowed"))?;
@@ -761,6 +775,31 @@ async fn execute_rest(
     }
 
     Ok(())
+}
+
+fn rest_full_scan_completion_position(
+    descriptor: &ResourceDescriptor,
+    partition: &PartitionPlan,
+    compiled_source_plan_hash: &CompiledSourcePlanHash,
+) -> Result<SourcePosition> {
+    let authority = (
+        REST_FULL_SCAN_COMPLETION_PROTOCOL,
+        descriptor.resource_id.as_str(),
+        compiled_source_plan_hash.as_str(),
+        partition.partition_id.as_str(),
+        &partition.scan_intent,
+    );
+    let opaque_blob = serde_json::to_vec(&authority).map_err(|error| {
+        CdfError::internal(format!("serialize REST full-scan authority: {error}"))
+    })?;
+    let position = SourcePosition::ForeignState(ForeignState {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        protocol: REST_FULL_SCAN_COMPLETION_PROTOCOL.to_owned(),
+        blob_sha256: artifact_hash(&authority)?,
+        opaque_blob,
+    });
+    position.validate()?;
+    Ok(position)
 }
 
 async fn decode_with_prefetch(

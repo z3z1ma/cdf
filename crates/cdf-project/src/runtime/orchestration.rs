@@ -40,39 +40,50 @@ use cdf_state_sqlite::{SqliteCheckpointStore, SqliteRunLedger};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
     time::Instant,
 };
 
-pub async fn run_project(
-    request: ProjectRunRequest<'_>,
+pub fn run_project<'a>(
+    request: ProjectRunRequest<'a>,
     services: &ExecutionServices,
-) -> Result<ProjectRunOutcome> {
-    run_project_with_context(
+) -> Pin<Box<dyn Future<Output = Result<ProjectRunOutcome>> + 'a>> {
+    Box::pin(run_project_with_context(
         request,
         RunTelemetryConfig::disabled(),
         services.clone(),
         None,
-    )
-    .await
+    ))
 }
 
-pub async fn run_project_with_scheduler_and_telemetry(
-    request: ProjectRunRequest<'_>,
+pub fn run_project_with_scheduler_and_telemetry<'a>(
+    request: ProjectRunRequest<'a>,
     services: &ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     telemetry: RunTelemetryConfig,
-) -> Result<ProjectRunOutcome> {
-    run_project_with_context(request, telemetry, services.clone(), scheduler).await
+) -> Pin<Box<dyn Future<Output = Result<ProjectRunOutcome>> + 'a>> {
+    Box::pin(run_project_with_context(
+        request,
+        telemetry,
+        services.clone(),
+        scheduler,
+    ))
 }
 
-pub async fn run_project_with_telemetry(
-    request: ProjectRunRequest<'_>,
+pub fn run_project_with_telemetry<'a>(
+    request: ProjectRunRequest<'a>,
     services: &ExecutionServices,
     telemetry: RunTelemetryConfig,
-) -> Result<ProjectRunOutcome> {
-    run_project_with_context(request, telemetry, services.clone(), None).await
+) -> Pin<Box<dyn Future<Output = Result<ProjectRunOutcome>> + 'a>> {
+    Box::pin(run_project_with_context(
+        request,
+        telemetry,
+        services.clone(),
+        None,
+    ))
 }
 
 async fn run_project_with_context(

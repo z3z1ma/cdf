@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-08-07
-Updated: 2026-08-08
+Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 Depends-On: `.10x/tickets/done/2026-08-03-cdc-source-position-artifact-transition.md`, `.10x/tickets/2026-08-07-a1-5-package-native-keyed-effects.md`
 
@@ -48,7 +48,7 @@ event-prefix resume tokens without branching on source kind in generic runtime c
 - [x] A deterministic synthetic source proves committed-frontier and Mongo event-prefix behavior
       under randomized Arrow rechunking, cadence boundaries, cancellation/failure injection,
       within/over-limit settlement units, and `jobs` invariance.
-- [ ] A finite-drain conformance certificate proves package finalization, exact receipt settlement,
+- [x] A finite-drain conformance certificate proves package finalization, exact receipt settlement,
       checkpoint advancement, and crash recovery without introducing a second runtime lifecycle.
 - [x] Focused affected-package tests, formatting, check, and strict affected-package Clippy pass.
 
@@ -116,6 +116,25 @@ event-prefix resume tokens without branching on source kind in generic runtime c
   checkpoint integration and crash recovery; add the deterministic synthetic source with
   cancellation/failure injection and `jobs` invariance; then the finite-drain conformance
   certificate.
+
+- 2026-08-09: Increment 9 closed the final finite-drain certificate. A synthetic MongoDB
+  event-prefix resource now drives explicit insert, update, and delete settlement units through the
+  production project/engine package path. A fault injected after durable receipt verification but
+  before checkpoint commit leaves the package loading and the checkpoint proposed; artifact
+  recovery verifies the same receipt, commits the terminal resume token, marks the package
+  checkpointed, performs no second destination write, and does not reopen the source.
+  Three integration gaps surfaced and were fixed rather than hidden in the fixture: compiled source
+  capabilities could not advertise MongoDB resume-token scopes; generic per-batch position
+  aggregation tried to order opaque interior tokens before the terminal event-prefix marker; and
+  mock destination receipts discarded the compiled output schema hash.
+
+- 2026-08-09: The closure run also removed two false platform requirements. Project execution had
+  encoded ordered cursor presence as a universal prerequisite even for bounded replacement; the
+  validator now distinguishes bounded execution from drains, while REST full scans emit typed
+  `rest.full_scan_completion.v1` authority rather than inventing a cursor. Separately, large nested
+  async orchestration futures overflowed the ordinary Rust test-thread stack. The public project-run
+  boundary now returns a heap-pinned future, so both the new certificate and the formerly
+  overflowing drain settlement test pass without `RUST_MIN_STACK`.
 
 ## Blockers
 
@@ -474,12 +493,62 @@ pre-existing functions in `cdf-kernel`, `cdf-state-sqlite`, `cdf-contract`, `cdf
 `cdf-engine::preview_resource`. MongoDB live validation reported host port `27020`, replica-set
 member `localhost:27020`, and two events with resume tokens plus update `before=a`, `after=b`.
 
+### Increment 9 — finite-drain crash certificate and cursor/runtime correction (2026-08-09)
+
+```text
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-runtime --locked cdc_log_source
+  50 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-rest --locked
+  8 passed, 0 failed, 1 release performance test ignored
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine --locked \
+  cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families
+  1 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --locked \
+  mongo_event_prefix_drain_recovers_receipt_checkpoint_crash_without_source_reopen
+  1 passed, 0 failed on the ordinary stack
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --locked \
+  drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement
+  1 passed, 0 failed on the ordinary stack
+
+DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --locked \
+  bounded_project_run_allows_rest_without_cursor
+  1 passed, 0 failed
+
+DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-kernel -p cdf-runtime -p cdf-engine \
+  -p cdf-source-rest -p cdf-project --all-targets --locked
+  exit 0
+
+DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-kernel -p cdf-runtime -p cdf-engine \
+  -p cdf-source-rest -p cdf-project --all-targets --locked -- -D warnings
+  exit 0
+
+DUCKDB_DOWNLOAD_LIB=1 cargo doc -p cdf-project -p cdf-source-rest --no-deps --locked
+cargo fmt --all -- --check
+git diff --check
+  all exit 0
+```
+
+The cognitive-complexity diagnostic reported only pre-existing functions; no changed production
+function was flagged. Error ownership and the unavailable `graphify` limit are recorded in
+`.10x/evidence/.storage/2026-08-09-a2-error-ownership-ledger.md`.
+
 ## Review
 
 The nine external-review findings were reproduced against code or active records and repaired.
 Focused behavioral tests and affected-package static gates pass. Verdict for this repair: **pass**.
 Residual risk belongs to unchecked AC8, which remains visibly open rather than being laundered into
 this review result.
+
+Closure review verdict: **pass**. Fresh inspection traced the terminal resume token from compiled
+source capability through the CDC settlement marker, package keyed effects, receipt-covered state
+delta, checkpoint recovery, and source-replay frontier. Interior CDC data batches cannot advance
+generic position state, and recovery is receipt-driven rather than source-driven. The cursorless
+bounded path retains typed full-scan checkpoint authority. Residual risk is adapter-specific live
+CDC behavior, explicitly owned by the PostgreSQL/MySQL/MongoDB children rather than A2.
 
 ## Retrospective
 
@@ -491,3 +560,12 @@ host-dependent bound at execution time; freezing it into plan bytes restores por
 host compatibility a preflight assertion. Finally, a requested `jobs` value is not evidence of
 parallel invariance unless the real scheduler and package path are executed and the resolved
 concurrency is stated.
+
+Closure retrospective: the persistent default-stack overflow was not a test-runner nuisance; it
+was an API-shape defect caused by embedding a very large orchestration future in every caller. The
+heap-pinned public boundary removes that cost for product and tests alike. The cursor failure came
+from conflating a common incremental frontier with the universal concept of durable completion;
+source-native log, resume-token, snapshot, file, and foreign-state authorities are the correct
+runtime vocabulary. Finally, a synthetic crash certificate is most valuable when it uses exact
+production artifacts and lifecycle hooks—the test exposed three real missing authorities that the
+state-machine unit suite could not see.

@@ -1,7 +1,7 @@
 use super::{resources::ProjectRunSource, types::ProjectRunRequest};
 use cdf_contract::{ObservedSchema, normalize_schema};
 use cdf_engine::EnginePlan;
-use cdf_kernel::{CdfError, CursorOrderingClaim, IncrementalShape, ResourceStream, Result};
+use cdf_kernel::{CdfError, CursorOrderingClaim, ResourceStream, Result};
 use cdf_state_sqlite::StateStorePathOwnership;
 use std::{
     fs,
@@ -45,43 +45,39 @@ fn validate_checkpointable_source_position(
     resource: ProjectRunSource<'_>,
     plan: &EnginePlan,
 ) -> Result<()> {
-    if matches!(
-        resource.capabilities().incremental,
-        IncrementalShape::File | IncrementalShape::TableSnapshot
-    ) {
-        return Ok(());
-    }
     let descriptor = resource.descriptor();
-    if permits_cursorless_full_replace(
-        &resource.capabilities().incremental,
-        &descriptor.write_disposition,
-        &plan.execution_extent,
-    ) {
+    if let Some(cursor) = descriptor.cursor.as_ref() {
+        if cursor.ordering == CursorOrderingClaim::Unordered {
+            return Err(CdfError::contract(format!(
+                "resource `{}` declares cursor `{}` but its ordering is unproven; use an ordered cursor or remove it from this bounded resource",
+                descriptor.resource_id, cursor.field
+            )));
+        }
         return Ok(());
     }
-    let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
-        CdfError::contract(format!(
-            "cdf run requires resource `{}` without file- or table-snapshot incremental capability to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
-            descriptor.resource_id
-        ))
-    })?;
-    if cursor.ordering == CursorOrderingClaim::Unordered {
-        return Err(CdfError::contract(format!(
-            "cdf run requires resource `{}` without file- or table-snapshot incremental capability to declare an ordered cursor for checkpoint advancement",
-            descriptor.resource_id
-        )));
+    if plan.execution_extent.is_bounded() {
+        return Ok(());
     }
-    Ok(())
-}
-
-fn permits_cursorless_full_replace(
-    incremental: &IncrementalShape,
-    disposition: &cdf_kernel::WriteDisposition,
-    execution_extent: &cdf_kernel::ExecutionExtent,
-) -> bool {
-    incremental == &IncrementalShape::Full
-        && disposition == &cdf_kernel::WriteDisposition::Replace
-        && execution_extent.is_bounded()
+    let has_non_cursor_frontier = plan
+        .compiled_source_execution
+        .as_ref()
+        .and_then(|source| source.stream_capabilities())
+        .is_some_and(|stream| {
+            stream.source_frontiers.iter().any(|frontier| {
+                !matches!(
+                    frontier,
+                    cdf_runtime::SourceFrontierCapability::Cursor { .. }
+                        | cdf_runtime::SourceFrontierCapability::PageToken
+                )
+            })
+        });
+    if has_non_cursor_frontier {
+        return Ok(());
+    }
+    Err(CdfError::contract(format!(
+        "drain execution for resource `{}` requires an ordered declared cursor or a compiled source frontier such as a log, resume token, file manifest, snapshot, or foreign state; bounded runs and replace disposition do not inherently require cursors",
+        descriptor.resource_id
+    )))
 }
 
 fn validate_run_plan(
@@ -482,25 +478,6 @@ pub(super) fn validate_explicit_package_id(package_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_bounded_full_replace_may_run_without_an_ordered_cursor() {
-        assert!(permits_cursorless_full_replace(
-            &IncrementalShape::Full,
-            &cdf_kernel::WriteDisposition::Replace,
-            &cdf_kernel::ExecutionExtent::bounded(),
-        ));
-        assert!(!permits_cursorless_full_replace(
-            &IncrementalShape::Full,
-            &cdf_kernel::WriteDisposition::Append,
-            &cdf_kernel::ExecutionExtent::bounded(),
-        ));
-        assert!(!permits_cursorless_full_replace(
-            &IncrementalShape::Cursor,
-            &cdf_kernel::WriteDisposition::Replace,
-            &cdf_kernel::ExecutionExtent::bounded(),
-        ));
-    }
 
     #[test]
     fn state_store_parent_wrong_shape_is_internal() {

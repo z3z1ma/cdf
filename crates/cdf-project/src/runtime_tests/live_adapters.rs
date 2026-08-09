@@ -1225,7 +1225,7 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
 }
 
 #[test]
-fn general_project_run_rejects_rest_without_cursor_before_writes() {
+fn bounded_project_run_allows_rest_without_cursor() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = rest_resource();
     let transport = RecordingTransport::new([json_response(r#"[{ "id": 1 }]"#)]);
@@ -1240,32 +1240,38 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
+    let source = compiled.source_plan().clone();
+    let destination =
+        crate::test_destinations::duckdb(duckdb_path.clone(), TargetName::new("items").unwrap())
+            .unwrap();
+    let plan = live_plan(&resource, package_id)
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
 
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&resource),
-        plan: live_plan(&resource, package_id),
+        plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         state_store_path_ownership: crate::StateStorePathOwnership::Configured,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-no-cursor").unwrap(),
-        destination: crate::test_destinations::duckdb(
-            duckdb_path.clone(),
-            TargetName::new("items").unwrap(),
-        )
-        .unwrap(),
+        destination,
         run_id: Some(RunId::new("run-general-rest-no-cursor").unwrap()),
         event_sink: None,
         after_receipt_verified: None,
     }))
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error.to_string().contains("ordered cursor"));
-    assert_eq!(transport.requests().len(), 0);
-    assert!(!package_root.join(package_id).exists());
-    assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
+    assert_eq!(report.row_count, 1);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(transport.requests().len(), 1);
+    assert!(package_root.join(package_id).exists());
+    assert!(duckdb_path.exists());
+    assert!(state_path.exists());
 }
 
 #[test]

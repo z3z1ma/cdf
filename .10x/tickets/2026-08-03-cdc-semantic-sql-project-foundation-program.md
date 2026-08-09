@@ -104,7 +104,7 @@ integration and A3 destination proof.
 - bounded large-transaction/overshoot behavior;
 - finite drain commands only.
 
-Executable child: `.10x/tickets/2026-08-07-a2-log-source-runtime-archetype.md`.
+Completed child: `.10x/tickets/done/2026-08-07-a2-log-source-runtime-archetype.md`.
 
 Depends-On: A1 and A1.5.
 

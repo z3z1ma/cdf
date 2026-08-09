@@ -4612,7 +4612,9 @@ where
                         batch.header.source_position.clone(),
                         &partition_scope,
                     );
-                    if let Some(position) = &batch_source_position {
+                    if cdc_settlement_runtime.is_none()
+                        && let Some(position) = &batch_source_position
+                    {
                         accumulate_processed_partition_position(
                             cdf_kernel::partition_schema_observation_id(&partition),
                             resource.descriptor(),
@@ -5013,7 +5015,13 @@ where
                     source_rows,
                     &residual_preflight.quarantined_batch_rows,
                 )?;
-                if let Some(position) = &batch_source_position {
+                // CDC data positions order keyed effects inside the open settlement unit, but
+                // only its explicit terminal marker is checkpoint-safe. Feeding every opaque
+                // resume token through generic position aggregation would either invent an order
+                // or reject a valid sequence before the source-attested terminal arrives.
+                if cdc_settlement_runtime.is_none()
+                    && let Some(position) = &batch_source_position
+                {
                     accumulate_processed_partition_position(
                         cdf_kernel::partition_schema_observation_id(&partition),
                         resource.descriptor(),

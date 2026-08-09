@@ -5,20 +5,22 @@ use super::{
     DestinationId, DuckDbDestination, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, EstimateSupport, Event, ExecutionExtent, ExecutionProfile, Field,
     FileManifest, FileManifestRunSummary, FilePosition, FilterCapabilities, Id, IncrementalShape,
-    Int64Array, LineageSummary, Metadata, Mutex, Ordering, PackageBuilder, PackageHash,
-    PackageReader, PackageStatus, PageToken, PartitionId, Path, PathBuf, PipelineId, PlanId,
-    ProcessedObservationOutcome, ProcessedObservationPosition, ProjectRunNoOpReason,
-    ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource, QueryableResource,
-    Receipt, Record, RecordBatch, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceId, ResourceStream, Result, RunEvent, RunEventDetails, RunEventKind, RunEventSink,
-    RunEventSinkResult, RunEventValue, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus,
-    RunTelemetryConfig, ScanRequest, Schema, SchemaHash, SchemaSource, ScopeKey, SecretReference,
-    SegmentId, SourcePosition, SqliteCheckpointStore, SqliteRunLedger, StateDelta,
-    StateDeltaTestRequest, Subscriber, TargetName, TracingField, TracingRunEventSink, TrustLevel,
-    Visit, WriteDisposition, backfill_pipeline_id, fmt, fs, negotiate_scan_plan, plan_backfill,
-    postgres_log_position, state_delta_from_run,
+    Int64Array, LineageSummary, Metadata, Mutex, Ordering, PackageArtifactRecoveryRequest,
+    PackageBuilder, PackageHash, PackageReader, PackageStatus, PageToken, PartitionId, Path,
+    PathBuf, PipelineId, PlanId, ProcessedObservationOutcome, ProcessedObservationPosition,
+    ProjectRunNoOpReason, ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
+    QueryableResource, Receipt, Record, RecordBatch, ReplaySupport, ResolvedProjectDestination,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunEvent,
+    RunEventDetails, RunEventKind, RunEventSink, RunEventSinkResult, RunEventValue, RunId,
+    RunPhase, RunPhaseMetric, RunPhaseStatus, RunTelemetryConfig, ScanRequest, Schema, SchemaHash,
+    SchemaSource, ScopeKey, SecretReference, SegmentId, SourcePosition, SqliteCheckpointStore,
+    SqliteRunLedger, StateDelta, StateDeltaTestRequest, Subscriber, TargetName, TracingField,
+    TracingRunEventSink, TrustLevel, Visit, WriteDisposition, backfill_pipeline_id, fmt, fs,
+    negotiate_scan_plan, plan_backfill, postgres_log_position, recover_package_from_artifacts,
+    state_delta_from_run,
     support::{
-        BackfillMockResource, BoundTestResource, MULTI_FILE_RESOURCE_APPEND, OwnedTestResource,
+        BackfillMockResource, BoundTestResource, MULTI_FILE_RESOURCE_APPEND, MockDestination,
+        MockDestinationCounters, MockProjectDestinationRuntime, OwnedTestResource,
         RecordingTransport, SCHEMA_HASH, StaticSecretProvider, build_package_with_carryover,
         compile_test_file_resource, compiled_test_source_plan, delta, destination,
         live_file_resource, live_plan, live_plan_for_queryable, multi_file_resource,
@@ -27,6 +29,9 @@ use super::{
         run_project_fixture, run_project_outcome, sample_batch, test_execution_services,
     },
 };
+
+use base64::Engine as _;
+use sha2::{Digest as _, Sha256};
 
 pub(super) async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
@@ -112,6 +117,259 @@ impl cdf_kernel::SourceReplayRetention for CheckpointBoundReplayRetention {
 }
 
 impl QueryableResource for BoundTestResource<'_> {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+pub(super) struct MongoEventPrefixDrainResource {
+    inner: BackfillMockResource,
+    open_count: AtomicU64,
+    scope: cdf_kernel::MongoChangeStreamScope,
+    delete_field: Mutex<Option<Field>>,
+}
+
+impl MongoEventPrefixDrainResource {
+    fn new() -> Self {
+        let mut inner = BackfillMockResource::new(IncrementalShape::Cdc, None);
+        inner.descriptor.resource_id = ResourceId::new("mock.mongo_database_cdc").unwrap();
+        inner.descriptor.write_disposition = WriteDisposition::CdcApply;
+        inner.descriptor.cursor = None;
+        inner.schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        assert_eq!(
+            cdf_kernel::canonical_arrow_schema_hash(inner.schema.as_ref())
+                .unwrap()
+                .as_str(),
+            SCHEMA_HASH
+        );
+        inner.descriptor.schema_source = SchemaSource::Declared {
+            schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+            source: "mock MongoDB database change stream".to_owned(),
+        };
+        Self {
+            inner,
+            open_count: AtomicU64::new(0),
+            scope: cdf_kernel::MongoChangeStreamScope {
+                source_binding: "atlas".to_owned(),
+                watch_level: cdf_kernel::MongoWatchLevel::Database,
+                database: Some("analytics".to_owned()),
+                collection: None,
+                pipeline_sha256: format!("sha256:{}", "a".repeat(64)),
+                options_sha256: format!("sha256:{}", "b".repeat(64)),
+            },
+            delete_field: Mutex::new(None),
+        }
+    }
+
+    fn bind_delete_field(&self, field: Field) {
+        *self.delete_field.lock().unwrap() = Some(field);
+    }
+
+    fn position(&self, token: &str) -> SourcePosition {
+        let token = token.as_bytes();
+        let string_length = i32::try_from(token.len() + 1).unwrap();
+        let document_length = i32::try_from(4 + 1 + 6 + 4 + token.len() + 1 + 1).unwrap();
+        let mut bson = Vec::with_capacity(usize::try_from(document_length).unwrap());
+        bson.extend_from_slice(&document_length.to_le_bytes());
+        bson.push(0x02);
+        bson.extend_from_slice(b"_data\0");
+        bson.extend_from_slice(&string_length.to_le_bytes());
+        bson.extend_from_slice(token);
+        bson.push(0);
+        bson.push(0);
+        SourcePosition::resume_token(cdf_kernel::ResumeTokenPosition::MongoChangeStream(
+            cdf_kernel::MongoChangeStreamResumeToken {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                scope: self.scope.clone(),
+                token_bson_base64: base64::engine::general_purpose::STANDARD.encode(&bson),
+                token_sha256: format!("sha256:{:x}", Sha256::digest(&bson)),
+                resume_mode: cdf_kernel::MongoResumeMode::ResumeAfter,
+                token_source: cdf_kernel::MongoResumeTokenSource::Event,
+            },
+        ))
+    }
+
+    fn boundary_batch(
+        &self,
+        batch_id: &str,
+        partition_id: PartitionId,
+        position: SourcePosition,
+        boundary: cdf_kernel::CdcSettlementBoundary,
+    ) -> Result<cdf_kernel::Batch> {
+        let schema = self.schema();
+        let mut batch = cdf_kernel::Batch::from_record_batch(
+            cdf_kernel::BatchId::new(batch_id)?,
+            self.descriptor().resource_id.clone(),
+            partition_id,
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+            RecordBatch::new_empty(schema),
+        )?;
+        batch.header.byte_count = 0;
+        batch.header.source_position = Some(position.clone());
+        batch.header.cdc_settlement = Some(cdf_kernel::CdcSettlementMarker {
+            unit_kind: cdf_kernel::CdcSettlementUnitKind::EventPrefix,
+            boundary,
+            position,
+        });
+        Ok(batch)
+    }
+
+    fn upsert_batch(
+        &self,
+        batch_id: &str,
+        partition_id: PartitionId,
+        id: i64,
+        name: &str,
+        operation: cdf_kernel::CdcOperation,
+        position: SourcePosition,
+    ) -> Result<cdf_kernel::Batch> {
+        let schema = self.schema();
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![id])) as ArrayRef,
+                Arc::new(arrow_array::StringArray::from(vec![Some(name)])) as ArrayRef,
+            ],
+        )?;
+        let mut batch = cdf_kernel::Batch::from_record_batch(
+            cdf_kernel::BatchId::new(batch_id)?,
+            self.descriptor().resource_id.clone(),
+            partition_id,
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+            record_batch,
+        )?;
+        batch.header.source_position = Some(position.clone());
+        batch.header.cdc = Some(cdf_kernel::CdcMetadata {
+            operation,
+            position,
+        });
+        Ok(batch)
+    }
+
+    fn delete_batch(
+        &self,
+        batch_id: &str,
+        partition_id: PartitionId,
+        id: i64,
+        position: SourcePosition,
+    ) -> Result<cdf_kernel::Batch> {
+        let key_field = self
+            .delete_field
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("CDC test plan must bind its compiled delete key field before execution");
+        let schema = Arc::new(Schema::new(vec![key_field]));
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![id])) as ArrayRef],
+        )?;
+        let mut batch = cdf_kernel::Batch::from_record_batch(
+            cdf_kernel::BatchId::new(batch_id)?,
+            self.descriptor().resource_id.clone(),
+            partition_id,
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+            record_batch,
+        )?;
+        batch.header.source_position = Some(position.clone());
+        batch.header.cdc = Some(cdf_kernel::CdcMetadata {
+            operation: cdf_kernel::CdcOperation::Delete,
+            position,
+        });
+        Ok(batch)
+    }
+}
+
+impl ResourceStream for MongoEventPrefixDrainResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.open_count.fetch_add(1, Ordering::SeqCst);
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            if partition.start_position.is_some() {
+                return Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                    futures_util::stream::empty(),
+                )));
+            }
+            let partition_id = partition.partition_id;
+            let events = [
+                (
+                    "insert",
+                    cdf_kernel::CdcOperation::Insert,
+                    self.position("token-1"),
+                ),
+                (
+                    "update",
+                    cdf_kernel::CdcOperation::Update,
+                    self.position("token-2"),
+                ),
+                (
+                    "delete",
+                    cdf_kernel::CdcOperation::Delete,
+                    self.position("token-3"),
+                ),
+            ];
+            let mut batches = Vec::new();
+            for (event, operation, position) in events {
+                batches.push(self.boundary_batch(
+                    &format!("mongo-{event}-begin"),
+                    partition_id.clone(),
+                    position.clone(),
+                    cdf_kernel::CdcSettlementBoundary::Begin,
+                )?);
+                batches.push(if operation == cdf_kernel::CdcOperation::Delete {
+                    self.delete_batch(
+                        "mongo-delete-data",
+                        partition_id.clone(),
+                        2,
+                        position.clone(),
+                    )?
+                } else {
+                    self.upsert_batch(
+                        &format!("mongo-{event}-data"),
+                        partition_id.clone(),
+                        1,
+                        if operation == cdf_kernel::CdcOperation::Insert {
+                            "one"
+                        } else {
+                            "one-updated"
+                        },
+                        operation,
+                        position.clone(),
+                    )?
+                });
+                batches.push(self.boundary_batch(
+                    &format!("mongo-{event}-terminal"),
+                    partition_id.clone(),
+                    position,
+                    cdf_kernel::CdcSettlementBoundary::Terminal,
+                )?);
+            }
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                futures_util::stream::iter(batches.into_iter().map(Ok)),
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for MongoEventPrefixDrainResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         self.inner.capabilities()
     }
@@ -1838,6 +2096,218 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
         .unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn mongo_event_prefix_drain_recovers_receipt_checkpoint_crash_without_source_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = MongoEventPrefixDrainResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-mongo-event-prefix-crash";
+    let pipeline_id = PipelineId::new("pipeline-mongo-event-prefix-crash").unwrap();
+    let checkpoint_id = CheckpointId::new("checkpoint-mongo-event-prefix-crash").unwrap();
+    let final_position = resource.position("token-3");
+    let mut source = compiled_drain_test_source_plan(&resource);
+    source.execution_capabilities.maximum_concurrency = 1;
+    source.execution_capabilities.useful_concurrency = 1;
+    source.execution_capabilities.resumable = true;
+    source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: true,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        watermark: None,
+        safe_frontiers: vec![cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::ResumeToken {
+            scopes: vec![resource.scope.clone()],
+        }],
+        idleness_capabilities: Vec::new(),
+    });
+    source.validate().unwrap();
+    assert!(
+        source
+            .stream_capabilities
+            .as_ref()
+            .unwrap()
+            .supports_source_frontier(&final_position)
+    );
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
+        replay_retention: None,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 100 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            transaction_limit_bytes: Some(1 << 20),
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 3 },
+    };
+    let destination = MockDestination::cdc_apply();
+    let counters = MockDestinationCounters::new();
+    let runtime =
+        MockProjectDestinationRuntime::with_destination(destination.clone(), counters.clone());
+    let destination_capabilities = crate::ProjectDestinationRuntime::runtime_capabilities(&runtime);
+    let mut policy =
+        cdf_contract::ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier =
+        cdf_contract::identifier_policy_from_destination_rules(&destination.sheet.identifier_rules)
+            .unwrap();
+    let validation_program = cdf_contract::compile_validation_program(
+        &policy,
+        &cdf_contract::ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = cdf_engine::Planner::new()
+        .plan_tier_b(
+            &resource,
+            cdf_engine::EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                execution_extent: extent,
+                keyed_effects: cdf_kernel::KeyedEffectPlanAuthority {
+                    deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+                        support: cdf_kernel::DeletionCaptureSupport::Inherent,
+                        enabled: true,
+                        semantics_sha256: format!("sha256:{}", "c".repeat(64)),
+                    },
+                    delete_application: cdf_kernel::DeleteApplicationAuthority::Apply {
+                        policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+                    },
+                },
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
+                package_id: package_id.to_owned(),
+                relational_expression_plan: None,
+                committed_frontier: None,
+            },
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination_capabilities)
+        .unwrap();
+    let services = test_execution_services();
+    let plan = plan
+        .bind_resolved_transaction_limit(services.spill().snapshot().budget_bytes)
+        .unwrap();
+    resource.bind_delete_field(plan.output_arrow_schema().unwrap().field(0).clone());
+    let resolved =
+        ResolvedProjectDestination::new(Box::new(runtime), TargetName::new("events").unwrap())
+            .with_bound_execution_services(services.clone())
+            .unwrap();
+    let hook = |_receipt: &Receipt| {
+        Err(CdfError::internal(
+            "injected MongoDB event-prefix checkpoint crash",
+        ))
+    };
+
+    let error = futures_executor::block_on(run_project_fixture(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(&bound),
+            plan,
+            package_root: package_root.clone(),
+            state_store_path: state_path.clone(),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: pipeline_id.clone(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: checkpoint_id.clone(),
+            destination: resolved,
+            run_id: Some(RunId::new("run-mongo-event-prefix-crash").unwrap()),
+            event_sink: None,
+            after_receipt_verified: Some(&hook),
+        },
+        &services,
+        RunTelemetryConfig::disabled(),
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected MongoDB event-prefix checkpoint crash"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    let package_dir = package_root.join(package_id);
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(destination.write_count(), 2);
+    assert_eq!(
+        receipts[0].counts.keyed_intent(),
+        Some(cdf_kernel::KeyedEffectCounts {
+            upserts: 1,
+            deletes: 1,
+        })
+    );
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert!(
+        store
+            .head(
+                &pipeline_id,
+                &resource.descriptor().resource_id,
+                &resource.descriptor().state_scope,
+            )
+            .unwrap()
+            .is_none()
+    );
+    let history = store
+        .history(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
+    assert_eq!(history[0].delta.output_position, final_position);
+    assert!(receipts[0].covers_state_delta(&history[0].delta));
+    let writes_before_recovery = destination.write_count();
+    let recovery_runtime =
+        MockProjectDestinationRuntime::with_destination(destination.clone(), counters);
+    let recovery_destination = ResolvedProjectDestination::new(
+        Box::new(recovery_runtime),
+        TargetName::new("events").unwrap(),
+    )
+    .with_bound_execution_services(services)
+    .unwrap();
+
+    let recovery = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: recovery_destination,
+        checkpoint_store: &store,
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(recovery.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(recovery.checkpoint.delta.output_position, final_position);
+    assert_eq!(recovery.receipt, receipts[0]);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(destination.write_count(), writes_before_recovery);
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    let head = store
+        .head(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap()
+        .expect("receipt recovery must commit the checkpoint head");
+    assert_eq!(head, recovery.checkpoint);
 }
 
 #[test]

@@ -1043,6 +1043,12 @@ impl MockDestination {
         self
     }
 
+    pub(super) fn cdc_apply() -> Self {
+        let mut destination = Self::new();
+        destination.sheet.supported_dispositions = vec![WriteDisposition::CdcApply];
+        destination
+    }
+
     pub(super) fn write_count(&self) -> usize {
         self.writes.lock().unwrap().len()
     }
@@ -1095,10 +1101,11 @@ impl DestinationProtocol for MockDestination {
 }
 
 impl MockDestination {
-    pub(super) fn begin(
+    pub(super) fn begin_with_schema(
         &self,
         request: DestinationCommitRequest,
         plan: CommitPlan,
+        schema_hash: SchemaHash,
     ) -> Result<Box<dyn CommitSession + '_>> {
         if self.fail_begin.load(Ordering::SeqCst) {
             return Err(CdfError::destination("injected primary replay failure"));
@@ -1107,6 +1114,7 @@ impl MockDestination {
             destination: self,
             request,
             plan,
+            schema_hash,
             migrations_applied: false,
             acks: Vec::new(),
         }))
@@ -1117,6 +1125,7 @@ pub(super) struct MockCommitSession<'a> {
     pub(super) destination: &'a MockDestination,
     pub(super) request: DestinationCommitRequest,
     pub(super) plan: CommitPlan,
+    pub(super) schema_hash: SchemaHash,
     pub(super) migrations_applied: bool,
     pub(super) acks: Vec<SegmentAck>,
 }
@@ -1193,8 +1202,23 @@ impl CommitSession for MockCommitSession<'_> {
             disposition: self.request.disposition.clone(),
             idempotency_token: self.request.idempotency_token.clone(),
             transaction: None,
-            counts: CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0)),
-            schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+            counts: match &self.request.content {
+                cdf_kernel::PackageContentAuthority::Rows { .. } => {
+                    CommitCounts::rows(rows_written, Some(rows_written), Some(0), Some(0))
+                }
+                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. } => {
+                    CommitCounts::keyed_changes(
+                        reduction.surviving,
+                        Some(reduction.surviving.upserts),
+                        Some(0),
+                        Some(reduction.surviving.deletes),
+                        Some(0),
+                        Some(0),
+                        Some(0),
+                    )
+                }
+            },
+            schema_hash: self.schema_hash,
             migrations: self.plan.migrations.clone(),
             committed_at_ms: 1_700_000_000_000,
             verify: VerifyClause {
@@ -1393,8 +1417,11 @@ impl cdf_runtime::FinalizedPackageIngress for MockProjectDestinationRuntime {
             ));
         }
         self.counters.binds.fetch_add(1, Ordering::SeqCst);
-        self.destination
-            .begin(prepared.commit().clone(), prepared.plan().clone())
+        self.destination.begin_with_schema(
+            prepared.commit().clone(),
+            prepared.plan().clone(),
+            prepared.schema_hash().clone(),
+        )
     }
 }
 

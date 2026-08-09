@@ -21,7 +21,7 @@ This ticket owns the *condition*. Individual defects it uncovers get their own b
 ## Discovery
 
 Found on 2026-08-07 while verifying the `STREAM_EPOCH_POLICY_VERSION` 1 → 2 bump in
-`.10x/tickets/2026-08-07-a2-log-source-runtime-archetype.md`. Because a serialized-artifact version
+`.10x/tickets/done/2026-08-07-a2-log-source-runtime-archetype.md`. Because a serialized-artifact version
 bump can break golden hashes workspace-wide, the change was verified by differential sweep against a
 stashed baseline rather than by inspection:
 
@@ -264,7 +264,7 @@ deleted, and no enforcement was relaxed. **CI is green** (`237583ac`, `9a6e73de`
 
 ## References
 
-- `.10x/tickets/2026-08-07-a2-log-source-runtime-archetype.md` (discovery context and method)
+- `.10x/tickets/done/2026-08-07-a2-log-source-runtime-archetype.md` (discovery context and method)
 - `.10x/knowledge/live-connector-fixture-topology.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/tickets/2026-08-07-a1-5-package-native-keyed-effects.md`
