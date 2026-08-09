@@ -131,6 +131,23 @@ retention, and live replica-set/Atlas certification.
   compiles and plans the admitted two-collection Atlas database resource through `CDC_APPLY` with
   one drain partition and six routed destination migrations.
 
+- 2026-08-09: The first production-binary Atlas executions opened a real database change stream
+  and exposed five integration defects that synthetic compilation could not: an absent optional
+  comment was serialized as an illegal `$changeStream.comment: null`; settlement controls omitted
+  their exact Arrow memory lease; upserts labeled their logical rather than physical observation
+  schema; live collection admission was not applied to database traffic; and zero-row latest-token
+  epochs had no schema-attestation path. Optional comments are now omitted, settlement memory is
+  exact and preaccounted, upserts/control markers carry source-materialized physical evidence,
+  database preflight requires the matching collection inventory to equal compiled discovery, and
+  a protected server-side pipeline filters ordinary events to the compiled inventory while still
+  surfacing DDL/invalidation. The engine now accepts verified schema evidence on settlement control
+  batches, so an idle latest-bootstrap epoch can checkpoint without fabricating a data row.
+
+- 2026-08-09: A subsequent live routed delete reached exact-key reduction and exposed that the
+  dedicated CDC delete path recorded surviving routed effects but omitted the corresponding routed
+  input count. The delete path now observes the protected key-plus-route batch before spill/dedup,
+  matching the existing upsert path and preserving per-output reduction invariants.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -154,6 +171,11 @@ retention, and live replica-set/Atlas certification.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb cdc_ --lib` — 5 focused CDC compilation
   and discovery-authority tests passed, including cursor-free CDC, latest-versus-snapshot native
   option precedence, and inventory recovery from bound discovery evidence.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine
+  cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families --lib` — the
+  existing exact effect-order/reduction certificate passes after the routed delete count repair.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-engine -p cdf-source-mongodb --all-targets -- -D
+  warnings` — strict Clippy passes for the live-runtime repair surface.
 - Release-binary Atlas evidence so far: `cdf compile mongo_live.atlas_database_cdc` and `cdf plan
   mongo_live.atlas_database_cdc` succeed against two isolated, post-image-enabled collections in
   the authorized Atlas database. The plan reports one drain partition, `cdc_apply`,

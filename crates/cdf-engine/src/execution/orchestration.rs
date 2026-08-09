@@ -4416,6 +4416,59 @@ where
                 validate_cdc_batch_authority(&plan.write_disposition, &batch.header)?;
                 if let Some(marker) = batch.header.cdc_settlement.clone() {
                     phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
+                    if let Some(expected) = partition_schema_evidence
+                        && !stream_admission_evidence.contains_key(&expected.observation_id)
+                    {
+                        let record_batch = batch.record_batch().ok_or_else(|| {
+                            CdfError::data(
+                                "CDC settlement schema attestation requires an in-memory Arrow batch",
+                            )
+                        })?;
+                        let reconciled = materialize_batch_schema_evidence(
+                            &batch,
+                            record_batch,
+                            BatchSchemaAdmissionContext {
+                                planned_observation_id:
+                                    cdf_kernel::partition_schema_observation_id(&partition),
+                                expected: Some(expected),
+                                expected_physical_observation: preobserved_physical_observation(
+                                    effective_schema_evidence,
+                                    Some(expected),
+                                )?,
+                                effective_schema: &admission_schema,
+                            },
+                            &plan.compiled_schema_admission,
+                            &mut schema_admission_cache,
+                        )?;
+                        let BatchSchemaDisposition::Admitted(reconciled) = reconciled else {
+                            return Err(CdfError::data(
+                                "CDC settlement schema attestation is incompatible with compiled discovery authority",
+                            ));
+                        };
+                        let observation_id = reconciled.observation_id.ok_or_else(|| {
+                            CdfError::internal(
+                                "CDC settlement schema attestation omitted observation identity",
+                            )
+                        })?;
+                        let physical_observation = reconciled.physical_observation.ok_or_else(|| {
+                            CdfError::internal(
+                                "CDC settlement schema attestation omitted physical observation",
+                            )
+                        })?;
+                        let coercion_plan = reconciled.coercion_plan.ok_or_else(|| {
+                            CdfError::internal(
+                                "CDC settlement schema attestation omitted coercion authority",
+                            )
+                        })?;
+                        partition_observation_id = Some(observation_id.clone());
+                        record_observation_schema_coercion(
+                            &mut stream_admission_evidence,
+                            &mut stream_physical_observation_catalog,
+                            &observation_id,
+                            physical_observation,
+                            coercion_plan,
+                        )?;
+                    }
                     let kind = settlement_unit_kind(marker.unit_kind);
                     match marker.boundary {
                         cdf_kernel::CdcSettlementBoundary::Begin => {
@@ -4665,6 +4718,9 @@ where
                     let rule = package_dedup_rule.as_ref().ok_or_else(|| {
                         CdfError::internal("CDC delete package omitted its exact-key rule")
                     })?;
+                    if let Some(routing) = routed_write.as_mut() {
+                        routing.observe_input(cdf_kernel::PackageSegmentKind::Delete, &output)?;
+                    }
                     let external = external_dedup.as_mut().ok_or_else(|| {
                         CdfError::contract(
                             "CDC delete reduction requires bounded execution services and spill authority",

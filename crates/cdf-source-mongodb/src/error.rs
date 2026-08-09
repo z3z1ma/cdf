@@ -37,15 +37,75 @@ pub(crate) fn classify_mongodb_error(action: &str, error: Error) -> CdfError {
         MongoErrorKind::Internal { .. } => ErrorKind::Internal,
         _ => ErrorKind::Data,
     };
-    let detail = match kind {
-        ErrorKind::Auth => "MongoDB authentication failed",
-        ErrorKind::Contract => "MongoDB rejected the compiled request",
-        ErrorKind::Environment => "the host could not provide MongoDB transport facilities",
-        ErrorKind::Transient | ErrorKind::RateLimited => "MongoDB is temporarily unavailable",
-        ErrorKind::Internal => "the MongoDB driver reported an internal invariant failure",
-        _ => "MongoDB returned invalid or incompatible source data",
-    };
+    let detail = mongodb_error_detail(error.kind.as_ref(), &kind);
     CdfError::new(kind, format!("{action}: {detail}"))
+}
+
+fn mongodb_error_detail(error: &MongoErrorKind, kind: &ErrorKind) -> String {
+    if let MongoErrorKind::Command(command) = error {
+        let code_name = command
+            .code_name
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '_')
+            .then_some(command.code_name.as_str())
+            .filter(|value| !value.is_empty() && value.len() <= 64);
+        return match code_name {
+            Some(code_name) => format!(
+                "MongoDB command failed with code {} ({code_name})",
+                command.code
+            ),
+            None => format!("MongoDB command failed with code {}", command.code),
+        };
+    }
+    match error {
+        MongoErrorKind::Authentication { .. } => "MongoDB authentication failed".to_owned(),
+        MongoErrorKind::InvalidArgument { .. } => {
+            "MongoDB rejected a driver request argument".to_owned()
+        }
+        MongoErrorKind::Bson(_) => "MongoDB BSON decoding failed".to_owned(),
+        MongoErrorKind::InvalidResponse { .. } => {
+            "MongoDB returned an invalid wire response".to_owned()
+        }
+        MongoErrorKind::DnsResolve { .. } => "MongoDB DNS resolution failed".to_owned(),
+        MongoErrorKind::InvalidTlsConfig { .. } => {
+            "the host could not provide MongoDB TLS facilities".to_owned()
+        }
+        MongoErrorKind::ConnectionPoolCleared { .. } => {
+            "the MongoDB connection pool was cleared".to_owned()
+        }
+        MongoErrorKind::ServerSelection { .. } => {
+            "MongoDB server selection is temporarily unavailable".to_owned()
+        }
+        MongoErrorKind::Shutdown => "the MongoDB driver reported an internal shutdown".to_owned(),
+        MongoErrorKind::IncompatibleServer { .. } => {
+            "MongoDB server capabilities are incompatible with the compiled request".to_owned()
+        }
+        MongoErrorKind::SessionsNotSupported => {
+            "MongoDB server does not support required sessions".to_owned()
+        }
+        MongoErrorKind::Internal { .. } => {
+            "the MongoDB driver reported an internal invariant failure".to_owned()
+        }
+        MongoErrorKind::Io(_) => match kind {
+            ErrorKind::Transient => "MongoDB transport is temporarily unavailable".to_owned(),
+            ErrorKind::Data => "MongoDB transport returned invalid data".to_owned(),
+            _ => "the host could not provide MongoDB transport facilities".to_owned(),
+        },
+        _ => match kind {
+            ErrorKind::Auth => "MongoDB authentication failed".to_owned(),
+            ErrorKind::Contract => "MongoDB rejected the compiled request".to_owned(),
+            ErrorKind::Environment => {
+                "the host could not provide MongoDB transport facilities".to_owned()
+            }
+            ErrorKind::Transient | ErrorKind::RateLimited => {
+                "MongoDB is temporarily unavailable".to_owned()
+            }
+            ErrorKind::Internal => {
+                "the MongoDB driver reported an internal invariant failure".to_owned()
+            }
+            _ => "MongoDB returned invalid or incompatible source data".to_owned(),
+        },
+    }
 }
 
 fn embedded_cdf_error(error: &Error) -> Option<CdfError> {

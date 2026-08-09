@@ -2280,8 +2280,28 @@ fn sdk_wrapper_preserves_typed_error_ownership_and_retry_delay() {
             mongodb::error::ErrorKind::Command(command).into(),
         );
         assert_eq!(classified.kind, expected_kind, "command code {code}");
+        assert!(
+            classified
+                .message
+                .contains(&format!("code {code} (fixture)"))
+        );
         assert!(!classified.message.contains("must remain redacted"));
     }
+
+    let unsafe_code_name: mongodb::error::CommandError =
+        serde_json::from_value(serde_json::json!({
+            "code": 2,
+            "codeName": "unsafe pipeline $secret",
+            "errmsg": "must remain redacted",
+        }))
+        .unwrap();
+    let classified = classify_mongodb_error(
+        "open change stream",
+        mongodb::error::ErrorKind::Command(unsafe_code_name).into(),
+    );
+    assert!(classified.message.contains("code 2"));
+    assert!(!classified.message.contains("$secret"));
+    assert!(!classified.message.contains("must remain redacted"));
 
     let shutdown = classify_mongodb_error(
         "read collection",

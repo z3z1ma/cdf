@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     driver::{
         MongoDbBootstrap, MongoDbPhysicalPlan, MongoDbRepresentation, MongoDbRuntimeConfig,
-        MongoDbWatch, compiled_database_inventory, mongodb_cdc_capabilities,
+        MongoDbWatch, compile_globs, compiled_database_inventory, mongodb_cdc_capabilities,
         mongodb_change_stream_scope, read_collection_metadata, validate_server_version,
     },
     error::classify_mongodb_error,
@@ -51,6 +51,8 @@ pub(crate) struct MongoDbCdcResource {
     watch: MongoDbWatch,
     representation: MongoDbRepresentation,
     admitted_collections: Vec<String>,
+    include_collections: Vec<glob::Pattern>,
+    exclude_collections: Vec<glob::Pattern>,
     change_pipeline: Vec<mongodb::bson::Document>,
     change_batch_rows: u32,
     change_max_await_ms: u64,
@@ -100,7 +102,7 @@ impl MongoDbCdcResource {
         }
         validate_compiled_schema_evidence(compiled)?;
         let schema = Arc::new(compiled.schema.clone());
-        let (physical_schema, decoder_schema) = if watch == MongoDbWatch::Collection {
+        let (mut physical_schema, decoder_schema) = if watch == MongoDbWatch::Collection {
             let observed = current_physical_schema(compiled)?;
             let decoder = attach_expected_physical_types(schema.as_ref(), observed.as_ref())?;
             (Some(observed), Some(decoder))
@@ -148,6 +150,16 @@ impl MongoDbCdcResource {
                     "MongoDB database CDC envelope discovery contains a non-envelope physical schema",
                 ));
             }
+            physical_schema = Some(
+                runtime
+                    .physical_schema(&envelope_hash)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CdfError::data(
+                            "MongoDB database CDC envelope schema is absent from its compiled physical catalog",
+                        )
+                    })?,
+            );
         }
         Ok(Self {
             descriptor: compiled.descriptor.clone(),
@@ -159,6 +171,8 @@ impl MongoDbCdcResource {
             watch,
             representation,
             admitted_collections,
+            include_collections: compile_globs(&physical.include_collections)?,
+            exclude_collections: compile_globs(&physical.exclude_collections)?,
             change_pipeline: physical.change_pipeline.clone(),
             change_batch_rows: physical.change_batch_rows,
             change_max_await_ms: physical.change_max_await_ms,
@@ -194,6 +208,19 @@ impl MongoDbCdcResource {
             ));
         }
         Ok(())
+    }
+
+    fn admits_collection(&self, collection: &str) -> bool {
+        !collection.starts_with("system.")
+            && (self.include_collections.is_empty()
+                || self
+                    .include_collections
+                    .iter()
+                    .any(|pattern| pattern.matches(collection)))
+            && !self
+                .exclude_collections
+                .iter()
+                .any(|pattern| pattern.matches(collection))
     }
 
     fn partition(&self, request: &ScanRequest) -> Result<PartitionPlan> {
@@ -425,6 +452,7 @@ async fn execute_change_stream(
         send_control(
             &resource,
             &partition,
+            &memory,
             &mut sender,
             &mut ordinal,
             CdcSettlementBoundary::Begin,
@@ -434,6 +462,7 @@ async fn execute_change_stream(
         send_control(
             &resource,
             &partition,
+            &memory,
             &mut sender,
             &mut ordinal,
             CdcSettlementBoundary::Terminal,
@@ -472,6 +501,25 @@ async fn preflight_change_stream(
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<()> {
     let database = handle.client.database(resource.database.as_str());
+    if resource.watch == MongoDbWatch::Database {
+        let mut current_inventory = cancellation
+            .await_or_cancel(async {
+                database.list_collection_names().await.map_err(|error| {
+                    classify_mongodb_error("list MongoDB database collections", error)
+                })
+            })
+            .await?
+            .into_iter()
+            .filter(|name| resource.admits_collection(name))
+            .collect::<Vec<_>>();
+        current_inventory.sort();
+        current_inventory.dedup();
+        if current_inventory != resource.admitted_collections {
+            return Err(CdfError::data(
+                "MongoDB database collection inventory differs from its compiled authority; run discovery and compile before resuming",
+            ));
+        }
+    }
     let build_info = cancellation
         .await_or_cancel(async {
             database
@@ -513,7 +561,7 @@ async fn open_change_stream(
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<ChangeStream<ChangeStreamEvent<mongodb::bson::Document>>> {
     let database = handle.client.database(resource.database.as_str());
-    let pipeline = resource.change_pipeline.clone();
+    let pipeline = runtime_change_pipeline(resource);
     let batch_size = resource.change_batch_rows;
     let max_await = Duration::from_millis(resource.change_max_await_ms);
     let comment = resource
@@ -539,8 +587,11 @@ async fn open_change_stream(
                         .full_document(FullDocumentType::Required)
                         .batch_size(batch_size)
                         .max_await_time(max_await)
-                        .show_expanded_events(false)
-                        .comment(comment);
+                        .show_expanded_events(false);
+                    let watch = match comment {
+                        Some(value) => watch.comment(value),
+                        None => watch,
+                    };
                     let watch = match read_concern {
                         Some(value) => watch.read_concern(value),
                         None => watch,
@@ -558,8 +609,11 @@ async fn open_change_stream(
                         .full_document(FullDocumentType::Required)
                         .batch_size(batch_size)
                         .max_await_time(max_await)
-                        .show_expanded_events(false)
-                        .comment(comment);
+                        .show_expanded_events(true);
+                    let watch = match comment {
+                        Some(value) => watch.comment(value),
+                        None => watch,
+                    };
                     let watch = match read_concern {
                         Some(value) => watch.read_concern(value),
                         None => watch,
@@ -574,6 +628,31 @@ async fn open_change_stream(
             result.map_err(|error| classify_mongodb_error("open MongoDB change stream", error))
         })
         .await
+}
+
+fn runtime_change_pipeline(resource: &MongoDbCdcResource) -> Vec<mongodb::bson::Document> {
+    if resource.watch == MongoDbWatch::Collection {
+        return resource.change_pipeline.clone();
+    }
+    let admitted = resource
+        .admitted_collections
+        .iter()
+        .cloned()
+        .map(mongodb::bson::Bson::String)
+        .collect::<Vec<_>>();
+    let mut pipeline = vec![mongodb::bson::doc! {
+        "$match": {
+            "$or": [
+                {
+                    "operationType": {"$in": ["insert", "update", "replace", "delete"]},
+                    "ns.coll": {"$in": admitted},
+                },
+                {"operationType": {"$nin": ["insert", "update", "replace", "delete"]}},
+            ]
+        }
+    }];
+    pipeline.extend(resource.change_pipeline.iter().cloned());
+    pipeline
 }
 
 async fn publish_event(
@@ -621,6 +700,7 @@ async fn publish_event(
     send_control(
         resource,
         partition,
+        memory,
         sender,
         ordinal,
         CdcSettlementBoundary::Begin,
@@ -660,13 +740,27 @@ async fn publish_event(
     .await?;
     lease.reconcile(retained_bytes)?;
     *ordinal = ordinal.saturating_add(1);
+    let observed_schema = match operation {
+        CdcOperation::Delete => record_batch.schema(),
+        CdcOperation::Insert | CdcOperation::Update => Arc::clone(
+            resource
+                .physical_schema
+                .as_ref()
+                .ok_or_else(|| CdfError::internal("MongoDB CDC upsert omitted physical schema"))?,
+        ),
+    };
     let mut batch = Batch::from_record_batch(
         event_batch_id(resource, *ordinal, "data")?,
         resource.descriptor.resource_id.clone(),
         partition.partition_id.clone(),
-        cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?,
+        cdf_kernel::canonical_arrow_schema_hash(observed_schema.as_ref())?,
         record_batch,
     )?;
+    if operation != CdcOperation::Delete {
+        batch
+            .header
+            .mark_materialized_output(observed_schema.as_ref())?;
+    }
     batch.header.source_position = Some(position.clone());
     batch.header.cdc = Some(CdcMetadata {
         operation,
@@ -677,6 +771,7 @@ async fn publish_event(
     send_control(
         resource,
         partition,
+        memory,
         sender,
         ordinal,
         CdcSettlementBoundary::Terminal,
@@ -688,19 +783,29 @@ async fn publish_event(
 async fn send_control(
     resource: &MongoDbCdcResource,
     partition: &PartitionPlan,
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
     sender: &mut TaskStreamSender<Batch>,
     ordinal: &mut u64,
     boundary: CdcSettlementBoundary,
     position: &SourcePosition,
 ) -> Result<()> {
     *ordinal = ordinal.saturating_add(1);
+    let record_batch = RecordBatch::new_empty(Arc::clone(&resource.schema));
+    let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+    let physical_schema = resource
+        .physical_schema
+        .as_ref()
+        .ok_or_else(|| CdfError::internal("MongoDB CDC settlement omitted physical schema"))?;
     let mut batch = Batch::from_record_batch(
         event_batch_id(resource, *ordinal, "settlement")?,
         resource.descriptor.resource_id.clone(),
         partition.partition_id.clone(),
-        cdf_kernel::canonical_arrow_schema_hash(resource.schema.as_ref())?,
-        RecordBatch::new_empty(Arc::clone(&resource.schema)),
+        cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?,
+        record_batch,
     )?;
+    batch
+        .header
+        .mark_materialized_output(physical_schema.as_ref())?;
     batch.header.byte_count = 0;
     batch.header.source_position = Some(position.clone());
     batch.header.cdc_settlement = Some(CdcSettlementMarker {
@@ -708,6 +813,17 @@ async fn send_control(
         boundary,
         position: position.clone(),
     });
+    if retained_bytes != 0 {
+        let lease = reserve(
+            Arc::clone(memory),
+            ReservationRequest::new(
+                ConsumerKey::new("mongodb-cdc-settlement", MemoryClass::Control)?,
+                retained_bytes,
+            )?,
+        )
+        .await?;
+        batch = batch.with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
+    }
     sender.send(batch).await
 }
 

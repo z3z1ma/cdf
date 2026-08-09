@@ -1054,7 +1054,7 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
     }
 }
 
-fn compile_globs(patterns: &[String]) -> Result<Vec<glob::Pattern>> {
+pub(crate) fn compile_globs(patterns: &[String]) -> Result<Vec<glob::Pattern>> {
     patterns
         .iter()
         .map(|pattern| {
