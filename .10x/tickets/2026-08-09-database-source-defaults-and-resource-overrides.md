@@ -96,8 +96,9 @@ execution was unavailable; this does not block the independently exercised inher
 - Release sandbox `cdf run sqlite_native.events_snapshot`: committed and verified 100,000 rows in
   782 ms through package, receipt, checkpoint, and destination gates.
 - Release PostgreSQL compile connected and described the query, then correctly stopped at the
-  existing explicit schema-promotion gate. Atlas compile reached the driver but failed MongoDB
-  authentication with the expired supplied session credentials; no live Atlas success is claimed.
+  existing explicit schema-promotion gate. Atlas compile reached the driver but the supplied
+  session credentials were rejected by MongoDB authentication; no cause or live Atlas success is
+  inferred.
 
 ## Review
 
