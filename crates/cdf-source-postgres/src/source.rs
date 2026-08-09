@@ -14,12 +14,15 @@ use cdf_kernel::{
     CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeclarativeExpression,
     DeclarativeExpressionLiteral, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PartitionAttestation, PartitionAttestationAttempt,
     PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
     PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
     ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate,
     ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
 };
-use postgres::{Client, IsolationLevel, NoTls, Statement};
+#[cfg(test)]
+use postgres::IsolationLevel;
+use postgres::{Client, NoTls, Statement};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use cdf_runtime::{
@@ -37,6 +40,10 @@ use crate::{
     },
     catalog::{PostgresCatalogColumn, read_catalog_columns},
     error::classify_postgres_error,
+    native::{
+        PostgresNativeOptions, PostgresSourceInput, describe_postgres_query,
+        postgres_query_generation_position, query_generation_from_schema,
+    },
 };
 
 const POSTGRES_PARTITION_KIND: &str = "sql";
@@ -57,10 +64,12 @@ pub fn postgres_source_blocking_lane() -> BlockingLaneSpec {
 }
 
 #[derive(Clone)]
-pub struct PostgresTableResource {
+pub struct PostgresSourceResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
-    target: PostgresTarget,
+    input: PostgresSourceInput,
+    options: PostgresNativeOptions,
+    query_generation: Option<SourcePosition>,
     connection: PostgresConnection,
     capabilities: ResourceCapabilities,
     execution: Option<ExecutionServices>,
@@ -77,8 +86,26 @@ enum PostgresConnection {
     Deferred(Arc<dyn Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static>),
 }
 
-impl PostgresTableResource {
-    pub fn new(
+fn resolve_postgres_connection(
+    connection: &PostgresConnection,
+    cancellation: RunCancellation,
+) -> Result<String> {
+    cancellation.check()?;
+    let database_url = match connection {
+        PostgresConnection::Resolved(database_url) => database_url.clone(),
+        PostgresConnection::Deferred(resolve) => resolve(cancellation.clone())?,
+    };
+    cancellation.check()?;
+    if database_url.trim().is_empty() {
+        return Err(CdfError::auth(
+            "Postgres source connection string resolved to an empty value",
+        ));
+    }
+    Ok(database_url)
+}
+
+impl PostgresSourceResource {
+    pub fn new_table(
         database_url: impl Into<String>,
         descriptor: ResourceDescriptor,
         schema: SchemaRef,
@@ -91,12 +118,16 @@ impl PostgresTableResource {
                 "Postgres source connection string resolved to an empty value",
             ));
         }
-        validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
-        let capabilities = postgres_table_capabilities(&descriptor);
+        let input = PostgresSourceInput::Table { target };
+        let options = PostgresNativeOptions::default();
+        validate_postgres_source_resource_shape(&descriptor, &schema, &input)?;
+        let capabilities = postgres_source_capabilities(&descriptor);
         Ok(Self {
             descriptor,
             schema,
-            target,
+            input,
+            options,
+            query_generation: None,
             connection: PostgresConnection::Resolved(database_url),
             capabilities,
             execution: None,
@@ -108,7 +139,7 @@ impl PostgresTableResource {
         })
     }
 
-    pub fn new_with_connection_resolver<F>(
+    pub fn new_table_with_connection_resolver<F>(
         descriptor: ResourceDescriptor,
         schema: SchemaRef,
         target: PostgresTarget,
@@ -118,12 +149,16 @@ impl PostgresTableResource {
     where
         F: Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static,
     {
-        validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
-        let capabilities = postgres_table_capabilities(&descriptor);
+        let input = PostgresSourceInput::Table { target };
+        let options = PostgresNativeOptions::default();
+        validate_postgres_source_resource_shape(&descriptor, &schema, &input)?;
+        let capabilities = postgres_source_capabilities(&descriptor);
         Ok(Self {
             descriptor,
             schema,
-            target,
+            input,
+            options,
+            query_generation: None,
             connection: PostgresConnection::Deferred(Arc::new(resolver)),
             capabilities,
             execution: None,
@@ -137,20 +172,42 @@ impl PostgresTableResource {
 
     pub(crate) fn from_compiled_plan_with_connection_resolver<F>(
         compiled: &cdf_runtime::CompiledSourcePlan,
-        target: PostgresTarget,
+        input: PostgresSourceInput,
+        options: PostgresNativeOptions,
         egress: SourceEgressScope,
         resolver: F,
     ) -> Result<Self>
     where
         F: Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static,
     {
-        let mut resource = Self::new_with_connection_resolver(
-            compiled.descriptor.clone(),
-            Arc::new(compiled.schema.clone()),
-            target,
-            egress,
-            resolver,
+        validate_postgres_source_resource_shape(
+            &compiled.descriptor,
+            &Arc::new(compiled.schema.clone()),
+            &input,
         )?;
+        options.validate()?;
+        let query_generation = match &input {
+            PostgresSourceInput::Table { .. } => None,
+            PostgresSourceInput::Query { .. } => Some(postgres_query_generation_position(
+                &compiled.descriptor,
+                query_generation_from_schema(&compiled.schema)?,
+            )?),
+        };
+        let mut resource = Self {
+            descriptor: compiled.descriptor.clone(),
+            schema: Arc::new(compiled.schema.clone()),
+            input,
+            options,
+            query_generation,
+            connection: PostgresConnection::Deferred(Arc::new(resolver)),
+            capabilities: postgres_source_capabilities(&compiled.descriptor),
+            execution: None,
+            egress,
+            type_policy_allowances: Default::default(),
+            compiled_source_plan_hash: None,
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        };
         resource.compiled_source_plan_hash = Some(compiled.compiled_source_plan_hash()?);
         resource.effective_schema_runtime = compiled.effective_schema_runtime.clone();
         resource.baseline_observation_schema_catalog =
@@ -174,7 +231,8 @@ impl PostgresTableResource {
     pub fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
         let descriptor = self.descriptor;
         let schema = self.schema;
-        let target = self.target;
+        let input = self.input;
+        let options = self.options;
         let connection = self.connection;
         let egress = self.egress;
         let Some(execution) = self.execution else {
@@ -184,10 +242,11 @@ impl PostgresTableResource {
                 ))
             }));
         };
-        open_postgres_table_with_connection_and_catalog(
+        open_postgres_source_with_connection(
             descriptor,
             schema,
-            target,
+            input,
+            options,
             partition,
             execution,
             egress,
@@ -216,10 +275,11 @@ pub fn open_postgres_table_with_connection<F>(
 where
     F: FnOnce(cdf_runtime::RunCancellation) -> Result<String> + Send + 'static,
 {
-    open_postgres_table_with_connection_and_catalog(
+    open_postgres_source_with_connection(
         descriptor,
         schema,
-        target,
+        PostgresSourceInput::Table { target },
+        PostgresNativeOptions::default(),
         partition,
         execution,
         egress,
@@ -228,10 +288,11 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn open_postgres_table_with_connection_and_catalog<F>(
+fn open_postgres_source_with_connection<F>(
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
-    target: PostgresTarget,
+    input: PostgresSourceInput,
+    options: PostgresNativeOptions,
     partition: PartitionPlan,
     execution: ExecutionServices,
     egress: SourceEgressScope,
@@ -240,8 +301,8 @@ fn open_postgres_table_with_connection_and_catalog<F>(
 where
     F: FnOnce(cdf_runtime::RunCancellation) -> Result<String> + Send + 'static,
 {
-    if let Err(error) = validate_postgres_table_resource_shape(&descriptor, &schema, &target)
-        .and_then(|()| scan_from_partition(&descriptor, &schema, &target, &partition).map(|_| ()))
+    if let Err(error) = validate_postgres_source_resource_shape(&descriptor, &schema, &input)
+        .and_then(|()| scan_from_partition(&descriptor, &schema, &input, &partition).map(|_| ()))
     {
         return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
     }
@@ -262,12 +323,13 @@ where
                 ));
             }
             cancellation.check()?;
-            execute_postgres_table(
+            execute_postgres_source(
                 PostgresExecutionInput {
                     database_url,
                     descriptor,
                     schema,
-                    target,
+                    input,
+                    options,
                     partition,
                     memory,
                     egress,
@@ -297,13 +359,14 @@ where
     cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
 }
 
-impl fmt::Debug for PostgresTableResource {
+impl fmt::Debug for PostgresSourceResource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PostgresTableResource")
+            .debug_struct("PostgresSourceResource")
             .field("descriptor", &self.descriptor)
             .field("schema", &self.schema)
-            .field("target", &self.target)
+            .field("input", &self.input.redacted_evidence())
+            .field("options", &self.options)
             .field("connection", &"<redacted>")
             .field("capabilities", &self.capabilities)
             .field("managed_execution", &self.execution.is_some())
@@ -311,7 +374,7 @@ impl fmt::Debug for PostgresTableResource {
     }
 }
 
-impl ResourceStream for PostgresTableResource {
+impl ResourceStream for PostgresSourceResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         &self.descriptor
     }
@@ -338,21 +401,19 @@ impl ResourceStream for PostgresTableResource {
                 "Postgres source execution requires injected execution services",
             ));
         }
-        let database_url = match &self.connection {
-            PostgresConnection::Resolved(database_url) => database_url.clone(),
-            PostgresConnection::Deferred(resolve) => resolve(RunCancellation::default())?,
-        };
-        if database_url.trim().is_empty() {
-            return Err(CdfError::auth(
-                "Postgres source connection string resolved to an empty value",
-            ));
-        }
+        let database_url =
+            resolve_postgres_connection(&self.connection, RunCancellation::default())?;
         self.egress.authorize(&database_url)
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let mut partition =
-            plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
+        let mut partition = plan_postgres_source_partition(
+            &self.descriptor,
+            &self.schema,
+            &self.input,
+            self.query_generation.as_ref(),
+            request,
+        )?;
         partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
         if self.effective_schema_runtime.is_some() {
             cdf_kernel::bind_partition_schema_candidate(&mut partition, "runtime.postgres")?;
@@ -367,16 +428,90 @@ impl ResourceStream for PostgresTableResource {
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.clone().open_owned(partition)
     }
+
+    fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        let Some(expected_generation) = self.query_generation.as_ref() else {
+            return PartitionAttestationAttempt::materialized(Box::pin(async { Ok(None) }));
+        };
+        if partition.planned_position.as_ref() != Some(expected_generation) {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "Postgres query partition generation differs from compiled source authority",
+                ))
+            }));
+        }
+        if let Err(error) =
+            scan_from_partition(&self.descriptor, &self.schema, &self.input, &partition)
+        {
+            return PartitionAttestationAttempt::materialized(Box::pin(async move { Err(error) }));
+        }
+        let physical_schema_hash = match partition
+            .metadata
+            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+            .map(|value| SchemaHash::new(value.clone()))
+            .transpose()
+        {
+            Ok(hash) => hash,
+            Err(error) => {
+                return PartitionAttestationAttempt::materialized(Box::pin(
+                    async move { Err(error) },
+                ));
+            }
+        };
+        let Some(execution) = self.execution.as_ref() else {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "Postgres query attestation requires injected execution services",
+                ))
+            }));
+        };
+        let descriptor = self.descriptor.clone();
+        let input = self.input.clone();
+        let options = self.options.clone();
+        let connection = self.connection.clone();
+        let egress = self.egress.clone();
+        let cancellation = execution.run_cancellation();
+        let attestation = execution.run_blocking("postgres-source.sync", move || {
+            cancellation.check()?;
+            let database_url = resolve_postgres_connection(&connection, cancellation.clone())?;
+            egress.authorize(&database_url)?;
+            let mut client = Client::connect(&database_url, NoTls).map_err(|error| {
+                classify_postgres_error("connect for Postgres query attestation", error)
+            })?;
+            let mut transaction = options
+                .begin_transaction(&mut client, "begin Postgres query attestation transaction")?;
+            let schema = describe_postgres_query(
+                &mut transaction,
+                &descriptor.resource_id,
+                &input,
+                &options,
+            )?;
+            let position = postgres_query_generation_position(
+                &descriptor,
+                query_generation_from_schema(&schema)?,
+            )?;
+            Ok(Some(PartitionAttestation::new(
+                position,
+                physical_schema_hash,
+            )))
+        });
+        PartitionAttestationAttempt::materialized(Box::pin(async move { attestation }))
+    }
 }
 
-impl QueryableResource for PostgresTableResource {
+impl QueryableResource for PostgresSourceResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         &self.capabilities
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        let mut scan =
-            negotiate_postgres_table_scan(&self.descriptor, &self.schema, &self.target, request)?;
+        let mut scan = negotiate_postgres_source_scan(
+            &self.descriptor,
+            &self.schema,
+            &self.input,
+            self.query_generation.as_ref(),
+            request,
+        )?;
         if self.effective_schema_runtime.is_some() {
             let partition = scan
                 .inline_partitions_mut()
@@ -392,7 +527,7 @@ impl QueryableResource for PostgresTableResource {
     }
 }
 
-pub fn postgres_table_capabilities(descriptor: &ResourceDescriptor) -> ResourceCapabilities {
+pub fn postgres_source_capabilities(descriptor: &ResourceDescriptor) -> ResourceCapabilities {
     ResourceCapabilities {
         projection: CapabilitySupport::Supported,
         filters: FilterCapabilities {
@@ -433,12 +568,27 @@ pub fn postgres_table_capabilities(descriptor: &ResourceDescriptor) -> ResourceC
 pub fn validate_postgres_table_resource_shape(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    _target: &PostgresTarget,
+    target: &PostgresTarget,
 ) -> Result<()> {
+    validate_postgres_source_resource_shape(
+        descriptor,
+        schema,
+        &PostgresSourceInput::Table {
+            target: target.clone(),
+        },
+    )
+}
+
+fn validate_postgres_source_resource_shape(
+    descriptor: &ResourceDescriptor,
+    schema: &SchemaRef,
+    input: &PostgresSourceInput,
+) -> Result<()> {
+    input.validate()?;
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
-            "Postgres table source execution requires a declared schema with at least one field",
+            "Postgres source execution requires a declared schema with at least one field",
         ));
     }
 
@@ -446,7 +596,7 @@ pub fn validate_postgres_table_resource_shape(
     for field in schema.fields() {
         if !names.insert(field.name().to_owned()) {
             return Err(CdfError::contract(format!(
-                "Postgres table source schema declares duplicate field `{}`",
+                "Postgres source schema declares duplicate field `{}`",
                 field.name()
             )));
         }
@@ -477,6 +627,9 @@ pub fn validate_postgres_table_resource_shape(
             )));
         }
     }
+    if matches!(input, PostgresSourceInput::Query { .. }) {
+        query_generation_from_schema(schema.as_ref())?;
+    }
     Ok(())
 }
 
@@ -496,13 +649,31 @@ pub fn negotiate_postgres_table_scan(
     target: &PostgresTarget,
     request: &ScanRequest,
 ) -> Result<ScanPlan> {
+    negotiate_postgres_source_scan(
+        descriptor,
+        schema,
+        &PostgresSourceInput::Table {
+            target: target.clone(),
+        },
+        None,
+        request,
+    )
+}
+
+fn negotiate_postgres_source_scan(
+    descriptor: &ResourceDescriptor,
+    schema: &SchemaRef,
+    input: &PostgresSourceInput,
+    query_generation: Option<&SourcePosition>,
+    request: &ScanRequest,
+) -> Result<ScanPlan> {
     if request.resource_id != descriptor.resource_id {
         return Err(CdfError::contract(format!(
             "scan request resource `{}` does not match Postgres resource `{}`",
             request.resource_id, descriptor.resource_id
         )));
     }
-    validate_postgres_table_resource_shape(descriptor, schema, target)?;
+    validate_postgres_source_resource_shape(descriptor, schema, input)?;
 
     let (pushed_predicates, unsupported_predicates) =
         classify_postgres_table_predicates(schema, &request.filters);
@@ -510,8 +681,12 @@ pub fn negotiate_postgres_table_scan(
     Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("postgres-scan-{}", descriptor.resource_id))?,
         request.clone(),
-        PartitionAuthority::Inline(vec![plan_postgres_table_partition(
-            descriptor, schema, target, request,
+        PartitionAuthority::Inline(vec![plan_postgres_source_partition(
+            descriptor,
+            schema,
+            input,
+            query_generation,
+            request,
         )?]),
         pushed_predicates,
         unsupported_predicates,
@@ -545,13 +720,31 @@ pub fn plan_postgres_table_partition(
     target: &PostgresTarget,
     request: &ScanRequest,
 ) -> Result<PartitionPlan> {
+    plan_postgres_source_partition(
+        descriptor,
+        schema,
+        &PostgresSourceInput::Table {
+            target: target.clone(),
+        },
+        None,
+        request,
+    )
+}
+
+fn plan_postgres_source_partition(
+    descriptor: &ResourceDescriptor,
+    schema: &SchemaRef,
+    input: &PostgresSourceInput,
+    query_generation: Option<&SourcePosition>,
+    request: &ScanRequest,
+) -> Result<PartitionPlan> {
     if request.resource_id != descriptor.resource_id {
         return Err(CdfError::contract(format!(
             "scan request resource `{}` does not match Postgres resource `{}`",
             request.resource_id, descriptor.resource_id
         )));
     }
-    validate_postgres_table_resource_shape(descriptor, schema, target)?;
+    validate_postgres_source_resource_shape(descriptor, schema, input)?;
     let (pushed_predicates, _) = classify_postgres_table_predicates(schema, &request.filters);
     let scan_intent = CompiledScanIntent {
         version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
@@ -561,11 +754,20 @@ pub fn plan_postgres_table_partition(
         order_by: request.order_by.clone(),
     };
     scan_intent.validate()?;
-    PostgresTableScan::from_intent(schema, &scan_intent)?;
+    PostgresSourceScan::from_intent(schema, &scan_intent)?;
     let mut metadata = BTreeMap::new();
     metadata.insert("kind".to_owned(), POSTGRES_PARTITION_KIND.to_owned());
     metadata.insert("dialect".to_owned(), POSTGRES_SQL_DIALECT.to_owned());
-    metadata.insert("table".to_owned(), target.display_name());
+    match input {
+        PostgresSourceInput::Table { target } => {
+            metadata.insert("input_kind".to_owned(), "table".to_owned());
+            metadata.insert("table".to_owned(), target.display_name());
+        }
+        PostgresSourceInput::Query { sha256, .. } => {
+            metadata.insert("input_kind".to_owned(), "query".to_owned());
+            metadata.insert("query_sha256".to_owned(), sha256.clone());
+        }
+    }
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
     if let Some(cursor) = &descriptor.cursor {
         metadata.insert("cursor_field".to_owned(), cursor.field.clone());
@@ -573,7 +775,7 @@ pub fn plan_postgres_table_partition(
     Ok(PartitionPlan {
         partition_id: PartitionId::new("sql")?,
         scope: descriptor.state_scope.clone(),
-        planned_position: None,
+        planned_position: query_generation.cloned(),
         start_position: None,
         scan_intent,
         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -585,13 +787,14 @@ struct PostgresExecutionInput {
     database_url: String,
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
-    target: PostgresTarget,
+    input: PostgresSourceInput,
+    options: PostgresNativeOptions,
     partition: PartitionPlan,
     memory: Arc<dyn MemoryCoordinator>,
     egress: SourceEgressScope,
 }
 
-fn execute_postgres_table(
+fn execute_postgres_source(
     input: PostgresExecutionInput,
     mut sender: BlockingTaskStreamSender<Batch>,
     cancellation: RunCancellation,
@@ -600,34 +803,49 @@ fn execute_postgres_table(
         database_url,
         descriptor,
         schema,
-        target,
+        input,
+        options,
         partition,
         memory,
         egress,
     } = input;
-    validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
-    let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
-    let query = build_query(&schema, &target, &scan)?;
+    validate_postgres_source_resource_shape(&descriptor, &schema, &input)?;
+    options.validate()?;
+    let scan = scan_from_partition(&descriptor, &schema, &input, &partition)?;
+    let query = build_query(&schema, &input, &scan)?;
     let output_schema = projected_schema(&schema, &scan)?;
 
     egress.authorize(&database_url)?;
     let mut client = Client::connect(&database_url, NoTls)
         .map_err(|error| classify_postgres_error("connect to Postgres source", error))?;
-    let mut transaction = client
-        .build_transaction()
-        .isolation_level(IsolationLevel::RepeatableRead)
-        .read_only(true)
-        .start()
-        .map_err(|error| classify_postgres_error("begin Postgres source snapshot", error))?;
+    let mut transaction =
+        options.begin_transaction(&mut client, "begin Postgres source read-only transaction")?;
     let statement = transaction
         .prepare(&query.sql)
         .map_err(|error| classify_postgres_error("prepare Postgres source query", error))?;
     validate_copy_descriptor(&statement, output_schema.as_ref())?;
-    let catalog = read_catalog_columns(&mut transaction, &target)?;
-    validate_source_domains_from_catalog(output_schema.as_ref(), &catalog)?;
-    let selected_catalog = select_catalog_columns(output_schema.as_ref(), &catalog)?;
-    let live_schema =
-        crate::catalog::schema_from_catalog_columns(&descriptor.resource_id, selected_catalog)?;
+    let live_schema = match &input {
+        PostgresSourceInput::Table { target } => {
+            let catalog = read_catalog_columns(&mut transaction, target)?;
+            validate_source_domains_from_catalog(output_schema.as_ref(), &catalog)?;
+            let selected_catalog = select_catalog_columns(output_schema.as_ref(), &catalog)?;
+            crate::catalog::schema_from_catalog_columns(&descriptor.resource_id, selected_catalog)?
+        }
+        PostgresSourceInput::Query { .. } => {
+            let live = describe_postgres_query(
+                &mut transaction,
+                &descriptor.resource_id,
+                &input,
+                &options,
+            )?;
+            if query_generation_from_schema(&live)? != query_generation_from_schema(&schema)? {
+                return Err(CdfError::data(
+                    "Postgres native query output changed from its compiled authority; create a new plan",
+                ));
+            }
+            live
+        }
+    };
     let physical_schema = Arc::new(project_physical_schema(
         &live_schema,
         output_schema.as_ref(),
@@ -649,11 +867,18 @@ fn execute_postgres_table(
             decoder_reservation_bytes,
         )?,
     )?;
-    let mut decoder = PostgresBinaryCopyDecoder::new(
-        reader,
-        Arc::clone(&output_schema),
-        batch_reservation_bytes,
-    )?;
+    let mut decoder = if options.output_batch_rows
+        == crate::native::POSTGRES_DEFAULT_OUTPUT_BATCH_ROWS
+    {
+        PostgresBinaryCopyDecoder::new(reader, Arc::clone(&output_schema), batch_reservation_bytes)?
+    } else {
+        PostgresBinaryCopyDecoder::new_with_target_rows(
+            reader,
+            Arc::clone(&output_schema),
+            batch_reservation_bytes,
+            options.output_batch_rows,
+        )?
+    };
     let mut batch_index = 0_usize;
     loop {
         cancellation.check()?;
@@ -698,7 +923,7 @@ fn execute_postgres_table(
     }
 }
 
-fn projected_schema(schema: &SchemaRef, scan: &PostgresTableScan) -> Result<SchemaRef> {
+fn projected_schema(schema: &SchemaRef, scan: &PostgresSourceScan) -> Result<SchemaRef> {
     let fields = scan
         .projection
         .iter()
@@ -886,24 +1111,24 @@ fn validate_decimal_source_domain(
 fn scan_from_partition(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
-    target: &PostgresTarget,
+    input: &PostgresSourceInput,
     partition: &PartitionPlan,
-) -> Result<PostgresTableScan> {
+) -> Result<PostgresSourceScan> {
     if partition.partition_id.as_str() != "sql" {
         return Err(CdfError::contract(format!(
-            "Postgres table resource `{}` expected partition `sql`, got `{}`",
+            "Postgres resource `{}` expected partition `sql`, got `{}`",
             descriptor.resource_id, partition.partition_id
         )));
     }
     if partition.metadata.get("kind").map(String::as_str) != Some(POSTGRES_PARTITION_KIND) {
         return Err(CdfError::contract(format!(
-            "Postgres table resource `{}` expected a SQL partition plan",
+            "Postgres resource `{}` expected a SQL partition plan",
             descriptor.resource_id
         )));
     }
     if partition.metadata.get("dialect").map(String::as_str) != Some(POSTGRES_SQL_DIALECT) {
         return Err(CdfError::contract(
-            "Postgres table source partition must declare dialect `postgres`",
+            "Postgres source partition must declare dialect `postgres`",
         ));
     }
     if partition.metadata.get("resource_id").map(String::as_str)
@@ -914,11 +1139,34 @@ fn scan_from_partition(
             descriptor.resource_id
         )));
     }
-    if partition.metadata.get("table").map(String::as_str) != Some(target.display_name().as_str()) {
-        return Err(CdfError::contract(format!(
-            "Postgres source partition table does not match `{}`",
-            target.display_name()
-        )));
+    match input {
+        PostgresSourceInput::Table { target } => {
+            if partition.metadata.get("input_kind").map(String::as_str) != Some("table")
+                || partition.metadata.get("table").map(String::as_str)
+                    != Some(target.display_name().as_str())
+                || partition.planned_position.is_some()
+            {
+                return Err(CdfError::contract(format!(
+                    "Postgres source partition table authority does not match `{}`",
+                    target.display_name()
+                )));
+            }
+        }
+        PostgresSourceInput::Query { sha256, .. } => {
+            let expected = postgres_query_generation_position(
+                descriptor,
+                query_generation_from_schema(schema.as_ref())?,
+            )?;
+            if partition.metadata.get("input_kind").map(String::as_str) != Some("query")
+                || partition.metadata.get("query_sha256").map(String::as_str)
+                    != Some(sha256.as_str())
+                || partition.planned_position.as_ref() != Some(&expected)
+            {
+                return Err(CdfError::contract(
+                    "Postgres native-query partition authority differs from its compiled source input",
+                ));
+            }
+        }
     }
     if partition.scope != descriptor.state_scope {
         return Err(CdfError::contract(format!(
@@ -928,7 +1176,7 @@ fn scan_from_partition(
     }
 
     partition.scan_intent.validate()?;
-    let scan = PostgresTableScan::from_intent(schema, &partition.scan_intent)?;
+    let scan = PostgresSourceScan::from_intent(schema, &partition.scan_intent)?;
     if let Some(cursor) = &descriptor.cursor
         && !scan.projection.iter().any(|field| field == &cursor.field)
     {
@@ -941,14 +1189,14 @@ fn scan_from_partition(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PostgresTableScan {
+struct PostgresSourceScan {
     projection: Vec<String>,
     filters: Vec<PostgresStoredPredicate>,
     order_by: Vec<PostgresStoredOrder>,
     limit: Option<u64>,
 }
 
-impl PostgresTableScan {
+impl PostgresSourceScan {
     fn from_intent(schema: &SchemaRef, intent: &CompiledScanIntent) -> Result<Self> {
         intent.validate()?;
         let projection = match &intent.projection {
@@ -1129,8 +1377,8 @@ impl SqlLiteral {
 
 fn build_query(
     schema: &SchemaRef,
-    target: &PostgresTarget,
-    scan: &PostgresTableScan,
+    input: &PostgresSourceInput,
+    scan: &PostgresSourceScan,
 ) -> Result<PostgresQuery> {
     let projection = scan
         .projection
@@ -1144,7 +1392,11 @@ fn build_query(
             select_expression(field)
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut sql = format!("SELECT {} FROM {}", projection.join(", "), target.sql());
+    let mut sql = format!(
+        "SELECT {} FROM {}",
+        projection.join(", "),
+        input.relation_sql()
+    );
     if !scan.filters.is_empty() {
         let predicates = scan
             .filters
@@ -1403,7 +1655,7 @@ fn parse_literal_for_field(
 
 fn source_position_for_batch(
     descriptor: &ResourceDescriptor,
-    scan: &PostgresTableScan,
+    scan: &PostgresSourceScan,
     batch: &RecordBatch,
 ) -> Result<Option<SourcePosition>> {
     let Some(cursor_spec) = &descriptor.cursor else {
@@ -1835,7 +2087,7 @@ mod tests {
             plan_postgres_table_partition(&descriptor, &schema, &target, &request).unwrap();
         assert_eq!(partition.partition_id.as_str(), "sql");
         assert!(!partition.metadata.contains_key("postgres_sql_scan"));
-        let scan = PostgresTableScan::from_intent(&schema, &partition.scan_intent).unwrap();
+        let scan = PostgresSourceScan::from_intent(&schema, &partition.scan_intent).unwrap();
         assert_eq!(scan.projection, vec!["id", "name"]);
         assert_eq!(scan.filters.len(), 1);
         assert_eq!(scan.filters[0].field, "id");
@@ -1843,11 +2095,45 @@ mod tests {
     }
 
     #[test]
+    fn native_query_is_wrapped_before_exact_outer_scan_operations() {
+        let schema = schema();
+        let input = PostgresSourceInput::from_authored(
+            None,
+            Some(
+                "SELECT id, name, active FROM private_ledger WHERE tenant = 'private-value'"
+                    .to_owned(),
+            ),
+        )
+        .unwrap();
+        let scan = PostgresSourceScan {
+            projection: vec!["id".to_owned(), "name".to_owned()],
+            filters: vec![PostgresStoredPredicate {
+                field: "id".to_owned(),
+                operator: PostgresPredicateOperator::Gte,
+                literal: "10".to_owned(),
+            }],
+            order_by: vec![PostgresStoredOrder {
+                field: "id".to_owned(),
+                direction: PostgresStoredDirection::Desc,
+            }],
+            limit: Some(25),
+        };
+
+        let query = build_query(&schema, &input, &scan).unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT \"id\"::bigint AS \"id\", \"name\"::text AS \"name\" FROM (SELECT id, name, active FROM private_ledger WHERE tenant = 'private-value') AS \"_cdf_native_query\" WHERE \"id\"::bigint >= 10::bigint ORDER BY \"id\"::bigint DESC LIMIT 25"
+        );
+        let evidence = input.redacted_evidence().to_string();
+        assert!(!evidence.contains("private-value"));
+    }
+
+    #[test]
     fn source_shape_fails_closed_for_empty_and_unsupported_schemas() {
         let target = PostgresTarget::parse("raw.orders").unwrap();
         let empty_schema = Arc::new(Schema::empty());
         assert!(
-            PostgresTableResource::new(
+            PostgresSourceResource::new_table(
                 "postgresql://localhost/db",
                 descriptor(None),
                 empty_schema,
@@ -1860,7 +2146,7 @@ mod tests {
         let unsupported_schema =
             Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         assert!(
-            PostgresTableResource::new(
+            PostgresSourceResource::new_table(
                 "postgresql://localhost/db",
                 descriptor(None),
                 unsupported_schema,
@@ -1907,7 +2193,7 @@ mod tests {
         active.schema_source = SchemaSource::Active {
             schema_hash: SchemaHash::new("sha256:postgres-active-test").unwrap(),
         };
-        PostgresTableResource::new(
+        PostgresSourceResource::new_table(
             "postgresql://localhost/db",
             active,
             schema(),
@@ -1925,7 +2211,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             },
         };
-        PostgresTableResource::new(
+        PostgresSourceResource::new_table(
             "postgresql://localhost/db",
             discovered,
             schema(),
@@ -1948,7 +2234,7 @@ mod tests {
         ] {
             let mut descriptor = descriptor(None);
             descriptor.schema_source = schema_source;
-            let error = PostgresTableResource::new(
+            let error = PostgresSourceResource::new_table(
                 "postgresql://localhost/db",
                 descriptor,
                 schema(),
@@ -1971,7 +2257,7 @@ mod tests {
             "VendorID",
         )]));
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let scan = PostgresTableScan {
+        let scan = PostgresSourceScan {
             projection: vec!["vendor_id".to_owned()],
             filters: vec![PostgresStoredPredicate {
                 field: "vendor_id".to_owned(),
@@ -1985,7 +2271,14 @@ mod tests {
             limit: None,
         };
 
-        let query = build_query(&schema, &target, &scan).unwrap();
+        let query = build_query(
+            &schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &scan,
+        )
+        .unwrap();
 
         assert_eq!(
             query.sql,
@@ -2056,7 +2349,7 @@ mod tests {
             false,
         )]));
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let scan = PostgresTableScan {
+        let scan = PostgresSourceScan {
             projection: vec!["external_id".to_owned()],
             filters: vec![PostgresStoredPredicate {
                 field: "external_id".to_owned(),
@@ -2067,7 +2360,14 @@ mod tests {
             limit: Some(5),
         };
 
-        let query = build_query(&schema, &target, &scan).unwrap();
+        let query = build_query(
+            &schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &scan,
+        )
+        .unwrap();
         assert_eq!(
             query.sql,
             "SELECT \"external_id\"::text AS \"external_id\" FROM \"raw\".\"orders\" WHERE \"external_id\"::text = $cdf1$a'$cdf0$\\b$cdf1$::text LIMIT 5"
@@ -2082,7 +2382,7 @@ mod tests {
             false,
         )]));
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let scan = PostgresTableScan {
+        let scan = PostgresSourceScan {
             projection: vec!["sequence".to_owned()],
             filters: Vec::new(),
             order_by: vec![PostgresStoredOrder {
@@ -2092,7 +2392,14 @@ mod tests {
             limit: Some(1),
         };
 
-        let query = build_query(&schema, &target, &scan).unwrap();
+        let query = build_query(
+            &schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &scan,
+        )
+        .unwrap();
         assert_eq!(
             query.sql,
             "SELECT \"sequence\"::text AS \"sequence\" FROM \"raw\".\"orders\" ORDER BY \"sequence\"::numeric ASC LIMIT 1"
@@ -2181,7 +2488,7 @@ mod tests {
             cdf_semantic::POSTGRES_NUMERIC_TEXT_SEMANTIC
         );
 
-        let scan = PostgresTableScan {
+        let scan = PostgresSourceScan {
             projection: schema
                 .fields()
                 .iter()
@@ -2194,7 +2501,14 @@ mod tests {
             }],
             limit: None,
         };
-        let query = build_query(&schema, &target, &scan).unwrap();
+        let query = build_query(
+            &schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &scan,
+        )
+        .unwrap();
         let output_schema = projected_schema(&schema, &scan).unwrap();
         let batch = {
             let mut transaction = client
@@ -2308,7 +2622,7 @@ mod tests {
                 target.sql()
             ))
             .unwrap();
-        let decimal_only_scan = PostgresTableScan {
+        let decimal_only_scan = PostgresSourceScan {
             projection: vec!["amount".to_owned()],
             filters: Vec::new(),
             order_by: vec![PostgresStoredOrder {
@@ -2317,7 +2631,14 @@ mod tests {
             }],
             limit: None,
         };
-        let decimal_query = build_query(&schema, &target, &decimal_only_scan).unwrap();
+        let decimal_query = build_query(
+            &schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &decimal_only_scan,
+        )
+        .unwrap();
         let decimal_output = projected_schema(&schema, &decimal_only_scan).unwrap();
         let decimal_error = {
             let mut transaction = client
@@ -2351,7 +2672,7 @@ mod tests {
             Field::new("id", DataType::Int64, false),
             Field::new("amount", DataType::Utf8, false),
         ]));
-        let text_scan = PostgresTableScan {
+        let text_scan = PostgresSourceScan {
             projection: vec!["amount".to_owned()],
             filters: Vec::new(),
             order_by: vec![PostgresStoredOrder {
@@ -2360,7 +2681,14 @@ mod tests {
             }],
             limit: Some(1),
         };
-        let text_query = build_query(&text_schema, &target, &text_scan).unwrap();
+        let text_query = build_query(
+            &text_schema,
+            &PostgresSourceInput::Table {
+                target: target.clone(),
+            },
+            &text_scan,
+        )
+        .unwrap();
         let text_output = projected_schema(&text_schema, &text_scan).unwrap();
         let text_batch = {
             let mut transaction = client
@@ -2402,7 +2730,7 @@ mod tests {
     #[test]
     fn debug_redacts_connection_string() {
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let resource = PostgresTableResource::new(
+        let resource = PostgresSourceResource::new_table(
             "postgresql://user:super-secret@example.com/db",
             descriptor(None),
             schema(),
@@ -2420,7 +2748,7 @@ mod tests {
         let descriptor = descriptor(None);
         let schema = schema();
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let resource = PostgresTableResource::new(
+        let resource = PostgresSourceResource::new_table(
             "postgresql://127.0.0.1:1/not-used",
             descriptor.clone(),
             Arc::clone(&schema),
@@ -2440,7 +2768,13 @@ mod tests {
         partition
             .metadata
             .insert("table".to_owned(), "raw.other".to_owned());
-        let error = scan_from_partition(&descriptor, &schema, &target, &partition).unwrap_err();
+        let error = scan_from_partition(
+            &descriptor,
+            &schema,
+            &PostgresSourceInput::Table { target },
+            &partition,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("partition table"), "{error}");
     }
 
@@ -2480,7 +2814,7 @@ mod tests {
         }));
         let schema = schema();
         let target = PostgresTarget::parse("raw.orders").unwrap();
-        let resource = PostgresTableResource::new(
+        let resource = PostgresSourceResource::new_table(
             "postgresql://127.0.0.1:1/not-used",
             descriptor.clone(),
             Arc::clone(&schema),

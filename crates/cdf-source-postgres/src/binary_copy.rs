@@ -41,16 +41,31 @@ pub(crate) struct PostgresBinaryCopyDecoder<R> {
     baseline_estimated_bytes: u64,
     maximum_batch_bytes: u64,
     target_batch_bytes: u64,
+    target_batch_rows: usize,
     value_scratch: Vec<u8>,
     finished: bool,
 }
 
 impl<R: BufRead> PostgresBinaryCopyDecoder<R> {
-    pub(crate) fn new(mut reader: R, schema: SchemaRef, maximum_batch_bytes: u64) -> Result<Self> {
+    pub(crate) fn new(reader: R, schema: SchemaRef, maximum_batch_bytes: u64) -> Result<Self> {
+        Self::new_with_target_rows(reader, schema, maximum_batch_bytes, COPY_TARGET_ROWS)
+    }
+
+    pub(crate) fn new_with_target_rows(
+        mut reader: R,
+        schema: SchemaRef,
+        maximum_batch_bytes: u64,
+        target_batch_rows: usize,
+    ) -> Result<Self> {
         if schema.fields().is_empty() {
             return Err(CdfError::contract(
                 "Postgres binary COPY requires at least one projected field",
             ));
+        }
+        if !(1..=100_000).contains(&target_batch_rows) {
+            return Err(CdfError::contract(format!(
+                "Postgres output batch row target {target_batch_rows} must be between 1 and 100000"
+            )));
         }
         read_copy_header(&mut reader, maximum_batch_bytes)?;
         let builders = schema
@@ -77,6 +92,7 @@ impl<R: BufRead> PostgresBinaryCopyDecoder<R> {
             baseline_estimated_bytes,
             maximum_batch_bytes,
             target_batch_bytes: maximum_batch_bytes.saturating_mul(3) / 4,
+            target_batch_rows,
             value_scratch: vec![0; UTF8_SCRATCH_BYTES + 4],
             finished: false,
         })
@@ -87,7 +103,7 @@ impl<R: BufRead> PostgresBinaryCopyDecoder<R> {
             return Ok(None);
         }
 
-        while self.rows < COPY_TARGET_ROWS && self.estimated_bytes < self.target_batch_bytes {
+        while self.rows < self.target_batch_rows && self.estimated_bytes < self.target_batch_bytes {
             let field_count = read_i16(&mut self.reader, "tuple field count")?;
             if field_count == -1 {
                 ensure_copy_eof(&mut self.reader)?;
@@ -914,6 +930,29 @@ mod tests {
                 .values(),
             &[123_456_700, -987_654_300]
         );
+        assert!(decoder.next_batch().unwrap().is_none());
+    }
+
+    #[test]
+    fn configured_row_target_only_changes_arrow_publication_bound() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let mut bytes = copy_header();
+        for value in 1_i64..=5 {
+            push_i16(&mut bytes, 1);
+            push_field(&mut bytes, &value.to_be_bytes());
+        }
+        push_i16(&mut bytes, -1);
+
+        let mut decoder = PostgresBinaryCopyDecoder::new_with_target_rows(
+            Cursor::new(bytes),
+            schema,
+            1024 * 1024,
+            2,
+        )
+        .unwrap();
+        assert_eq!(decoder.next_batch().unwrap().unwrap().num_rows(), 2);
+        assert_eq!(decoder.next_batch().unwrap().unwrap().num_rows(), 2);
+        assert_eq!(decoder.next_batch().unwrap().unwrap().num_rows(), 1);
         assert!(decoder.next_batch().unwrap().is_none());
     }
 

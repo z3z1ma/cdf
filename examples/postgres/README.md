@@ -29,3 +29,7 @@ rm postgres-dsn
 `postgres-dsn` is ignored by the repository. `cdf.toml` contains only its
 `secret://file/postgres-dsn` reference; the resource query lives at
 `cdf/warehouse/orders.cdf.sql`.
+
+PostgreSQL resources can also expose an adapter-native read query instead of a table. See the
+[PostgreSQL source guide](../../docs/postgres-source.md) for supported query shapes, transaction
+controls, portable-plan authority, and the binary COPY performance defaults.

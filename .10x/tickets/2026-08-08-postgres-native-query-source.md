@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-08
 Updated: 2026-08-08
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -52,6 +52,27 @@ logical replication, a row/portal transport fallback, or changes to destination 
 ## Journal
 
 - 2026-08-08: Opened after explicit supersession of the table-only/arbitrary-SQL exclusion.
+- 2026-08-08: Execution started after MongoDB native extraction closed. The existing binary COPY
+  decoder's 65,536-row adaptive target and 32 MiB source ceiling remain the production defaults;
+  `output_batch_rows` will only tighten the row target when explicitly configured. PostgreSQL
+  owns local AST classification, server read-only transactions, prepare/describe discovery,
+  transaction-local settings, derived-relation wrapping, and descriptor reattestation. The error
+  audit remains scoped to preserving existing typed CDF and SQLSTATE ownership through the new
+  prepare/settings/COPY call sites; no wrapper rewrite is authorized.
+- 2026-08-08: Implemented the PostgreSQL-owned native-query boundary: exactly-one table/query
+  validation, read-only AST admission, prepare-only discovery, output-generation identity,
+  portable-plan re-description, transaction-local isolation/timeouts/search path, derived-relation
+  wrapping, exact outer scan operations, and the existing binary COPY decoder. The default
+  65,536-row decoder constructor remains the literal default path; only an explicit nondefault
+  `output_batch_rows` selects the bounded constructor.
+- 2026-08-08: Added native-query `cdf add` proposals, safe human evidence, exact compiled physical
+  authority, operator documentation, and behavior tests for accepted/rejected SQL, literal
+  redaction, option bounds, query wrapping, private DSN publication, and configurable Arrow batch
+  boundaries. `cargo test -p cdf-source-postgres` passed 35 tests with the one environment-backed
+  case ignored; rerunning that case against PostgreSQL 17 at the established local fixture passed.
+  Strict affected-crate Clippy and `cargo machete --with-metadata` passed. The explicit cognitive-
+  complexity diagnostic reported only the pre-existing `cdf-kernel::arrow_type` warning, outside
+  this connector change.
 
 ## Blockers
 

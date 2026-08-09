@@ -20,7 +20,7 @@ use cdf_kernel::{
 };
 use cdf_runtime::{SourceDriverId, SourceEgressScope};
 use cdf_source_postgres::{
-    PostgresTableResource, PostgresTarget, discover_postgres_table_catalog_schema,
+    PostgresSourceResource, PostgresTarget, discover_postgres_table_catalog_schema,
 };
 use fallible_iterator::FallibleIterator;
 use futures_util::StreamExt;
@@ -359,8 +359,9 @@ fn compile_resource(
         freshness: None,
         trust_level: TrustLevel::Governed,
     };
-    let resource = PostgresTableResource::new(database_url, descriptor, schema, target, egress)?
-        .with_execution(execution.clone())?;
+    let resource =
+        PostgresSourceResource::new_table(database_url, descriptor, schema, target, egress)?
+            .with_execution(execution.clone())?;
     Ok(Arc::new(resource))
 }
 
