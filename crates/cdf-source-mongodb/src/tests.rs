@@ -465,6 +465,7 @@ fn default_discovery_types_primitives_and_keeps_complex_values_opaque() {
         schema.field_with_name("sequence").unwrap().data_type(),
         &DataType::Int64
     );
+    assert!(schema.fields().iter().all(|field| field.is_nullable()));
     assert_eq!(
         schema.field_with_name("_id").unwrap().metadata()["cdf:semantic"],
         MONGODB_OBJECT_ID_SEMANTIC
@@ -532,7 +533,7 @@ fn configured_depth_two_infers_direct_children_without_nested_key_explosion() {
     assert!(fields.find("left").unwrap().1.is_nullable());
     assert!(fields.find("right").unwrap().1.is_nullable());
     let (_, map) = fields.find("map").unwrap();
-    assert!(!map.is_nullable());
+    assert!(map.is_nullable());
     assert_eq!(map.data_type(), &DataType::Utf8);
     assert_eq!(physical_type(map), Some("bson:document"));
     assert_eq!(

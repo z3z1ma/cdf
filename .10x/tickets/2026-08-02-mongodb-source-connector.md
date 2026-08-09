@@ -293,6 +293,20 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   slice passed 19/19 including projected query execution, MongoDB passed 43/43, and strict Clippy
   passed for all three affected crates. A release Atlas rerun remains required before closure.
 
+- 2026-08-08: The first decoupled wire-batch setting was itself disproven against the live
+  roofline. On the same 21-column projection, a 100,000-document cursor request managed about
+  2,599 documents/s over its first 50,000 rows, matching CDF's 2,708 scanned documents/s and
+  materially trailing the measured 8,003 documents/s at a 1,000-document request. The wire cursor
+  now requests 1,000 documents independently of the configured Arrow/package batch. Inspection of
+  the CDF run's bounded quarantine artifacts also found 509,139 of 509,157 candidates came from
+  the sampled `amount` Int32 authority encountering later physical values, quarantining 250,604
+  rows because sample-observed presence had incorrectly compiled the field as required. MongoDB
+  discovery now treats every sampled document field, including depth-configured nested fields, as
+  nullable: a finite sample can infer a useful type but cannot prove requiredness in a schemaless
+  collection. This lets later physical mismatches follow the already-compiled `capture_variant`
+  policy while the typed value becomes null. All 43 MongoDB unit tests and strict all-target
+  Clippy pass. A single rebuilt-release Atlas rerun remains the closure barrier.
+
 ## Blockers
 
 None.

@@ -426,9 +426,10 @@ impl SchemaInference {
             ));
         }
         for field in self.fields.values_mut() {
-            if field.observed_documents != self.documents {
-                field.nullable = true;
-            }
+            // A finite sample from a schemaless collection cannot establish requiredness for
+            // documents outside the sample. Presence informs type inference only; missing values
+            // must continue to materialize as null instead of becoming row violations.
+            field.nullable = true;
         }
         let fields = self
             .fields
@@ -735,14 +736,13 @@ fn inferred_data_type(
         }
         InferredType::Struct {
             fields,
-            observed_documents,
+            observed_documents: _,
         } => {
             let fields = fields
                 .into_iter()
                 .map(|(name, mut field)| {
-                    if field.observed_documents != observed_documents {
-                        field.nullable = true;
-                    }
+                    // Nested document presence is no stronger than top-level sample presence.
+                    field.nullable = true;
                     inferred_field(name, field, depth + 1)
                 })
                 .collect::<Result<Vec<_>>>()?;

@@ -33,7 +33,10 @@ pub(crate) const MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const MONGODB_FULL_SCAN_COMPLETION_PROTOCOL: &str = "mongodb.full_scan_completion.v1";
 const MONGODB_CLIENT_POOL_BYTES: u64 = 64 * 1024 * 1024;
-const MONGODB_CURSOR_BATCH_ROWS: u32 = 100_000;
+// MongoDB also caps replies by bytes. A moderate row request keeps server-side batch assembly and
+// client latency bounded across narrow and wide documents while remaining independent of the
+// Arrow/package batch size selected by the project.
+const MONGODB_CURSOR_BATCH_ROWS: u32 = 1_000;
 
 pub(crate) struct MongoDbClientHandle {
     pub(crate) client: Client,
