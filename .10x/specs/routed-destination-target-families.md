@@ -7,8 +7,8 @@ Updated: 2026-08-07
 ## Purpose
 
 Define how one logical CDF resource may route its accepted rows or keyed effects to a bounded
-family of physical destination tables while retaining one resource, package, run, receipt, and
-checkpoint authority.
+family of physical destination tables, including families whose outputs have distinct logical
+schemas, while retaining one resource, package, run, receipt, and checkpoint authority.
 
 ## Proposed authoring contract
 
@@ -39,6 +39,9 @@ fails before destination mutation.
 ## Identity and control laws
 
 - The canonical resource id and logical target do not change with discovered route values.
+- Schema authority is keyed by project, environment, resource, and a generic output binding. An
+  unrouted resource uses `primary`; a routed output binding derives from the route field's typed
+  canonical value and folding version, never from a destination-specific physical name.
 - The route declaration, field type, folding version, maximum count, and ordered exact
   value-to-physical-target map are package/plan/receipt identity.
 - Null, nested, binary, non-canonical, or otherwise unsupported route values fail before package
@@ -50,9 +53,24 @@ fails before destination mutation.
   Physical object names and route reports are operational metadata and are not secret stores.
 - Route discovery never creates authored resource files or new resource/checkpoint identities.
 
+## Heterogeneous schema families
+
+Every routed output binding owns an independent logical schema generation/hash, drift disposition,
+promotion history, destination migration plan, and installation record. A homogeneous routed
+family may bind the same schema hash repeatedly; a heterogeneous family binds each distinct schema
+explicitly. The full ordered output-binding/schema/target map is plan, package, receipt, replay,
+and checkpoint authority.
+
+One authored relational query MAY be compiled independently against every admitted output schema.
+If so, every explicit expression must typecheck for every output; output-specific query override
+syntax is outside this contract. Runtime cannot create a new output schema, migration, or target
+from observed route values. An unknown output binding fails before package publication and
+checkpoint advancement until explicit discovery/compilation establishes it.
+
 ## Package and destination contract
 
-One package contains deterministic route partitions over its accepted rows or final keyed effects.
+One package contains deterministic, schema-homogeneous route partitions over its accepted rows or
+final keyed effects.
 Canonical route order is typed-key order followed by canonical segment order within each route.
 Changing jobs, batch boundaries, fan-out membership, or destination speed cannot change route
 assignment or package bytes.
@@ -60,8 +78,8 @@ assignment or package bytes.
 A destination advertises routed-target-family support separately from ordinary single-target
 support. It MUST:
 
-- plan every physical target and migration before mutation;
-- bind the complete route map and per-target content/effect identities;
+- plan every physical target and its bound schema/migration before mutation;
+- bind the complete output/schema/target map and per-target content/effect identities;
 - commit the package atomically across all routed targets, or return an unambiguous recoverable
   package outcome with equivalent semantics;
 - apply one package idempotency token across the family;
@@ -100,12 +118,16 @@ the old and new route; CDF MUST NOT infer the old route from destination state.
    without re-extraction when the destination can prove it.
 5. Null, sensitive, colliding, or over-ceiling route values fail closed.
 6. PostgreSQL and DuckDB commit all routed tables in one transaction and report per-target effects.
+7. Two routes with distinct schemas retain independent authority and destination migrations under
+   one atomic package/receipt/checkpoint; an unknown route creates no implicit authority.
 
 ## Ratification
 
 The user ratified the `ROUTE BY <field> MAX TARGETS <n>` grammar, mandatory resource ceiling, `__`
 separator, exact-token/slug-plus-hash fold, null/sensitive-key rejection, and post-routing omission
-rule on 2026-08-07.
+rule on 2026-08-07. On 2026-08-09 the user ratified heterogeneous routed schema families, generic
+resource/output-binding schema authority, independently compiled route schemas, and fail-closed
+admission of newly observed routes.
 
 ## References
 
