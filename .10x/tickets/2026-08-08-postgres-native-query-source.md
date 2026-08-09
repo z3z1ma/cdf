@@ -78,6 +78,13 @@ logical replication, a row/portal transport fallback, or changes to destination 
   security fence and exact query bytes by base64-encoding only the serialized physical-plan field;
   adapter memory and PostgreSQL still receive the exact decoded SQL. Added round-trip/redaction
   coverage, and both connector and builtin-catalog suites passed after the repair.
+- 2026-08-08: The first portable-plan run streamed 500,000 joined/windowed rows in 1.4 seconds
+  through ten binary COPY batches, then correctly refused to checkpoint because query-generation
+  authority had not been attached to full-scan batches. Repaired the authority separation by
+  retaining generation as portable preflight/planned authority while emitting it as the bounded
+  query's full-scan completion position. Added explicit full-query resume validation and exact
+  cursor-start predicates for String, signed/unsigned integer, finite float, Date32, and timestamp
+  domains. The focused suite now passes 36 tests plus one live ignored test.
 
 ## Blockers
 

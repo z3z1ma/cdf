@@ -41,8 +41,8 @@ use crate::{
     catalog::{PostgresCatalogColumn, read_catalog_columns},
     error::classify_postgres_error,
     native::{
-        PostgresNativeOptions, PostgresSourceInput, describe_postgres_query,
-        postgres_query_generation_position, query_generation_from_schema,
+        POSTGRES_QUERY_GENERATION_PROTOCOL, PostgresNativeOptions, PostgresSourceInput,
+        describe_postgres_query, postgres_query_generation_position, query_generation_from_schema,
     },
 };
 
@@ -419,6 +419,64 @@ impl ResourceStream for PostgresSourceResource {
             cdf_kernel::bind_partition_schema_candidate(&mut partition, "runtime.postgres")?;
         }
         Ok(vec![partition])
+    }
+
+    fn rebind_scan_for_resume(
+        &self,
+        mut scan: ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<ScanPlan> {
+        committed_frontier.validate()?;
+        let partitions = scan.inline_partitions_mut().ok_or_else(|| {
+            CdfError::contract("Postgres resume binding requires one inline partition")
+        })?;
+        let partition_count = partitions.len();
+        let [partition] = partitions.as_mut_slice() else {
+            return Err(CdfError::contract(format!(
+                "Postgres resume binding requires one partition, found {partition_count}"
+            )));
+        };
+        match &self.descriptor.cursor {
+            Some(cursor) => {
+                let SourcePosition::Cursor(position) = committed_frontier else {
+                    return Err(CdfError::contract(format!(
+                        "Postgres cursor resource `{}` cannot resume from {} checkpoint authority",
+                        self.descriptor.resource_id,
+                        committed_frontier.kind().as_str()
+                    )));
+                };
+                if position.field != cursor.field {
+                    return Err(CdfError::contract(format!(
+                        "Postgres cursor resource `{}` expected checkpoint field `{}`, found `{}`",
+                        self.descriptor.resource_id, cursor.field, position.field
+                    )));
+                }
+                partition.start_position = Some(committed_frontier.clone());
+            }
+            None => {
+                let PostgresSourceInput::Query { .. } = &self.input else {
+                    return Err(CdfError::contract(format!(
+                        "Postgres table resource `{}` has no resumable full-scan checkpoint",
+                        self.descriptor.resource_id
+                    )));
+                };
+                let SourcePosition::ForeignState(position) = committed_frontier else {
+                    return Err(CdfError::contract(format!(
+                        "Postgres native-query replacement `{}` expected query-generation checkpoint authority, found {}",
+                        self.descriptor.resource_id,
+                        committed_frontier.kind().as_str()
+                    )));
+                };
+                if position.protocol != POSTGRES_QUERY_GENERATION_PROTOCOL {
+                    return Err(CdfError::contract(format!(
+                        "Postgres native-query replacement `{}` cannot resume from foreign-state protocol `{}`",
+                        self.descriptor.resource_id, position.protocol
+                    )));
+                }
+                partition.start_position = None;
+            }
+        }
+        Ok(scan)
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
@@ -812,8 +870,18 @@ fn execute_postgres_source(
     validate_postgres_source_resource_shape(&descriptor, &schema, &input)?;
     options.validate()?;
     let scan = scan_from_partition(&descriptor, &schema, &input, &partition)?;
-    let query = build_query(&schema, &input, &scan)?;
+    let query = build_query(&schema, &input, &scan, partition.start_position.as_ref())?;
     let output_schema = projected_schema(&schema, &scan)?;
+    let full_scan_position = (descriptor.cursor.is_none()
+        && matches!(&input, PostgresSourceInput::Query { .. }))
+    .then(|| {
+        partition.planned_position.clone().ok_or_else(|| {
+            CdfError::contract(
+                "Postgres native-query full scan omitted its planned generation authority",
+            )
+        })
+    })
+    .transpose()?;
 
     egress.authorize(&database_url)?;
     let mut client = Client::connect(&database_url, NoTls)
@@ -893,7 +961,8 @@ fn execute_postgres_source(
             return Ok(());
         };
         cancellation.check()?;
-        let source_position = source_position_for_batch(&descriptor, &scan, &record_batch)?;
+        let source_position = source_position_for_batch(&descriptor, &scan, &record_batch)?
+            .or_else(|| full_scan_position.clone());
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
         if retained_bytes > batch_reservation_bytes {
             return Err(CdfError::data(format!(
@@ -1174,6 +1243,29 @@ fn scan_from_partition(
             descriptor.resource_id
         )));
     }
+    match (&partition.start_position, &descriptor.cursor) {
+        (None, _) => {}
+        (Some(SourcePosition::Cursor(position)), Some(cursor))
+            if position.field == cursor.field =>
+        {
+            partition
+                .start_position
+                .as_ref()
+                .expect("matched")
+                .validate()?;
+        }
+        (Some(_), Some(cursor)) => {
+            return Err(CdfError::contract(format!(
+                "Postgres source start position must be a cursor for field `{}`",
+                cursor.field
+            )));
+        }
+        (Some(_), None) => {
+            return Err(CdfError::contract(
+                "Postgres full-scan resource cannot carry a start position",
+            ));
+        }
+    }
 
     partition.scan_intent.validate()?;
     let scan = PostgresSourceScan::from_intent(schema, &partition.scan_intent)?;
@@ -1379,6 +1471,7 @@ fn build_query(
     schema: &SchemaRef,
     input: &PostgresSourceInput,
     scan: &PostgresSourceScan,
+    start_position: Option<&SourcePosition>,
 ) -> Result<PostgresQuery> {
     let projection = scan
         .projection
@@ -1397,9 +1490,12 @@ fn build_query(
         projection.join(", "),
         input.relation_sql()
     );
-    if !scan.filters.is_empty() {
-        let predicates = scan
-            .filters
+    let mut predicates = Vec::new();
+    if let Some(predicate) = cursor_resume_predicate(schema, start_position)? {
+        predicates.push(predicate);
+    }
+    predicates.extend(
+        scan.filters
             .iter()
             .map(|predicate| {
                 let field = field_by_name(schema, &predicate.field).ok_or_else(|| {
@@ -1419,7 +1515,9 @@ fn build_query(
                     value.sql()?
                 ))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?,
+    );
+    if !predicates.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&predicates.join(" AND "));
     }
@@ -1454,6 +1552,83 @@ fn build_query(
     }
 
     Ok(PostgresQuery { sql })
+}
+
+fn cursor_resume_predicate(
+    schema: &SchemaRef,
+    start_position: Option<&SourcePosition>,
+) -> Result<Option<String>> {
+    let Some(position) = start_position else {
+        return Ok(None);
+    };
+    position.validate()?;
+    let SourcePosition::Cursor(position) = position else {
+        return Err(CdfError::contract(
+            "Postgres source start position must be a cursor",
+        ));
+    };
+    let field = field_by_name(schema, &position.field).ok_or_else(|| {
+        CdfError::contract(format!(
+            "Postgres start cursor field `{}` is absent from the compiled schema",
+            position.field
+        ))
+    })?;
+    let source = source_column_identifier(field)?.quoted();
+    let predicate = match (field.data_type(), &position.value) {
+        (DataType::Utf8, CursorValue::String(value)) => {
+            format!("{source}::text > {}::text", dollar_quoted_literal(value)?)
+        }
+        (DataType::Int64, CursorValue::I64(value)) => {
+            format!("{source}::bigint > {value}::bigint")
+        }
+        (DataType::UInt64, CursorValue::U64(value)) => {
+            format!("{source}::numeric > {value}::numeric")
+        }
+        (DataType::Float64, CursorValue::DecimalString(value)) => {
+            let value = value.parse::<f64>().map_err(|_| {
+                CdfError::contract("Postgres floating cursor checkpoint is not a finite number")
+            })?;
+            if !value.is_finite() {
+                return Err(CdfError::contract(
+                    "Postgres floating cursor checkpoint is not a finite number",
+                ));
+            }
+            format!("{source}::double precision > {value}::double precision")
+        }
+        (DataType::Date32, CursorValue::I64(value)) => {
+            let days = i32::try_from(*value).map_err(|_| {
+                CdfError::contract("Postgres Date32 cursor checkpoint exceeds i32 days")
+            })?;
+            format!("{source} > DATE '1970-01-01' + {days}")
+        }
+        (
+            DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, timezone),
+            CursorValue::TimestampMicros {
+                micros,
+                timezone: checkpoint_timezone,
+            },
+        ) => {
+            if checkpoint_timezone.as_deref() != timezone.as_ref().map(AsRef::as_ref) {
+                return Err(CdfError::contract(
+                    "Postgres timestamp cursor timezone changed from compiled authority",
+                ));
+            }
+            let epoch = if timezone.is_some() {
+                "TIMESTAMPTZ 'epoch'"
+            } else {
+                "TIMESTAMP 'epoch'"
+            };
+            format!("{source} > {epoch} + {micros} * INTERVAL '1 microsecond'")
+        }
+        _ => {
+            return Err(CdfError::contract(format!(
+                "Postgres checkpoint value does not match cursor field `{}` type {:?}",
+                field.name(),
+                field.data_type()
+            )));
+        }
+    };
+    Ok(Some(predicate))
 }
 
 fn select_expression(field: &Field) -> Result<String> {
@@ -2119,13 +2294,43 @@ mod tests {
             limit: Some(25),
         };
 
-        let query = build_query(&schema, &input, &scan).unwrap();
+        let query = build_query(&schema, &input, &scan, None).unwrap();
         assert_eq!(
             query.sql,
             "SELECT \"id\"::bigint AS \"id\", \"name\"::text AS \"name\" FROM (SELECT id, name, active FROM private_ledger WHERE tenant = 'private-value') AS \"_cdf_native_query\" WHERE \"id\"::bigint >= 10::bigint ORDER BY \"id\"::bigint DESC LIMIT 25"
         );
         let evidence = input.redacted_evidence().to_string();
         assert!(!evidence.contains("private-value"));
+    }
+
+    #[test]
+    fn cursor_checkpoint_becomes_an_exact_outer_resume_predicate() {
+        let schema = schema();
+        let input = PostgresSourceInput::from_authored(
+            None,
+            Some("SELECT id, name, active FROM public.ledger".to_owned()),
+        )
+        .unwrap();
+        let scan = PostgresSourceScan {
+            projection: vec!["id".to_owned(), "name".to_owned()],
+            filters: Vec::new(),
+            order_by: vec![PostgresStoredOrder {
+                field: "id".to_owned(),
+                direction: PostgresStoredDirection::Asc,
+            }],
+            limit: None,
+        };
+        let position = SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(42),
+        });
+
+        let query = build_query(&schema, &input, &scan, Some(&position)).unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT \"id\"::bigint AS \"id\", \"name\"::text AS \"name\" FROM (SELECT id, name, active FROM public.ledger) AS \"_cdf_native_query\" WHERE \"id\"::bigint > 42::bigint ORDER BY \"id\"::bigint ASC"
+        );
     }
 
     #[test]
@@ -2277,6 +2482,7 @@ mod tests {
                 target: target.clone(),
             },
             &scan,
+            None,
         )
         .unwrap();
 
@@ -2366,6 +2572,7 @@ mod tests {
                 target: target.clone(),
             },
             &scan,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -2398,6 +2605,7 @@ mod tests {
                 target: target.clone(),
             },
             &scan,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -2507,6 +2715,7 @@ mod tests {
                 target: target.clone(),
             },
             &scan,
+            None,
         )
         .unwrap();
         let output_schema = projected_schema(&schema, &scan).unwrap();
@@ -2637,6 +2846,7 @@ mod tests {
                 target: target.clone(),
             },
             &decimal_only_scan,
+            None,
         )
         .unwrap();
         let decimal_output = projected_schema(&schema, &decimal_only_scan).unwrap();
@@ -2687,6 +2897,7 @@ mod tests {
                 target: target.clone(),
             },
             &text_scan,
+            None,
         )
         .unwrap();
         let text_output = projected_schema(&text_schema, &text_scan).unwrap();

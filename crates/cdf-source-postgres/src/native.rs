@@ -24,7 +24,7 @@ use crate::error::classify_postgres_error;
 pub(crate) const POSTGRES_DEFAULT_OUTPUT_BATCH_ROWS: usize = 65_536;
 pub(crate) const POSTGRES_QUERY_GENERATION_SCHEMA_KEY: &str =
     "cdf.source.postgres.query_generation";
-const POSTGRES_QUERY_GENERATION_PROTOCOL: &str = "cdf.postgres.query-generation.v1";
+pub(crate) const POSTGRES_QUERY_GENERATION_PROTOCOL: &str = "cdf.postgres.query-generation.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
