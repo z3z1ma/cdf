@@ -37,6 +37,7 @@ pub fn schema_authority_key<S: SchemaAuthorityStore>(
         ProjectId::new("project-01").unwrap(),
         EnvironmentName::new(environment).unwrap(),
         ResourceId::new(resource).unwrap(),
+        cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING).unwrap(),
     )
     .unwrap()
 }

@@ -179,6 +179,7 @@ fn active_promotion_resources(
             context.config.project.id.clone(),
             EnvironmentName::new(context.environment.name.clone())?,
             resource_id.clone(),
+            cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING)?,
         )?;
         if store
             .head(&key)?

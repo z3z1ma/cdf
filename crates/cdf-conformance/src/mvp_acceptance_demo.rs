@@ -534,6 +534,7 @@ fn github_issues_resource(
         config.project.id.clone(),
         EnvironmentName::new("dev")?,
         ResourceId::new(RESOURCE_ID)?,
+        cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING)?,
     )?;
     let head = store
         .head(&key)?

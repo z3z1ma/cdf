@@ -20,7 +20,7 @@ use cdf_kernel::{
     CursorValue, DestinationId, ErrorKind, EventTimeDomain, FileManifest, FilePosition,
     ForeignState, IdempotencyToken, LeaseOwnerId, MigrationRecord, MongoChangeStreamResumeToken,
     MongoChangeStreamScope, MongoResumeMode, MongoResumeTokenSource, MongoWatchLevel,
-    PARTITION_WATERMARK_STATE_VERSION, PackageHash, PageToken, PartitionId,
+    OutputBindingId, PARTITION_WATERMARK_STATE_VERSION, PackageHash, PageToken, PartitionId,
     PartitionWatermarkState, PipelineId, PlanId, PostgresCommitPosition, PostgresLogScope,
     PromotionId, Receipt, ReceiptId, ResourceId, ResumeTokenPosition, RewindRequest, RunId,
     SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SchemaAuthorityStore, SchemaHash,
@@ -2468,6 +2468,31 @@ fn sqlite_schema_authority_passes_shared_conformance() {
 }
 
 #[test]
+fn sqlite_schema_authority_keeps_resource_output_bindings_independent() {
+    let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
+    let mut east = first_use_schema_authority_establishment(&store, "dev", "events", "east_value");
+    east.key.output_binding = OutputBindingId::new("route_east").unwrap();
+    let mut west = first_use_schema_authority_establishment(&store, "dev", "events", "west_value");
+    west.key.output_binding = OutputBindingId::new("route_west").unwrap();
+
+    let heads = store
+        .establish_batch_if_absent(vec![east.clone(), west.clone()])
+        .unwrap();
+    assert_eq!(heads.len(), 2);
+    assert_eq!(
+        store.head(&east.key).unwrap().unwrap().schema_hash,
+        east.version.schema_hash
+    );
+    assert_eq!(
+        store.head(&west.key).unwrap().unwrap().schema_hash,
+        west.version.schema_hash
+    );
+    assert_ne!(east.version.schema_hash, west.version.schema_hash);
+    assert_eq!(store.history(&east.key, 10).unwrap().len(), 1);
+    assert_eq!(store.history(&west.key, 10).unwrap().len(), 1);
+}
+
+#[test]
 fn sqlite_schema_authority_failure_rolls_back_complete_batch() {
     let store = SqliteSchemaAuthorityStore::open_in_memory().unwrap();
     let first = first_use_schema_authority_establishment(&store, "dev", "orders", "order_id");
@@ -2507,7 +2532,7 @@ fn sqlite_schema_authority_detects_corrupt_version_bytes_behind_head() {
     store
         .execute_for_test(
             "UPDATE cdf_schema_versions SET version_json = 'not-json' WHERE resource_id = ?",
-            [establishment.key.resource_id.as_str()],
+            [crate::schema_authority::authority_storage_key(&establishment.key).unwrap()],
         )
         .unwrap();
 
@@ -2531,7 +2556,7 @@ fn sqlite_schema_authority_detects_missing_version_behind_head() {
     store
         .execute_for_test(
             "DELETE FROM cdf_schema_versions WHERE resource_id = ?",
-            [establishment.key.resource_id.as_str()],
+            [crate::schema_authority::authority_storage_key(&establishment.key).unwrap()],
         )
         .unwrap();
 
@@ -2553,7 +2578,7 @@ fn sqlite_schema_authority_detects_versions_without_a_head() {
     store
         .execute_for_test(
             "DELETE FROM cdf_schema_heads WHERE resource_id = ?",
-            [establishment.key.resource_id.as_str()],
+            [crate::schema_authority::authority_storage_key(&establishment.key).unwrap()],
         )
         .unwrap();
 
@@ -2595,7 +2620,7 @@ fn sqlite_schema_authority_records_and_requires_current_schema_version() {
     assert!(
         error
             .message
-            .contains("current schema version 2 is required")
+            .contains("current schema version 3 is required")
     );
 }
 
@@ -2612,7 +2637,7 @@ fn sqlite_schema_authority_rejects_incomplete_current_schema() {
             recorded_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
-        VALUES ('schema_authority_store', 2, 1);
+        VALUES ('schema_authority_store', 3, 1);
         ",
     )
     .unwrap();

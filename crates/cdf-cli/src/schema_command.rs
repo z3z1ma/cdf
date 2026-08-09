@@ -363,6 +363,7 @@ fn load_resumable_promotion_state(
         context.config.project.id.clone(),
         EnvironmentName::new(context.environment.name.clone())?,
         resource_id.clone(),
+        cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING)?,
     )?;
     let store = SqliteSchemaPromotionStore::open_with_path_ownership(&state_path, ownership)?;
     let Some(current_head) = SchemaAuthorityStore::head(&store, &key)? else {

@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     CanonicalArrowSchema, CdfError, Checkpoint, CheckpointId, ContractRef, DestinationId,
     EnvironmentName, FencingToken, ImmutableContentIdentity, LeaseAuthorityDomainId, LeaseOwnerId,
-    PackageHash, ProjectId, PromotionId, Receipt, ReceiptId, ResourceId, Result, RunId, SchemaHash,
-    ScopeKey, ScopeLease, TargetName, canonical_arrow_schema_hash,
+    OutputBindingId, PackageHash, ProjectId, PromotionId, Receipt, ReceiptId, ResourceId, Result,
+    RunId, SchemaHash, ScopeKey, ScopeLease, TargetName, canonical_arrow_schema_hash,
 };
 
 pub const MAX_SCHEMA_AUTHORITY_HISTORY_LIMIT: u32 = 10_000;
@@ -17,6 +17,7 @@ pub struct SchemaAuthorityKey {
     pub project_id: ProjectId,
     pub environment: EnvironmentName,
     pub resource_id: ResourceId,
+    pub output_binding: OutputBindingId,
 }
 
 impl SchemaAuthorityKey {
@@ -25,12 +26,14 @@ impl SchemaAuthorityKey {
         project_id: ProjectId,
         environment: EnvironmentName,
         resource_id: ResourceId,
+        output_binding: OutputBindingId,
     ) -> Result<Self> {
         let key = Self {
             authority_domain_id,
             project_id,
             environment,
             resource_id,
+            output_binding,
         };
         key.validate()?;
         Ok(key)
@@ -40,7 +43,8 @@ impl SchemaAuthorityKey {
         LeaseAuthorityDomainId::new(self.authority_domain_id.as_str()).map(drop)?;
         ProjectId::new(self.project_id.as_str()).map(drop)?;
         EnvironmentName::new(self.environment.as_str()).map(drop)?;
-        ResourceId::new(self.resource_id.as_str()).map(drop)
+        ResourceId::new(self.resource_id.as_str()).map(drop)?;
+        OutputBindingId::new(self.output_binding.as_str()).map(drop)
     }
 
     pub fn promotion_scope(&self) -> Result<ScopeKey> {
@@ -51,6 +55,7 @@ impl SchemaAuthorityKey {
             self.project_id.as_str(),
             self.environment.as_str(),
             self.resource_id.as_str(),
+            self.output_binding.as_str(),
         ] {
             use std::fmt::Write as _;
             write!(&mut encoded, ":{}:{part}", part.len()).map_err(|error| {
@@ -881,6 +886,7 @@ mod tests {
             ProjectId::new(project).unwrap(),
             EnvironmentName::new(environment).unwrap(),
             ResourceId::new("orders").unwrap(),
+            OutputBindingId::new(crate::PRIMARY_OUTPUT_BINDING).unwrap(),
         )
         .unwrap()
     }
@@ -904,8 +910,11 @@ mod tests {
     fn schema_authority_lease_scope_is_delimiter_safe() {
         let first = key("a:b", "c").promotion_scope().unwrap();
         let second = key("a", "b:c").promotion_scope().unwrap();
+        let mut routed = key("a:b", "c");
+        routed.output_binding = OutputBindingId::new("route_east").unwrap();
 
         assert_ne!(first, second);
+        assert_ne!(first, routed.promotion_scope().unwrap());
     }
 
     #[test]

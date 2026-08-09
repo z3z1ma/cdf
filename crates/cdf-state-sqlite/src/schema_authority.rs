@@ -37,13 +37,27 @@ use crate::{
 };
 
 pub(crate) const SCHEMA_AUTHORITY_COMPONENT: &str = "schema_authority_store";
-pub(crate) const SCHEMA_AUTHORITY_SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_AUTHORITY_SCHEMA_VERSION: i64 = 3;
 
 const VERSION_SELECT: &str = "SELECT schema_hash, predecessor_schema_hash, created_at_ms, version_json FROM cdf_schema_versions";
 const HEAD_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, generation, schema_hash, status, promotion_id, promotion_from_schema_hash, promotion_to_schema_hash, promotion_lease_owner, promotion_fencing_token, head_json FROM cdf_schema_heads";
 const EVENT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, ordinal, generation, schema_hash, recorded_at_ms, event_json FROM cdf_schema_authority_events";
 const PERMIT_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, run_id, generation, schema_hash, acquired_at_ms, expires_at_ms, released, permit_json FROM cdf_schema_settlement_permits";
 const PROMOTION_SELECT: &str = "SELECT authority_domain_id, project_id, environment, resource_id, promotion_id, phase, from_generation, from_schema_hash, to_schema_hash, updated_at_ms, state_json FROM cdf_schema_promotions";
+
+/// Encodes the resource/output tuple into the scalar SQLite key column. The serialized authority
+/// remains typed in every JSON record; this length-delimited materialization only keeps the SQL
+/// primary/foreign keys compact without conflating output identity with the public resource id.
+pub(crate) fn authority_storage_key(key: &SchemaAuthorityKey) -> Result<String> {
+    key.validate()?;
+    Ok(format!(
+        "{}:{}{}:{}",
+        key.resource_id.as_str().len(),
+        key.resource_id.as_str(),
+        key.output_binding.as_str().len(),
+        key.output_binding.as_str()
+    ))
+}
 
 pub struct SqliteSchemaAuthorityStore {
     conn: Mutex<Connection>,
@@ -720,7 +734,7 @@ fn insert_version(
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
             version.schema_hash.as_str(),
             version.predecessor.as_ref().map(SchemaHash::as_str),
             version.created_at_ms,
@@ -759,7 +773,7 @@ fn insert_head(tx: &Transaction<'_>, head: &SchemaHead) -> Result<()> {
             head.key.authority_domain_id.as_str(),
             head.key.project_id.as_str(),
             head.key.environment.as_str(),
-            head.key.resource_id.as_str(),
+            authority_storage_key(&head.key)?,
             u64_to_i64("schema authority generation", head.generation)?,
             head.schema_hash.as_str(),
             columns.status,
@@ -798,7 +812,7 @@ fn update_head(tx: &Transaction<'_>, head: &SchemaHead) -> Result<()> {
                 head.key.authority_domain_id.as_str(),
                 head.key.project_id.as_str(),
                 head.key.environment.as_str(),
-                head.key.resource_id.as_str(),
+                authority_storage_key(&head.key)?,
             ],
         )
         .map_err(sqlite_error)?;
@@ -861,7 +875,7 @@ fn insert_event(tx: &Transaction<'_>, event: &SchemaAuthorityEvent) -> Result<()
             event.key.authority_domain_id.as_str(),
             event.key.project_id.as_str(),
             event.key.environment.as_str(),
-            event.key.resource_id.as_str(),
+            authority_storage_key(&event.key)?,
             u64_to_i64("schema authority event ordinal", event.ordinal)?,
             u64_to_i64("schema authority event generation", event.generation)?,
             event.schema_hash.as_str(),
@@ -882,7 +896,7 @@ fn next_event_ordinal(tx: &Transaction<'_>, key: &SchemaAuthorityKey) -> Result<
                 key.authority_domain_id.as_str(),
                 key.project_id.as_str(),
                 key.environment.as_str(),
-                key.resource_id.as_str(),
+                authority_storage_key(key)?,
             ],
             |row| row.get::<_, i64>(0),
         )
@@ -925,7 +939,7 @@ fn fetch_version(
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
             schema_hash.as_str(),
         ],
         stored_version_row,
@@ -968,7 +982,7 @@ fn authority_has_any_version(conn: &Connection, key: &SchemaAuthorityKey) -> Res
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
         ],
         |_| Ok(()),
     )
@@ -1022,7 +1036,7 @@ fn fetch_head(conn: &Connection, key: &SchemaAuthorityKey) -> Result<Option<Sche
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
         ],
         stored_head_row,
     )
@@ -1043,7 +1057,7 @@ fn decode_head(row: StoredHeadRow) -> Result<SchemaHead> {
             if head.key.authority_domain_id.as_str() != row.authority_domain_id
                 || head.key.project_id.as_str() != row.project_id
                 || head.key.environment.as_str() != row.environment
-                || head.key.resource_id.as_str() != row.resource_id
+                || authority_storage_key(&head.key)? != row.resource_id
                 || u64_to_i64("schema authority generation", head.generation)? != row.generation
                 || head.schema_hash.as_str() != row.schema_hash
                 || columns.status != row.status
@@ -1163,7 +1177,7 @@ fn decode_event(row: StoredEventRow) -> Result<SchemaAuthorityEvent> {
             if event.key.authority_domain_id.as_str() != row.authority_domain_id
                 || event.key.project_id.as_str() != row.project_id
                 || event.key.environment.as_str() != row.environment
-                || event.key.resource_id.as_str() != row.resource_id
+                || authority_storage_key(&event.key)? != row.resource_id
                 || u64_to_i64("schema authority event ordinal", event.ordinal)? != row.ordinal
                 || u64_to_i64("schema authority event generation", event.generation)?
                     != row.generation
@@ -1262,7 +1276,7 @@ fn fetch_permit(
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
             run_id.as_str(),
         ],
         stored_permit_row,
@@ -1285,7 +1299,7 @@ fn decode_permit(row: StoredPermitRow) -> Result<(SchemaSettlementPermit, bool)>
             if permit.key.authority_domain_id.as_str() != row.authority_domain_id
                 || permit.key.project_id.as_str() != row.project_id
                 || permit.key.environment.as_str() != row.environment
-                || permit.key.resource_id.as_str() != row.resource_id
+                || authority_storage_key(&permit.key)? != row.resource_id
                 || permit.run_id.as_str() != row.run_id
                 || u64_to_i64("schema settlement generation", permit.generation)? != row.generation
                 || permit.schema_hash.as_str() != row.schema_hash
@@ -1313,7 +1327,7 @@ fn insert_permit(tx: &Transaction<'_>, permit: &SchemaSettlementPermit) -> Resul
             permit.key.authority_domain_id.as_str(),
             permit.key.project_id.as_str(),
             permit.key.environment.as_str(),
-            permit.key.resource_id.as_str(),
+            authority_storage_key(&permit.key)?,
             permit.run_id.as_str(),
             u64_to_i64("schema settlement generation", permit.generation)?,
             permit.schema_hash.as_str(),
@@ -1420,7 +1434,7 @@ fn fetch_promotion(
             key.authority_domain_id.as_str(),
             key.project_id.as_str(),
             key.environment.as_str(),
-            key.resource_id.as_str(),
+            authority_storage_key(key)?,
             promotion_id.as_str(),
         ],
         stored_promotion_row,
@@ -1443,7 +1457,7 @@ fn decode_promotion(row: StoredPromotionRow) -> Result<SchemaPromotionState> {
             if state.key.authority_domain_id.as_str() != row.authority_domain_id
                 || state.key.project_id.as_str() != row.project_id
                 || state.key.environment.as_str() != row.environment
-                || state.key.resource_id.as_str() != row.resource_id
+                || authority_storage_key(&state.key)? != row.resource_id
                 || state.plan.promotion_id.as_str() != row.promotion_id
                 || promotion_phase(state.phase) != row.phase
                 || u64_to_i64("schema promotion generation", state.from_generation)?
@@ -1472,7 +1486,7 @@ fn insert_promotion(tx: &Transaction<'_>, state: &SchemaPromotionState) -> Resul
             state.key.authority_domain_id.as_str(),
             state.key.project_id.as_str(),
             state.key.environment.as_str(),
-            state.key.resource_id.as_str(),
+            authority_storage_key(&state.key)?,
             state.plan.promotion_id.as_str(),
             promotion_phase(state.phase),
             u64_to_i64("schema promotion generation", state.from_generation)?,
@@ -1501,7 +1515,7 @@ fn update_promotion(tx: &Transaction<'_>, state: &SchemaPromotionState) -> Resul
                 state.key.authority_domain_id.as_str(),
                 state.key.project_id.as_str(),
                 state.key.environment.as_str(),
-                state.key.resource_id.as_str(),
+                authority_storage_key(&state.key)?,
                 state.plan.promotion_id.as_str(),
                 u64_to_i64("schema promotion generation", state.from_generation)?,
                 state.from_schema_hash.as_str(),
@@ -1527,7 +1541,7 @@ fn live_permit_count(conn: &Connection, key: &SchemaAuthorityKey, now_ms: i64) -
                 key.authority_domain_id.as_str(),
                 key.project_id.as_str(),
                 key.environment.as_str(),
-                key.resource_id.as_str(),
+                authority_storage_key(key)?,
                 now_ms,
             ],
             |row| row.get::<_, i64>(0),
@@ -1559,7 +1573,7 @@ fn promotion_cutoff(
                 state.key.authority_domain_id.as_str(),
                 state.key.project_id.as_str(),
                 state.key.environment.as_str(),
-                state.key.resource_id.as_str(),
+                authority_storage_key(&state.key)?,
                 u64_to_i64("schema promotion generation", state.from_generation)?,
                 state.from_schema_hash.as_str(),
             ],
@@ -2151,7 +2165,7 @@ impl SchemaAuthorityStore for SqliteSchemaAuthorityStore {
                     key.authority_domain_id.as_str(),
                     key.project_id.as_str(),
                     key.environment.as_str(),
-                    key.resource_id.as_str(),
+                    authority_storage_key(key)?,
                     i64::from(limit),
                 ],
                 stored_event_row,
@@ -2246,7 +2260,7 @@ impl SchemaSettlementStore for SqliteSchemaAuthorityStore {
                 renewed.key.authority_domain_id.as_str(),
                 renewed.key.project_id.as_str(),
                 renewed.key.environment.as_str(),
-                renewed.key.resource_id.as_str(),
+                authority_storage_key(&renewed.key)?,
                 renewed.run_id.as_str(),
             ],
         )
@@ -2286,7 +2300,7 @@ impl SchemaSettlementStore for SqliteSchemaAuthorityStore {
                     permit.key.authority_domain_id.as_str(),
                     permit.key.project_id.as_str(),
                     permit.key.environment.as_str(),
-                    permit.key.resource_id.as_str(),
+                    authority_storage_key(&permit.key)?,
                     permit.run_id.as_str(),
                 ],
             )
@@ -2332,7 +2346,7 @@ impl SchemaSettlementStore for SqliteSchemaAuthorityStore {
                 permit.key.authority_domain_id.as_str(),
                 permit.key.project_id.as_str(),
                 permit.key.environment.as_str(),
-                permit.key.resource_id.as_str(),
+                authority_storage_key(&permit.key)?,
                 permit.run_id.as_str(),
                 u64_to_i64("schema settlement generation", permit.generation)?,
                 permit.schema_hash.as_str(),
@@ -2348,7 +2362,7 @@ impl SchemaSettlementStore for SqliteSchemaAuthorityStore {
                 permit.key.authority_domain_id.as_str(),
                 permit.key.project_id.as_str(),
                 permit.key.environment.as_str(),
-                permit.key.resource_id.as_str(),
+                authority_storage_key(&permit.key)?,
                 permit.run_id.as_str(),
             ],
         )

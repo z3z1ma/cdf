@@ -70,6 +70,12 @@ user-ratified authority.
   bounded human slug plus a typed SHA-256 suffix. Generic output-binding ids are derived from the
   typed value rather than destination names, and complete route families reject null/nested
   values, duplicate/colliding targets, ceiling overflow, and identifier-budget loss.
+- 2026-08-09: Generalized durable schema authority from resource-only identity to the typed
+  `(resource_id, output_binding)` key. Primary outputs use the explicit `primary` binding; routed
+  bindings now receive independent heads, versions, promotion leases, histories, generations, and
+  hashes without overloading resource ids or destination names. The pre-production SQLite state
+  component advances to version 3 and uses one length-delimited scalar key materialization for the
+  tuple across every primary/foreign-key lookup.
 
 ## Blockers
 
@@ -86,6 +92,11 @@ must not become a parallel implementation.
   not yet prove package or destination settlement.
 - Affected strict Clippy passed: `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-kernel -p cdf-project
   --all-targets -- -D warnings`. `cargo fmt --all -- --check` and `git diff --check` passed.
+- Output-bound schema authority: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-state-sqlite
+  sqlite_schema_authority --lib` passed 9 tests, including two distinct schemas under one resource;
+  `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-kernel schema_authority --lib` passed; and
+  `DUCKDB_DOWNLOAD_LIB=1 cargo check --workspace` passed. This proves independent durable keys and
+  histories, not yet a family-wide settlement permit or destination application.
 
 ## Review
 

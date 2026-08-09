@@ -49,6 +49,7 @@ pub(crate) fn load_active(
         context.config.project.id.clone(),
         EnvironmentName::new(context.environment.name.clone())?,
         resource_id.clone(),
+        cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING)?,
     )?;
     let store =
         SqliteSchemaAuthorityStore::open_read_only_with_path_ownership(&state_path, ownership)?;
@@ -132,6 +133,7 @@ pub(crate) fn prepare(
         context.config.project.id.clone(),
         EnvironmentName::new(context.environment.name.clone())?,
         ResourceId::new(resource.descriptor().resource_id.to_string())?,
+        cdf_kernel::OutputBindingId::new(cdf_kernel::PRIMARY_OUTPUT_BINDING)?,
     )?;
     let canonical_schema =
         cdf_project::compiled_logical_output_schema(resource, &context.semantic_catalog)?;
