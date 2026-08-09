@@ -73,6 +73,11 @@ logical replication, a row/portal transport fallback, or changes to destination 
   Strict affected-crate Clippy and `cargo machete --with-metadata` passed. The explicit cognitive-
   complexity diagnostic reported only the pre-existing `cdf-kernel::arrow_type` warning, outside
   this connector change.
+- 2026-08-08: The first release-binary sandbox compile exposed the manifest's deliberate ban on
+  control characters when exact multiline SQL was serialized as a plain string. Preserved that
+  security fence and exact query bytes by base64-encoding only the serialized physical-plan field;
+  adapter memory and PostgreSQL still receive the exact decoded SQL. Added round-trip/redaction
+  coverage, and both connector and builtin-catalog suites passed after the repair.
 
 ## Blockers
 

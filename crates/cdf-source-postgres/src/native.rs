@@ -29,8 +29,35 @@ const POSTGRES_QUERY_GENERATION_PROTOCOL: &str = "cdf.postgres.query-generation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PostgresSourceInput {
-    Table { target: PostgresTarget },
-    Query { sql: String, sha256: String },
+    Table {
+        target: PostgresTarget,
+    },
+    Query {
+        #[serde(rename = "sql_base64", with = "query_bytes_base64")]
+        sql: String,
+        sha256: String,
+    },
+}
+
+mod query_bytes_base64 {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub(super) fn serialize<S>(sql: &String, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&BASE64_STANDARD.encode(sql.as_bytes()))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let bytes = BASE64_STANDARD.decode(encoded).map_err(D::Error::custom)?;
+        String::from_utf8(bytes).map_err(D::Error::custom)
+    }
 }
 
 impl PostgresSourceInput {
@@ -599,6 +626,14 @@ mod tests {
         let evidence = input.redacted_evidence().to_string();
         assert!(evidence.contains("query_sha256"));
         assert!(!evidence.contains("private-value"));
+
+        let serialized = serde_json::to_string(&input).unwrap();
+        assert!(serialized.contains("sql_base64"));
+        assert!(!serialized.contains("private-value"));
+        assert_eq!(
+            serde_json::from_str::<PostgresSourceInput>(&serialized).unwrap(),
+            input
+        );
 
         let error = validate_postgres_read_query("SELECT 'private-parse-literal").unwrap_err();
         assert!(!error.to_string().contains("private-parse-literal"));
