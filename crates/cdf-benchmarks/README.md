@@ -9,8 +9,8 @@ Committed fixtures live in `fixtures/baseline-fixtures.json` as deterministic sp
 Build the isolated macro/reference worker and print a sanitized host fingerprint:
 
 ```bash
-cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked
-target/release/cdf-p3-lab host
+cargo build -p cdf-benchmarks --bin cdf-p3-lab --profile bench-max --locked
+target/bench-max/cdf-p3-lab host
 ```
 
 ## Dedicated EC2 benchmark host
@@ -36,11 +36,11 @@ tools/p3-ec2-benchmark-host.sh lab -- host
 tools/p3-ec2-benchmark-host.sh teardown
 ```
 
-The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories. Workspace synchronization defaults to a minimal control-plane manifest (`cdf.toml`, `cdf/`, `data/`, `.cdf/state.db`, `.cdf/schemas/`, and schema-observation cache entries) so nested generated benchmark directories and destination files do not leak into the benchmark host; set `CDF_BENCH_WORKSPACE_SYNC_MODE=full` for an ignore-filtered full tree that still excludes local secrets plus generated DuckDB/package/spool artifacts. The on-host build uses the workspace release profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`. Use `build-measure`/`preflight-measure` for ordinary `measure-cdf` command cells; use `build`/`preflight` only when full `cdf-p3-lab` reference workloads are needed.
+The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories. Workspace synchronization defaults to a minimal control-plane manifest (`cdf.toml`, `cdf/`, `data/`, `.cdf/state.db`, `.cdf/schemas/`, and schema-observation cache entries) so nested generated benchmark directories and destination files do not leak into the benchmark host; set `CDF_BENCH_WORKSPACE_SYNC_MODE=full` for an ignore-filtered full tree that still excludes local secrets plus generated DuckDB/package/spool artifacts. The on-host build uses the workspace `bench-max` profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`. Use `build-measure`/`preflight-measure` for ordinary `measure-cdf` command cells; use `build`/`preflight` only when full `cdf-p3-lab` reference workloads are needed.
 
-Run `preflight-measure` immediately before using a measured-command result as P3 promotion evidence. Run `preflight` for full-lab/reference cells. Both reject the common measurement-poison cases: the recorded instance is not running, the root volume no longer matches the benchmark gp3 IOPS/throughput, SSH/release binaries are unavailable, the synced remote revision differs from the local revision label, the relevant release-build marker does not match the synced revision, the synced workspace is missing, or free disk has fallen below `CDF_BENCH_MIN_FREE_GB` (default 50). Use `CDF_BENCH_PREFLIGHT_ALLOW_STALE=1` only for intentional historical comparisons and `CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE=0` only for repo-only reference workloads. Use `fetch` to copy host-generated JSON artifacts back into local `.10x/evidence/.storage/` instead of relying on ad-hoc transcripts.
+Run `preflight-measure` immediately before using a measured-command result as P3 promotion evidence. Run `preflight` for full-lab/reference cells. Both reject the common measurement-poison cases: the recorded instance is not running, the root volume no longer matches the benchmark gp3 IOPS/throughput, SSH/`bench-max` binaries are unavailable, the synced remote revision differs from the local revision label, the relevant benchmark-build marker does not match the synced revision, the synced workspace is missing, or free disk has fallen below `CDF_BENCH_MIN_FREE_GB` (default 50). Use `CDF_BENCH_PREFLIGHT_ALLOW_STALE=1` only for intentional historical comparisons and `CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE=0` only for repo-only reference workloads. Use `fetch` to copy host-generated JSON artifacts back into local `.10x/evidence/.storage/` instead of relying on ad-hoc transcripts.
 
-`measure-cdf` generates a standard `run-cell` request on the host and runs the release `cdf` binary through the lean `cdf-p3-measure` runner. By default each sample gets a fresh copy of the synced workspace, drops `.cdf/state.db` so ingestion benchmarks cannot silently become checkpoint no-ops, excludes local DuckDB destination artifacts from the copied workspace, and keeps that setup outside the worker's timed region. Use `CDF_BENCH_MEASURE_PRESERVE_STATE=1` only when the workload intentionally benchmarks resume/no-op behavior, and `CDF_BENCH_MEASURE_WORKSPACE_MODE=in_place` only for explicitly stateful or non-mutating commands. `CDF_BENCH_MEASURE_ENV_JSON` accepts a JSON object of string environment variables for the measured `cdf` child, which keeps destination/source tuning diagnostics under the same child-timeout supervision as ordinary runs. `CDF_BENCH_SAMPLES`, `CDF_BENCH_TIMEOUT_MS`, `CDF_BENCH_IO_MODE`, `CDF_BENCH_EXPECTED_ROWS`, `CDF_BENCH_LOGICAL_BYTES`, and `CDF_BENCH_PHYSICAL_BYTES` are knobs, not compiled limits.
+`measure-cdf` generates a standard `run-cell` request on the host and runs the `bench-max` `cdf` binary through the lean `cdf-p3-measure` runner. By default each sample gets a fresh copy of the synced workspace, drops `.cdf/state.db` so ingestion benchmarks cannot silently become checkpoint no-ops, excludes local DuckDB destination artifacts from the copied workspace, and keeps that setup outside the worker's timed region. Use `CDF_BENCH_MEASURE_PRESERVE_STATE=1` only when the workload intentionally benchmarks resume/no-op behavior, and `CDF_BENCH_MEASURE_WORKSPACE_MODE=in_place` only for explicitly stateful or non-mutating commands. `CDF_BENCH_MEASURE_ENV_JSON` accepts a JSON object of string environment variables for the measured `cdf` child, which keeps destination/source tuning diagnostics under the same child-timeout supervision as ordinary runs. `CDF_BENCH_SAMPLES`, `CDF_BENCH_TIMEOUT_MS`, `CDF_BENCH_IO_MODE`, `CDF_BENCH_EXPECTED_ROWS`, `CDF_BENCH_LOGICAL_BYTES`, and `CDF_BENCH_PHYSICAL_BYTES` are knobs, not compiled limits.
 
 `run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, direct Arrow Parquet rewrite with explicit writer policy, DuckDB Parquet read/count, persistent DuckDB `CREATE TABLE AS SELECT * FROM read_parquet(...)` ingest references, native DuckDB Parquet ingest plus SQL-generated `_cdf_row_key` diagnostics, persistent DuckDB Arrow-appender diagnostics over TLC-shaped synthetic batches, lab-only DuckDB C Arrow data-chunk append diagnostics for binding-overhead isolation, lab-only DuckDB Arrow stream-scan materialization diagnostics for scanner/provenance-layout exploration with optional DuckDB resource knobs, and DuckDB Parquet-staged ingest diagnostics that write a bounded Parquet handoff before native DuckDB ingest.
 
@@ -49,8 +49,8 @@ Package diagnostics are intentionally narrow: `package-shape PACKAGE_DIR` reads 
 Profiling plans record the exact detected tool/version, command, and ignored artifact path without requiring the tool in ordinary tests:
 
 ```bash
-target/release/cdf-p3-lab profile-dry-run flamegraph cdf-package target/release/cdf --help
-target/release/cdf-p3-lab profile-dry-run perf-stat cdf-package target/release/cdf --help
+target/bench-max/cdf-p3-lab profile-dry-run flamegraph cdf-package target/bench-max/cdf --help
+target/bench-max/cdf-p3-lab profile-dry-run perf-stat cdf-package target/bench-max/cdf --help
 ```
 
 Missing tools and non-opted-in privileged cold-cache control produce typed unavailable cells; they are never omitted or simulated.
@@ -58,13 +58,13 @@ Missing tools and non-opted-in privileged cold-cache control produce typed unava
 Smoke Criterion pass, intended local budget under 2 minutes:
 
 ```bash
-CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
+CDF_BENCH_SUITE=smoke cargo bench --profile bench-max -p cdf-benchmarks --bench baseline --locked
 ```
 
 Full opt-in Criterion pass, intended deep/weekly budget under 15 minutes:
 
 ```bash
-CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
+CDF_BENCH_SUITE=full cargo bench --profile bench-max -p cdf-benchmarks --bench baseline --locked
 ```
 
 Postgres package replay is a separate opt-in suite because it requires and mutates a live disposable database. It replays the finalized package fixture to target table `orders` through the Postgres destination runtime:

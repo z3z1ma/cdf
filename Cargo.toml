@@ -96,10 +96,17 @@ parquet = { git = "https://github.com/z3z1ma/arrow-rs.git", rev = "2865fdfc23513
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+incremental = true
 panic = "abort"
 strip = "symbols"
+
+[profile.bench-max]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+incremental = false
 
 [profile.dev]
 incremental = false

@@ -3,7 +3,7 @@ name: run-cdf-ec2-benchmarks
 description: Use when provisioning, reusing, measuring on, fetching evidence from, or tearing down CDF's dedicated AWS EC2 performance host.
 metadata:
   created: 2026-07-26
-  updated: 2026-07-26
+  updated: 2026-08-08
 ---
 
 # Run CDF EC2 Benchmarks
@@ -126,8 +126,9 @@ tools/p3-ec2-benchmark-host.sh verify-measure
 tools/p3-ec2-benchmark-host.sh preflight-measure
 ```
 
-This builds release `cdf` plus the lean `cdf-p3-measure` runner. It avoids relinking the heavy
-reference lab, historically an 8.5-minute fat-LTO cost.
+This builds `bench-max` `cdf` plus the lean `cdf-p3-measure` runner. `bench-max` is the
+non-incremental fat-LTO profile required for roofline evidence; ordinary iteration uses the faster
+thin-LTO `release` profile. The measure path avoids additionally relinking the heavy reference lab.
 
 Only when a raw/reference lab workload is required:
 
@@ -146,7 +147,7 @@ Preflight rejects:
 - a non-running instance;
 - root storage that does not match configured gp3 IOPS/throughput;
 - stale synchronized revision or stale build marker;
-- missing release binaries;
+- missing `bench-max` binaries;
 - a missing required workspace;
 - less than the configured disk floor;
 - mismatched full-lab versus measured-runner build authority.

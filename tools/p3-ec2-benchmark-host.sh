@@ -513,12 +513,12 @@ case "${command}" in
   preflight|preflight-measure)
     preflight_mode="full"
     build_marker=".cdf-bench-build.env"
-    host_binary="target/release/cdf-p3-lab"
+    host_binary="target/bench-max/cdf-p3-lab"
     build_hint="build"
     if [[ "${command}" == "preflight-measure" ]]; then
       preflight_mode="measure"
       build_marker=".cdf-bench-measure-build.env"
-      host_binary="target/release/cdf-p3-measure"
+      host_binary="target/bench-max/cdf-p3-measure"
       build_hint="build-measure"
     fi
     load_resource_state
@@ -549,7 +549,7 @@ case "${command}" in
         --query 'Volumes[0].[VolumeType,Iops,Throughput,Size,State]' \
         --output text
       run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-        "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -f .cdf-bench-revision.env; test -f '${build_marker}'; . ./.cdf-bench-revision.env; test -x target/release/cdf; test -x '${host_binary}'; sed -n 's/^built_revision_label=//p' '${build_marker}'; '${host_binary}' host-class; target/release/cdf --version; df -B1 --output=avail '${remote_root}' | tail -n 1; test '${CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE:-1}' != '1' || test -f '${remote_workspace}/cdf.toml'"
+        "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -f .cdf-bench-revision.env; test -f '${build_marker}'; . ./.cdf-bench-revision.env; test -x target/bench-max/cdf; test -x '${host_binary}'; sed -n 's/^built_revision_label=//p' '${build_marker}'; '${host_binary}' host-class; target/bench-max/cdf --version; df -B1 --output=avail '${remote_root}' | tail -n 1; test '${CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE:-1}' != '1' || test -f '${remote_workspace}/cdf.toml'"
       exit 0
     fi
     instance_state="$("${aws_cmd[@]}" ec2 describe-instances \
@@ -589,13 +589,13 @@ case "${command}" in
       fi
     fi
     if [[ "${built_label}" != "${remote_label}" ]]; then
-      echo "preflight failed: ${preflight_mode} release binaries were built for ${built_label:-unknown}, but synced repo is ${remote_label}; run ${build_hint} before measuring" >&2
+      echo "preflight failed: ${preflight_mode} bench-max binaries were built for ${built_label:-unknown}, but synced repo is ${remote_label}; run ${build_hint} before measuring" >&2
       exit 1
     fi
     min_free_gb="${CDF_BENCH_MIN_FREE_GB:-50}"
     require_workspace="${CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE:-1}"
     remote_check="$(ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -x target/release/cdf; test -x '${host_binary}'; host_class=\"\$('${host_binary}' host-class)\"; cdf_version=\"\$(target/release/cdf --version)\"; lab_host=\"\$('${host_binary}' host | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get(\"schema_version\", \"unknown\"))')\"; free_bytes=\"\$(df -B1 --output=avail '${remote_root}' | tail -n 1 | tr -d ' ')\"; if [ '${require_workspace}' = '1' ]; then test -f '${remote_workspace}/cdf.toml'; workspace_status=present; else workspace_status=not_required; fi; printf 'host_class=%s\ncdf_version=%s\nhost_fingerprint_schema=%s\nfree_bytes=%s\nworkspace=%s\n' \"\${host_class}\" \"\${cdf_version}\" \"\${lab_host}\" \"\${free_bytes}\" \"\${workspace_status}\"")"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -x target/bench-max/cdf; test -x '${host_binary}'; host_class=\"\$('${host_binary}' host-class)\"; cdf_version=\"\$(target/bench-max/cdf --version)\"; lab_host=\"\$('${host_binary}' host | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get(\"schema_version\", \"unknown\"))')\"; free_bytes=\"\$(df -B1 --output=avail '${remote_root}' | tail -n 1 | tr -d ' ')\"; if [ '${require_workspace}' = '1' ]; then test -f '${remote_workspace}/cdf.toml'; workspace_status=present; else workspace_status=not_required; fi; printf 'host_class=%s\ncdf_version=%s\nhost_fingerprint_schema=%s\nfree_bytes=%s\nworkspace=%s\n' \"\${host_class}\" \"\${cdf_version}\" \"\${lab_host}\" \"\${free_bytes}\" \"\${workspace_status}\"")"
     free_bytes="$(printf '%s\n' "${remote_check}" | awk -F= '$1=="free_bytes" {print $2}')"
     min_free_bytes=$((min_free_gb * 1024 * 1024 * 1024))
     if [[ "${free_bytes}" -lt "${min_free_bytes}" ]]; then
@@ -844,9 +844,9 @@ EOF"
     load_resource_state
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
-    local_cdf="${repo_root}/target/release/cdf"
+    local_cdf="${repo_root}/target/bench-max/cdf"
     if [[ ! -x "${local_cdf}" ]]; then
-      echo "sync-package requires ${local_cdf}; build the release binary first" >&2
+      echo "sync-package requires ${local_cdf}; build the bench-max binary first" >&2
       exit 2
     fi
     remote_package_root="${remote_workspace}/benchmark-input"
@@ -858,7 +858,7 @@ EOF"
       -e "ssh -i ${CDF_BENCH_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
       "${package_dir%/}/" "${ssh_user}@${host}:${remote_package}/"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; '${remote_repo}/target/release/cdf' package verify '${remote_package}' --json"
+      "set -euo pipefail; ${remote_prelude}; '${remote_repo}/target/bench-max/cdf' package verify '${remote_package}' --json"
     ;;
 
   build)
@@ -866,7 +866,7 @@ EOF"
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --release --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-bench-measure --bin cdf-p3-measure --release --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked -j \$(nproc); build_revision_label=\"\$(sed -n 's/^repo_revision_label=//p' .cdf-bench-revision.env)\"; { printf 'built_revision_label=%s\n' \"\${build_revision_label:-unknown}\"; printf 'built_at_utc=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; printf 'rustc_version=%s\n' \"\$(rustc --version)\"; printf 'cargo_version=%s\n' \"\$(cargo --version)\"; printf 'duckdb_linkage=%s\n' 'downloaded-prebuilt'; } > .cdf-bench-build.env; cp .cdf-bench-build.env .cdf-bench-measure-build.env; ls -lh target/release/cdf target/release/cdf-p3-measure target/release/cdf-p3-lab; cat .cdf-bench-build.env"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --profile bench-max --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-bench-measure --bin cdf-p3-measure --profile bench-max --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-benchmarks --bin cdf-p3-lab --profile bench-max --locked -j \$(nproc); build_revision_label=\"\$(sed -n 's/^repo_revision_label=//p' .cdf-bench-revision.env)\"; { printf 'built_revision_label=%s\n' \"\${build_revision_label:-unknown}\"; printf 'built_at_utc=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; printf 'rustc_version=%s\n' \"\$(rustc --version)\"; printf 'cargo_version=%s\n' \"\$(cargo --version)\"; printf 'duckdb_linkage=%s\n' 'downloaded-prebuilt'; } > .cdf-bench-build.env; cp .cdf-bench-build.env .cdf-bench-measure-build.env; ls -lh target/bench-max/cdf target/bench-max/cdf-p3-measure target/bench-max/cdf-p3-lab; cat .cdf-bench-build.env"
     ;;
 
   build-measure)
@@ -874,7 +874,7 @@ EOF"
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --release --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-bench-measure --bin cdf-p3-measure --release --locked -j \$(nproc); build_revision_label=\"\$(sed -n 's/^repo_revision_label=//p' .cdf-bench-revision.env)\"; { printf 'built_revision_label=%s\n' \"\${build_revision_label:-unknown}\"; printf 'built_at_utc=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; printf 'rustc_version=%s\n' \"\$(rustc --version)\"; printf 'cargo_version=%s\n' \"\$(cargo --version)\"; printf 'duckdb_linkage=%s\n' 'downloaded-prebuilt'; } > .cdf-bench-measure-build.env; ls -lh target/release/cdf target/release/cdf-p3-measure; cat .cdf-bench-measure-build.env"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --profile bench-max --locked -j \$(nproc); DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-bench-measure --bin cdf-p3-measure --profile bench-max --locked -j \$(nproc); build_revision_label=\"\$(sed -n 's/^repo_revision_label=//p' .cdf-bench-revision.env)\"; { printf 'built_revision_label=%s\n' \"\${build_revision_label:-unknown}\"; printf 'built_at_utc=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; printf 'rustc_version=%s\n' \"\$(rustc --version)\"; printf 'cargo_version=%s\n' \"\$(cargo --version)\"; printf 'duckdb_linkage=%s\n' 'downloaded-prebuilt'; } > .cdf-bench-measure-build.env; ls -lh target/bench-max/cdf target/bench-max/cdf-p3-measure; cat .cdf-bench-measure-build.env"
     ;;
 
   verify)
@@ -882,7 +882,7 @@ EOF"
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; target/release/cdf --version; target/release/cdf-p3-lab host"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; target/bench-max/cdf --version; target/bench-max/cdf-p3-lab host"
     ;;
 
   verify-measure)
@@ -890,7 +890,7 @@ EOF"
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; target/release/cdf --version; target/release/cdf-p3-measure host"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; target/bench-max/cdf --version; target/bench-max/cdf-p3-measure host"
     ;;
 
   cdf)
@@ -902,7 +902,7 @@ EOF"
     host="$(target_host)"
     remote_args="$(remote_command "$@")"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "${remote_prelude}; cd '${remote_workspace}' && '${remote_repo}/target/release/cdf' ${remote_args}"
+      "${remote_prelude}; cd '${remote_workspace}' && '${remote_repo}/target/bench-max/cdf' ${remote_args}"
     ;;
 
   measure-cdf)
@@ -947,7 +947,7 @@ EOF"
     physical_bytes_q="$(printf '%q' "${CDF_BENCH_EXPECTED_PHYSICAL_BYTES:-}")"
     systemd_memory_max_q="$(printf '%q' "${CDF_BENCH_SYSTEMD_MEMORY_MAX:-}")"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; out=${output_q}; dataset=${dataset_q}; workload=${workload_q}; cdf_args_json=${args_json_q}; samples=${samples_q}; timeout_ms=${timeout_q}; io_mode=${io_mode_q}; workspace_mode=${workspace_mode_q}; preserve_state=${preserve_state_q}; measure_env_json_b64=${measure_env_json_b64_q}; timed_region_version=${timed_region_version_q}; expected_rows=${rows_q}; logical_bytes=${logical_bytes_q}; physical_bytes=${physical_bytes_q}; systemd_memory_max=${systemd_memory_max_q}; mkdir -p \"\$(dirname \"\${out}\")\" target/cdf-benchmarks/requests target/cdf-benchmarks/cdf-command-workspaces; . ./.cdf-bench-revision.env; host_class=\"\$(target/release/cdf-p3-measure host-class)\"; toolchain=\"\$(rustc --version)\"; request_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-cdf-command.json\"; spec_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-run-cell.json\"; systemd_log=\"\${out%.json}.systemd.log\"; if [ -n \"\${systemd_memory_max}\" ]; then host_class_path=\"\${spec_path%.json}-host-class.txt\"; systemd-run --user --wait --collect -p \"MemoryMax=\${systemd_memory_max}\" bash -lc 'cd \"\$1\"; target/release/cdf-p3-measure host-class > \"\$2\"' bash '${remote_repo}' \"\${host_class_path}\" > \"\${systemd_log}\" 2>&1; host_class=\"\$(cat \"\${host_class_path}\")\"; fi; CDF_BENCH_MEASURE_OUT=\"\${out}\" CDF_BENCH_MEASURE_DATASET=\"\${dataset}\" CDF_BENCH_MEASURE_WORKLOAD=\"\${workload}\" CDF_BENCH_MEASURE_ARGS_JSON=\"\${cdf_args_json}\" CDF_BENCH_MEASURE_SAMPLES=\"\${samples}\" CDF_BENCH_MEASURE_TIMEOUT_MS=\"\${timeout_ms}\" CDF_BENCH_MEASURE_IO_MODE=\"\${io_mode}\" CDF_BENCH_MEASURE_WORKSPACE_MODE=\"\${workspace_mode}\" CDF_BENCH_MEASURE_PRESERVE_STATE=\"\${preserve_state}\" CDF_BENCH_MEASURE_ENV_JSON_B64=\"\${measure_env_json_b64}\" CDF_BENCH_MEASURE_TIMED_REGION_VERSION=\"\${timed_region_version}\" CDF_BENCH_MEASURE_ROWS=\"\${expected_rows}\" CDF_BENCH_MEASURE_LOGICAL_BYTES=\"\${logical_bytes}\" CDF_BENCH_MEASURE_PHYSICAL_BYTES=\"\${physical_bytes}\" CDF_BENCH_MEASURE_SYSTEMD_MEMORY_MAX=\"\${systemd_memory_max}\" CDF_BENCH_MEASURE_REQUEST=\"\${request_path}\" CDF_BENCH_MEASURE_SPEC=\"\${spec_path}\" CDF_BENCH_MEASURE_REPO='${remote_repo}' CDF_BENCH_MEASURE_WORKSPACE='${remote_workspace}' CDF_BENCH_MEASURE_REVISION=\"\${repo_revision_label:-unknown}\" CDF_BENCH_MEASURE_HOST_CLASS=\"\${host_class}\" CDF_BENCH_MEASURE_TOOLCHAIN=\"\${toolchain}\" python3 - <<'PY'
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; out=${output_q}; dataset=${dataset_q}; workload=${workload_q}; cdf_args_json=${args_json_q}; samples=${samples_q}; timeout_ms=${timeout_q}; io_mode=${io_mode_q}; workspace_mode=${workspace_mode_q}; preserve_state=${preserve_state_q}; measure_env_json_b64=${measure_env_json_b64_q}; timed_region_version=${timed_region_version_q}; expected_rows=${rows_q}; logical_bytes=${logical_bytes_q}; physical_bytes=${physical_bytes_q}; systemd_memory_max=${systemd_memory_max_q}; mkdir -p \"\$(dirname \"\${out}\")\" target/cdf-benchmarks/requests target/cdf-benchmarks/cdf-command-workspaces; . ./.cdf-bench-revision.env; host_class=\"\$(target/bench-max/cdf-p3-measure host-class)\"; toolchain=\"\$(rustc --version)\"; request_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-cdf-command.json\"; spec_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-run-cell.json\"; systemd_log=\"\${out%.json}.systemd.log\"; if [ -n \"\${systemd_memory_max}\" ]; then host_class_path=\"\${spec_path%.json}-host-class.txt\"; systemd-run --user --wait --collect -p \"MemoryMax=\${systemd_memory_max}\" bash -lc 'cd \"\$1\"; target/bench-max/cdf-p3-measure host-class > \"\$2\"' bash '${remote_repo}' \"\${host_class_path}\" > \"\${systemd_log}\" 2>&1; host_class=\"\$(cat \"\${host_class_path}\")\"; fi; CDF_BENCH_MEASURE_OUT=\"\${out}\" CDF_BENCH_MEASURE_DATASET=\"\${dataset}\" CDF_BENCH_MEASURE_WORKLOAD=\"\${workload}\" CDF_BENCH_MEASURE_ARGS_JSON=\"\${cdf_args_json}\" CDF_BENCH_MEASURE_SAMPLES=\"\${samples}\" CDF_BENCH_MEASURE_TIMEOUT_MS=\"\${timeout_ms}\" CDF_BENCH_MEASURE_IO_MODE=\"\${io_mode}\" CDF_BENCH_MEASURE_WORKSPACE_MODE=\"\${workspace_mode}\" CDF_BENCH_MEASURE_PRESERVE_STATE=\"\${preserve_state}\" CDF_BENCH_MEASURE_ENV_JSON_B64=\"\${measure_env_json_b64}\" CDF_BENCH_MEASURE_TIMED_REGION_VERSION=\"\${timed_region_version}\" CDF_BENCH_MEASURE_ROWS=\"\${expected_rows}\" CDF_BENCH_MEASURE_LOGICAL_BYTES=\"\${logical_bytes}\" CDF_BENCH_MEASURE_PHYSICAL_BYTES=\"\${physical_bytes}\" CDF_BENCH_MEASURE_SYSTEMD_MEMORY_MAX=\"\${systemd_memory_max}\" CDF_BENCH_MEASURE_REQUEST=\"\${request_path}\" CDF_BENCH_MEASURE_SPEC=\"\${spec_path}\" CDF_BENCH_MEASURE_REPO='${remote_repo}' CDF_BENCH_MEASURE_WORKSPACE='${remote_workspace}' CDF_BENCH_MEASURE_REVISION=\"\${repo_revision_label:-unknown}\" CDF_BENCH_MEASURE_HOST_CLASS=\"\${host_class}\" CDF_BENCH_MEASURE_TOOLCHAIN=\"\${toolchain}\" python3 - <<'PY'
 import base64
 import json
 import os
@@ -967,7 +967,7 @@ if not isinstance(measure_env, dict) or not all(isinstance(k, str) and (isinstan
 expected_package_hash = measure_env.pop(\"__cdf_bench_expected_package_hash\", None)
 expected_schema_hash = measure_env.pop(\"__cdf_bench_expected_schema_hash\", None)
 request = {
-    \"cdf_executable\": f\"{repo}/target/release/cdf\",
+    \"cdf_executable\": f\"{repo}/target/bench-max/cdf\",
     \"workspace_template\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE\"],
     \"workspace_parent\": f\"{repo}/target/cdf-benchmarks/cdf-command-workspaces\",
     \"workspace_mode\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE_MODE\"],
@@ -999,7 +999,7 @@ spec = {
     \"timeout_ms\": int(os.environ[\"CDF_BENCH_MEASURE_TIMEOUT_MS\"]),
     \"allow_privileged_cache_control\": False,
     \"command\": {
-        \"program\": f\"{repo}/target/release/cdf-p3-measure\",
+        \"program\": f\"{repo}/target/bench-max/cdf-p3-measure\",
         \"args\": [\"cdf-command-worker\", str(request_path)],
         \"environment\": {},
         \"current_dir\": None,
@@ -1024,11 +1024,11 @@ spec_path.write_text(json.dumps(spec, sort_keys=True), encoding=\"utf-8\")
 PY
 if [ -n \"\${systemd_memory_max}\" ]; then
   systemd-run --user --wait --collect -p \"MemoryMax=\${systemd_memory_max}\" \
-    bash -lc 'cd \"\$1\"; target/release/cdf-p3-measure run-cell \"\$2\" > \"\$3\"' \
+    bash -lc 'cd \"\$1\"; target/bench-max/cdf-p3-measure run-cell \"\$2\" > \"\$3\"' \
     bash '${remote_repo}' \"\${spec_path}\" \"\${out}\" \
     >> \"\${systemd_log}\" 2>&1
 else
-  target/release/cdf-p3-measure run-cell \"\${spec_path}\" > \"\${out}\"
+  target/bench-max/cdf-p3-measure run-cell \"\${spec_path}\" > \"\${out}\"
 fi
 python3 -m json.tool \"\${out}\" >/dev/null; wc -c \"\${out}\""
     ;;
@@ -1067,7 +1067,7 @@ python3 -m json.tool \"\${out}\" >/dev/null; wc -c \"\${out}\""
     host="$(target_host)"
     remote_args="$(remote_command "$@")"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "${remote_prelude}; cd '${remote_repo}' && '${remote_repo}/target/release/cdf-p3-lab' ${remote_args}"
+      "${remote_prelude}; cd '${remote_repo}' && '${remote_repo}/target/bench-max/cdf-p3-lab' ${remote_args}"
     ;;
 
   run)

@@ -14,8 +14,8 @@ Usage:
   run-constant-memory-stress.sh ROOT FILE_COUNT LOGICAL_BYTES_PER_FILE [MEMORY_BUDGET|default]
 
 Environment:
-  CDF_STRESS_CDF        cdf executable; default: target/release/cdf
-  CDF_STRESS_LAB        cdf-p3-lab executable; default: target/release/cdf-p3-lab
+  CDF_STRESS_CDF        cdf executable; default: target/bench-max/cdf
+  CDF_STRESS_LAB        cdf-p3-lab executable; default: target/bench-max/cdf-p3-lab
   CDF_STRESS_BATCH_ROWS generator batch rows; default: 65536
   CDF_STRESS_PAYLOAD_BYTES generated payload bytes per row; default: 192
 
@@ -40,8 +40,8 @@ memory_budget="${4:-2GiB}"
 [[ "$file_count" =~ ^[1-9][0-9]*$ ]] || die 'FILE_COUNT must be a positive integer'
 [[ "$logical_bytes_per_file" =~ ^[1-9][0-9]*$ ]] || die 'LOGICAL_BYTES_PER_FILE must be a positive integer'
 
-cdf="${CDF_STRESS_CDF:-${repo_root}/target/release/cdf}"
-lab="${CDF_STRESS_LAB:-${repo_root}/target/release/cdf-p3-lab}"
+cdf="${CDF_STRESS_CDF:-${repo_root}/target/bench-max/cdf}"
+lab="${CDF_STRESS_LAB:-${repo_root}/target/bench-max/cdf-p3-lab}"
 batch_rows="${CDF_STRESS_BATCH_ROWS:-65536}"
 payload_bytes="${CDF_STRESS_PAYLOAD_BYTES:-192}"
 [[ -x "$cdf" ]] || die "cdf executable is absent: $cdf"

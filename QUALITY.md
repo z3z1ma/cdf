@@ -397,13 +397,18 @@ cargo test -p cdf-benchmarks --tests --locked
 Run timing only in the dedicated scheduled/manual performance tier, never as a pull-request fast check:
 
 ```bash
-CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
-CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
-cargo run --release -p cdf-bench-measure --bin cdf-p3-measure --locked -- \
+CDF_BENCH_SUITE=smoke cargo bench --profile bench-max -p cdf-benchmarks --bench baseline --locked
+CDF_BENCH_SUITE=full cargo bench --profile bench-max -p cdf-benchmarks --bench baseline --locked
+cargo run --profile bench-max -p cdf-bench-measure --bin cdf-p3-measure --locked -- \
   validation-envelope 5 8388608 > target/cdf-benchmarks/validation-envelope.json
-CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --release -p cdf-engine \
+CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --profile bench-max -p cdf-engine \
   fused_transform_hot_path_benchmark --lib --locked -- --ignored --nocapture
 ```
+
+`release` is the fast production-equivalent iteration profile (thin LTO, 16 codegen units, and
+incremental compilation). Roofline and promotion measurements MUST use `bench-max`, whose fat LTO,
+single codegen unit, and non-incremental build make the optimized binary reproducible without
+charging that link cost to ordinary release iteration.
 
 The validation-envelope command is a scheduled/release gate, not a fast check. It uses a
 single-threaded median-of-N matrix at 8k/16k/64k rows, fails when any ratified 64k native
