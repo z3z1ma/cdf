@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
+use arrow_array::StringArray;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
-use cdf_kernel::{CdfError, QueryableResource, Result, SchemaSource};
+use cdf_kernel::{
+    CdfError, QueryableResource, Result, RouteScalar, SchemaObservationRoute, SchemaSource,
+};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     CompiledSourcePlan, SourceAddCursor, SourceAddCursorOrdering, SourceAddPlanner,
@@ -392,6 +395,7 @@ impl SourceDriver for MongoDbSourceDriver {
             collection: physical.collection.ok_or_else(|| {
                 CdfError::contract("MongoDB collection resource omitted its collection")
             })?,
+            cdc: physical.mode == MongoDbMode::Cdc,
             discovery_records: physical.discovery_records,
             discovery_bytes: physical.discovery_bytes,
             schema_depth: physical.schema_depth,
@@ -788,6 +792,7 @@ fn add_private_file(
 struct MongoDbDiscoverySession {
     database: MongoDbIdentifier,
     collection: MongoDbIdentifier,
+    cdc: bool,
     discovery_records: u64,
     discovery_bytes: u64,
     schema_depth: u8,
@@ -872,6 +877,11 @@ impl SourceDiscoverySession for MongoDbDiscoverySession {
             ),
         ]);
         source_identity.extend(collection_metadata.identity());
+        let schema = if self.cdc {
+            with_required_cdc_id(schema)?
+        } else {
+            schema
+        };
         SourceSchemaObservation::new(candidate, schema, source_identity, bytes, records)
     }
 }
@@ -951,6 +961,11 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
         self.admitted_collection_names()?
             .into_iter()
             .map(|collection| {
+                let route_values = StringArray::from(vec![collection.as_str()]);
+                let route = SchemaObservationRoute::new(
+                    "source_collection",
+                    RouteScalar::from_array(&route_values, 0)?,
+                )?;
                 SourceDiscoveryCandidate::new(
                     format!("{}.{}", self.database, collection),
                     None,
@@ -958,7 +973,7 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
                     BTreeMap::from([
                         ("source_kind".to_owned(), "mongodb".to_owned()),
                         ("database".to_owned(), self.database.as_str().to_owned()),
-                        ("collection".to_owned(), collection),
+                        ("collection".to_owned(), collection.clone()),
                         (
                             "representation".to_owned(),
                             match self.representation {
@@ -969,7 +984,8 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
                         ),
                         ("schema_depth".to_owned(), self.schema_depth.to_string()),
                     ]),
-                )
+                )?
+                .with_route(route)
             })
             .collect()
     }
@@ -1023,7 +1039,13 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
                     ("schema_depth".to_owned(), self.schema_depth.to_string()),
                 ]);
                 identity.extend(collection_metadata.identity());
-                SourceSchemaObservation::new(candidate, schema, identity, bytes, records)
+                SourceSchemaObservation::new(
+                    candidate,
+                    with_collection_route_field(with_required_cdc_id(schema)?, collection_name)?,
+                    identity,
+                    bytes,
+                    records,
+                )
             }
             MongoDbRepresentation::Envelope => {
                 let (server_version, metadata) = self.execution.run_io(async move {
@@ -1052,6 +1074,52 @@ impl SourceDiscoverySession for MongoDbDatabaseDiscoverySession {
             }
         }
     }
+}
+
+fn with_collection_route_field(
+    schema: arrow_schema::Schema,
+    collection: &str,
+) -> Result<arrow_schema::Schema> {
+    if schema.field_with_name("source_collection").is_ok() {
+        return Err(CdfError::data(format!(
+            "MongoDB typed database collection `{collection}` contains reserved field `source_collection`"
+        )));
+    }
+    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(arrow_schema::Field::new(
+        "source_collection",
+        arrow_schema::DataType::Utf8,
+        false,
+    )));
+    Ok(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ))
+}
+
+pub(crate) fn with_required_cdc_id(schema: arrow_schema::Schema) -> Result<arrow_schema::Schema> {
+    let mut found = false;
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == "_id" {
+                found = true;
+                Arc::new(field.as_ref().clone().with_nullable(false))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !found {
+        return Err(CdfError::data(
+            "MongoDB CDC discovery did not observe the required `_id` document key",
+        ));
+    }
+    Ok(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ))
 }
 
 pub(crate) fn compile_globs(patterns: &[String]) -> Result<Vec<glob::Pattern>> {

@@ -2062,7 +2062,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
     assert!(
         error
             .to_string()
-            .contains("zero-segment state advancement requires a zero-segment package and typed processed-observation evidence"),
+            .contains("zero-segment state advancement requires a zero-segment package and typed source-progress evidence"),
         "{error}"
     );
 
@@ -2173,13 +2173,36 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         commit_plan.clone(),
         replay_segment_stream(&[]),
         None,
+        None,
     )
     .unwrap_err();
     assert!(
         missing
             .to_string()
-            .contains("typed processed-observation evidence")
+            .contains("typed source-progress evidence")
     );
+
+    let epoch_frontier = cdf_kernel::EpochFrontier {
+        version: cdf_kernel::EPOCH_FRONTIER_VERSION,
+        policy_version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+        epoch_ordinal: 0,
+        frontier: processed_position.clone(),
+        input_low: None,
+        input_high: processed_position.clone(),
+        carryover: None,
+        watermark: None,
+    };
+    let replay = PackageReplayInputs::from_preimages_with_processed(
+        package_hash.clone(),
+        None,
+        state_delta.clone(),
+        commit_plan.clone(),
+        replay_segment_stream(&[]),
+        None,
+        Some(epoch_frontier),
+    )
+    .unwrap();
+    assert!(replay.state_delta.segments.is_empty());
 
     let processed = ProcessedObservationEvidenceArtifact::new(
         None,
@@ -2195,6 +2218,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         commit_plan,
         replay_segment_stream(&[]),
         Some(processed.clone()),
+        None,
     )
     .unwrap();
     assert!(replay.state_delta.segments.is_empty());
@@ -2224,6 +2248,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         ),
         replay_segment_stream(&[]),
         Some(mismatched),
+        None,
     )
     .unwrap_err();
     assert!(error.to_string().contains("does not aggregate"), "{error}");
@@ -2279,6 +2304,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         commit_plan.clone(),
         replay_segment_stream(&[]),
         Some(processed.clone()),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -2298,6 +2324,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         commit_plan,
         replay_segment_stream(&[]),
         Some(tampered),
+        None,
     )
     .unwrap_err();
     assert!(error.to_string().contains("does not aggregate"), "{error}");

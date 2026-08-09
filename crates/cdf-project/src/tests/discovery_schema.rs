@@ -560,10 +560,20 @@ pub(super) fn observed_discovery_candidate(
         },
         participation: DiscoveryParticipation::Observed,
         metadata_variance: Vec::new(),
-        physical_schema_hash: Some(physical_schema_hash),
+        physical_schema_hash: Some(physical_schema_hash.clone()),
         physical_schema: Some(
             cdf_kernel::CanonicalArrowSchema::from_arrow(&physical_schema).unwrap(),
         ),
+        effective_schema_observation: Some(cdf_kernel::EffectiveSchemaObservationEvidence::new(
+            location,
+            physical_schema_hash,
+            cdf_kernel::SchemaObservationBinding::new(format!("sha256:{}", "0".repeat(64)))
+                .unwrap(),
+        )),
+        effective_schema: Some(
+            cdf_kernel::CanonicalArrowSchema::from_arrow(&physical_schema).unwrap(),
+        ),
+        terminal_quarantine: None,
         probe_bytes: Some(probe_bytes),
         probe_records: Some(0),
         schema_verdict: Some(DiscoverySchemaVerdict {
@@ -591,6 +601,9 @@ pub(super) fn unobserved_discovery_candidate(
         metadata_variance: Vec::new(),
         physical_schema_hash: None,
         physical_schema: None,
+        effective_schema_observation: None,
+        effective_schema: None,
+        terminal_quarantine: None,
         probe_bytes: None,
         probe_records: None,
         schema_verdict: None,
@@ -2374,7 +2387,7 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
     let pinned = apply_discovered_schema(&resource, artifacts.discovery.clone());
     let prepared = prepare_cached_resource_schema_artifacts(temp.path(), &pinned).unwrap();
     assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
-    assert!(prepared.resource().effective_schema_runtime().is_none());
+    assert!(prepared.resource().effective_schema_runtime().is_some());
     assert_eq!(prepared.resource().schema(), pinned.schema());
 }
 
@@ -3625,7 +3638,7 @@ fn pinned_schema_preparation_reuses_snapshot_without_observing_runtime_files() {
         initial_manifest.reference()
     );
     assert_eq!(prepared.resource().schema(), pinned.schema());
-    assert!(prepared.resource().effective_schema_runtime().is_none());
+    assert!(prepared.resource().effective_schema_runtime().is_some());
     let expected_baseline_hashes = initial_manifest
         .candidates
         .iter()

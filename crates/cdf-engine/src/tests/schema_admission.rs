@@ -70,6 +70,7 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
             physical_observation_hash.to_string(),
             physical_observation,
         )]),
+        routed_admission_catalog: BTreeMap::new(),
         observations: vec![
             StreamAdmissionObservationEvidence::new(
                 "partition-1",

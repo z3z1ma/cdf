@@ -102,6 +102,18 @@ user-ratified authority.
   dispositions reject delete policy. Live MongoDB database-envelope planning is now exercising the
   homogeneous routed family end to end; heterogeneous per-output planning and PostgreSQL family
   settlement remain open.
+- 2026-08-09: Completed the generic heterogeneous execution path for DuckDB. Routed sources may
+  publish an exact per-output schema/observation inventory without a fabricated primary schema;
+  compilation emits independent route queries and engine plans; runtime admission, SQL execution,
+  dedup spill, package construction, verified replay, and destination planning select schema by
+  output binding. Spill effect families include canonical schema identity, so unrelated routed
+  schemas never share one Arrow writer. DuckDB key-index names include the physical target identity
+  and therefore cannot collide when distinct resources route the same upstream values.
+- 2026-08-09: Production-profile Atlas typed database CDC certified one heterogeneous family over
+  independently discovered invoices and orders schemas. Four events became three homogeneous
+  routed segments, one atomic receipt, and one committed event-token checkpoint; receipt counts
+  prove a hard delete, an update, and two inserts across the two targets. PostgreSQL atomic-family
+  application and shared-extraction identity remain open.
 
 ## Blockers
 
@@ -146,6 +158,16 @@ must not become a parallel implementation.
   cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families --lib` preserves
   the existing non-routed key-only behavior. A live multi-target routed delete remains part of the
   MongoDB CDC acceptance certificate.
+- Heterogeneous package path: focused engine spill testing proves two routed payload schemas remain
+  separate through payload and effect-sort spill; package replay testing proves exact per-output
+  schema/frontier validation; and DuckDB focused tests prove target-scoped routed key indexes and
+  catalog `TIMESTAMPTZ` alias normalization.
+- Production-profile sandbox certificate: package
+  `pkg-portable-mongo-live-atlas-database-typed-cdc-e2e3-54997-1786317120895846000` contains three
+  schema-homogeneous segments for two independently typed output bindings. One DuckDB transaction
+  inserted one invoice and one order, updated one order, hard-deleted one invoice, wrote one routed
+  receipt, and enabled one resume-token checkpoint. Direct table and receipt inspection confirmed
+  every effect and zero missing delete keys.
 
 ## Review
 

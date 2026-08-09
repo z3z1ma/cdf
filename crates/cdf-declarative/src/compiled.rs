@@ -28,6 +28,13 @@ use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutedRelationalExpressionPlan {
+    pub route_value: cdf_kernel::RouteScalar,
+    pub plan: RelationalExpressionPlan,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
     descriptor: ResourceDescriptor,
@@ -43,6 +50,7 @@ pub struct CompiledResource {
     type_policy_allowances: TypePolicyAllowances,
     execution_extent: ExecutionExtent,
     relational_expression_plan: Option<RelationalExpressionPlan>,
+    routed_relational_expression_plans: Vec<RoutedRelationalExpressionPlan>,
 }
 
 impl CompiledResource {
@@ -91,6 +99,7 @@ impl CompiledResource {
             type_policy_allowances,
             execution_extent,
             relational_expression_plan: None,
+            routed_relational_expression_plans: Vec::new(),
         })
     }
 
@@ -146,6 +155,10 @@ impl CompiledResource {
         self.relational_expression_plan.as_ref()
     }
 
+    pub fn routed_relational_expression_plans(&self) -> &[RoutedRelationalExpressionPlan] {
+        &self.routed_relational_expression_plans
+    }
+
     pub fn with_relational_expression_plan(&self, plan: RelationalExpressionPlan) -> Result<Self> {
         plan.validate_recorded()?;
         if plan.input_schema != CanonicalArrowSchema::from_arrow(&self.source_plan.schema)? {
@@ -156,6 +169,47 @@ impl CompiledResource {
         let mut resource = self.clone();
         resource.schema = Arc::new(plan.output_schema.to_arrow()?);
         resource.relational_expression_plan = Some(plan);
+        Ok(resource)
+    }
+
+    pub fn with_routed_relational_expression_plans(
+        &self,
+        mut plans: Vec<RoutedRelationalExpressionPlan>,
+    ) -> Result<Self> {
+        plans.sort_by(|left, right| left.route_value.cmp(&right.route_value));
+        let expected_routes = self
+            .source_plan
+            .effective_schema_runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
+                    .evidence
+                    .observations()
+                    .iter()
+                    .filter_map(|observation| observation.route.as_ref().map(|route| &route.value))
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let planned_routes = plans
+            .iter()
+            .map(|plan| plan.route_value.clone())
+            .collect::<BTreeSet<_>>();
+        if plans
+            .windows(2)
+            .any(|pair| pair[0].route_value == pair[1].route_value)
+            || expected_routes != planned_routes
+        {
+            return Err(CdfError::contract(
+                "routed relational plans require one unique plan for every observed route",
+            ));
+        }
+        for routed in &plans {
+            routed.route_value.validate()?;
+            routed.plan.validate_recorded()?;
+        }
+        let mut resource = self.clone();
+        resource.routed_relational_expression_plans = plans;
         Ok(resource)
     }
 
@@ -170,6 +224,7 @@ impl CompiledResource {
         resource.source_plan.descriptor.schema_source = schema_source;
         resource.source_plan.schema = schema.as_ref().clone();
         resource.relational_expression_plan = None;
+        resource.routed_relational_expression_plans.clear();
         resource
     }
 
@@ -190,6 +245,7 @@ impl CompiledResource {
         resource.schema = Arc::clone(&schema);
         resource.source_plan.schema = schema.as_ref().clone();
         resource.relational_expression_plan = None;
+        resource.routed_relational_expression_plans.clear();
         resource.source_plan.effective_schema_runtime = Some(runtime.clone());
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
@@ -409,6 +465,7 @@ fn compile_resource(
         type_policy_allowances,
         execution_extent,
         relational_expression_plan: None,
+        routed_relational_expression_plans: Vec::new(),
     })
 }
 

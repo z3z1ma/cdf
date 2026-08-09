@@ -140,6 +140,7 @@ pub(crate) fn normalize_type(value: &str) -> String {
         "INT" => "INTEGER".to_owned(),
         "UINT" => "UINTEGER".to_owned(),
         "DOUBLE PRECISION" => "DOUBLE".to_owned(),
+        "TIMESTAMP WITH TIME ZONE" => "TIMESTAMPTZ".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -210,4 +211,16 @@ pub(crate) fn require_targetable_provenance(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_type;
+
+    #[test]
+    fn duckdb_catalog_type_aliases_match_declared_types() {
+        assert!(same_type("TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ"));
+        assert!(same_type("DOUBLE PRECISION", "DOUBLE"));
+        assert!(!same_type("TIMESTAMP", "TIMESTAMPTZ"));
+    }
 }

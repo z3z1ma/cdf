@@ -49,6 +49,14 @@ pub(crate) fn build_resource_material(
     destination_uri: &str,
     artifact_root: &Path,
 ) -> Result<PortablePlanResourceMaterial, CliError> {
+    let resource_id = prepared
+        .compiled_resource
+        .descriptor()
+        .resource_id
+        .to_string();
+    let execution_suffix =
+        crate::run_command::minted_run_suffix(&format!("portable-{resource_id}"))?;
+    let engine_plan = engine_plan.rebind_package_id(format!("pkg-{execution_suffix}"))?;
     let source_task_set = engine_plan
         .scan
         .external_task_set()
@@ -115,11 +123,6 @@ pub(crate) fn build_resource_material(
         runtime_capabilities: resolved.destination.runtime_capabilities(),
         target: resolved.destination.target().clone(),
     };
-    let resource_id = prepared
-        .compiled_resource
-        .descriptor()
-        .resource_id
-        .to_string();
     Ok(PortablePlanResourceMaterial {
         resource: PortablePlanResource {
             resource_id: resource_id.clone(),
@@ -131,7 +134,7 @@ pub(crate) fn build_resource_material(
             engine_plan,
             destination,
             pipeline_id: PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
-            checkpoint_id: CheckpointId::new(format!("portable-plan-{resource_id}"))?,
+            checkpoint_id: CheckpointId::new(format!("checkpoint-{execution_suffix}"))?,
         },
     })
 }

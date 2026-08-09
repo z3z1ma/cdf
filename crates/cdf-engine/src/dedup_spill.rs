@@ -18,6 +18,8 @@ const EFFECT_MERGE_FAN_IN: usize = 4;
 const MAX_KEY_BYTES: usize = 32 * 1024 * 1024;
 const FAST_PATH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
+type EffectFamily = (PackageSegmentKind, String);
+
 trait MutexFailStop<T> {
     fn lock_fail_stop(&self) -> MutexGuard<'_, T>;
 }
@@ -34,6 +36,7 @@ impl<T> MutexFailStop<T> for Mutex<T> {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PayloadMetadata {
     kind: PackageSegmentKind,
+    schema_hash: String,
     partition_ordinal: u64,
     output_position: Option<SourcePosition>,
 }
@@ -49,10 +52,10 @@ pub(crate) struct DedupPayload {
 pub(crate) struct DedupPayloadSpool {
     owner: Arc<ScratchOwner>,
     reservation: Arc<Mutex<SpillReservation>>,
-    writers: BTreeMap<PackageSegmentKind, arrow_ipc::writer::StreamWriter<BudgetedSpillFile>>,
+    writers: BTreeMap<EffectFamily, arrow_ipc::writer::StreamWriter<BudgetedSpillFile>>,
     metadata: BufWriter<BudgetedSpillFile>,
     keys: BufWriter<BudgetedSpillFile>,
-    schemas: BTreeMap<PackageSegmentKind, arrow_schema::SchemaRef>,
+    schemas: BTreeMap<EffectFamily, arrow_schema::SchemaRef>,
     input_rows: u64,
     pub input_bytes: u64,
 }
@@ -60,7 +63,7 @@ pub(crate) struct DedupPayloadSpool {
 pub(crate) struct DedupPayloadReader {
     _owner: Arc<ScratchOwner>,
     _reservation: Arc<Mutex<SpillReservation>>,
-    readers: BTreeMap<PackageSegmentKind, arrow_ipc::reader::StreamReader<BufReader<File>>>,
+    readers: BTreeMap<EffectFamily, arrow_ipc::reader::StreamReader<BufReader<File>>>,
     metadata: BufReader<File>,
     keys: KeyReader,
     next_ordinal: u64,
@@ -70,8 +73,8 @@ pub(crate) struct EffectSortSpool {
     owner: Arc<ScratchOwner>,
     reservation: Arc<Mutex<SpillReservation>>,
     memory: Arc<dyn MemoryCoordinator>,
-    runs: BTreeMap<PackageSegmentKind, Vec<EffectRun>>,
-    schemas: BTreeMap<PackageSegmentKind, arrow_schema::SchemaRef>,
+    runs: BTreeMap<EffectFamily, Vec<EffectRun>>,
+    schemas: BTreeMap<EffectFamily, arrow_schema::SchemaRef>,
     next_run: u64,
     terminal_position: Option<SourcePosition>,
 }
@@ -182,7 +185,8 @@ impl EffectSortSpool {
                 "canonical keyed-effect sort batch and key counts are inconsistent",
             ));
         }
-        match self.schemas.get(&kind) {
+        let family = effect_family(kind, batch.schema().as_ref())?;
+        match self.schemas.get(&family) {
             Some(schema) if schema.as_ref() != batch.schema().as_ref() => {
                 return Err(CdfError::data(
                     "one keyed-effect family changed Arrow schema during canonical ordering",
@@ -190,7 +194,7 @@ impl EffectSortSpool {
             }
             Some(_) => {}
             None => {
-                self.schemas.insert(kind, batch.schema());
+                self.schemas.insert(family.clone(), batch.schema());
             }
         }
         let retained = u64::try_from(batch.get_array_memory_size())
@@ -234,7 +238,7 @@ impl EffectSortSpool {
             .into_iter()
             .map(|index| keys[index].clone())
             .collect::<Vec<_>>();
-        let mut run = self.new_run(kind, 0, self.next_run)?;
+        let mut run = self.new_run(&family, 0, self.next_run)?;
         self.next_run = self
             .next_run
             .checked_add(1)
@@ -245,7 +249,7 @@ impl EffectSortSpool {
             batch.schema().as_ref(),
             std::iter::once((sorted_keys, sorted)),
         )?;
-        self.runs.entry(kind).or_default().push(run);
+        self.runs.entry(family).or_default().push(run);
         if output_position.is_some() {
             self.terminal_position = output_position;
         }
@@ -258,42 +262,50 @@ impl EffectSortSpool {
         }
         let mut families = std::collections::VecDeque::new();
         for kind in [PackageSegmentKind::Upsert, PackageSegmentKind::Delete] {
-            let Some(mut runs) = self.runs.remove(&kind) else {
-                continue;
-            };
-            let schema = self.schemas.get(&kind).ok_or_else(|| {
-                CdfError::internal("keyed-effect sort family omitted its Arrow schema")
-            })?;
-            let mut level = 1_u32;
-            while runs.len() > 1 {
-                let mut next = Vec::with_capacity(runs.len().div_ceil(EFFECT_MERGE_FAN_IN));
-                for group in runs.chunks(EFFECT_MERGE_FAN_IN) {
-                    let mut output = self.new_run(kind, level, self.next_run)?;
-                    self.next_run = self
-                        .next_run
-                        .checked_add(1)
-                        .ok_or_else(|| CdfError::data("keyed-effect run ordinal overflowed u64"))?;
-                    output.maximum_batch_bytes = merge_effect_runs(
-                        group,
-                        &output,
-                        schema.as_ref(),
-                        Arc::clone(&self.reservation),
-                        Arc::clone(&self.memory),
-                    )?;
-                    for input in group {
-                        remove_effect_run(input, &self.reservation)?;
+            let kind_families = self
+                .runs
+                .keys()
+                .filter(|family| family.0 == kind)
+                .cloned()
+                .collect::<Vec<_>>();
+            for family in kind_families {
+                let mut runs = self
+                    .runs
+                    .remove(&family)
+                    .ok_or_else(|| CdfError::internal("keyed-effect sort family disappeared"))?;
+                let schema = self.schemas.get(&family).ok_or_else(|| {
+                    CdfError::internal("keyed-effect sort family omitted its Arrow schema")
+                })?;
+                let mut level = 1_u32;
+                while runs.len() > 1 {
+                    let mut next = Vec::with_capacity(runs.len().div_ceil(EFFECT_MERGE_FAN_IN));
+                    for group in runs.chunks(EFFECT_MERGE_FAN_IN) {
+                        let mut output = self.new_run(&family, level, self.next_run)?;
+                        self.next_run = self.next_run.checked_add(1).ok_or_else(|| {
+                            CdfError::data("keyed-effect run ordinal overflowed u64")
+                        })?;
+                        output.maximum_batch_bytes = merge_effect_runs(
+                            group,
+                            &output,
+                            schema.as_ref(),
+                            Arc::clone(&self.reservation),
+                            Arc::clone(&self.memory),
+                        )?;
+                        for input in group {
+                            remove_effect_run(input, &self.reservation)?;
+                        }
+                        next.push(output);
                     }
-                    next.push(output);
+                    runs = next;
+                    level = level
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("keyed-effect merge level overflowed u32"))?;
                 }
-                runs = next;
-                level = level
-                    .checked_add(1)
-                    .ok_or_else(|| CdfError::data("keyed-effect merge level overflowed u32"))?;
+                let run = runs.pop().ok_or_else(|| {
+                    CdfError::internal("keyed-effect sort family lost its final run")
+                })?;
+                families.push_back((kind, EffectRunReader::open(&run)?));
             }
-            let run = runs
-                .pop()
-                .ok_or_else(|| CdfError::internal("keyed-effect sort family lost its final run"))?;
-            families.push_back((kind, EffectRunReader::open(&run)?));
         }
         Ok(Some(EffectSortReader {
             _owner: Arc::clone(&self.owner),
@@ -304,8 +316,8 @@ impl EffectSortSpool {
         }))
     }
 
-    fn new_run(&self, kind: PackageSegmentKind, level: u32, ordinal: u64) -> Result<EffectRun> {
-        let family = match kind {
+    fn new_run(&self, family: &EffectFamily, level: u32, ordinal: u64) -> Result<EffectRun> {
+        let kind = match family.0 {
             PackageSegmentKind::Upsert => "upsert",
             PackageSegmentKind::Delete => "delete",
             PackageSegmentKind::Row => {
@@ -314,7 +326,8 @@ impl EffectSortSpool {
                 ));
             }
         };
-        let stem = format!("{family}-l{level:03}-r{ordinal:012}");
+        let schema = family_path_component(&family.1);
+        let stem = format!("{kind}-{schema}-l{level:03}-r{ordinal:012}");
         Ok(EffectRun {
             arrow: self.owner.root.join(format!("{stem}.arrow")),
             keys: self.owner.root.join(format!("{stem}.keys")),
@@ -680,19 +693,20 @@ impl DedupPayloadSpool {
                 "dedup payload key count does not match its Arrow row count",
             ));
         }
-        if let Some(schema) = self.schemas.get(&kind) {
+        let family = effect_family(kind, batch.schema().as_ref())?;
+        if let Some(schema) = self.schemas.get(&family) {
             if schema.as_ref() != batch.schema().as_ref() {
-                return Err(CdfError::data(
-                    "dedup payload batches in one effect family must share one schema",
+                return Err(CdfError::internal(
+                    "canonical schema hash collision in dedup payload family",
                 ));
             }
         } else {
-            self.schemas.insert(kind, batch.schema());
+            self.schemas.insert(family.clone(), batch.schema());
             self.writers.insert(
-                kind,
+                family.clone(),
                 arrow_ipc::writer::StreamWriter::try_new(
                     BudgetedSpillFile::create(
-                        self.owner.root.join(payload_path(kind)),
+                        self.owner.root.join(payload_path(&family)),
                         Arc::clone(&self.reservation),
                     )?,
                     batch.schema().as_ref(),
@@ -701,12 +715,13 @@ impl DedupPayloadSpool {
             );
         }
         self.writers
-            .get_mut(&kind)
+            .get_mut(&family)
             .ok_or_else(|| CdfError::internal("dedup payload writer was not initialized"))?
             .write(batch)
             .map_err(|error| scratch_arrow_error("write dedup payload", error))?;
         let mut metadata = serde_json::to_vec(&PayloadMetadata {
             kind,
+            schema_hash: family.1,
             partition_ordinal,
             output_position,
         })
@@ -755,13 +770,12 @@ impl DedupPayloadSpool {
         let readers = self
             .schemas
             .keys()
-            .copied()
-            .map(|kind| {
+            .map(|family| {
                 Ok((
-                    kind,
+                    family.clone(),
                     arrow_ipc::reader::StreamReader::try_new(
                         BufReader::new(
-                            File::open(self.owner.root.join(payload_path(kind))).map_err(
+                            File::open(self.owner.root.join(payload_path(family))).map_err(
                                 |error| {
                                     scratch_read_io_error(
                                         "open dedup payload",
@@ -821,9 +835,10 @@ impl DedupPayloadReader {
             return Ok(None);
         }
         let metadata = decode_payload_metadata(&line)?;
+        let family = (metadata.kind, metadata.schema_hash);
         let batch = self
             .readers
-            .get_mut(&metadata.kind)
+            .get_mut(&family)
             .ok_or_else(|| CdfError::internal("dedup metadata names an absent effect spool"))?
             .next()
             .transpose()
@@ -845,7 +860,7 @@ impl DedupPayloadReader {
             keys.push(record.key);
         }
         Ok(Some(DedupPayload {
-            kind: metadata.kind,
+            kind: family.0,
             partition_ordinal: metadata.partition_ordinal,
             output_position: metadata.output_position,
             batch,
@@ -854,12 +869,26 @@ impl DedupPayloadReader {
     }
 }
 
-fn payload_path(kind: PackageSegmentKind) -> &'static str {
-    match kind {
-        PackageSegmentKind::Row => "payload-rows.arrow",
-        PackageSegmentKind::Upsert => "payload-upserts.arrow",
-        PackageSegmentKind::Delete => "payload-deletes.arrow",
-    }
+fn payload_path(family: &EffectFamily) -> String {
+    let kind = match family.0 {
+        PackageSegmentKind::Row => "rows",
+        PackageSegmentKind::Upsert => "upserts",
+        PackageSegmentKind::Delete => "deletes",
+    };
+    format!("payload-{kind}-{}.arrow", family_path_component(&family.1))
+}
+
+fn effect_family(kind: PackageSegmentKind, schema: &arrow_schema::Schema) -> Result<EffectFamily> {
+    Ok((
+        kind,
+        cdf_kernel::canonical_arrow_schema_hash(schema)?
+            .as_str()
+            .to_owned(),
+    ))
+}
+
+fn family_path_component(schema_hash: &str) -> &str {
+    schema_hash.strip_prefix("sha256:").unwrap_or(schema_hash)
 }
 
 fn decode_payload_metadata(line: &str) -> Result<PayloadMetadata> {
@@ -1758,7 +1787,69 @@ mod tests {
     use super::*;
     use std::{collections::HashMap, time::Instant};
 
-    use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
+    use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
+
+    #[test]
+    fn spill_payload_and_effect_sort_preserve_heterogeneous_routed_schemas() {
+        let temp = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                64 * 1024 * 1024,
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let one_column = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(Int64Array::from(vec![2_i64])) as ArrayRef,
+        )])
+        .unwrap();
+        let two_columns = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef),
+            (
+                "source_collection",
+                Arc::new(StringArray::from(vec!["orders"])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+
+        let mut payload =
+            DedupPayloadSpool::create(temp.path().join("payload"), Arc::clone(&spill)).unwrap();
+        payload
+            .push(PackageSegmentKind::Upsert, 0, None, &[vec![2]], &one_column)
+            .unwrap();
+        payload
+            .push(
+                PackageSegmentKind::Upsert,
+                0,
+                None,
+                &[vec![1]],
+                &two_columns,
+            )
+            .unwrap();
+        let mut payload = payload.finish().unwrap().unwrap();
+        assert_eq!(payload.next().unwrap().unwrap().batch.num_columns(), 1);
+        assert_eq!(payload.next().unwrap().unwrap().batch.num_columns(), 2);
+        assert!(payload.next().unwrap().is_none());
+
+        let mut sorter =
+            EffectSortSpool::create(temp.path().join("effects"), spill, memory).unwrap();
+        sorter
+            .push(PackageSegmentKind::Upsert, None, one_column, vec![vec![2]])
+            .unwrap();
+        sorter
+            .push(PackageSegmentKind::Upsert, None, two_columns, vec![vec![1]])
+            .unwrap();
+        let mut reader = sorter.finish().unwrap().unwrap();
+        let mut column_counts = Vec::new();
+        while let Some(effect) = reader.next().unwrap() {
+            column_counts.push(effect.batch.num_columns());
+        }
+        column_counts.sort_unstable();
+        assert_eq!(column_counts, vec![1, 2]);
+    }
 
     #[test]
     fn effect_sort_spill_orders_each_typed_family_across_merge_levels() {

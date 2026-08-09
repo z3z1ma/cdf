@@ -757,6 +757,7 @@ pub fn hydrate_compiled_resource_artifact(
         manifest.execution_extent.clone(),
     )?
     .with_relational_expression_plan(manifest.relational_plan.clone())?
+    .with_routed_relational_expression_plans(manifest.routed_relational_plans.clone())?
     .with_logical_schema_source(manifest.descriptor.schema_source.clone())?;
     if resource.descriptor() != &manifest.descriptor
         || resource.capabilities() != &manifest.capabilities

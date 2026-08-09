@@ -23,6 +23,7 @@ use crate::{
     MongoDbSourceDriver,
     driver::{
         collection_metadata_from_response, compiled_database_inventory, validate_server_version,
+        with_required_cdc_id,
     },
     error::classify_mongodb_error,
     execution::{
@@ -1138,6 +1139,29 @@ fn default_discovery_types_primitives_and_keeps_complex_values_opaque() {
         .unwrap();
     assert_eq!(tags.value(0), r#"["one","two"]"#);
     assert_eq!(tags.value(1), r#"["three"]"#);
+}
+
+#[test]
+fn cdc_discovery_requires_mongodb_id_without_claiming_other_fields_are_required() {
+    let schema = Schema::new(vec![
+        with_source_name(Field::new("_id", DataType::Utf8, true), "_id"),
+        with_source_name(Field::new("status", DataType::Utf8, true), "status"),
+    ]);
+
+    let cdc = with_required_cdc_id(schema).unwrap();
+
+    assert!(!cdc.field_with_name("_id").unwrap().is_nullable());
+    assert!(cdc.field_with_name("status").unwrap().is_nullable());
+    assert!(
+        with_required_cdc_id(Schema::new(vec![Field::new(
+            "status",
+            DataType::Utf8,
+            true,
+        )]))
+        .unwrap_err()
+        .message
+        .contains("required `_id`")
+    );
 }
 
 #[test]

@@ -157,6 +157,21 @@ retention, and live replica-set/Atlas certification.
   final post-image. Both outputs share one package hash, destination receipt, and Mongo resume-token
   checkpoint; DuckDB contains the final `status=settled` order and no corresponding invoice row.
 
+- 2026-08-09: Implemented heterogeneous typed database watches end to end. Every admitted
+  collection now keeps its independently discovered logical/physical schema and observation id
+  through manifest compilation, query compilation, engine admission, spill/dedup, package replay,
+  destination planning, and atomic routed application. MongoDB `_id` is the non-null logical `id`
+  while exact physical key decoding remains source-name aware. Multiple route observations may
+  attest the same terminal event token, but distinct or mixed resume tokens remain invalid.
+
+- 2026-08-09: Live replay exposed that typed CDC rejected residual evidence inside the adapter,
+  bypassing the compiled `capture_variant` policy that already governs finite MongoDB reads. Typed
+  CDC now attaches bounded residual and physical-reconciliation evidence to the materialized batch
+  and lets the engine apply the resource policy; delete keys remain exact and cannot use residual
+  fallback. The same replay also closed heterogeneous spill-family collisions, rowless drain
+  checkpoint frontiers, target-scoped DuckDB key-index identity, DuckDB catalog type aliases, and
+  unique package/checkpoint identities for every portable plan.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -200,6 +215,29 @@ retention, and live replica-set/Atlas certification.
   segments, and the proposed checkpoint carries the terminal event resume token. This certifies
   real Atlas database-watch fan-out, exact update/delete reduction, atomic routed destination
   settlement, receipt-gated checkpointing, and hard-delete application with the production binary.
+- Production-profile typed Atlas acceptance: portable plan
+  `atlas-database-typed-cdc-e2e8-release.plan.json` passed preflight and package
+  `pkg-portable-mongo-live-atlas-database-typed-cdc-e2e3-54997-1786317120895846000` committed one
+  database-watch epoch across independently typed invoices and orders tables. Its routed receipt
+  proves invoices `{upserts:1,deletes:1}` with `rows_inserted=1`, `hard_deletes=1`, and no missing
+  keys; orders `{upserts:2,deletes:0}` with `rows_inserted=1`, `rows_updated=1`; and one receipt plus
+  one event-issued resume-token checkpoint covers all four events. DuckDB inspection proved the
+  old invoice absent, the existing order updated, both new rows present, opaque document/array
+  fields preserved as Extended JSON, and no residuals for the governed final run.
+- Production-profile telemetry acceptance: the same 30-second Atlas run continuously redrew the
+  active Read phase with monotonic elapsed time, added exact row/byte/batch counters when events
+  arrived, and retained final Read, Packaged, Verified, and Committed summaries. The local release
+  build used the pinned downloaded DuckDB tuple and normal optimized release profile, not the
+  fat-LTO benchmark profile.
+- Drift/replay acceptance: a prior Atlas event introduced two undiscovered top-level fields. The
+  first run failed before checkpoint advancement; after the CDC evidence repair, a new portable
+  plan replayed from the unchanged committed token, captured both fields in `_cdf_variant`,
+  atomically applied the remaining governed effects, and committed the terminal event token. This
+  proves field drift obeys compiled policy rather than being silently dropped or adapter-rejected.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib` — all 60 MongoDB adapter tests
+  passed after the typed CDC residual-evidence repair. `DUCKDB_DOWNLOAD_LIB=1 cargo clippy` with
+  warnings denied passed for kernel, runtime, engine, package, MongoDB, DuckDB, project, and CLI
+  across all targets; formatting and `git diff --check` passed without `RUST_MIN_STACK`.
 
 ## Review
 

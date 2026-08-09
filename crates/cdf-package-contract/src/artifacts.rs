@@ -22,6 +22,7 @@ pub const DEDUP_PROVENANCE_VERSION: u16 = 1;
 pub const DEDUP_PROVENANCE_DIRECTORY: &str = "stats/dedup-dropped/";
 pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
 pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 2;
+pub const EPOCH_FRONTIER_FILE: &str = "plan/epoch-frontier.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -391,6 +392,7 @@ impl PackageReplayInputs {
             commit_plan,
             package_segments,
             None,
+            None,
         )
     }
 
@@ -401,6 +403,7 @@ impl PackageReplayInputs {
         commit_plan: DestinationCommitPlanPreimage,
         package_segments: I,
         processed: Option<ProcessedObservationEvidenceArtifact>,
+        epoch_frontier: Option<cdf_kernel::EpochFrontier>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = Result<SegmentEntry>>,
@@ -419,7 +422,12 @@ impl PackageReplayInputs {
                 .iter()
                 .map(|segment| (&segment.segment_id, &segment.kind, segment.row_count)),
         )?;
-        validate_package_segments(package_segments, &state_delta.segments, processed.as_ref())?;
+        validate_package_segments(
+            package_segments,
+            &state_delta.segments,
+            processed.as_ref(),
+            epoch_frontier.as_ref(),
+        )?;
         if let Some(processed) = &processed {
             processed.validate()?;
             if processed.disposition != commit_plan.disposition {
@@ -432,6 +440,17 @@ impl PackageReplayInputs {
             {
                 return Err(CdfError::data(
                     "processed-observation evidence does not match the state delta positions",
+                ));
+            }
+        }
+        if let Some(epoch_frontier) = &epoch_frontier {
+            epoch_frontier.validate()?;
+            if epoch_frontier.input_low != state_delta.input_position
+                || epoch_frontier.input_high != state_delta.output_position
+                || epoch_frontier.frontier != state_delta.output_position
+            {
+                return Err(CdfError::data(
+                    "drain epoch frontier does not match the state delta positions",
                 ));
             }
         }
@@ -508,15 +527,18 @@ fn validate_package_segments<I>(
     package_segments: I,
     state_segments: &[StateSegment],
     processed: Option<&ProcessedObservationEvidenceArtifact>,
+    epoch_frontier: Option<&cdf_kernel::EpochFrontier>,
 ) -> Result<()>
 where
     I: IntoIterator<Item = Result<SegmentEntry>>,
 {
     let mut package_segments = package_segments.into_iter();
     if state_segments.is_empty() {
-        if package_segments.next().transpose()?.is_some() || processed.is_none() {
+        if package_segments.next().transpose()?.is_some()
+            || (processed.is_none() && epoch_frontier.is_none())
+        {
             return Err(CdfError::data(
-                "zero-segment state advancement requires a zero-segment package and typed processed-observation evidence",
+                "zero-segment state advancement requires a zero-segment package and typed source-progress evidence",
             ));
         }
         return Ok(());

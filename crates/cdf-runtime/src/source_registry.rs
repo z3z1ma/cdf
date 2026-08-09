@@ -836,7 +836,9 @@ impl PlannedPartitionReader for RegistryValidatedPartitionReader {
             && let Some(runtime) = &self.effective_schema_runtime
         {
             let observation_id = validate_partition_observation_binding(runtime, partition.plan())?;
-            if !self.seen_observations.insert(observation_id.to_owned()) {
+            if let Some(observation_id) = observation_id
+                && !self.seen_observations.insert(observation_id.to_owned())
+            {
                 return Err(CdfError::contract(format!(
                     "schema observation {observation_id:?} is assigned to more than one external partition"
                 )));
@@ -860,7 +862,9 @@ fn validate_scan_observation_bindings(
     let mut seen = BTreeSet::new();
     for partition in partitions {
         let observation_id = validate_partition_observation_binding(runtime, partition)?;
-        if !seen.insert(observation_id) {
+        if let Some(observation_id) = observation_id
+            && !seen.insert(observation_id)
+        {
             return Err(CdfError::contract(format!(
                 "schema observation {observation_id:?} is assigned to more than one planned partition"
             )));
@@ -872,16 +876,38 @@ fn validate_scan_observation_bindings(
 fn validate_partition_observation_binding<'a>(
     runtime: &EffectiveSchemaRuntime,
     partition: &'a PartitionPlan,
-) -> Result<&'a str> {
-    let observation_id = partition
+) -> Result<Option<&'a str>> {
+    let Some(observation_id) = partition
         .metadata
         .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY)
-        .ok_or_else(|| {
-            CdfError::contract(format!(
+    else {
+        if runtime.evidence.observations().is_empty()
+            || runtime
+                .evidence
+                .observations()
+                .iter()
+                .any(|observation| observation.route.is_none())
+        {
+            return Err(CdfError::contract(format!(
                 "source partition `{}` omitted its effective-schema observation identity",
                 partition.partition_id
-            ))
-        })?;
+            )));
+        }
+        if partition
+            .metadata
+            .contains_key(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+            || partition
+                .metadata
+                .contains_key(cdf_kernel::PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+        {
+            return Err(CdfError::contract(format!(
+                "source partition `{}` carries partial effective-schema observation metadata",
+                partition.partition_id
+            )));
+        } else {
+            return Ok(None);
+        }
+    };
     let binding = cdf_kernel::SchemaObservationBinding::new(
         partition
             .metadata
@@ -902,7 +928,7 @@ fn validate_partition_observation_binding<'a>(
             partition.partition_id
         )));
     }
-    Ok(observation_id)
+    Ok(Some(observation_id))
 }
 
 struct VerifiedSourceDiscoverySession {

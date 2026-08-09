@@ -1215,7 +1215,9 @@ pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result
     scan.validate_partition_authority()?;
     let mut partitions_by_observation = BTreeMap::new();
     for partition in scan.inline_partitions().unwrap_or(&[]) {
-        let observation_id = partition_schema_observation_id(partition);
+        let Some(observation_id) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY) else {
+            continue;
+        };
         if observation_id.is_empty() {
             return Err(CdfError::contract(format!(
                 "planned partition {:?} carries an empty schema observation identity",
@@ -1973,7 +1975,38 @@ impl TerminalSchemaObservationQuarantine {
 pub struct EffectiveSchemaObservationEvidence {
     pub observation_id: String,
     pub physical_schema_hash: SchemaHash,
+    pub effective_schema_hash: SchemaHash,
     pub schema_observation_binding: SchemaObservationBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<SchemaObservationRoute>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaObservationRoute {
+    pub field: String,
+    pub value: crate::RouteScalar,
+}
+
+impl SchemaObservationRoute {
+    pub fn new(field: impl Into<String>, value: crate::RouteScalar) -> Result<Self> {
+        let route = Self {
+            field: field.into(),
+            value,
+        };
+        route.validate()?;
+        Ok(route)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.field.is_empty() || self.field.chars().any(char::is_control) {
+            return Err(CdfError::contract(
+                "schema-observation route field must be nonempty and control-free",
+            ));
+        }
+        self.value.validate()
+    }
 }
 
 impl EffectiveSchemaObservationEvidence {
@@ -1984,9 +2017,22 @@ impl EffectiveSchemaObservationEvidence {
     ) -> Self {
         Self {
             observation_id: observation_id.into(),
+            effective_schema_hash: physical_schema_hash.clone(),
             physical_schema_hash,
             schema_observation_binding,
+            route: None,
         }
+    }
+
+    pub fn with_effective_schema_hash(mut self, hash: SchemaHash) -> Self {
+        self.effective_schema_hash = hash;
+        self
+    }
+
+    pub fn with_route(mut self, route: SchemaObservationRoute) -> Result<Self> {
+        route.validate()?;
+        self.route = Some(route);
+        Ok(self)
     }
 }
 
@@ -2071,6 +2117,9 @@ impl EffectiveSchemaEvidence {
                 ));
             }
             previous = Some(&observation.observation_id);
+            if let Some(route) = &observation.route {
+                route.validate()?;
+            }
         }
         Ok(())
     }
@@ -2321,6 +2370,15 @@ impl EffectiveSchemaRuntime {
                     observation.observation_id, observation.physical_schema_hash
                 )));
             }
+            if self
+                .physical_schema(&observation.effective_schema_hash)
+                .is_none()
+            {
+                return Err(CdfError::data(format!(
+                    "effective schema observation {:?} references absent effective schema {}",
+                    observation.observation_id, observation.effective_schema_hash
+                )));
+            }
         }
         let mut previous_quarantine = None::<&str>;
         for quarantine in &self.terminal_quarantines {
@@ -2378,6 +2436,115 @@ impl EffectiveSchemaRuntime {
             .binary_search_by(|schema| schema.physical_schema_hash.cmp(hash))
             .ok()
             .map(|index| &self.schema_catalog[index].schema)
+    }
+
+    /// Narrows complete routed discovery authority to the one observation program compiled for
+    /// a physical output. The family-level baseline and discovery reference remain unchanged;
+    /// only batch admission catalogs and terminal evidence are scoped to the selected route.
+    pub fn for_route_value(&self, route_value: &crate::RouteScalar) -> Result<Self> {
+        route_value.validate()?;
+        let mut matches = self.evidence.observations.iter().filter(|observation| {
+            observation
+                .route
+                .as_ref()
+                .is_some_and(|route| &route.value == route_value)
+        });
+        let observation = matches.next().cloned().ok_or_else(|| {
+            CdfError::data("routed schema runtime omitted the selected output observation")
+        })?;
+        if matches.next().is_some() {
+            return Err(CdfError::data(
+                "routed schema runtime contains duplicate observations for one output",
+            ));
+        }
+        let mut evidence = EffectiveSchemaEvidence::new(
+            self.evidence.baseline.clone(),
+            self.evidence.effective_schema_hash.clone(),
+            self.evidence.discovery_manifest.clone(),
+            vec![observation.clone()],
+        )?;
+        if let Some(coverage) = self.evidence.discovery_coverage.clone() {
+            evidence = evidence.with_discovery_coverage(coverage)?;
+        }
+        let schema_catalog = self
+            .schema_catalog
+            .iter()
+            .filter(|entry| {
+                entry.physical_schema_hash == observation.physical_schema_hash
+                    || entry.physical_schema_hash == observation.effective_schema_hash
+            })
+            .cloned()
+            .collect();
+        let terminal_quarantines = self
+            .terminal_quarantines
+            .iter()
+            .filter(|quarantine| quarantine.observation_id == observation.observation_id)
+            .cloned()
+            .collect();
+        let mut runtime =
+            Self::new(evidence, schema_catalog)?.with_terminal_quarantines(terminal_quarantines)?;
+        if let Some(budget) = self.discovery_executor_budget.clone() {
+            runtime = runtime.with_discovery_executor_budget(budget)?;
+        }
+        Ok(runtime)
+    }
+
+    /// Resolves the complete pre-observed input schema family for one authored route.
+    /// Every effective-schema observation must participate exactly once; runtime traffic cannot
+    /// extend this inventory.
+    pub fn routed_observation_schemas(
+        &self,
+        route: &crate::RoutePlan,
+    ) -> Result<Vec<(crate::RouteScalar, SchemaRef)>> {
+        route.validate()?;
+        let mut outputs = self
+            .evidence
+            .observations()
+            .iter()
+            .map(|observation| {
+                let observation_route = observation.route.as_ref().ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "schema observation {:?} has no routed-output authority",
+                        observation.observation_id
+                    ))
+                })?;
+                if observation_route.field != route.field {
+                    return Err(CdfError::contract(format!(
+                        "schema observation {:?} routes by {:?}, not authored field {:?}",
+                        observation.observation_id, observation_route.field, route.field
+                    )));
+                }
+                let schema = self
+                    .physical_schema(&observation.effective_schema_hash)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "schema observation {:?} references absent physical schema {}",
+                            observation.observation_id, observation.physical_schema_hash
+                        ))
+                    })?;
+                Ok((observation_route.value.clone(), schema))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        outputs.sort_by(|left, right| left.0.cmp(&right.0));
+        if outputs.is_empty() {
+            return Err(CdfError::contract(
+                "routed schema family requires at least one observed output",
+            ));
+        }
+        if outputs.len() > route.maximum_targets as usize {
+            return Err(CdfError::contract(format!(
+                "routed schema family contains {} outputs, exceeding MAX TARGETS {}",
+                outputs.len(),
+                route.maximum_targets
+            )));
+        }
+        if outputs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CdfError::data(
+                "routed schema observations contain a duplicate typed route value",
+            ));
+        }
+        Ok(outputs)
     }
 }
 

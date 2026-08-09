@@ -2213,6 +2213,7 @@ pub struct SourceDiscoveryCandidate {
     pub modified_at_ms: Option<i64>,
     pub identity: BTreeMap<String, String>,
     schema_observation_binding: Option<cdf_kernel::SchemaObservationBinding>,
+    route: Option<cdf_kernel::SchemaObservationRoute>,
 }
 
 impl SourceDiscoveryCandidate {
@@ -2231,6 +2232,7 @@ impl SourceDiscoveryCandidate {
             modified_at_ms,
             identity,
             schema_observation_binding: None,
+            route: None,
         };
         candidate.validate()?;
         Ok(candidate)
@@ -2252,6 +2254,9 @@ impl SourceDiscoveryCandidate {
             ));
         }
         validate_source_evidence_identity(&self.identity)?;
+        if let Some(route) = &self.route {
+            route.validate()?;
+        }
         Ok(())
     }
 
@@ -2274,6 +2279,17 @@ impl SourceDiscoveryCandidate {
             .map_or_else(|| self.discovery_binding(), Ok)
     }
 
+    pub fn with_route(mut self, route: cdf_kernel::SchemaObservationRoute) -> Result<Self> {
+        route.validate()?;
+        self.route = Some(route);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn route(&self) -> Option<&cdf_kernel::SchemaObservationRoute> {
+        self.route.as_ref()
+    }
+
     /// Framework-owned binding between inventory evidence and a later schema observation.
     /// The raw operational location is never retained: its hash plus the canonical redacted
     /// location, generation, size, and time reject cross-candidate observations without
@@ -2287,6 +2303,7 @@ impl SourceDiscoveryCandidate {
             "size_bytes": self.size_bytes,
             "modified_at_ms": self.modified_at_ms,
             "identity": self.identity,
+            "route": self.route,
         }))?)
     }
 }

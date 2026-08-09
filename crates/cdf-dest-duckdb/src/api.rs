@@ -266,7 +266,7 @@ impl DuckDbDestination {
         }
         if request.binding().disposition == WriteDisposition::CdcApply {
             return Err(CdfError::contract(
-                "DuckDB destination does not support cdc_apply",
+                "DuckDB single-target staged ingress does not support cdc_apply; use keyed routed package application",
             ));
         }
         match request.bulk_path().descriptor.path_id.as_str() {
@@ -916,7 +916,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             )?,
             WriteDisposition::CdcApply => {
                 return Err(CdfError::contract(
-                    "DuckDB destination does not support cdc_apply",
+                    "DuckDB single-target final binding does not support cdc_apply; use keyed routed package application",
                 ));
             }
         };

@@ -1106,11 +1106,13 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let mut has_quarantine = false;
     let mut has_quarantine_admission = false;
     let mut has_processed = false;
+    let mut has_effective_schema_evidence = false;
     package.reader().for_each_identity_file(&mut |entry| {
         has_stream_evidence |= entry.path == "schema/stream-admission-evidence.json";
         has_quarantine |= entry.path == quarantine_path;
         has_quarantine_admission |= entry.path == quarantine_admission_path;
         has_processed |= entry.path == processed_path;
+        has_effective_schema_evidence |= entry.path == "schema/effective-schema-evidence.json";
         Ok(())
     })?;
     if !has_stream_evidence {
@@ -1128,6 +1130,16 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         .reader()
         .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
     cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
+    let dynamic_observation_bindings = if has_effective_schema_evidence {
+        let effective: cdf_engine::EffectiveSchemaPlanEvidence =
+            package.reader().verified_json_artifact(
+                package.verification(),
+                "schema/effective-schema-evidence.json",
+            )?;
+        effective.observation_bindings
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let mut admitted = std::collections::BTreeMap::new();
     let mut partial_admissions = std::collections::BTreeMap::new();
     let mut unpositioned_admissions = std::collections::BTreeMap::new();
@@ -1203,6 +1215,17 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
             })
             .collect::<Vec<_>>();
         if matching_partitions.len() != 1 {
+            if dynamic_inline_lineage_matches_exactly(
+                &scan,
+                &lineage,
+                &dynamic_observation_bindings,
+                observation_id,
+                partition_binding,
+                None,
+                Some(source_position),
+            ) {
+                continue;
+            }
             return Err(CdfError::data(format!(
                 "complete stream-admission observation {observation_id:?} is not bound to one planned partition"
             )));
@@ -1254,6 +1277,17 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                 })
                 .collect::<Vec<_>>();
             if matching_partitions.len() != 1 {
+                if dynamic_inline_lineage_matches_exactly(
+                    &scan,
+                    &lineage,
+                    &dynamic_observation_bindings,
+                    observation_id,
+                    partition_binding,
+                    Some(*observed_rows),
+                    Some(attempted_position),
+                ) {
+                    continue;
+                }
                 return Err(CdfError::data(format!(
                     "partial stream-admission observation {observation_id:?} is not bound to a planned partition and source generation"
                 )));
@@ -1299,6 +1333,17 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                 })
                 .collect::<Vec<_>>();
             if matching_partitions.len() != 1 {
+                if dynamic_inline_lineage_matches_exactly(
+                    &scan,
+                    &lineage,
+                    &dynamic_observation_bindings,
+                    observation_id,
+                    partition_binding,
+                    None,
+                    None,
+                ) {
+                    continue;
+                }
                 return Err(CdfError::data(format!(
                     "unpositioned stream-admission observation {observation_id:?} is not bound to a planned partition"
                 )));
@@ -1573,6 +1618,37 @@ fn external_lineage_matches_exactly(
                 && &observation.partition_binding == partition_binding
                 && observed_rows.is_none_or(|rows| observation.observed_rows == rows)
                 && observation.output_position.as_ref() == output_position
+        })
+        .count()
+        == 1
+}
+
+fn dynamic_inline_lineage_matches_exactly(
+    scan: &cdf_kernel::ScanPlan,
+    lineage: &cdf_engine::LineageSummary,
+    observation_bindings: &std::collections::BTreeMap<String, cdf_kernel::SchemaObservationBinding>,
+    observation_id: &str,
+    partition_binding: &cdf_kernel::SchemaObservationBinding,
+    observed_rows: Option<u64>,
+    output_position: Option<&cdf_kernel::SourcePosition>,
+) -> bool {
+    if observation_bindings.get(observation_id) != Some(partition_binding) {
+        return false;
+    }
+    let Some(partitions) = scan.inline_partitions() else {
+        return false;
+    };
+    lineage
+        .input_observations
+        .iter()
+        .filter(|observation| {
+            observation.observation_id == observation_id
+                && &observation.partition_binding == partition_binding
+                && observed_rows.is_none_or(|rows| observation.observed_rows == rows)
+                && observation.output_position.as_ref() == output_position
+                && partitions
+                    .iter()
+                    .any(|partition| partition.partition_id == observation.partition_id)
         })
         .count()
         == 1

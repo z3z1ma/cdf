@@ -8,13 +8,14 @@ use std::{
 };
 
 use cdf_kernel::{
-    CanonicalArrowSchema, CdfError, DiscoveryManifestHash, DiscoveryManifestReference, ResourceId,
-    Result, SchemaHash, StratifiedHashCandidate, plan_stratified_hash_v1,
+    CanonicalArrowSchema, CdfError, DiscoveryManifestHash, DiscoveryManifestReference,
+    EffectiveSchemaObservationEvidence, ResourceId, Result, SchemaHash, StratifiedHashCandidate,
+    TerminalSchemaObservationQuarantine, plan_stratified_hash_v1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const DISCOVERY_MANIFEST_ARTIFACT_VERSION: u16 = 2;
+pub const DISCOVERY_MANIFEST_ARTIFACT_VERSION: u16 = 3;
 pub const DISCOVERY_MANIFEST_SUFFIX: &str = ".discovery.json";
 pub const DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_RECORDS_PER_FILE: u64 = 1_000;
@@ -213,6 +214,12 @@ pub struct DiscoveryCandidateEvidence {
     pub physical_schema_hash: Option<SchemaHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physical_schema: Option<CanonicalArrowSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_schema_observation: Option<EffectiveSchemaObservationEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_schema: Option<CanonicalArrowSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_quarantine: Option<TerminalSchemaObservationQuarantine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -913,12 +920,14 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
         DiscoveryParticipation::Observed => {
             if candidate.physical_schema_hash.is_none()
                 || candidate.physical_schema.is_none()
+                || candidate.effective_schema_observation.is_none()
+                || candidate.effective_schema.is_none()
                 || candidate.probe_bytes.is_none()
                 || candidate.probe_records.is_none()
                 || candidate.schema_verdict.is_none()
             {
                 return Err(CdfError::contract(format!(
-                    "observed discovery candidate `{}` requires physical_schema_hash, physical_schema, probe_bytes, probe_records, and schema_verdict",
+                    "observed discovery candidate `{}` requires physical and effective schema authority, probe accounting, and schema verdict",
                     candidate.canonical_location
                 )));
             }
@@ -934,6 +943,37 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
                     candidate.canonical_location
                 )));
             }
+            let observation = candidate
+                .effective_schema_observation
+                .as_ref()
+                .expect("observed effective schema observation checked above");
+            if let Some(route) = &observation.route {
+                route.validate()?;
+            }
+            let effective_schema = candidate
+                .effective_schema
+                .as_ref()
+                .expect("observed effective schema checked above")
+                .to_arrow()?;
+            let effective_hash = cdf_kernel::canonical_arrow_schema_hash(&effective_schema)?;
+            if observation.observation_id != candidate.canonical_location
+                || observation.physical_schema_hash != computed_hash
+                || observation.effective_schema_hash != effective_hash
+            {
+                return Err(CdfError::contract(format!(
+                    "discovery candidate `{}` effective schema observation does not bind its location, physical schema, and effective schema",
+                    candidate.canonical_location
+                )));
+            }
+            if let Some(quarantine) = &candidate.terminal_quarantine {
+                quarantine.validate()?;
+                if quarantine.observation_id() != candidate.canonical_location {
+                    return Err(CdfError::contract(format!(
+                        "discovery candidate `{}` terminal quarantine belongs to another observation",
+                        candidate.canonical_location
+                    )));
+                }
+            }
             // Catalogs and other metadata authorities can establish a complete
             // physical schema without reading source payload bytes. Presence is
             // the accounting invariant; zero is an honest measurement.
@@ -941,12 +981,15 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
         DiscoveryParticipation::Unobserved => {
             if candidate.physical_schema_hash.is_some()
                 || candidate.physical_schema.is_some()
+                || candidate.effective_schema_observation.is_some()
+                || candidate.effective_schema.is_some()
+                || candidate.terminal_quarantine.is_some()
                 || candidate.probe_bytes.is_some()
                 || candidate.probe_records.is_some()
                 || candidate.schema_verdict.is_some()
             {
                 return Err(CdfError::contract(format!(
-                    "unobserved discovery candidate `{}` forbids physical_schema_hash, physical_schema, probe_bytes, probe_records, and schema_verdict",
+                    "unobserved discovery candidate `{}` forbids schema authority, probe accounting, and schema verdict",
                     candidate.canonical_location
                 )));
             }

@@ -517,30 +517,32 @@ where
             package.manifest().lifecycle.status,
             PackageStatus::Planned | PackageStatus::Extracting | PackageStatus::Validated
         ) {
-            let target = destination.target().clone();
-            let active = ActiveStagedIngress::begin(
-                destination.runtime_mut(),
-                StagedIngressPlan {
-                    checkpoint_id: expected_checkpoint_id.clone(),
-                    execution_plan_id: context.plan.scan.plan_id.clone(),
-                    target,
-                    disposition: context.plan.write_disposition.clone(),
-                    schema_hash: context.schema_hash.clone(),
-                    output_schema: context.plan.output_arrow_schema()?.as_ref().clone(),
-                    merge_keys: context.descriptor.merge_key.clone(),
-                    workload: cdf_runtime::StagedIngressWorkload::planned_stream(
-                        context.plan.scan.partition_count()?,
-                        context
-                            .plan
-                            .scan
-                            .planned_source_bytes
-                            .map(|bytes| bytes.get()),
-                    ),
-                },
-                context.services,
-            )?;
-            if let Some(active) = active {
-                active.abort()?;
+            if context.plan.route_family.is_none() {
+                let target = destination.target().clone();
+                let active = ActiveStagedIngress::begin(
+                    destination.runtime_mut(),
+                    StagedIngressPlan {
+                        checkpoint_id: expected_checkpoint_id.clone(),
+                        execution_plan_id: context.plan.scan.plan_id.clone(),
+                        target,
+                        disposition: context.plan.write_disposition.clone(),
+                        schema_hash: context.schema_hash.clone(),
+                        output_schema: context.plan.output_arrow_schema()?.as_ref().clone(),
+                        merge_keys: context.descriptor.merge_key.clone(),
+                        workload: cdf_runtime::StagedIngressWorkload::planned_stream(
+                            context.plan.scan.partition_count()?,
+                            context
+                                .plan
+                                .scan
+                                .planned_source_bytes
+                                .map(|bytes| bytes.get()),
+                        ),
+                    },
+                    context.services,
+                )?;
+                if let Some(active) = active {
+                    active.abort()?;
+                }
             }
             package.discard_incomplete_construction(&package_id)?;
             return Ok(ordinal);

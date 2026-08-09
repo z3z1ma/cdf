@@ -132,7 +132,9 @@ impl Planner {
                 resource.schema().as_ref(),
                 None,
             )?;
-        if let Some(evidence) = &effective_schema_evidence {
+        if let Some(evidence) = &effective_schema_evidence
+            && !uses_dynamic_routed_schema_observations(resource, &evidence.authority)
+        {
             plan.compiled_schema_admission
                 .validate_preobserved_evidence(evidence)?;
         }
@@ -244,7 +246,9 @@ impl Planner {
                 resource.schema().as_ref(),
                 baseline_projection,
             )?;
-        if let Some(evidence) = &effective_schema_evidence {
+        if let Some(evidence) = &effective_schema_evidence
+            && !uses_dynamic_routed_schema_observations(resource, &evidence.authority)
+        {
             plan.compiled_schema_admission
                 .validate_preobserved_evidence(evidence)?;
         }
@@ -395,6 +399,7 @@ impl Planner {
             effect_key: finish.effect_key,
             keyed_effects: input.keyed_effects,
             route_family: None,
+            routed_output_plans: Vec::new(),
             validation_program,
             schema_authority: finish.schema_authority,
             output_schema: finish.output_schema,
@@ -852,6 +857,7 @@ where
     };
     runtime.validate_for_resource(resource.descriptor())?;
     let evidence = &runtime.evidence;
+    let dynamic_routed_observations = uses_dynamic_routed_schema_observations(resource, evidence);
     let projection = match scan.partition_authority() {
         cdf_kernel::PartitionAuthority::Inline(partitions) => partitions
             .first()
@@ -877,9 +883,22 @@ where
                         observation.physical_schema_hash, observation.observation_id
                     ))
                 })?;
+            let effective_schema = if dynamic_routed_observations {
+                runtime
+                    .physical_schema(&observation.effective_schema_hash)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "effective schema runtime omitted routed schema {} for observation {:?}",
+                            observation.effective_schema_hash, observation.observation_id
+                        ))
+                    })?
+                    .clone()
+            } else {
+                resource.schema()
+            };
             let projected = project_physical_observation(
                 physical.as_ref(),
-                resource.schema().as_ref(),
+                effective_schema.as_ref(),
                 projection.as_deref(),
             )?;
             let hash = cdf_kernel::canonical_arrow_schema_hash(&projected)?;
@@ -912,14 +931,15 @@ where
     };
     if let Some(inline_partitions) = inline_partitions {
         for partition in inline_partitions {
-            let observation_id = partition
-            .metadata
-            .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
-            .ok_or_else(|| {
-            CdfError::data(
-                "effective schema evidence requires every planned partition to identify its schema observation",
-            )
-        })?;
+            let Some(observation_id) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+            else {
+                if dynamic_routed_observations {
+                    continue;
+                }
+                return Err(CdfError::data(
+                    "effective schema evidence requires every planned partition to identify its schema observation",
+                ));
+            };
             let binding = cdf_kernel::SchemaObservationBinding::new(
                 partition
                 .metadata
@@ -1015,13 +1035,26 @@ where
                         observation.observation_id
                     ))
                 })?;
+            let observation_constraint = if dynamic_routed_observations {
+                let effective = runtime
+                    .physical_schema(&observation.effective_schema_hash)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "effective schema runtime omitted routed schema {} for observation {:?}",
+                            observation.effective_schema_hash, observation.observation_id
+                        ))
+                    })?;
+                scan_expression_schema(effective.as_ref(), projection.as_deref())?
+            } else {
+                admission_constraint.clone()
+            };
             let reconciliation = reconcile_schema_with_source_materializations(
                 physical_schema,
-                &admission_constraint,
+                &observation_constraint,
                 &type_policy,
                 resource.source_materializations(),
             )?;
-            validate_reconciliation_target(&reconciliation.schema, &admission_constraint)?;
+            validate_reconciliation_target(&reconciliation.schema, &observation_constraint)?;
             Ok(EffectiveSchemaObservationCoercion {
                 observation_id: observation.observation_id.clone(),
                 physical_schema_hash: physical_schema_hash.clone(),
@@ -1040,6 +1073,23 @@ where
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,
     }))
+}
+
+fn uses_dynamic_routed_schema_observations<R>(
+    resource: &R,
+    evidence: &cdf_kernel::EffectiveSchemaEvidence,
+) -> bool
+where
+    R: ResourceStream + ?Sized,
+{
+    resource.required_route_field().is_some()
+        && !evidence.observations.is_empty()
+        && evidence.observations.iter().all(|observation| {
+            observation
+                .route
+                .as_ref()
+                .is_some_and(|route| Some(route.field.as_str()) == resource.required_route_field())
+        })
 }
 
 fn project_physical_observation(

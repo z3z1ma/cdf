@@ -382,16 +382,144 @@ pub fn prepare_cached_resource_schema_artifacts(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let prepared = resource
+    let mut prepared = resource
         .with_schema_source_and_schema(
             resource.descriptor().schema_source.clone(),
             baseline.schema().clone(),
         )
         .with_baseline_observation_schema_catalog(baseline_observation_schema_catalog);
+    if let Some(manifest) = discovery_manifest.as_ref() {
+        let runtime = cached_effective_schema_runtime(manifest, snapshot)?;
+        prepared = prepared.with_effective_schema(prepared.schema(), runtime)?;
+    }
     Ok(PreparedSchemaResource {
         resource: prepared,
         discovery_manifest,
     })
+}
+
+fn cached_effective_schema_runtime(
+    manifest: &DiscoveryManifestArtifact,
+    snapshot: &cdf_kernel::SchemaSnapshotReference,
+) -> Result<EffectiveSchemaRuntime> {
+    let effective_schema_hash = manifest.effective_schema_hash.clone().ok_or_else(|| {
+        CdfError::data(
+            "cached discovery manifest omitted its effective schema hash; run discovery again",
+        )
+    })?;
+    let observed = manifest
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
+        .collect::<Vec<_>>();
+    let observations = observed
+        .iter()
+        .map(|candidate| {
+            candidate
+                .effective_schema_observation
+                .clone()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "cached discovery candidate {:?} omitted effective schema observation authority; run discovery again",
+                        candidate.canonical_location
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut schema_catalog = observed
+        .iter()
+        .map(|candidate| {
+            let observation = candidate
+                .effective_schema_observation
+                .as_ref()
+                .ok_or_else(|| CdfError::data("cached effective observation is absent"))?;
+            let physical = candidate
+                .physical_schema
+                .as_ref()
+                .ok_or_else(|| CdfError::data("cached physical schema is absent"))?;
+            let effective = candidate
+                .effective_schema
+                .as_ref()
+                .ok_or_else(|| CdfError::data("cached effective schema is absent"))?;
+            Ok([
+                EffectiveSchemaCatalogEntry::new(
+                    observation.physical_schema_hash.clone(),
+                    Arc::new(physical.to_arrow()?),
+                ),
+                EffectiveSchemaCatalogEntry::new(
+                    observation.effective_schema_hash.clone(),
+                    Arc::new(effective.to_arrow()?),
+                ),
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    schema_catalog
+        .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
+    schema_catalog.dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
+    let mut evidence = EffectiveSchemaEvidence::new(
+        SchemaBaselineReference::Pinned {
+            snapshot: snapshot.clone(),
+        },
+        effective_schema_hash,
+        manifest.reference(),
+        observations,
+    )?;
+    let selected_files = u64::try_from(observed.len())
+        .map_err(|_| CdfError::data("cached discovery observed count exceeds u64"))?;
+    let matched_files = u64::try_from(manifest.candidates.len())
+        .map_err(|_| CdfError::data("cached discovery candidate count exceeds u64"))?;
+    let observed_bytes = observed.iter().try_fold(0_u64, |total, candidate| {
+        total
+            .checked_add(candidate.probe_bytes.unwrap_or_default())
+            .ok_or_else(|| CdfError::data("cached discovery byte accounting overflow"))
+    })?;
+    let observed_records = observed.iter().try_fold(0_u64, |total, candidate| {
+        total
+            .checked_add(candidate.probe_records.unwrap_or_default())
+            .ok_or_else(|| CdfError::data("cached discovery record accounting overflow"))
+    })?;
+    evidence = evidence.with_discovery_coverage(DiscoveryCoverageEvidence::new(
+        DiscoveryCoverageEvidenceInput {
+            file_coverage: match &manifest.file_coverage {
+                DiscoveryFileCoverage::AllFiles => "all_files",
+                DiscoveryFileCoverage::SampledFiles => "sampled_files",
+            }
+            .to_owned(),
+            within_file_coverage: match &manifest.within_file_coverage {
+                DiscoveryWithinFileCoverage::FormatMetadata => "format_metadata",
+                DiscoveryWithinFileCoverage::BoundedContent => "bounded_content",
+                DiscoveryWithinFileCoverage::FullContent => "full_content",
+            }
+            .to_owned(),
+            selector: manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.selector.clone()),
+            sample_files: manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.sample_files),
+            matched_files,
+            selected_files,
+            observed_bytes,
+            observed_records,
+        },
+    )?)?;
+    let terminal_quarantines = observed
+        .iter()
+        .filter_map(|candidate| candidate.terminal_quarantine.clone())
+        .collect::<Vec<_>>();
+    EffectiveSchemaRuntime::new(evidence, schema_catalog)?
+        .with_terminal_quarantines(terminal_quarantines)?
+        .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(
+            manifest.budget.max_bytes_per_file(),
+            manifest.budget.max_records_per_file(),
+            manifest.budget.max_total_in_flight_bytes(),
+            manifest.budget.max_concurrent_probes(),
+        )?)
 }
 
 #[derive(Clone, Debug)]
@@ -409,6 +537,7 @@ struct SchemaProbe {
     cache_status: String,
     schema: arrow_schema::SchemaRef,
     source_identity: BTreeMap<String, String>,
+    route: Option<cdf_kernel::SchemaObservationRoute>,
 }
 
 #[derive(Clone, Debug)]
@@ -674,7 +803,20 @@ fn discover_registered_resource_schema(
         })
         .collect::<Vec<_>>();
     let file_aggregate = plan_aggregate_arrow_schema_join(&aggregate_candidates)?;
-    if options.runtime_baseline.is_none() && !file_aggregate.is_compatible() {
+    let routed_probe_count = selected_probes
+        .iter()
+        .filter(|probe| probe.route.is_some())
+        .count();
+    if routed_probe_count != 0 && routed_probe_count != selected_probes.len() {
+        return Err(CdfError::internal(
+            "source discovery mixed routed and unrouted schema observations for one resource",
+        ));
+    }
+    let routed_schema_family = routed_probe_count != 0;
+    if options.runtime_baseline.is_none()
+        && !routed_schema_family
+        && !file_aggregate.is_compatible()
+    {
         let file_reports = file_aggregate
             .files
             .iter()
@@ -705,9 +847,23 @@ fn discover_registered_resource_schema(
         )));
     }
 
-    let initial_observed_schema = match selected_probes.as_slice() {
-        [probe] => probe.schema.as_ref(),
-        _ => &file_aggregate.schema,
+    // A routed family intentionally owns one independently typed schema per output binding. The
+    // resource snapshot remains a deterministic compilation carrier for framework seams that
+    // require one primary schema; runtime admission and destination planning use the exact routed
+    // observation schemas below. Choosing the lowest canonical location makes that carrier stable
+    // across discovery concurrency and source candidate iteration order.
+    let initial_observed_schema = if routed_schema_family {
+        selected_probes
+            .iter()
+            .min_by(|left, right| left.location.cmp(&right.location))
+            .ok_or_else(|| CdfError::internal("routed discovery selected no schema observations"))?
+            .schema
+            .as_ref()
+    } else {
+        match selected_probes.as_slice() {
+            [probe] => probe.schema.as_ref(),
+            _ => &file_aggregate.schema,
+        }
     };
     let (effective_schema, terminal_quarantines) =
         if let Some(baseline) = options.runtime_baseline() {
@@ -721,6 +877,22 @@ fn discover_registered_resource_schema(
     let normalized = effective_schema;
     let normalized = Arc::new(normalized);
     let metadata = registered_snapshot_metadata(plan)?;
+    let candidate_verdicts = if routed_schema_family {
+        selected_probes
+            .iter()
+            .map(|probe| {
+                let report = plan_aggregate_arrow_schema_join(&[AggregateSchemaCandidate::new(
+                    probe.location.clone(),
+                    probe.schema.as_ref().clone(),
+                )])?;
+                report.files.into_iter().next().ok_or_else(|| {
+                    CdfError::internal("single routed schema report omitted its candidate verdict")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        file_aggregate.files.clone()
+    };
     let manifest_candidates = candidates
         .iter()
         .map(|candidate| {
@@ -736,8 +908,7 @@ fn discover_registered_resource_schema(
                         candidate.location
                     ))
                 })?;
-            let verdict = file_aggregate
-                .files
+            let verdict = candidate_verdicts
                 .iter()
                 .find(|verdict| verdict.location == probe.location)
                 .ok_or_else(|| {
@@ -894,23 +1065,42 @@ fn discover_registered_resource_schema(
         let mut observations = probes
             .iter()
             .map(|probe| {
-                EffectiveSchemaObservationEvidence::new(
+                let effective_schema =
+                    normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;
+                let effective_schema_hash =
+                    cdf_kernel::canonical_arrow_schema_hash(&effective_schema)?;
+                let evidence = EffectiveSchemaObservationEvidence::new(
                     probe.location.clone(),
                     probe.physical_schema_hash.clone(),
                     probe.schema_observation_binding.clone(),
                 )
+                .with_effective_schema_hash(effective_schema_hash);
+                match probe.route.clone() {
+                    Some(route) => evidence.with_route(route),
+                    None => Ok(evidence),
+                }
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
         let mut schema_catalog = probes
             .iter()
-            .map(|probe| {
-                EffectiveSchemaCatalogEntry::new(
+            .flat_map(|probe| {
+                let physical = EffectiveSchemaCatalogEntry::new(
                     probe.physical_schema_hash.clone(),
                     Arc::clone(&probe.schema),
-                )
+                );
+                let effective =
+                    normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())
+                        .and_then(|schema| {
+                            let schema = Arc::new(schema);
+                            Ok(EffectiveSchemaCatalogEntry::new(
+                                cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+                                schema,
+                            ))
+                        });
+                [Ok(physical), effective]
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         schema_catalog
             .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
         schema_catalog
@@ -1166,6 +1356,7 @@ fn schema_probe_from_parts(
         cache_status,
         schema,
         source_identity,
+        route: candidate.source.route().cloned(),
     })
 }
 
@@ -1372,6 +1563,19 @@ fn manifest_candidate(
     selector_identity: Option<DiscoveryBoundedIdentity>,
     terminal_quarantine: Option<&TerminalSchemaObservationQuarantine>,
 ) -> Result<DiscoveryCandidateEvidence> {
+    let effective_schema =
+        normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;
+    let effective_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&effective_schema)?;
+    let observation = EffectiveSchemaObservationEvidence::new(
+        probe.location.clone(),
+        probe.physical_schema_hash.clone(),
+        probe.schema_observation_binding.clone(),
+    )
+    .with_effective_schema_hash(effective_schema_hash);
+    let observation = match probe.route.clone() {
+        Some(route) => observation.with_route(route)?,
+        None => observation,
+    };
     let outcome = if verdict
         .fields
         .iter()
@@ -1401,6 +1605,11 @@ fn manifest_candidate(
         physical_schema: Some(cdf_kernel::CanonicalArrowSchema::from_arrow(
             probe.schema.as_ref(),
         )?),
+        effective_schema_observation: Some(observation),
+        effective_schema: Some(cdf_kernel::CanonicalArrowSchema::from_arrow(
+            &effective_schema,
+        )?),
+        terminal_quarantine: terminal_quarantine.cloned(),
         probe_bytes: Some(probe.probe_bytes),
         probe_records: Some(probe.probe_records),
         schema_verdict: Some(DiscoverySchemaVerdict {
@@ -1447,6 +1656,9 @@ fn unobserved_manifest_candidate(
         metadata_variance: Vec::new(),
         physical_schema_hash: None,
         physical_schema: None,
+        effective_schema_observation: None,
+        effective_schema: None,
+        terminal_quarantine: None,
         probe_bytes: None,
         probe_records: None,
         schema_verdict: None,

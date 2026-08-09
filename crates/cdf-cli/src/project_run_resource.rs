@@ -17,6 +17,7 @@ pub(crate) struct CliProjectRunSource {
     source_plan: cdf_runtime::CompiledSourcePlan,
     execution_extent: cdf_kernel::ExecutionExtent,
     relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
+    routed_relational_expression_plans: Vec<cdf_declarative::RoutedRelationalExpressionPlan>,
 }
 
 impl CliProjectRunSource {
@@ -25,12 +26,14 @@ impl CliProjectRunSource {
         source_plan: cdf_runtime::CompiledSourcePlan,
         execution_extent: cdf_kernel::ExecutionExtent,
         relational_expression_plan: Option<cdf_contract::RelationalExpressionPlan>,
+        routed_relational_expression_plans: Vec<cdf_declarative::RoutedRelationalExpressionPlan>,
     ) -> Self {
         Self {
             resource,
             source_plan,
             execution_extent,
             relational_expression_plan,
+            routed_relational_expression_plans,
         }
     }
 
@@ -54,6 +57,12 @@ impl CliProjectRunSource {
         &self,
     ) -> Option<&cdf_contract::RelationalExpressionPlan> {
         self.relational_expression_plan.as_ref()
+    }
+
+    pub(crate) fn routed_relational_expression_plans(
+        &self,
+    ) -> &[cdf_declarative::RoutedRelationalExpressionPlan] {
+        &self.routed_relational_expression_plans
     }
 }
 
@@ -93,6 +102,7 @@ pub(crate) fn build_project_run_resource_from_compilation(
         source_plan,
         resource.execution_extent().clone(),
         resource.relational_expression_plan().cloned(),
+        resource.routed_relational_expression_plans().to_vec(),
     ))
 }
 
@@ -181,6 +191,7 @@ fn build_project_run_resource_with_artifact_root(
         source_plan,
         resource.execution_extent().clone(),
         resource.relational_expression_plan().cloned(),
+        resource.routed_relational_expression_plans().to_vec(),
     ))
 }
 

@@ -34,6 +34,9 @@ pub(super) fn write_run_state_commit_artifacts(
         StateDeltaRunDraft {
             segment_positions: draft.segment_positions,
             execution_evidence: draft.execution_evidence(),
+            drain_output_position: draft
+                .drain_frontier
+                .map(|frontier| frontier.frontier.clone()),
             source_continuation: draft
                 .drain_frontier
                 .and_then(|frontier| frontier.carryover.clone()),
@@ -247,6 +250,10 @@ pub(crate) fn state_delta_from_run(
         StateDeltaRunDraft {
             segment_positions: &output.segment_positions,
             execution_evidence: output.execution_evidence(),
+            drain_output_position: output
+                .drain_epoch
+                .as_ref()
+                .map(|epoch| epoch.closure.frontier.frontier.clone()),
             source_continuation: output
                 .drain_epoch
                 .as_ref()
@@ -285,6 +292,7 @@ pub(crate) fn state_delta_from_run(
 struct StateDeltaRunDraft<'a> {
     segment_positions: &'a [cdf_engine::EngineSegmentPosition],
     execution_evidence: &'a cdf_engine::EngineExecutionEvidence,
+    drain_output_position: Option<SourcePosition>,
     source_continuation: Option<SourcePosition>,
     output_watermark: Option<cdf_kernel::WatermarkClaim>,
     consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
@@ -350,43 +358,71 @@ fn state_delta_preimage_from_run_draft(
         .iter()
         .map(|observation| observation.source_position.clone())
         .collect::<Vec<_>>();
-    let output_position = if observed_positions.is_empty() {
-        if draft.consumed_late_data_carryover.is_empty() {
-            return Err(CdfError::data(
-                "checkpoint state requires processed source observations or persisted late-data carryover",
-            ));
-        }
-        let head = head.ok_or_else(|| {
-            CdfError::data("late-data carryover checkpoint requires a committed input head")
-        })?;
-        let carryover_positions = draft
-            .consumed_late_data_carryover
-            .iter()
-            .map(|carryover| carryover.output_position.clone())
-            .collect::<Vec<_>>();
-        let observed = cdf_kernel::aggregate_resource_closed_output_position(
-            context.descriptor,
-            context.schema,
-            Some(&head.delta.output_position),
-            &carryover_positions,
-        )?;
-        if observed != head.delta.output_position
-            || state_segments
-                .iter()
-                .any(|segment| segment.output_position != head.delta.output_position)
-        {
-            return Err(CdfError::data(
-                "late-data carryover cannot advance or disagree with its committed source frontier",
-            ));
-        }
-        head.delta.output_position.clone()
+    let processed_output_position = if observed_positions.is_empty() {
+        None
     } else {
-        cdf_kernel::aggregate_resource_closed_output_position(
+        Some(cdf_kernel::aggregate_resource_closed_output_position(
             context.descriptor,
             context.schema,
             head.map(|checkpoint| &checkpoint.delta.output_position),
             &observed_positions,
-        )?
+        )?)
+    };
+    let output_position = match (processed_output_position, draft.drain_output_position) {
+        (Some(processed), Some(drain)) => {
+            if processed != drain {
+                return Err(CdfError::internal(
+                    "drain epoch frontier disagrees with processed source observation authority",
+                ));
+            }
+            processed
+        }
+        (Some(processed), None) => processed,
+        (None, Some(drain)) => {
+            let aggregated = cdf_kernel::aggregate_resource_closed_output_position(
+                context.descriptor,
+                context.schema,
+                head.map(|checkpoint| &checkpoint.delta.output_position),
+                std::slice::from_ref(&drain),
+            )?;
+            if aggregated != drain {
+                return Err(CdfError::data(
+                    "drain epoch frontier does not close over the committed source position",
+                ));
+            }
+            drain
+        }
+        (None, None) if draft.consumed_late_data_carryover.is_empty() => {
+            return Err(CdfError::data(
+                "checkpoint state requires processed source observations, a drain frontier, or persisted late-data carryover",
+            ));
+        }
+        (None, None) => {
+            let head = head.ok_or_else(|| {
+                CdfError::data("late-data carryover checkpoint requires a committed input head")
+            })?;
+            let carryover_positions = draft
+                .consumed_late_data_carryover
+                .iter()
+                .map(|carryover| carryover.output_position.clone())
+                .collect::<Vec<_>>();
+            let observed = cdf_kernel::aggregate_resource_closed_output_position(
+                context.descriptor,
+                context.schema,
+                Some(&head.delta.output_position),
+                &carryover_positions,
+            )?;
+            if observed != head.delta.output_position
+                || state_segments
+                    .iter()
+                    .any(|segment| segment.output_position != head.delta.output_position)
+            {
+                return Err(CdfError::data(
+                    "late-data carryover cannot advance or disagree with its committed source frontier",
+                ));
+            }
+            head.delta.output_position.clone()
+        }
     };
     Ok(StateDeltaPreimage {
         checkpoint_id: context.checkpoint_id.clone(),

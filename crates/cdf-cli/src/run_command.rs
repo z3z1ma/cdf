@@ -552,9 +552,10 @@ fn attest_portable_partitions(
     host: &cdf_engine::StandaloneExecutionHost,
 ) -> Result<(), CliError> {
     host.block_on_root(async {
+        let require_generation = plan.execution_extent.is_bounded();
         if let Some(partitions) = plan.scan.inline_partitions() {
             for partition in partitions {
-                attest_portable_partition(resource, partition.clone()).await?;
+                attest_portable_partition(resource, partition.clone(), require_generation).await?;
             }
         } else if let Some(reference) = plan.scan.external_task_set() {
             let mut reader = resource
@@ -566,7 +567,7 @@ fn attest_portable_partitions(
                         "portable source task set ended before planned partition {ordinal}"
                     ))
                 })?;
-                attest_portable_executable(resource, partition).await?;
+                attest_portable_executable(resource, partition, require_generation).await?;
             }
             if reader.next_partition(reference.task_count)?.is_some() {
                 return Err(CdfError::data(
@@ -582,8 +583,11 @@ fn attest_portable_partitions(
 async fn attest_portable_partition(
     resource: &crate::project_run_resource::CliProjectRunSource,
     partition: cdf_kernel::PartitionPlan,
+    require_generation: bool,
 ) -> cdf_kernel::Result<()> {
-    let expected = portable_partition_attestation(&partition)?;
+    let Some(expected) = portable_partition_attestation(&partition, require_generation)? else {
+        return Ok(());
+    };
     let observed = resource
         .as_queryable()
         .attest_partition(partition.clone())
@@ -594,31 +598,38 @@ async fn attest_portable_partition(
 async fn attest_portable_executable(
     resource: &crate::project_run_resource::CliProjectRunSource,
     partition: cdf_kernel::ExecutablePartition,
+    require_generation: bool,
 ) -> cdf_kernel::Result<()> {
     let plan = partition.plan().clone();
-    let expected = portable_partition_attestation(&plan)?;
+    let Some(expected) = portable_partition_attestation(&plan, require_generation)? else {
+        return Ok(());
+    };
     let observed = resource.as_queryable().attest_executable(partition).await?;
     validate_portable_attestation(&plan, &expected, observed)
 }
 
 fn portable_partition_attestation(
     partition: &cdf_kernel::PartitionPlan,
-) -> cdf_kernel::Result<cdf_kernel::PartitionAttestation> {
-    let planned_position = partition.planned_position.clone().ok_or_else(|| {
-        CdfError::contract(format!(
-            "portable plan partition `{}` has no source-generation position; its adapter must implement portable generation authority",
-            partition.partition_id
-        ))
-    })?;
+    require_generation: bool,
+) -> cdf_kernel::Result<Option<cdf_kernel::PartitionAttestation>> {
+    let Some(planned_position) = partition.planned_position.clone() else {
+        if require_generation {
+            return Err(CdfError::contract(format!(
+                "portable plan partition `{}` has no source-generation position; its adapter must implement portable generation authority",
+                partition.partition_id
+            )));
+        }
+        return Ok(None);
+    };
     let schema_hash = partition
         .metadata
         .get(cdf_kernel::PLAN_PHYSICAL_SCHEMA_HASH_KEY)
         .map(|value| cdf_kernel::SchemaHash::new(value.clone()))
         .transpose()?;
-    Ok(cdf_kernel::PartitionAttestation::new(
+    Ok(Some(cdf_kernel::PartitionAttestation::new(
         planned_position,
         schema_hash,
-    ))
+    )))
 }
 
 fn validate_portable_attestation(
@@ -1856,7 +1867,7 @@ fn adhoc_target_for_resource(resource_id: &str) -> String {
         .to_owned()
 }
 
-fn minted_run_suffix(resource_id: &str) -> Result<String, CliError> {
+pub(crate) fn minted_run_suffix(resource_id: &str) -> Result<String, CliError> {
     minted_run_suffix_at(resource_id, SystemTime::now())
 }
 
@@ -2016,6 +2027,31 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Environment);
         assert_eq!(error.code, "CDF-ENV-HOST");
         assert!(error.message.contains("correct the system clock"));
+    }
+
+    #[test]
+    fn portable_stream_partition_does_not_invent_finite_generation_authority() {
+        let partition = cdf_kernel::PartitionPlan {
+            partition_id: cdf_kernel::PartitionId::new("live-stream").unwrap(),
+            scope: cdf_kernel::ScopeKey::Resource,
+            planned_position: None,
+            start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+            metadata: std::collections::BTreeMap::new(),
+        };
+
+        assert!(
+            portable_partition_attestation(&partition, false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            portable_partition_attestation(&partition, true)
+                .unwrap_err()
+                .message
+                .contains("source-generation position")
+        );
     }
 
     #[test]

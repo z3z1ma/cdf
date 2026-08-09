@@ -3383,6 +3383,93 @@ fn state_delta_rejects_partial_execution_even_with_an_earlier_complete_observati
 }
 
 #[test]
+fn state_delta_accepts_a_rowless_drain_frontier_without_inventing_a_schema_observation() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = MongoEventPrefixDrainResource::new();
+    let package_id = "pkg-rowless-mongo-drain-frontier";
+    let builder = PackageBuilder::create(
+        temp.path().join(package_id),
+        package_id,
+        cdf_kernel::PackageContentAuthority::rows(SchemaHash::new("engine-output-schema").unwrap()),
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    let (manifest, verification) = builder.finish_verified().unwrap();
+    let execution_evidence =
+        cdf_engine::EngineExecutionEvidence::new(Vec::new(), Vec::new(), None, true).unwrap();
+    let mut output = EngineRunOutputWithSegmentPositions::new(
+        EngineRunOutput {
+            manifest,
+            verification,
+            profile: ExecutionProfile::default(),
+            lineage: LineageSummary::default(),
+            admission: cdf_contract::ContractPolicy::default().admission,
+            verdict_summary: cdf_contract::VerdictSummary::default(),
+            terminal_schema_quarantines: Vec::new(),
+        },
+        Vec::new(),
+        execution_evidence,
+    );
+    let position = resource.position("post-batch-token");
+    let epoch_frontier = cdf_kernel::EpochFrontier {
+        version: cdf_kernel::EPOCH_FRONTIER_VERSION,
+        policy_version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+        epoch_ordinal: 0,
+        frontier: position.clone(),
+        input_low: None,
+        input_high: position.clone(),
+        carryover: None,
+        watermark: None,
+    };
+    let closure_evidence = cdf_kernel::EpochClosureEvidence {
+        version: cdf_kernel::EPOCH_CLOSURE_EVIDENCE_VERSION,
+        frontier: epoch_frontier.clone(),
+        cause: cdf_kernel::EpochClosureCause::DrainTermination {
+            termination: cdf_kernel::DrainTermination::Duration {
+                milliseconds: 20_000,
+            },
+        },
+        observation: cdf_kernel::EpochClosureObservation::Elapsed {
+            observed_milliseconds: 20_000,
+            overshoot_milliseconds: 0,
+        },
+    };
+    closure_evidence.validate().unwrap();
+    output.drain_epoch = Some(cdf_engine::EngineDrainEpoch {
+        closure: cdf_runtime::DrainEpochClosure {
+            frontier: epoch_frontier,
+            evidence: closure_evidence,
+            observed_at_unix_milliseconds: 1_700_000_000_000,
+            terminate_after_settlement: true,
+        },
+        consumed_partition_count: 1,
+        resume_partition: None,
+        consumed_late_data_carryover: Vec::new(),
+        late_data_carryover: Vec::new(),
+        partition_watermarks: Vec::new(),
+    });
+
+    let delta = state_delta_from_run(
+        &state_delta_request(&resource, package_id),
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &resource.descriptor().state_scope,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(delta.output_position, position);
+    assert!(delta.segments.is_empty());
+    assert!(
+        output
+            .execution_evidence()
+            .processed_observations()
+            .is_empty()
+    );
+}
+
+#[test]
 fn state_delta_aggregates_file_manifest_positions_deterministically() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());

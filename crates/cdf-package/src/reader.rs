@@ -1098,6 +1098,10 @@ impl PackageReader {
                     .open_std_file(cdf_package_contract::MANIFEST_FILE)?,
             ),
             self.verified_optional_json_artifact(verified, PROCESSED_OBSERVATIONS_FILE)?,
+            self.verified_optional_json_artifact(
+                verified,
+                cdf_package_contract::EPOCH_FRONTIER_FILE,
+            )?,
         )
     }
 

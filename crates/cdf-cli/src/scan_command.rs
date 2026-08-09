@@ -667,15 +667,18 @@ pub(crate) fn build_engine_plan_for_resource(
     let validation_program =
         compile_resource_validation_program(&policy, &observed_schema, resource.descriptor())?;
     let request = scan_request(resource.descriptor(), args)?;
+    let keyed_effects = keyed_effect_plan_authority(source, routing.delete_application)?;
+    let segmentation = segmentation_policy_from_tuning(&args.segmentation)?;
+    let package_id = run_package_id
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id));
     let input = EnginePlanInput {
-        request,
+        request: request.clone(),
         validation_program,
         execution_extent: source.execution_extent().clone(),
-        keyed_effects: keyed_effect_plan_authority(source, routing.delete_application)?,
-        segmentation: segmentation_policy_from_tuning(&args.segmentation)?,
-        package_id: run_package_id
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
+        keyed_effects: keyed_effects.clone(),
+        segmentation: segmentation.clone(),
+        package_id: package_id.clone(),
         relational_expression_plan: source.relational_expression_plan().cloned(),
         committed_frontier,
     };
@@ -708,25 +711,103 @@ pub(crate) fn build_engine_plan_for_resource(
             ))
             .into());
         }
-        let input_schema_hash =
-            cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
-        for (_, schema) in &outputs {
-            if cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())? != input_schema_hash {
-                return Err(CdfError::contract(
-                    "heterogeneous routed source schemas require independently compiled output plans",
+        let routed_relational = source.routed_relational_expression_plans();
+        if routed_relational.is_empty() {
+            let input_schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+            for (_, schema) in &outputs {
+                if cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())? != input_schema_hash {
+                    return Err(CdfError::contract(
+                        "heterogeneous routed source schemas omitted their independently compiled output plans",
+                    )
+                    .into());
+                }
+            }
+            let family = cdf_kernel::RouteTargetFamily::new(
+                route.clone(),
+                routing.logical_target.clone(),
+                routing.identifier_max_length,
+                outputs
+                    .into_iter()
+                    .map(|(value, _)| (value, plan.output_schema.arrow_schema_hash.clone())),
+            )?;
+            plan = plan.bind_route_family(family)?;
+        } else {
+            let mut source_outputs = outputs.into_iter();
+            let mut routed_plans = Vec::with_capacity(routed_relational.len());
+            for authored in routed_relational {
+                let (source_route, source_schema) = source_outputs.next().ok_or_else(|| {
+                    CdfError::data(
+                        "runtime routed schema inventory is shorter than compiled query authority",
+                    )
+                })?;
+                if source_route != authored.route_value
+                    || cdf_kernel::canonical_arrow_schema_hash(source_schema.as_ref())?
+                        != cdf_kernel::canonical_arrow_schema_hash(
+                            authored.plan.input_schema.to_arrow()?.as_ref(),
+                        )?
+                {
+                    return Err(CdfError::data(
+                        "runtime routed schema inventory differs from compiled query authority; discover and compile again",
+                    )
+                    .into());
+                }
+                let routed_logical_schema = authored.plan.output_schema.to_arrow()?;
+                let routed_observed = ObservedSchema::from_arrow(routed_logical_schema.as_ref());
+                let mut routed_policy =
+                    ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+                routed_policy.types.coerce_types = allowances.coerce_types;
+                routed_policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+                let routed_validation = compile_resource_validation_program(
+                    &routed_policy,
+                    &routed_observed,
+                    resource.descriptor(),
+                )?;
+                let planning_resource = RoutedSchemaPlanningResource {
+                    inner: resource,
+                    schema: std::sync::Arc::new(authored.plan.input_schema.to_arrow()?),
+                    effective_schema_runtime: resource
+                        .effective_schema_runtime()
+                        .map(|runtime| runtime.for_route_value(&source_route))
+                        .transpose()?,
+                };
+                let routed_engine = Planner::new().plan_tier_b(
+                    &planning_resource,
+                    EnginePlanInput {
+                        request: request.clone(),
+                        validation_program: routed_validation,
+                        execution_extent: source.execution_extent().clone(),
+                        keyed_effects: keyed_effects.clone(),
+                        segmentation: segmentation.clone(),
+                        package_id: package_id.clone(),
+                        relational_expression_plan: Some(authored.plan.clone()),
+                        committed_frontier: None,
+                    },
+                )?;
+                routed_plans.push(cdf_engine::RoutedEngineOutputPlan::from_engine_plan(
+                    authored.route_value.clone(),
+                    routed_engine,
+                )?);
+            }
+            if source_outputs.next().is_some() {
+                return Err(CdfError::data(
+                    "runtime routed schema inventory is longer than compiled query authority",
                 )
                 .into());
             }
+            let family = cdf_kernel::RouteTargetFamily::new(
+                route.clone(),
+                routing.logical_target.clone(),
+                routing.identifier_max_length,
+                routed_plans.iter().map(|routed| {
+                    (
+                        routed.route_value.clone(),
+                        routed.output_schema.arrow_schema_hash.clone(),
+                    )
+                }),
+            )?;
+            plan = plan.bind_heterogeneous_route_family(family, routed_plans)?;
         }
-        let family = cdf_kernel::RouteTargetFamily::new(
-            route.clone(),
-            routing.logical_target.clone(),
-            routing.identifier_max_length,
-            outputs
-                .into_iter()
-                .map(|(value, _)| (value, plan.output_schema.arrow_schema_hash.clone())),
-        )?;
-        plan = plan.bind_route_family(family)?;
     }
     let source_plan = source.source_plan();
     plan.bind_compiled_source(source_plan)
@@ -735,6 +816,70 @@ pub(crate) fn build_engine_plan_for_resource(
             plan.bind_resolved_transaction_limit(execution.spill().snapshot().budget_bytes)
         })
         .map_err(CliError::from)
+}
+
+struct RoutedSchemaPlanningResource<'a> {
+    inner: &'a dyn cdf_kernel::QueryableResource,
+    schema: arrow_schema::SchemaRef,
+    effective_schema_runtime: Option<cdf_kernel::EffectiveSchemaRuntime>,
+}
+
+impl cdf_kernel::ResourceStream for RoutedSchemaPlanningResource<'_> {
+    fn descriptor(&self) -> &cdf_kernel::ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn source_boundary_capabilities(&self) -> Option<cdf_kernel::SourceBoundaryCapabilities> {
+        self.inner.source_boundary_capabilities()
+    }
+
+    fn plan_partitions(
+        &self,
+        request: &cdf_kernel::ScanRequest,
+    ) -> cdf_kernel::Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open(partition)
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+
+    fn source_materializations(&self) -> &[cdf_kernel::SourceMaterializationRule] {
+        self.inner.source_materializations()
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
+
+    fn required_route_field(&self) -> Option<&str> {
+        self.inner.required_route_field()
+    }
+}
+
+impl cdf_kernel::QueryableResource for RoutedSchemaPlanningResource<'_> {
+    fn capabilities(&self) -> &cdf_kernel::ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(
+        &self,
+        request: &cdf_kernel::ScanRequest,
+    ) -> cdf_kernel::Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
 }
 
 fn keyed_effect_plan_authority(

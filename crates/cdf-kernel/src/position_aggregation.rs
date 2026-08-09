@@ -102,16 +102,14 @@ pub fn aggregate_position_set(
         .iter()
         .any(|position| matches!(position, SourcePosition::ResumeToken(_)))
     {
-        if positions.len() != 1
-            || !positions
-                .iter()
-                .all(|position| matches!(position, SourcePosition::ResumeToken(_)))
-        {
+        let terminal = &positions[0];
+        if !positions.iter().all(|position| {
+            matches!(position, SourcePosition::ResumeToken(_)) && position == terminal
+        }) {
             return Err(CdfError::data(
-                "MongoDB position aggregation requires exactly one source-attested terminal token for the retained event prefix",
+                "MongoDB position aggregation requires one distinct source-attested terminal token for the retained event prefix",
             ));
         }
-        let terminal = &positions[0];
         return match input {
             Some(previous) => previous.advance_ordered_prefix(terminal),
             None => {
@@ -804,6 +802,16 @@ mod tests {
             )
             .unwrap(),
             second
+        );
+        assert_eq!(
+            aggregate_position_set(
+                "mongo.orders",
+                Some(&first),
+                &[mongo_token("second"), mongo_token("second")],
+                &WriteDisposition::Merge,
+            )
+            .unwrap(),
+            mongo_token("second")
         );
         assert!(
             aggregate_position_set(

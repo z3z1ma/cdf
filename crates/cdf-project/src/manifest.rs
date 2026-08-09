@@ -248,6 +248,7 @@ pub struct ManifestResource {
     pub source_node_id: String,
     pub effective: EffectiveResourceEnvelope,
     pub relational_plan: RelationalExpressionPlan,
+    pub routed_relational_plans: Vec<cdf_declarative::RoutedRelationalExpressionPlan>,
     pub descriptor: ResourceDescriptor,
     pub capabilities: ResourceCapabilities,
     pub execution_extent: ExecutionExtent,
@@ -414,6 +415,7 @@ struct ResourceExecutionIdentity<'a> {
     effective_semantics: &'a BTreeMap<String, String>,
     effective_execution: &'a ExecutionExtent,
     relational_plan: &'a RelationalExpressionPlan,
+    routed_relational_plans: &'a [cdf_declarative::RoutedRelationalExpressionPlan],
 }
 
 #[derive(Clone, Copy)]
@@ -706,6 +708,7 @@ fn compile_manifest_resource(
         source_node_id: entry.query.source_node_id.clone(),
         effective: entry.query.effective.clone(),
         relational_plan,
+        routed_relational_plans: resource.routed_relational_expression_plans().to_vec(),
         descriptor: resource.descriptor().clone(),
         capabilities: resource.capabilities().clone(),
         execution_extent: resource.execution_extent().clone(),
@@ -1189,6 +1192,13 @@ fn validate_resource(
         .relational_plan
         .validate_recorded()
         .map_err(|error| remap(error, authority))?;
+    for routed in &resource.routed_relational_plans {
+        routed
+            .route_value
+            .validate()
+            .and_then(|()| routed.plan.validate_recorded())
+            .map_err(|error| remap(error, authority))?;
+    }
     if CanonicalArrowSchema::from_arrow(&resource.source_plan.schema)
         .map_err(|error| remap(error, authority))?
         != resource.relational_plan.input_schema
@@ -1348,6 +1358,7 @@ fn resource_hash(resource: &ManifestResource) -> Result<String> {
         effective_semantics: &resource.effective.semantics.value,
         effective_execution: &resource.effective.execution.value,
         relational_plan: &resource.relational_plan,
+        routed_relational_plans: &resource.routed_relational_plans,
     })
 }
 

@@ -131,6 +131,11 @@ pub struct BatchHeader {
     pub observation_representation: PhysicalObservationRepresentation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physical_observation_schema: Option<CanonicalArrowSchema>,
+    /// Exact discovery observation that owns this batch's physical schema. This is carried at
+    /// batch granularity because one long-lived source partition can legitimately multiplex
+    /// independently typed routed outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_observation_id: Option<String>,
     pub row_count: u64,
     pub byte_count: u64,
     pub source_position: Option<SourcePosition>,
@@ -173,6 +178,7 @@ impl BatchHeader {
             observed_schema_hash,
             observation_representation: PhysicalObservationRepresentation::ArrowSchema,
             physical_observation_schema: None,
+            schema_observation_id: None,
             row_count,
             byte_count,
             source_position: None,
@@ -191,6 +197,20 @@ impl BatchHeader {
         self.observation_representation = PhysicalObservationRepresentation::MaterializedOutput;
         self.observed_schema_hash = crate::canonical_arrow_schema_hash(physical_schema)?;
         self.physical_observation_schema = Some(CanonicalArrowSchema::from_arrow(physical_schema)?);
+        Ok(())
+    }
+
+    pub fn bind_schema_observation(&mut self, observation_id: impl Into<String>) -> Result<()> {
+        let observation_id = observation_id.into();
+        if observation_id.is_empty()
+            || observation_id.len() > 1024
+            || observation_id.chars().any(char::is_control)
+        {
+            return Err(crate::CdfError::data(
+                "batch schema observation identity must be a nonempty, control-free value of at most 1024 bytes",
+            ));
+        }
+        self.schema_observation_id = Some(observation_id);
         Ok(())
     }
 

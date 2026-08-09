@@ -296,12 +296,7 @@ fn plan_outputs(
             let unique_index_ddl = match output.content.as_ref() {
                 PackageContentAuthority::Rows { .. } => None,
                 PackageContentAuthority::KeyedChanges { key, .. } => {
-                    let suffix = binding
-                        .output_binding
-                        .as_str()
-                        .strip_prefix("route_")
-                        .unwrap_or(binding.output_binding.as_str());
-                    let name = validate_system_ident(&format!("_cdf_route_key_{suffix}"))?;
+                    let name = routed_key_index_name(&target, &binding.output_binding)?;
                     let keys = key
                         .fields
                         .iter()
@@ -328,6 +323,20 @@ fn plan_outputs(
             })
         })
         .collect()
+}
+
+fn routed_key_index_name(
+    target: &TargetRef,
+    output_binding: &cdf_kernel::OutputBindingId,
+) -> Result<cdf_dest_sql::ValidatedSqlIdentifier> {
+    let suffix = output_binding
+        .as_str()
+        .strip_prefix("route_")
+        .unwrap_or(output_binding.as_str());
+    validate_system_ident(&format!(
+        "_cdf_route_key_{}_{}_{suffix}",
+        target.schema, target.table
+    ))
 }
 
 fn output_index_for_segment(
@@ -770,6 +779,19 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
+    }
+
+    #[test]
+    fn routed_key_index_identity_is_scoped_to_the_physical_target() {
+        let binding =
+            cdf_kernel::OutputBindingId::new(format!("route_{}", "a".repeat(64))).unwrap();
+        let first = parse_target(&TargetName::new("analytics.first__orders").unwrap()).unwrap();
+        let second = parse_target(&TargetName::new("analytics.second__orders").unwrap()).unwrap();
+
+        assert_ne!(
+            routed_key_index_name(&first, &binding).unwrap(),
+            routed_key_index_name(&second, &binding).unwrap()
+        );
     }
 
     fn routed_segments(

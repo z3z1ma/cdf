@@ -1,5 +1,6 @@
 use crate::prelude::*;
 use crate::staging_lease::combine_cleanup_release;
+use arrow_array::StringArray;
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{
     BatchStream, CommitCounts, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
@@ -1968,6 +1969,58 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             .contains("omitted its effective-schema observation identity"),
         "{error}"
     );
+
+    let routed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&plan.schema).unwrap();
+    let routed_observation = cdf_kernel::EffectiveSchemaObservationEvidence::new(
+        "mock.events.route_a",
+        routed_schema_hash.clone(),
+        cdf_kernel::SchemaObservationBinding::new(
+            artifact_hash(&serde_json::json!({"mock_route": "route_a"})).unwrap(),
+        )
+        .unwrap(),
+    )
+    .with_route(
+        cdf_kernel::SchemaObservationRoute::new(
+            "source_collection",
+            cdf_kernel::RouteScalar::from_array(&StringArray::from(vec!["route_a"]), 0).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let routed_evidence = cdf_kernel::EffectiveSchemaEvidence::new(
+        plan.descriptor.schema_source.baseline_reference().unwrap(),
+        routed_schema_hash,
+        cdf_kernel::DiscoveryManifestReference {
+            manifest_hash: cdf_kernel::DiscoveryManifestHash::new("mock-routed-manifest").unwrap(),
+            path: ".cdf/discovery/mock-routed.json".to_owned(),
+        },
+        vec![routed_observation],
+    )
+    .unwrap();
+    let routed_runtime =
+        EffectiveSchemaRuntime::new(routed_evidence, vec![baseline_observation.clone()]).unwrap();
+    let routed_plan = plan
+        .clone()
+        .bind_schema_authority(
+            &plan.descriptor,
+            &plan.schema,
+            Some(routed_runtime),
+            vec![baseline_observation.clone()],
+        )
+        .unwrap();
+    let routed_resource = missing_binding_registry
+        .resolve(&routed_plan, &context)
+        .unwrap();
+    routed_resource
+        .negotiate(&ScanRequest {
+            resource_id: routed_plan.descriptor.resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        })
+        .unwrap();
 
     assert_eq!(
         registry.option_schemas(),

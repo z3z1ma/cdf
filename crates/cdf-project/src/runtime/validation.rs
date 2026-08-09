@@ -1,7 +1,7 @@
 use super::{resources::ProjectRunSource, types::ProjectRunRequest};
 use cdf_contract::{ObservedSchema, normalize_schema};
 use cdf_engine::EnginePlan;
-use cdf_kernel::{CdfError, CursorOrderingClaim, ResourceStream, Result};
+use cdf_kernel::{CdfError, CursorOrderingClaim, ResourceStream, Result, WriteDisposition};
 use cdf_state_sqlite::StateStorePathOwnership;
 use std::{
     fs,
@@ -46,6 +46,11 @@ fn validate_checkpointable_source_position(
     plan: &EnginePlan,
 ) -> Result<()> {
     let descriptor = resource.descriptor();
+    if plan.execution_extent.is_bounded()
+        || descriptor.write_disposition == WriteDisposition::Replace
+    {
+        return Ok(());
+    }
     if let Some(cursor) = descriptor.cursor.as_ref() {
         if cursor.ordering == CursorOrderingClaim::Unordered {
             return Err(CdfError::contract(format!(
@@ -53,9 +58,6 @@ fn validate_checkpointable_source_position(
                 descriptor.resource_id, cursor.field
             )));
         }
-        return Ok(());
-    }
-    if plan.execution_extent.is_bounded() {
         return Ok(());
     }
     let has_non_cursor_frontier = plan

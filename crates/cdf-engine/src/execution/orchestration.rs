@@ -7,11 +7,13 @@ use std::{
 };
 
 use crate::expression_execution::{
-    BoundExpressionTransform, BoundScalarExpression, SOURCE_ROW_TRACKING_FIELD,
-    apply_bound_expression_transforms, apply_bound_filters, apply_expression_transforms,
-    bind_expression_transforms, bind_filter_expressions, bind_relational_expression_plan,
-    execute_bound_relational_expression_plan_tracked, expression_transform_output_schema,
+    BoundExpressionTransform, BoundRelationalExpressionPlan, BoundScalarExpression,
+    SOURCE_ROW_TRACKING_FIELD, apply_bound_expression_transforms, apply_bound_filters,
+    apply_expression_transforms, bind_expression_transforms, bind_filter_expressions,
+    bind_relational_expression_plan, execute_bound_relational_expression_plan_tracked,
+    expression_transform_output_schema,
 };
+
 use crate::expression_memory::expression_working_set_bytes;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
@@ -95,6 +97,87 @@ use crate::{
         schema_admission_artifact_metadata,
     },
 };
+
+struct BoundRoutedExecution<'a> {
+    input_schema: Arc<Schema>,
+    output_schema: Arc<Schema>,
+    relational_plan: &'a cdf_contract::RelationalExpressionPlan,
+    compiled_schema_admission: &'a CompiledSchemaAdmissionPlan,
+    validation_program: &'a ValidationProgram,
+    compiled_expression_plan: &'a cdf_contract::CompiledExpressionPlan,
+    bound_relational: Option<BoundRelationalExpressionPlan>,
+    bound_residuals: Vec<BoundScalarExpression>,
+    bound_tracked_residuals: Vec<BoundScalarExpression>,
+    bound_transforms: Vec<BoundExpressionTransform>,
+    bound_tracked_transforms: Vec<BoundExpressionTransform>,
+    evaluator: VectorValidationEvaluator<'a>,
+    pre_contract_may_filter: bool,
+}
+
+fn bind_routed_executions(plan: &EnginePlan) -> Result<Vec<BoundRoutedExecution<'_>>> {
+    plan.routed_output_plans
+        .iter()
+        .map(|routed| {
+            let input_schema = routed.input_schema.to_arrow()?;
+            let output_schema = routed.output_schema.to_arrow()?;
+            let bound_relational = Some(bind_relational_expression_plan(
+                &routed.relational_expression_plan,
+            )?);
+            let expression_schema = routed.relational_expression_plan.output_schema.to_arrow()?;
+            let bound_residuals = bind_filter_expressions(
+                &routed.compiled_expression_plan.residuals,
+                &expression_schema,
+            )?;
+            let tracking_expression_schema = source_row_tracking_schema(&expression_schema)?;
+            let bound_tracked_residuals = bind_filter_expressions(
+                &routed.compiled_expression_plan.residuals,
+                &tracking_expression_schema,
+            )?;
+            let bound_transforms = bind_expression_transforms(
+                &routed.validation_program.transforms,
+                &routed.compiled_expression_plan.transforms,
+                &expression_schema,
+            )?;
+            let bound_tracked_transforms = bind_expression_transforms(
+                &routed.validation_program.transforms,
+                &routed.compiled_expression_plan.transforms,
+                &tracking_expression_schema,
+            )?;
+            let contract_schema = expression_transform_output_schema(
+                &routed.validation_program.transforms,
+                &routed.compiled_expression_plan.transforms,
+                &expression_schema,
+            )?;
+            let evaluator = VectorValidationEvaluator::new_bound(
+                &routed.validation_program,
+                Arc::new(contract_schema),
+            )?;
+            let pre_contract_may_filter = !bound_residuals.is_empty()
+                || routed
+                    .validation_program
+                    .transforms
+                    .iter()
+                    .any(|transform| {
+                        matches!(transform, cdf_contract::TransformDescription::Filter { .. })
+                    });
+            Ok(BoundRoutedExecution {
+                input_schema,
+                output_schema,
+                relational_plan: &routed.relational_expression_plan,
+                compiled_schema_admission: &routed.compiled_schema_admission,
+                validation_program: &routed.validation_program,
+                compiled_expression_plan: &routed.compiled_expression_plan,
+                bound_relational,
+                bound_residuals,
+                bound_tracked_residuals,
+                bound_transforms,
+                bound_tracked_transforms,
+                evaluator,
+                pre_contract_may_filter,
+            })
+        })
+        .collect()
+}
 
 /// Mutable epoch-scoped authorities that may advance only through one canonical drain closure.
 pub struct DrainEpochExecution<'a> {
@@ -2769,6 +2852,7 @@ fn record_observation_schema_coercion(
     observation_id: &str,
     physical_observation: PhysicalObservationEvidence,
     coercion_plan: cdf_contract::SchemaCoercionPlan,
+    compiled_admission: &CompiledSchemaAdmissionPlan,
 ) -> Result<()> {
     let physical_observation_hash = physical_observation.identity_hash()?;
     match physical_observation_catalog.entry(physical_observation_hash.to_string()) {
@@ -2784,16 +2868,18 @@ fn record_observation_schema_coercion(
         }
         std::collections::btree_map::Entry::Occupied(_) => {}
     }
-    let artifact = StreamAdmissionObservationEvidence::new(
+    let mut artifact = StreamAdmissionObservationEvidence::new(
         observation_id,
         physical_observation_hash,
         coercion_plan,
         crate::StreamAdmissionCompletion::Pending,
     )?;
+    artifact.bind_compiled_admission(compiled_admission)?;
     if let Some(existing) = evidence.get(observation_id) {
         if existing.observation_id != artifact.observation_id
             || existing.physical_observation_hash != artifact.physical_observation_hash
             || existing.coercion_plan != artifact.coercion_plan
+            || existing.compiled_admission_hash != artifact.compiled_admission_hash
         {
             return Err(CdfError::data(format!(
                 "schema observation {:?} produced inconsistent coercion/physical evidence: first={existing:?}, next={artifact:?}",
@@ -3655,6 +3741,7 @@ where
         ContractEvaluationContext::observed_at(current_observed_at_ms()?);
     let mut contract_evaluator =
         VectorValidationEvaluator::new_bound(&validation_program, Arc::new(contract_schema))?;
+    let mut routed_executions = bind_routed_executions(plan)?;
     if validation_program.requires_observed_at_ms() {
         builder.write_json_artifact(
             "plan/contract-evaluation-context.json",
@@ -4336,6 +4423,7 @@ where
             let mut observed_partition_position = None;
             let mut dynamic_quarantine = None;
             let mut partition_observation_id = None::<String>;
+            let mut partition_observation_rows = BTreeMap::<String, u64>::new();
             let mut admitted_batch_count = 0_u64;
             let mut partition_input_batch_count = 0_u64;
             let mut partition_input_bytes = 0_u64;
@@ -4468,6 +4556,7 @@ where
                             &observation_id,
                             physical_observation,
                             coercion_plan,
+                            &plan.compiled_schema_admission,
                         )?;
                     }
                     let kind = settlement_unit_kind(marker.unit_kind);
@@ -4671,6 +4760,14 @@ where
                 };
                 let validation_input_bytes = u64::try_from(record_batch.get_array_memory_size())
                     .map_err(|error| CdfError::internal(error.to_string()))?;
+                let routed_output_index = if plan.routed_output_plans.is_empty() {
+                    None
+                } else {
+                    let family = plan.route_family.as_ref().ok_or_else(|| {
+                        CdfError::internal("routed execution omitted its target family")
+                    })?;
+                    Some(single_route_output_index(family, record_batch)?)
+                };
                 if batch
                     .header
                     .cdc
@@ -4690,7 +4787,12 @@ where
                             "CDC delete keys cannot be quarantined, residualized, or physically reconciled",
                         ));
                     }
-                    let output = prepare_delete_effect_batch(plan, &batch, record_batch)?;
+                    let output = prepare_delete_effect_batch(
+                        plan,
+                        routed_output_index,
+                        &batch,
+                        record_batch,
+                    )?;
                     let batch_source_position = normalize_source_position_for_partition(
                         batch.header.source_position.clone(),
                         &partition_scope,
@@ -4782,21 +4884,114 @@ where
                     }
                     continue;
                 }
+                let (
+                    active_admission_schema,
+                    active_compiled_schema_admission,
+                    active_validation_program,
+                    active_compiled_expression_plan,
+                    active_relational_plan,
+                    active_bound_relational,
+                    active_bound_residuals,
+                    active_bound_tracked_residuals,
+                    active_bound_transforms,
+                    active_bound_tracked_transforms,
+                    active_contract_evaluator,
+                    active_pre_contract_may_filter,
+                    active_output_schema,
+                ) = match routed_output_index {
+                    Some(index) => {
+                        let routed = routed_executions.get_mut(index).ok_or_else(|| {
+                            CdfError::internal(
+                                "routed batch selected an absent compiled execution program",
+                            )
+                        })?;
+                        (
+                            routed.input_schema.as_ref(),
+                            routed.compiled_schema_admission,
+                            routed.validation_program,
+                            routed.compiled_expression_plan,
+                            Some(routed.relational_plan),
+                            routed.bound_relational.as_ref(),
+                            routed.bound_residuals.as_slice(),
+                            routed.bound_tracked_residuals.as_slice(),
+                            routed.bound_transforms.as_slice(),
+                            routed.bound_tracked_transforms.as_slice(),
+                            &mut routed.evaluator,
+                            routed.pre_contract_may_filter,
+                            routed.output_schema.as_ref(),
+                        )
+                    }
+                    None => (
+                        admission_schema.as_ref(),
+                        &plan.compiled_schema_admission,
+                        &validation_program,
+                        &plan.compiled_expression_plan,
+                        plan.relational_expression_plan.as_ref(),
+                        bound_relational.as_ref(),
+                        bound_residuals.as_slice(),
+                        bound_tracked_residuals.as_slice(),
+                        bound_transforms.as_slice(),
+                        bound_tracked_transforms.as_slice(),
+                        &mut contract_evaluator,
+                        pre_contract_may_filter,
+                        runtime_output_schema.as_ref(),
+                    ),
+                };
+                let batch_observation_id = batch
+                    .header
+                    .schema_observation_id
+                    .as_deref()
+                    .or_else(|| {
+                        let planned = cdf_kernel::partition_schema_observation_id(&partition);
+                        (!planned.is_empty()).then_some(planned)
+                    });
+                let batch_schema_evidence = batch_observation_id
+                    .and_then(|observation_id| {
+                        effective_schema_evidence.and_then(|evidence| {
+                            evidence
+                                .observations
+                                .binary_search_by(|item| {
+                                    item.observation_id.as_str().cmp(observation_id)
+                                })
+                                .ok()
+                                .map(|index| &evidence.observations[index])
+                        })
+                    })
+                    .or(partition_schema_evidence);
+                if batch.header.schema_observation_id.is_some() && batch_schema_evidence.is_none() {
+                    return Err(CdfError::data(format!(
+                        "batch {:?} references schema observation {:?} absent from the compiled plan; discover and compile before retrying",
+                        batch.header.batch_id,
+                        batch.header.schema_observation_id
+                    )));
+                }
+                if let Some(expected) = batch_schema_evidence
+                    && batch.header.observed_schema_hash != expected.physical_schema_hash
+                {
+                    return Err(CdfError::data(format!(
+                        "batch schema observation {:?} produced physical schema {} but discovery compiled {}",
+                        expected.observation_id,
+                        batch.header.observed_schema_hash,
+                        expected.physical_schema_hash
+                    )));
+                }
+                let admission_expected = routed_output_index
+                    .is_none()
+                    .then_some(batch_schema_evidence)
+                    .flatten();
                 let reconciled = materialize_batch_schema_evidence(
                     &batch,
                     record_batch,
                     BatchSchemaAdmissionContext {
-                        planned_observation_id: cdf_kernel::partition_schema_observation_id(
-                            &partition,
-                        ),
-                        expected: partition_schema_evidence,
+                        planned_observation_id: batch_observation_id.unwrap_or_default(),
+                        expected: admission_expected,
                         expected_physical_observation: preobserved_physical_observation(
                             effective_schema_evidence,
-                            partition_schema_evidence,
+                            admission_expected,
                         )?,
-                        effective_schema: &admission_schema,
+                        effective_schema: active_admission_schema,
                     },
-                    &plan.compiled_schema_admission,
+                    active_compiled_schema_admission,
                     &mut schema_admission_cache,
                 )?;
                 let reconciled = match reconciled {
@@ -4932,7 +5127,7 @@ where
                 };
                 admitted_batch_count = admitted_batch_count.saturating_add(1);
                 if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
-                    && plan.compiled_schema_admission.captures_unknown_fields()?
+                    && active_compiled_schema_admission.captures_unknown_fields()?
                 {
                     let candidates = stream_admission_residual_candidates(
                         record_batch,
@@ -4960,24 +5155,22 @@ where
                     let physical_observation = reconciled.physical_observation.ok_or_else(|| {
                         CdfError::internal("schema coercion omitted its physical observation")
                     })?;
-                    if partition_observation_id
-                        .as_deref()
-                        .is_some_and(|existing| existing != observation_id)
-                    {
-                        return Err(CdfError::data(format!(
-                            "partition {:?} emitted multiple schema observation identities",
-                            partition.partition_id
-                        )));
-                    }
                     partition_observation_id = Some(observation_id.to_owned());
+                    let observed_rows = partition_observation_rows
+                        .entry(observation_id.to_owned())
+                        .or_default();
+                    *observed_rows = observed_rows
+                        .checked_add(batch.header.row_count)
+                        .ok_or_else(|| CdfError::data("schema observation row count overflow"))?;
                     record_observation_schema_coercion(
                         &mut stream_admission_evidence,
                         &mut stream_physical_observation_catalog,
                         observation_id,
                         physical_observation,
                         batch_coercion,
+                        active_compiled_schema_admission,
                     )?;
-                } else if partition_schema_evidence.is_some() {
+                } else if batch_schema_evidence.is_some() {
                     return Err(CdfError::data(
                         "effective-schema execution requires trusted per-observation coercion evidence on every batch",
                     ));
@@ -5001,7 +5194,7 @@ where
                     .clone()
                     .with_source_position(batch_source_position.clone());
                 let residual_preflight = preflight_residual_quarantines(
-                    &validation_program,
+                    active_validation_program,
                     residual_candidates,
                     &ResidualBatchContext {
                         evaluation: &evaluation_context,
@@ -5013,22 +5206,20 @@ where
                 )?;
                 let residual_candidates = residual_preflight.remaining_candidates;
 
-                let track_source_rows = pre_contract_may_filter
+                let track_source_rows = active_pre_contract_may_filter
                     || !residual_candidates.is_empty()
                     || !residual_preflight.quarantined_batch_rows.is_empty()
                     || late_data_policy.is_some()
-                    || plan
-                        .relational_expression_plan
-                        .as_ref()
+                    || active_relational_plan
                         .is_some_and(|relational| relational.filter.is_some());
                 let expression_bytes = expression_working_set_bytes(
-                    plan.compiled_expression_plan
+                    active_compiled_expression_plan
                         .residuals
                         .iter()
-                        .chain(plan.compiled_expression_plan.transforms.iter())
+                        .chain(active_compiled_expression_plan.transforms.iter())
                         .map(|planned| &planned.expression)
                         .chain(
-                            plan.relational_expression_plan
+                            active_relational_plan
                                 .iter()
                                 .flat_map(|relational| {
                                     relational.filter.iter().chain(
@@ -5048,7 +5239,7 @@ where
                     expression_bytes,
                 )
                 .await?;
-                let (record_batch, relational_source_rows) = match &bound_relational {
+                let (record_batch, relational_source_rows) = match active_bound_relational {
                     Some(relational) => {
                         let memory = transform_memory_lease.as_ref().ok_or_else(|| {
                             CdfError::internal(
@@ -5068,9 +5259,9 @@ where
                 let executed = execute_batch(
                     &record_batch,
                     if track_source_rows {
-                        &bound_tracked_residuals
+                        active_bound_tracked_residuals
                     } else {
-                        &bound_residuals
+                        active_bound_residuals
                     },
                     track_source_rows,
                     transform_memory_lease.as_ref(),
@@ -5083,9 +5274,9 @@ where
                 } = apply_pre_contract_expressions(
                     executed.batch,
                     if track_source_rows {
-                        &bound_tracked_transforms
+                        active_bound_tracked_transforms
                     } else {
-                        &bound_transforms
+                        active_bound_transforms
                     },
                     &mut remaining_limit,
                     track_source_rows,
@@ -5192,7 +5383,7 @@ where
 
                 let quarantine_lease = if residual_candidates.is_empty()
                     && residual_preflight.quarantine_records.is_empty()
-                    && !program_may_quarantine(&validation_program)
+                    && !program_may_quarantine(active_validation_program)
                 {
                     None
                 } else {
@@ -5215,7 +5406,7 @@ where
                     memory_lease,
                 } = apply_contract_exec(
                     output,
-                    &mut contract_evaluator,
+                    active_contract_evaluator,
                     &mut |record| quarantine_sink.push(record),
                     residual_candidates,
                     &ResidualBatchContext {
@@ -5254,16 +5445,22 @@ where
                 let validation_output_bytes =
                     u64::try_from(output.get_array_memory_size())
                         .map_err(|error| CdfError::internal(error.to_string()))?;
+                let mut routed_batch_output_schema = routed_output_index
+                    .map(|_| schema_artifact(active_output_schema));
+                let batch_output_schema = match routed_output_index {
+                    Some(_) => &mut routed_batch_output_schema,
+                    None => &mut output_schema,
+                };
                 let prepared_output = prepare_output_batch(
-                    &validation_program,
+                    active_validation_program,
                     effective_schema_evidence.is_some(),
                         PreparedOutputBatch {
                             output,
                             variant_values,
                             memory_lease,
                         },
-                    &mut output_schema,
-                    runtime_output_schema.as_ref(),
+                    batch_output_schema,
+                    active_output_schema,
                     &mut phase_measurements,
                 )?;
                 let PreparedKernelOutput {
@@ -5595,6 +5792,7 @@ where
                 observed_partition_position,
                 dynamic_quarantine,
                 partition_observation_id,
+                partition_observation_rows,
                 partition_source_row_ordinal,
                 completion_attestation,
                 partition_input_batch_count,
@@ -5611,6 +5809,7 @@ where
             observed_partition_position,
             dynamic_quarantine,
             partition_observation_id,
+            partition_observation_rows,
             partition_observed_rows,
             completion_attestation,
             partition_input_batch_count,
@@ -5639,10 +5838,12 @@ where
             observed_partition_position,
             dynamic_quarantine,
             partition_observation_id,
+            partition_observation_rows,
             partition_observed_rows,
             completion_attestation,
             partition_schema_evidence,
             effective_schema_evidence,
+            &plan.compiled_schema_admission,
             &mut completion_positions,
             &mut processed_observations,
             &mut terminal_quarantines,
@@ -6036,10 +6237,12 @@ async fn reconcile_partition_completion<R>(
         PhysicalObservationEvidence,
     )>,
     partition_observation_id: Option<String>,
+    partition_observation_rows: BTreeMap<String, u64>,
     partition_observed_rows: u64,
     completion_attestation: Option<PartitionAttestation>,
     partition_schema_evidence: Option<&EffectiveSchemaObservationCoercion>,
     effective_schema_evidence: Option<&EffectiveSchemaPlanEvidence>,
+    compiled_schema_admission: &CompiledSchemaAdmissionPlan,
     completion_positions: &mut Vec<(u64, PartitionPlan, SourcePosition)>,
     processed_observations: &mut Vec<ProcessedObservationPosition>,
     terminal_quarantines: &mut Vec<TerminalSchemaObservationQuarantine>,
@@ -6131,33 +6334,42 @@ where
             quarantine,
             physical_observation,
         )?;
-    } else if let Some(observation_id) = partition
-        .metadata
-        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
-        .cloned()
-        .or(partition_observation_id)
-    {
-        let fallback_attestation =
-            if observed_partition_position.is_none() && completion_attestation.is_none() {
-                match observation_attestations.get(&observation_id) {
-                    Some(attestation) => Some(attestation.clone()),
-                    None => {
-                        let attestation = attest_partition_with_terminal_join(
-                            resource,
-                            executable_partition,
-                            run_cancellation,
-                        )
-                        .await?;
-                        if let Some(attestation) = &attestation {
-                            observation_attestations
-                                .insert(observation_id.clone(), attestation.clone());
-                        }
-                        attestation
+    } else {
+        let planned_observation_id = partition
+            .metadata
+            .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+            .filter(|value| !value.is_empty())
+            .cloned();
+        let mut observation_rows = partition_observation_rows;
+        if let Some(observation_id) = planned_observation_id.clone().or(partition_observation_id)
+            && observation_rows.is_empty()
+        {
+            observation_rows.insert(observation_id, partition_observed_rows);
+        }
+        let fallback_attestation = if planned_observation_id.is_some()
+            && observed_partition_position.is_none()
+            && completion_attestation.is_none()
+        {
+            let observation_id = planned_observation_id.as_deref().unwrap_or_default();
+            match observation_attestations.get(observation_id) {
+                Some(attestation) => Some(attestation.clone()),
+                None => {
+                    let attestation = attest_partition_with_terminal_join(
+                        resource,
+                        executable_partition,
+                        run_cancellation,
+                    )
+                    .await?;
+                    if let Some(attestation) = &attestation {
+                        observation_attestations
+                            .insert(observation_id.to_owned(), attestation.clone());
                     }
+                    attestation
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         if let Some(expected) = partition_schema_evidence
             && !stream_admission_evidence.contains_key(&expected.observation_id)
         {
@@ -6187,39 +6399,37 @@ where
                         )
                     })?,
                 expected.coercion_plan.clone(),
+                compiled_schema_admission,
             )?;
         }
         let fallback_position = completion_attestation
             .map(PartitionAttestation::into_processed_position)
             .or_else(|| fallback_attestation.map(PartitionAttestation::into_processed_position));
-        let source_position =
-            if observed_partition_position.is_none() && fallback_position.is_none() {
-                None
-            } else {
-                Some(aggregate_processed_partition_positions(
-                    &observation_id,
-                    resource.descriptor(),
-                    resource_schema,
-                    observed_partition_position.as_ref(),
-                    fallback_position,
-                )?)
-            };
-        let partition_binding = cdf_kernel::partition_schema_observation_binding(partition)?;
-        lineage.input_observations.push(LineageInputObservation {
-            observation_id: observation_id.clone(),
-            partition_id: partition.partition_id.clone(),
-            partition_binding: partition_binding.clone(),
-            observed_rows: partition_observed_rows,
-            output_position: source_position.clone(),
-        });
-        if let Some(source_position) = source_position {
-            if drain_execution {
-                record_drain_partition_position(
-                    drain_partition_positions,
-                    partition,
-                    source_position.clone(),
-                )?;
-            }
+        for (observation_id, observed_rows) in observation_rows {
+            let source_position =
+                if observed_partition_position.is_none() && fallback_position.is_none() {
+                    None
+                } else {
+                    Some(aggregate_processed_partition_positions(
+                        &observation_id,
+                        resource.descriptor(),
+                        resource_schema,
+                        observed_partition_position.as_ref(),
+                        fallback_position.clone(),
+                    )?)
+                };
+            let partition_binding = effective_schema_evidence
+                .and_then(|evidence| evidence.observation_bindings.get(&observation_id))
+                .cloned()
+                .map(Ok)
+                .unwrap_or_else(|| cdf_kernel::partition_schema_observation_binding(partition))?;
+            lineage.input_observations.push(LineageInputObservation {
+                observation_id: observation_id.clone(),
+                partition_id: partition.partition_id.clone(),
+                partition_binding: partition_binding.clone(),
+                observed_rows,
+                output_position: source_position.clone(),
+            });
             let evidence = stream_admission_evidence
                 .get_mut(&observation_id)
                 .ok_or_else(|| {
@@ -6227,30 +6437,30 @@ where
                         "admitted observation {observation_id:?} omitted stream-admission evidence"
                     ))
                 })?;
-            if fully_processed || partition_epoch_closed {
-                evidence
-                    .bind_source_position(source_position.clone(), partition_binding.clone())?;
-                processed_observations.push(ProcessedObservationPosition::new(
-                    observation_id,
-                    ProcessedObservationOutcome::Admitted,
-                    source_position,
-                )?);
-            } else {
-                evidence.bind_partial_attempt(
-                    source_position,
-                    partition_observed_rows,
-                    partition_binding.clone(),
-                )?;
-            }
-        } else {
-            let evidence = stream_admission_evidence
-                .get_mut(&observation_id)
-                .ok_or_else(|| {
-                    CdfError::internal(format!(
-                        "admitted observation {observation_id:?} omitted stream-admission evidence"
-                    ))
-                })?;
-            if fully_processed {
+            if let Some(source_position) = source_position {
+                if drain_execution {
+                    record_drain_partition_position(
+                        drain_partition_positions,
+                        partition,
+                        source_position.clone(),
+                    )?;
+                }
+                if fully_processed || partition_epoch_closed {
+                    evidence
+                        .bind_source_position(source_position.clone(), partition_binding.clone())?;
+                    processed_observations.push(ProcessedObservationPosition::new(
+                        observation_id,
+                        ProcessedObservationOutcome::Admitted,
+                        source_position,
+                    )?);
+                } else {
+                    evidence.bind_partial_attempt(
+                        source_position,
+                        observed_rows,
+                        partition_binding.clone(),
+                    )?;
+                }
+            } else if fully_processed {
                 evidence.bind_unpositioned_completion(partition_binding)?;
             } else {
                 return Err(CdfError::data(format!(
@@ -6365,10 +6575,13 @@ fn prepare_package_artifacts(
     }
     builder.write_json_artifact(
         "schema/stream-admission-evidence.json",
-        &CompiledStreamAdmissionEvidence::new(
+        &CompiledStreamAdmissionEvidence::new_with_routed_admissions(
             &plan.compiled_schema_admission,
             stream_physical_observation_catalog,
             stream_admission_evidence.into_values().collect(),
+            plan.routed_output_plans
+                .iter()
+                .map(|routed| routed.compiled_schema_admission.clone()),
         )?,
     )?;
     if !terminal_quarantines.is_empty() {
@@ -6477,7 +6690,8 @@ fn prepare_package_artifacts(
         checkpoint_eligible,
     )?;
     if let Some(closure) = drain_epoch_closure {
-        builder.write_json_artifact("plan/epoch-frontier.json", &closure.frontier)?;
+        builder
+            .write_json_artifact(cdf_package_contract::EPOCH_FRONTIER_FILE, &closure.frontier)?;
         builder.write_json_artifact("plan/epoch-closure.json", &closure.evidence)?;
     }
     Ok(PreparedPackageArtifacts {
@@ -6841,20 +7055,43 @@ pub fn planned_empty_package_content(
     let Some(family) = &plan.route_family else {
         return Ok(content);
     };
-    let schema =
-        cdf_kernel::CanonicalArrowSchema::from_arrow(plan.output_schema.to_arrow()?.as_ref())?;
     let routed = cdf_kernel::PackageContentAuthority::Routed {
         family: family.clone(),
         outputs: family
             .bindings
             .iter()
-            .map(|binding| cdf_kernel::RoutedOutputContentAuthority {
-                output_binding: binding.output_binding.clone(),
-                schema: schema.clone(),
-                content: Box::new(content.clone()),
-                segment_ids: Vec::new(),
+            .enumerate()
+            .map(|(index, binding)| {
+                let schema = routed_plan_output_schema(plan, index)?;
+                let inner = match plan.write_disposition {
+                    WriteDisposition::Append | WriteDisposition::Replace => {
+                        cdf_kernel::PackageContentAuthority::rows(
+                            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+                        )
+                    }
+                    WriteDisposition::Merge | WriteDisposition::CdcApply => {
+                        let rule = effective_keyed_effect_rule(plan)?;
+                        keyed_package_content_for_schema(
+                            plan,
+                            schema.as_ref(),
+                            keyed_reduction_authority(
+                                &rule,
+                                &empty_dedup_summary(&rule),
+                                plan,
+                                None,
+                                None,
+                            )?,
+                        )?
+                    }
+                };
+                Ok(cdf_kernel::RoutedOutputContentAuthority {
+                    output_binding: binding.output_binding.clone(),
+                    schema: cdf_kernel::CanonicalArrowSchema::from_arrow(schema.as_ref())?,
+                    content: Box::new(inner),
+                    segment_ids: Vec::new(),
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
     };
     routed.validate()?;
     Ok(routed)
@@ -6915,6 +7152,7 @@ fn encode_effect_keys(
 
 fn prepare_delete_effect_batch(
     plan: &EnginePlan,
+    routed_output_index: Option<usize>,
     batch: &cdf_kernel::Batch,
     input: &RecordBatch,
 ) -> Result<RecordBatch> {
@@ -6932,7 +7170,15 @@ fn prepare_delete_effect_batch(
             "CDC delete batch schema does not match its observed schema authority",
         ));
     }
-    let output_schema = plan.output_schema.to_arrow()?;
+    let output_schema = match routed_output_index {
+        Some(index) => plan
+            .routed_output_plans
+            .get(index)
+            .ok_or_else(|| CdfError::internal("CDC delete selected an absent routed output plan"))?
+            .output_schema
+            .to_arrow()?,
+        None => plan.output_schema.to_arrow()?,
+    };
     let input_schema = input.schema();
     let route_field = plan
         .route_family
@@ -7060,10 +7306,19 @@ fn keyed_package_content(
     plan: &EnginePlan,
     reduction: cdf_kernel::KeyedEffectReductionAuthority,
 ) -> Result<cdf_kernel::PackageContentAuthority> {
-    let (key, delete_schema_hash) = keyed_effect_key_authority(plan)?;
+    keyed_package_content_for_schema(plan, plan.output_schema.to_arrow()?.as_ref(), reduction)
+}
+
+fn keyed_package_content_for_schema(
+    plan: &EnginePlan,
+    output_schema: &Schema,
+    reduction: cdf_kernel::KeyedEffectReductionAuthority,
+) -> Result<cdf_kernel::PackageContentAuthority> {
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema)?;
+    let (key, delete_schema_hash) = keyed_effect_key_authority(plan, output_schema)?;
     let content = cdf_kernel::PackageContentAuthority::KeyedChanges {
-        logical_schema_hash: plan.output_schema.arrow_schema_hash.clone(),
-        upsert_schema_hash: plan.output_schema.arrow_schema_hash.clone(),
+        logical_schema_hash: schema_hash.clone(),
+        upsert_schema_hash: schema_hash,
         delete_schema_hash,
         key,
         reduction: Box::new(reduction),
@@ -7088,14 +7343,14 @@ fn routed_package_content(
             "routed package writer family changed during execution",
         ));
     }
-    let schema =
-        cdf_kernel::CanonicalArrowSchema::from_arrow(plan.output_schema.to_arrow()?.as_ref())?;
     let outputs = routing
         .family
         .bindings
         .iter()
         .zip(&routing.outputs)
-        .map(|(binding, output)| {
+        .enumerate()
+        .map(|(index, (binding, output))| {
+            let schema = routed_plan_output_schema(plan, index)?;
             let inner = match plan.write_disposition {
                 WriteDisposition::Append | WriteDisposition::Replace => {
                     cdf_kernel::PackageContentAuthority::rows(binding.schema_hash.clone())
@@ -7110,12 +7365,12 @@ fn routed_package_content(
                         u64::try_from(output.duplicate_winners.len()).map_err(|_| {
                             CdfError::data("routed duplicate-key count exceeds u64")
                         })?;
-                    keyed_package_content(plan, route_reduction)?
+                    keyed_package_content_for_schema(plan, schema.as_ref(), route_reduction)?
                 }
             };
             Ok(cdf_kernel::RoutedOutputContentAuthority {
                 output_binding: binding.output_binding.clone(),
-                schema: schema.clone(),
+                schema: cdf_kernel::CanonicalArrowSchema::from_arrow(schema.as_ref())?,
                 content: Box::new(inner),
                 segment_ids: output.segment_ids.clone(),
             })
@@ -7131,13 +7386,13 @@ fn routed_package_content(
 
 fn keyed_effect_key_authority(
     plan: &EnginePlan,
+    output: &Schema,
 ) -> Result<(cdf_kernel::KeyAuthority, cdf_kernel::SchemaHash)> {
     if plan.effect_key.is_empty() {
         return Err(CdfError::contract(
             "merge and cdc_apply require a nonempty ordered effect key",
         ));
     }
-    let output = plan.output_schema.to_arrow()?;
     let mut indices = Vec::with_capacity(plan.effect_key.len());
     for key in &plan.effect_key {
         let matches = output
@@ -7187,6 +7442,16 @@ fn keyed_effect_key_authority(
         },
         delete_schema_hash,
     ))
+}
+
+fn routed_plan_output_schema(plan: &EnginePlan, index: usize) -> Result<Arc<Schema>> {
+    match plan.routed_output_plans.get(index) {
+        Some(routed) => routed.output_schema.to_arrow(),
+        None if plan.routed_output_plans.is_empty() => plan.output_schema.to_arrow(),
+        None => Err(CdfError::internal(
+            "target-family binding omitted its routed output plan",
+        )),
+    }
 }
 
 fn keyed_reduction_authority(
@@ -7260,7 +7525,8 @@ fn keyed_reduction_authority(
         provenance_format: "parquet".to_owned(),
         provenance_version: cdf_package_contract::DEDUP_PROVENANCE_VERSION,
     };
-    let (key, _) = keyed_effect_key_authority(plan)?;
+    let output_schema = plan.output_schema.to_arrow()?;
+    let (key, _) = keyed_effect_key_authority(plan, output_schema.as_ref())?;
     reduction.validate(&key)?;
     Ok(reduction)
 }
@@ -8087,6 +8353,31 @@ fn route_output_indices(
             .push(u32::try_from(row).map_err(|_| CdfError::data("routed batch row exceeds u32"))?);
     }
     Ok(assignments)
+}
+
+fn single_route_output_index(
+    family: &cdf_kernel::RouteTargetFamily,
+    batch: &RecordBatch,
+) -> Result<usize> {
+    if batch.num_rows() == 0 {
+        return Err(CdfError::data(
+            "heterogeneous routed data batches must contain at least one row",
+        ));
+    }
+    let assignments = route_output_indices(family, batch)?;
+    let mut populated = assignments
+        .iter()
+        .enumerate()
+        .filter(|(_, rows)| !rows.is_empty());
+    let (index, _) = populated
+        .next()
+        .ok_or_else(|| CdfError::internal("routed batch produced no admitted output assignment"))?;
+    if populated.next().is_some() {
+        return Err(CdfError::data(
+            "one Arrow batch cannot mix route values with different compiled schemas; the source must isolate routed schema batches",
+        ));
+    }
+    Ok(index)
 }
 
 fn persist_canonical_segments(
@@ -10029,7 +10320,8 @@ pub fn assemble_isolated_worker_package(
             let drain = partition_evidence[0].drain.clone().ok_or_else(|| {
                 CdfError::contract("drain isolated package evidence lacks epoch closure")
             })?;
-            builder.write_json_artifact("plan/epoch-frontier.json", &drain.frontier)?;
+            builder
+                .write_json_artifact(cdf_package_contract::EPOCH_FRONTIER_FILE, &drain.frontier)?;
             builder.write_json_artifact("plan/epoch-closure.json", &drain.closure)?;
             builder.write_json_artifact(
                 cdf_package_contract::PARTITION_WATERMARK_STATE_FILE,

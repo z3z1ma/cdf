@@ -7,9 +7,10 @@ use cdf_kernel::{
     Batch, BatchId, BatchStream, CdcMetadata, CdcOperation, CdcSettlementBoundary,
     CdcSettlementMarker, CdcSettlementUnitKind, CdfError, CompiledScanIntent,
     CompiledSourcePlanHash, DeliveryGuarantee, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime,
-    PartitionAuthority, PartitionId, PartitionPlan, PayloadRetention, PlanId, QueryableResource,
+    PartitionAuthority, PartitionId, PartitionPlan, PayloadRetention, PlanId,
+    PreContractPhysicalReconciliation, PreContractResidualCandidate, QueryableResource,
     ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, RoutePlan, RouteScalar,
-    ScanPlan, ScanRequest, SourcePosition, bind_partition_schema_observation,
+    ScanPlan, ScanRequest, SourcePosition, bind_partition_schema_observation, source_name,
 };
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{ExecutionServices, SourceEgressScope, TaskStreamSender};
@@ -46,6 +47,8 @@ pub(crate) struct MongoDbCdcResource {
     schema: SchemaRef,
     decoder_schema: Option<SchemaRef>,
     physical_schema: Option<SchemaRef>,
+    typed_routes: BTreeMap<String, MongoDbTypedRouteSchema>,
+    observation_ids: BTreeMap<String, String>,
     database: MongoDbIdentifier,
     collection: Option<MongoDbIdentifier>,
     watch: MongoDbWatch,
@@ -73,6 +76,37 @@ pub(crate) struct MongoDbCdcResource {
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
+#[derive(Clone)]
+struct MongoDbTypedRouteSchema {
+    effective_schema: SchemaRef,
+    physical_schema: SchemaRef,
+    document_effective_schema: SchemaRef,
+    document_physical_schema: SchemaRef,
+    decoder_schema: SchemaRef,
+}
+
+struct MongoDbCdcEventBatch {
+    record_batch: RecordBatch,
+    observed_schema: Option<SchemaRef>,
+    residual_candidates: Vec<PreContractResidualCandidate>,
+    physical_reconciliations: Vec<PreContractPhysicalReconciliation>,
+    pre_contract_evidence_bytes: u64,
+    residuals_complete: bool,
+}
+
+impl MongoDbCdcEventBatch {
+    fn exact(record_batch: RecordBatch, observed_schema: Option<SchemaRef>) -> Self {
+        Self {
+            record_batch,
+            observed_schema,
+            residual_candidates: Vec::new(),
+            physical_reconciliations: Vec::new(),
+            pre_contract_evidence_bytes: 0,
+            residuals_complete: false,
+        }
+    }
+}
+
 impl MongoDbCdcResource {
     pub(crate) fn from_compiled_plan(
         compiled: &cdf_runtime::CompiledSourcePlan,
@@ -95,11 +129,6 @@ impl MongoDbCdcResource {
         physical
             .bootstrap
             .ok_or_else(|| CdfError::contract("MongoDB CDC omitted its bootstrap"))?;
-        if watch == MongoDbWatch::Database && representation == MongoDbRepresentation::Typed {
-            return Err(CdfError::contract(
-                "typed MongoDB database CDC requires heterogeneous routed output plans",
-            ));
-        }
         validate_compiled_schema_evidence(compiled)?;
         let schema = Arc::new(compiled.schema.clone());
         let (mut physical_schema, decoder_schema) = if watch == MongoDbWatch::Collection {
@@ -161,11 +190,33 @@ impl MongoDbCdcResource {
                     })?,
             );
         }
+        let observation_ids = database_observation_ids(
+            watch,
+            &physical.database,
+            &admitted_collections,
+            compiled.effective_schema_runtime.as_ref(),
+        )?;
+        let typed_routes = if watch == MongoDbWatch::Database
+            && representation == MongoDbRepresentation::Typed
+        {
+            typed_database_routes(
+                &admitted_collections,
+                compiled.effective_schema_runtime.as_ref().ok_or_else(|| {
+                    CdfError::data(
+                        "typed MongoDB database CDC omitted compiled schema evidence; run discovery and compile again",
+                    )
+                })?,
+            )?
+        } else {
+            BTreeMap::new()
+        };
         Ok(Self {
             descriptor: compiled.descriptor.clone(),
             schema,
             decoder_schema,
             physical_schema,
+            typed_routes,
+            observation_ids,
             database: physical.database.clone(),
             collection: physical.collection.clone(),
             watch,
@@ -223,6 +274,15 @@ impl MongoDbCdcResource {
                 .any(|pattern| pattern.matches(collection))
     }
 
+    fn typed_route(&self, collection: &str) -> Result<&MongoDbTypedRouteSchema> {
+        self.typed_routes.get(collection).ok_or_else(|| {
+            CdfError::data(format!(
+                "MongoDB change event selected typed collection `{}.{collection}` without compiled routed schema authority; run discovery and compile before resuming",
+                self.database
+            ))
+        })
+    }
+
     fn partition(&self, request: &ScanRequest) -> Result<PartitionPlan> {
         self.validate_scan_request(request)?;
         let mut partition = PartitionPlan {
@@ -237,25 +297,16 @@ impl MongoDbCdcResource {
                 ("database".to_owned(), self.database.as_str().to_owned()),
             ]),
         };
-        if let Some(runtime) = &self.effective_schema_runtime {
-            let observation_id = match self.watch {
-                MongoDbWatch::Collection => format!(
-                    "{}.{}",
-                    self.database,
-                    self.collection.as_ref().ok_or_else(|| {
-                        CdfError::internal("MongoDB collection CDC lost its collection")
-                    })?
-                ),
-                MongoDbWatch::Database => runtime
-                    .evidence
-                    .observations()
-                    .first()
-                    .ok_or_else(|| {
-                        CdfError::data("MongoDB database CDC discovery evidence is empty")
-                    })?
-                    .observation_id
-                    .clone(),
-            };
+        if self.watch == MongoDbWatch::Collection
+            && let Some(runtime) = &self.effective_schema_runtime
+        {
+            let observation_id = format!(
+                "{}.{}",
+                self.database,
+                self.collection.as_ref().ok_or_else(|| {
+                    CdfError::internal("MongoDB collection CDC lost its collection")
+                })?
+            );
             bind_partition_schema_observation(&mut partition, runtime, &observation_id)?;
         }
         Ok(partition)
@@ -289,6 +340,161 @@ impl MongoDbCdcResource {
             termination,
         )
     }
+}
+
+fn database_observation_ids(
+    watch: MongoDbWatch,
+    database: &MongoDbIdentifier,
+    admitted_collections: &[String],
+    runtime: Option<&EffectiveSchemaRuntime>,
+) -> Result<BTreeMap<String, String>> {
+    if watch == MongoDbWatch::Collection {
+        return Ok(BTreeMap::new());
+    }
+    let runtime = runtime.ok_or_else(|| {
+        CdfError::data(
+            "MongoDB database CDC omitted compiled discovery evidence; run discovery and compile again",
+        )
+    })?;
+    let mut observations = BTreeMap::new();
+    for observation in runtime.evidence.observations() {
+        let route = observation.route.as_ref().ok_or_else(|| {
+            CdfError::data(format!(
+                "MongoDB database CDC observation {:?} omitted its collection route",
+                observation.observation_id
+            ))
+        })?;
+        if route.field != "source_collection" {
+            return Err(CdfError::data(format!(
+                "MongoDB database CDC observation {:?} routes by {:?}, expected `source_collection`",
+                observation.observation_id, route.field
+            )));
+        }
+        let collection = route.value.canonical_value.clone();
+        if observation.observation_id != format!("{database}.{collection}")
+            || observations
+                .insert(collection.clone(), observation.observation_id.clone())
+                .is_some()
+        {
+            return Err(CdfError::data(
+                "MongoDB database CDC discovery carries duplicate or inconsistent collection observation identity",
+            ));
+        }
+    }
+    if observations.keys().map(String::as_str).collect::<Vec<_>>()
+        != admitted_collections
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    {
+        return Err(CdfError::data(
+            "MongoDB database CDC collection inventory does not exactly match routed schema observations; run discovery and compile again",
+        ));
+    }
+    Ok(observations)
+}
+
+fn typed_database_routes(
+    admitted_collections: &[String],
+    runtime: &EffectiveSchemaRuntime,
+) -> Result<BTreeMap<String, MongoDbTypedRouteSchema>> {
+    let mut routes = BTreeMap::new();
+    for observation in runtime.evidence.observations() {
+        let route = observation.route.as_ref().ok_or_else(|| {
+            CdfError::data(format!(
+                "typed MongoDB database observation {:?} omitted its collection route",
+                observation.observation_id
+            ))
+        })?;
+        if route.field != "source_collection" {
+            return Err(CdfError::data(
+                "typed MongoDB database CDC requires `source_collection` routed schema authority",
+            ));
+        }
+        let collection = route.value.canonical_value.clone();
+        let physical_schema = runtime
+            .physical_schema(&observation.physical_schema_hash)
+            .cloned()
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "typed MongoDB collection `{collection}` omitted its physical schema"
+                ))
+            })?;
+        let effective_schema = runtime
+            .physical_schema(&observation.effective_schema_hash)
+            .cloned()
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "typed MongoDB collection `{collection}` omitted its effective schema"
+                ))
+            })?;
+        validate_collection_route_field(physical_schema.as_ref(), &collection)?;
+        validate_collection_route_field(effective_schema.as_ref(), &collection)?;
+        let document_physical_schema = without_collection_route(physical_schema.as_ref())?;
+        let document_effective_schema = without_collection_route(effective_schema.as_ref())?;
+        let decoder_schema = attach_expected_physical_types(
+            document_effective_schema.as_ref(),
+            document_physical_schema.as_ref(),
+        )?;
+        let item = MongoDbTypedRouteSchema {
+            effective_schema,
+            physical_schema,
+            document_effective_schema,
+            document_physical_schema,
+            decoder_schema,
+        };
+        if routes.insert(collection, item).is_some() {
+            return Err(CdfError::data(
+                "typed MongoDB database CDC contains duplicate collection route authority",
+            ));
+        }
+    }
+    if routes.keys().map(String::as_str).collect::<Vec<_>>()
+        != admitted_collections
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    {
+        return Err(CdfError::data(
+            "typed MongoDB database CDC schemas do not exactly cover the admitted collection inventory",
+        ));
+    }
+    Ok(routes)
+}
+
+fn validate_collection_route_field(schema: &Schema, collection: &str) -> Result<()> {
+    let field = schema.field_with_name("source_collection").map_err(|_| {
+        CdfError::data(format!(
+            "typed MongoDB collection `{collection}` omitted its protected `source_collection` field"
+        ))
+    })?;
+    if field.is_nullable()
+        || field.data_type() != &arrow_schema::DataType::Utf8
+        || schema
+            .fields()
+            .last()
+            .is_none_or(|field| field.name() != "source_collection")
+    {
+        return Err(CdfError::data(format!(
+            "typed MongoDB collection `{collection}` must append non-null UTF-8 `source_collection` authority"
+        )));
+    }
+    Ok(())
+}
+
+fn without_collection_route(schema: &Schema) -> Result<SchemaRef> {
+    let indices = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| (field.name() != "source_collection").then_some(index))
+        .collect::<Vec<_>>();
+    if indices.len().checked_add(1) != Some(schema.fields().len()) {
+        return Err(CdfError::data(
+            "typed MongoDB routed schema must contain exactly one `source_collection` field",
+        ));
+    }
+    Ok(Arc::new(schema.project(&indices).map_err(CdfError::from)?))
 }
 
 impl fmt::Debug for MongoDbCdcResource {
@@ -329,6 +535,17 @@ impl ResourceStream for MongoDbCdcResource {
             return Err(CdfError::contract(
                 "MongoDB database CDC must route by `source_collection`",
             ));
+        }
+        if self.representation == MongoDbRepresentation::Typed {
+            return self
+                .effective_schema_runtime
+                .as_ref()
+                .ok_or_else(|| {
+                    CdfError::data(
+                        "typed MongoDB database CDC omitted routed schema authority; discover and compile again",
+                    )
+                })?
+                .routed_observation_schemas(route);
         }
         self.admitted_collections
             .iter()
@@ -707,29 +924,30 @@ async fn publish_event(
         &position,
     )
     .await?;
-    let record_batch = match (resource.representation, operation) {
-        (MongoDbRepresentation::Envelope, CdcOperation::Delete) => {
-            envelope_delete_batch(resource, collection, event.document_key.as_ref())?
-        }
-        (MongoDbRepresentation::Envelope, _) => envelope_upsert_batch(
-            resource,
-            collection,
-            event.document_key.as_ref(),
-            event.full_document.as_ref(),
-        )?,
-        (MongoDbRepresentation::Typed, CdcOperation::Delete) => {
-            typed_delete_batch(resource, event.document_key.as_ref())?
-        }
+    let decoded = match (resource.representation, operation) {
+        (MongoDbRepresentation::Envelope, CdcOperation::Delete) => MongoDbCdcEventBatch::exact(
+            envelope_delete_batch(resource, collection, event.document_key.as_ref())?,
+            None,
+        ),
+        (MongoDbRepresentation::Envelope, _) => MongoDbCdcEventBatch::exact(
+            envelope_upsert_batch(
+                resource,
+                collection,
+                event.document_key.as_ref(),
+                event.full_document.as_ref(),
+            )?,
+            resource.physical_schema.clone(),
+        ),
+        (MongoDbRepresentation::Typed, CdcOperation::Delete) => MongoDbCdcEventBatch::exact(
+            typed_delete_batch(resource, collection, event.document_key.as_ref())?,
+            None,
+        ),
         (MongoDbRepresentation::Typed, _) => {
-            typed_upsert_batch(resource, event.full_document.as_ref())?
+            typed_upsert_batch(resource, collection, event.full_document.as_ref())?
         }
     };
+    let record_batch = decoded.record_batch;
     let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-    if retained_bytes == 0 || retained_bytes > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
-        return Err(CdfError::data(format!(
-            "MongoDB CDC Arrow event retains {retained_bytes} bytes outside the compiled output bound"
-        )));
-    }
     let lease = reserve(
         Arc::clone(memory),
         ReservationRequest::new(
@@ -738,17 +956,10 @@ async fn publish_event(
         )?,
     )
     .await?;
-    lease.reconcile(retained_bytes)?;
     *ordinal = ordinal.saturating_add(1);
-    let observed_schema = match operation {
-        CdcOperation::Delete => record_batch.schema(),
-        CdcOperation::Insert | CdcOperation::Update => Arc::clone(
-            resource
-                .physical_schema
-                .as_ref()
-                .ok_or_else(|| CdfError::internal("MongoDB CDC upsert omitted physical schema"))?,
-        ),
-    };
+    let observed_schema = decoded
+        .observed_schema
+        .unwrap_or_else(|| record_batch.schema());
     let mut batch = Batch::from_record_batch(
         event_batch_id(resource, *ordinal, "data")?,
         resource.descriptor.resource_id.clone(),
@@ -761,12 +972,38 @@ async fn publish_event(
             .header
             .mark_materialized_output(observed_schema.as_ref())?;
     }
+    batch
+        .header
+        .extend_residual_candidates(decoded.residual_candidates);
+    batch
+        .header
+        .extend_physical_reconciliations(decoded.physical_reconciliations);
+    if decoded.residuals_complete {
+        batch.header.mark_materialized_residuals_complete();
+    }
+    if let Some(observation_id) = resource.observation_ids.get(collection) {
+        batch
+            .header
+            .bind_schema_observation(observation_id.clone())?;
+    }
     batch.header.source_position = Some(position.clone());
     batch.header.cdc = Some(CdcMetadata {
         operation,
         position: position.clone(),
     });
-    let batch = batch.with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
+    let evidence_bytes = decoded
+        .pre_contract_evidence_bytes
+        .max(batch.header.pre_contract_evidence_retained_bytes()?);
+    let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
+        CdfError::internal("MongoDB CDC event retained-memory accounting overflow")
+    })?;
+    if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
+        return Err(CdfError::data(format!(
+            "MongoDB CDC Arrow event and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound"
+        )));
+    }
+    lease.reconcile(retained_total)?;
+    let batch = batch.with_retention(PayloadRetention::new(Arc::new(lease), retained_total)?)?;
     sender.send(batch).await?;
     send_control(
         resource,
@@ -794,8 +1031,8 @@ async fn send_control(
     let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
     let physical_schema = resource
         .physical_schema
-        .as_ref()
-        .ok_or_else(|| CdfError::internal("MongoDB CDC settlement omitted physical schema"))?;
+        .clone()
+        .unwrap_or_else(|| Arc::clone(&resource.schema));
     let mut batch = Batch::from_record_batch(
         event_batch_id(resource, *ordinal, "settlement")?,
         resource.descriptor.resource_id.clone(),
@@ -803,9 +1040,11 @@ async fn send_control(
         cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?,
         record_batch,
     )?;
-    batch
-        .header
-        .mark_materialized_output(physical_schema.as_ref())?;
+    if resource.physical_schema.is_some() {
+        batch
+            .header
+            .mark_materialized_output(physical_schema.as_ref())?;
+    }
     batch.header.byte_count = 0;
     batch.header.source_position = Some(position.clone());
     batch.header.cdc_settlement = Some(CdcSettlementMarker {
@@ -884,8 +1123,9 @@ fn envelope_delete_record_batch(
 
 fn typed_upsert_batch(
     resource: &MongoDbCdcResource,
+    collection: &str,
     document: Option<&mongodb::bson::Document>,
-) -> Result<RecordBatch> {
+) -> Result<MongoDbCdcEventBatch> {
     let document = document
         .ok_or_else(|| CdfError::data("MongoDB CDC event omitted required fullDocument"))?;
     let raw = mongodb::bson::serialize_to_raw_document_buf(document).map_err(|error| {
@@ -893,42 +1133,70 @@ fn typed_upsert_batch(
             "MongoDB CDC fullDocument could not be decoded: {error}"
         ))
     })?;
-    let decoder = resource
-        .decoder_schema
-        .as_ref()
+    let route = (resource.watch == MongoDbWatch::Database)
+        .then(|| resource.typed_route(collection))
+        .transpose()?;
+    let decoder = route
+        .map(|route| &route.decoder_schema)
+        .or(resource.decoder_schema.as_ref())
         .ok_or_else(|| CdfError::internal("typed CDC omitted decoder schema"))?;
-    let physical = resource
-        .physical_schema
-        .as_ref()
+    let physical = route
+        .map(|route| &route.document_physical_schema)
+        .or(resource.physical_schema.as_ref())
         .ok_or_else(|| CdfError::internal("typed CDC omitted physical schema"))?;
+    let effective = route
+        .map(|route| &route.document_effective_schema)
+        .unwrap_or(&resource.schema);
     let decoded = decode_batch_with_physical_schema(
         Arc::clone(decoder),
         Arc::clone(decoder),
-        Arc::clone(&resource.schema),
+        Arc::clone(effective),
         Arc::clone(physical),
         &[raw.as_ref()],
         0,
     )?;
-    if !decoded.residual_candidates.is_empty() || !decoded.physical_reconciliations.is_empty() {
-        return Err(CdfError::data(
-            "MongoDB CDC fullDocument differs from its compiled schema authority; discover and compile before resuming",
-        ));
-    }
-    Ok(decoded.record_batch)
+    let observed_schema = route
+        .map(|route| Arc::clone(&route.physical_schema))
+        .or_else(|| resource.physical_schema.clone());
+    let record_batch = match route {
+        Some(route) => append_collection_route(
+            decoded.record_batch,
+            Arc::clone(&route.effective_schema),
+            collection,
+        )?,
+        None => decoded.record_batch,
+    };
+    Ok(MongoDbCdcEventBatch {
+        record_batch,
+        observed_schema,
+        residual_candidates: decoded.residual_candidates,
+        physical_reconciliations: decoded.physical_reconciliations,
+        pre_contract_evidence_bytes: decoded.pre_contract_evidence_bytes,
+        residuals_complete: true,
+    })
 }
 
 fn typed_delete_batch(
     resource: &MongoDbCdcResource,
+    collection: &str,
     document_key: Option<&mongodb::bson::Document>,
 ) -> Result<RecordBatch> {
     let document_key =
         document_key.ok_or_else(|| CdfError::data("MongoDB delete event omitted documentKey"))?;
-    let key_schema = project_schema(&resource.schema, &resource.descriptor.merge_key)?;
-    let physical = project_schema(
-        resource
-            .physical_schema
-            .as_ref()
-            .ok_or_else(|| CdfError::internal("typed CDC omitted physical schema"))?,
+    let route = (resource.watch == MongoDbWatch::Database)
+        .then(|| resource.typed_route(collection))
+        .transpose()?;
+    let effective = route
+        .map(|route| &route.document_effective_schema)
+        .unwrap_or(&resource.schema);
+    let physical_authority = route
+        .map(|route| &route.document_physical_schema)
+        .or(resource.physical_schema.as_ref())
+        .ok_or_else(|| CdfError::internal("typed CDC omitted physical schema"))?;
+    let key_schema = project_schema(effective, &resource.descriptor.merge_key)?;
+    let physical = project_physical_schema(
+        effective,
+        physical_authority,
         &resource.descriptor.merge_key,
     )?;
     let decoder = attach_expected_physical_types(key_schema.as_ref(), physical.as_ref())?;
@@ -957,8 +1225,47 @@ fn typed_delete_batch(
             "MongoDB CDC documentKey does not exactly satisfy the compiled CDC_APPLY key",
         ));
     }
-    RecordBatch::try_new(key_schema, decoded.record_batch.columns().to_vec())
-        .map_err(CdfError::from)
+    let decoded = RecordBatch::try_new(key_schema, decoded.record_batch.columns().to_vec())
+        .map_err(CdfError::from)?;
+    match route {
+        Some(route) => {
+            let output_fields = resource
+                .descriptor
+                .merge_key
+                .iter()
+                .map(|field| route.effective_schema.field_with_name(field).cloned())
+                .chain(std::iter::once(
+                    route
+                        .effective_schema
+                        .field_with_name("source_collection")
+                        .cloned(),
+                ))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(CdfError::from)?;
+            append_collection_route(decoded, Arc::new(Schema::new(output_fields)), collection)
+        }
+        None => Ok(decoded),
+    }
+}
+
+fn append_collection_route(
+    batch: RecordBatch,
+    output_schema: SchemaRef,
+    collection: &str,
+) -> Result<RecordBatch> {
+    if output_schema.fields().len() != batch.num_columns().saturating_add(1)
+        || output_schema
+            .fields()
+            .last()
+            .is_none_or(|field| field.name() != "source_collection")
+    {
+        return Err(CdfError::internal(
+            "typed MongoDB routed output schema does not append its collection authority",
+        ));
+    }
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(StringArray::from(vec![collection])) as ArrayRef);
+    RecordBatch::try_new(output_schema, columns).map_err(CdfError::from)
 }
 
 fn project_schema(schema: &SchemaRef, fields: &[String]) -> Result<SchemaRef> {
@@ -969,6 +1276,33 @@ fn project_schema(schema: &SchemaRef, fields: &[String]) -> Result<SchemaRef> {
                 .field_with_name(name)
                 .cloned()
                 .map_err(|_| CdfError::contract(format!("MongoDB CDC key `{name}` is absent")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new(projected)))
+}
+
+fn project_physical_schema(
+    effective_schema: &SchemaRef,
+    physical_schema: &SchemaRef,
+    fields: &[String],
+) -> Result<SchemaRef> {
+    let projected = fields
+        .iter()
+        .map(|name| {
+            let effective = effective_schema
+                .field_with_name(name)
+                .map_err(|_| CdfError::contract(format!("MongoDB CDC key `{name}` is absent")))?;
+            let source = source_name(effective).unwrap_or_else(|| effective.name());
+            physical_schema
+                .fields()
+                .iter()
+                .find(|field| source_name(field).unwrap_or_else(|| field.name()) == source)
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "MongoDB CDC physical schema omitted key source field `{source}`"
+                    ))
+                })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Arc::new(Schema::new(projected)))
@@ -1059,6 +1393,9 @@ fn decode_resume_position(
 mod tests {
     use std::str::FromStr;
 
+    use arrow_array::StringArray;
+    use arrow_schema::{DataType, Field};
+
     use super::*;
 
     fn scope() -> cdf_kernel::MongoChangeStreamScope {
@@ -1113,5 +1450,48 @@ mod tests {
         assert_eq!(delete.schema().fields().len(), 2);
         assert_eq!(delete.schema().field(0).name(), "document_key");
         assert_eq!(delete.schema().field(1).name(), "source_collection");
+    }
+
+    #[test]
+    fn typed_delete_maps_logical_key_to_its_mongodb_source_field() {
+        let effective = Arc::new(Schema::new(vec![cdf_kernel::with_source_name(
+            Field::new("id", DataType::Utf8, false),
+            "_id",
+        )]));
+        let physical = Arc::new(Schema::new(vec![cdf_kernel::with_physical_type(
+            cdf_kernel::with_source_name(Field::new("_id", DataType::Utf8, false), "_id"),
+            "bson:string",
+        )]));
+        let keys = vec!["id".to_owned()];
+        let key_schema = project_schema(&effective, &keys).unwrap();
+        let physical_key = project_physical_schema(&effective, &physical, &keys).unwrap();
+        let decoder =
+            attach_expected_physical_types(key_schema.as_ref(), physical_key.as_ref()).unwrap();
+        let raw =
+            mongodb::bson::serialize_to_raw_document_buf(&mongodb::bson::doc! {"_id": "order-1"})
+                .unwrap();
+        let decoded = decode_batch_with_physical_schema(
+            Arc::clone(&decoder),
+            decoder,
+            key_schema,
+            physical_key,
+            &[raw.as_ref()],
+            0,
+        )
+        .unwrap();
+
+        assert!(decoded.residual_candidates.is_empty());
+        assert!(decoded.physical_reconciliations.is_empty());
+        assert_eq!(decoded.record_batch.schema().field(0).name(), "id");
+        assert_eq!(
+            decoded
+                .record_batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "order-1"
+        );
     }
 }

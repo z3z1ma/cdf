@@ -76,6 +76,8 @@ pub struct EnginePlan {
     /// Complete pre-admitted output family. Runtime observations cannot extend it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_family: Option<cdf_kernel::RouteTargetFamily>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routed_output_plans: Vec<RoutedEngineOutputPlan>,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
     pub output_schema: CompiledArrowSchema,
@@ -89,6 +91,72 @@ impl EnginePlan {
         crate::planning::validate_route_family(Some(&family), &self.output_schema)?;
         self.route_family = Some(family);
         Ok(self)
+    }
+
+    pub fn bind_routed_output_plans(
+        mut self,
+        mut plans: Vec<RoutedEngineOutputPlan>,
+    ) -> Result<Self> {
+        let family = self.route_family.as_ref().ok_or_else(|| {
+            CdfError::contract("routed output plans require a bound target family")
+        })?;
+        plans.sort_by(|left, right| left.route_value.cmp(&right.route_value));
+        if plans.len() != family.bindings.len()
+            || plans.iter().zip(&family.bindings).any(|(plan, binding)| {
+                plan.route_value != binding.route_value
+                    || plan.output_schema.arrow_schema_hash != binding.schema_hash
+            })
+        {
+            return Err(CdfError::contract(
+                "routed output plans do not match the complete target-family schema authority",
+            ));
+        }
+        for plan in &plans {
+            plan.validate()?;
+        }
+        self.routed_output_plans = plans;
+        Ok(self)
+    }
+
+    pub fn bind_heterogeneous_route_family(
+        mut self,
+        family: cdf_kernel::RouteTargetFamily,
+        plans: Vec<RoutedEngineOutputPlan>,
+    ) -> Result<Self> {
+        family.validate()?;
+        for plan in &plans {
+            let output = plan.output_schema.to_arrow()?;
+            let field = output.field_with_name(&family.route.field).map_err(|_| {
+                CdfError::contract(format!(
+                    "route field `{}` is absent from routed output {:?}",
+                    family.route.field, plan.route_value
+                ))
+            })?;
+            if field.is_nullable()
+                || cdf_kernel::CanonicalArrowType::from_arrow(field.data_type())?
+                    != plan.route_value.arrow_type
+            {
+                return Err(CdfError::contract(format!(
+                    "route field `{}` must be non-null and preserve its typed route value in every routed output",
+                    family.route.field
+                )));
+            }
+            for key in &self.effect_key {
+                let key_field = output.field_with_name(key).map_err(|_| {
+                    CdfError::contract(format!(
+                        "effect key `{key}` is absent from routed output {:?}",
+                        plan.route_value
+                    ))
+                })?;
+                if key_field.is_nullable() {
+                    return Err(CdfError::contract(format!(
+                        "effect key `{key}` must be non-null in every routed output"
+                    )));
+                }
+            }
+        }
+        self.route_family = Some(family);
+        self.bind_routed_output_plans(plans)
     }
 
     pub fn validate_execution_extent_for_execution(&self) -> Result<()> {
@@ -592,6 +660,80 @@ impl EnginePlan {
         }
         policy.validate()?;
         Ok(policy)
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutedEngineOutputPlan {
+    pub route_value: cdf_kernel::RouteScalar,
+    pub input_schema: CompiledArrowSchema,
+    pub relational_expression_plan: cdf_contract::RelationalExpressionPlan,
+    pub compiled_schema_admission: CompiledSchemaAdmissionPlan,
+    pub schema_admission_program: ValidationProgram,
+    pub validation_program: ValidationProgram,
+    pub compiled_expression_plan: CompiledExpressionPlan,
+    pub final_projection: Option<Vec<String>>,
+    pub canonicalize_observed_schema: bool,
+    pub output_schema: CompiledArrowSchema,
+}
+
+impl RoutedEngineOutputPlan {
+    pub fn from_engine_plan(
+        route_value: cdf_kernel::RouteScalar,
+        plan: EnginePlan,
+    ) -> Result<Self> {
+        let relational_expression_plan = plan.relational_expression_plan.ok_or_else(|| {
+            CdfError::internal("routed output compilation omitted its relational plan")
+        })?;
+        let routed = Self {
+            route_value,
+            input_schema: CompiledArrowSchema::from_arrow(
+                relational_expression_plan.input_schema.to_arrow()?.as_ref(),
+            )?,
+            relational_expression_plan,
+            compiled_schema_admission: plan.compiled_schema_admission,
+            schema_admission_program: plan.schema_admission_program,
+            validation_program: plan.validation_program,
+            compiled_expression_plan: plan.compiled_expression_plan,
+            final_projection: plan.final_projection,
+            canonicalize_observed_schema: plan.effective_schema_evidence.is_some(),
+            output_schema: plan.output_schema,
+        };
+        routed.validate()?;
+        Ok(routed)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.route_value.validate()?;
+        self.relational_expression_plan.validate_recorded()?;
+        self.compiled_schema_admission
+            .validate_recorded(&self.schema_admission_program)?;
+        self.compiled_expression_plan.validate_recorded()?;
+        if self
+            .relational_expression_plan
+            .input_schema
+            .to_arrow()?
+            .as_ref()
+            != self.input_schema.to_arrow()?.as_ref()
+        {
+            return Err(CdfError::data(
+                "routed output plan input schema does not match its relational authority",
+            ));
+        }
+        let relational_output = self.relational_expression_plan.output_schema.to_arrow()?;
+        let expected_output = crate::output_schema::compile_logical_output_schema(
+            relational_output.as_ref(),
+            &self.validation_program,
+            self.final_projection.as_deref(),
+            self.canonicalize_observed_schema,
+        )?;
+        if expected_output.as_ref() != self.output_schema.to_arrow()?.as_ref() {
+            return Err(CdfError::data(
+                "routed output plan output schema does not match its relational, projection, and validation authority",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1417,6 +1559,8 @@ pub struct StreamAdmissionObservationEvidence {
     pub observation_id: String,
     pub physical_observation_hash: String,
     pub coercion_plan: SchemaCoercionPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_admission_hash: Option<String>,
     pub completion: StreamAdmissionCompletion,
 }
 
@@ -1455,8 +1599,28 @@ impl StreamAdmissionObservationEvidence {
             observation_id,
             physical_observation_hash: physical_observation_hash.to_string(),
             coercion_plan,
+            compiled_admission_hash: None,
             completion,
         })
+    }
+
+    pub fn bind_compiled_admission(
+        &mut self,
+        admission: &CompiledSchemaAdmissionPlan,
+    ) -> Result<()> {
+        let hash = cdf_runtime::artifact_hash(admission)?;
+        if self
+            .compiled_admission_hash
+            .as_ref()
+            .is_some_and(|existing| existing != &hash)
+        {
+            return Err(CdfError::data(format!(
+                "stream-admission observation {:?} changed compiled admission authority",
+                self.observation_id
+            )));
+        }
+        self.compiled_admission_hash = Some(hash);
+        Ok(())
     }
 
     pub fn bind_source_position(
@@ -1612,6 +1776,8 @@ pub struct CompiledStreamAdmissionEvidence {
     pub baseline_schema_hash: String,
     pub effective_schema_hash: String,
     pub physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub routed_admission_catalog: BTreeMap<String, CompiledSchemaAdmissionPlan>,
     pub observations: Vec<StreamAdmissionObservationEvidence>,
 }
 
@@ -1626,6 +1792,40 @@ impl CompiledStreamAdmissionEvidence {
             baseline_schema_hash: admission.baseline_schema_hash.to_string(),
             effective_schema_hash: admission.effective_schema_hash.to_string(),
             physical_observation_catalog,
+            routed_admission_catalog: BTreeMap::new(),
+            observations,
+        };
+        evidence.validate(admission)?;
+        Ok(evidence)
+    }
+
+    pub fn new_with_routed_admissions(
+        admission: &CompiledSchemaAdmissionPlan,
+        physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
+        observations: Vec<StreamAdmissionObservationEvidence>,
+        routed_admissions: impl IntoIterator<Item = CompiledSchemaAdmissionPlan>,
+    ) -> Result<Self> {
+        let mut routed_admission_catalog = BTreeMap::new();
+        for routed in routed_admissions {
+            let hash = cdf_runtime::artifact_hash(&routed)?;
+            match routed_admission_catalog.entry(hash) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(routed);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if entry.get() != &routed => {
+                    return Err(CdfError::data(
+                        "routed admission catalog identity collision carries conflicting authority",
+                    ));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+        let evidence = Self {
+            compiled_admission_hash: cdf_runtime::artifact_hash(admission)?,
+            baseline_schema_hash: admission.baseline_schema_hash.to_string(),
+            effective_schema_hash: admission.effective_schema_hash.to_string(),
+            physical_observation_catalog,
+            routed_admission_catalog,
             observations,
         };
         evidence.validate(admission)?;
@@ -1642,6 +1842,13 @@ impl CompiledStreamAdmissionEvidence {
             ));
         }
         validate_physical_observation_catalog(&self.physical_observation_catalog)?;
+        for (hash, routed) in &self.routed_admission_catalog {
+            if hash != &cdf_runtime::artifact_hash(routed)? {
+                return Err(CdfError::data(
+                    "routed admission catalog key does not match its compiled authority",
+                ));
+            }
+        }
         let mut observation_ids = std::collections::BTreeSet::new();
         let mut referenced_physical_observations = BTreeSet::new();
         for observation in &self.observations {
@@ -1680,7 +1887,20 @@ impl CompiledStreamAdmissionEvidence {
                     ))
                 })?;
             referenced_physical_observations.insert(observation.physical_observation_hash.as_str());
-            admission.validate_admitted_observation(
+            let observation_admission = observation
+                .compiled_admission_hash
+                .as_ref()
+                .and_then(|hash| self.routed_admission_catalog.get(hash))
+                .unwrap_or(admission);
+            if let Some(hash) = observation.compiled_admission_hash.as_ref()
+                && cdf_runtime::artifact_hash(observation_admission)? != *hash
+            {
+                return Err(CdfError::data(format!(
+                    "stream-admission observation {:?} references absent compiled admission authority",
+                    observation.observation_id
+                )));
+            }
+            observation_admission.validate_admitted_observation(
                 &observation.observation_id,
                 physical,
                 &observation.coercion_plan,

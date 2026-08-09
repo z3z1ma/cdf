@@ -5,7 +5,10 @@ use std::{
 
 use arrow_schema::Schema;
 use cdf_contract::RelationalExpressionPlan;
-use cdf_declarative::{CompiledResource, ExecutionDeclaration, compile_execution_extent};
+use cdf_declarative::{
+    CompiledResource, ExecutionDeclaration, RoutedRelationalExpressionPlan,
+    compile_execution_extent,
+};
 use cdf_engine::{
     ParsedProjectQuery, ProjectSqlSpan, analyze_project_query_at, parse_project_query_at,
 };
@@ -539,13 +542,21 @@ pub fn finalize_query_project_resource(
             compiled.query.resource_id
         )));
     }
+    let control_fields = compiled
+        .query
+        .effective
+        .route
+        .value
+        .as_ref()
+        .map(|route| vec![route.field.clone()])
+        .unwrap_or_default();
     let analyzed = analyze_project_query_at(
         &compiled.query.authored_file.query_sql,
         &compiled.query.relative_path,
         compiled.query.authored_file.query_span.start_line,
         compiled.query.authored_file.query_span.start_column,
         &input_schema,
-        Vec::new(),
+        control_fields,
     )?;
     if analyzed.upstream != compiled.query.parsed_query.upstream
         || analyzed.authored_ast_hash != compiled.query.parsed_query.authored_ast_hash
@@ -568,6 +579,54 @@ pub fn finalize_query_project_resource(
         .resource
         .with_relational_expression_plan(relational_plan.clone())?;
     compiled.query.relational_plan = Some(relational_plan);
+    if let Some(route) = compiled.query.effective.route.value.as_ref()
+        && let Some(runtime) = compiled
+            .resource
+            .source_plan()
+            .effective_schema_runtime
+            .as_ref()
+        && runtime
+            .evidence
+            .observations()
+            .iter()
+            .any(|observation| observation.route.is_some())
+    {
+        let routed = runtime
+            .routed_observation_schemas(route)?
+            .into_iter()
+            .map(|(route_value, input_schema)| {
+                let analyzed = analyze_project_query_at(
+                    &compiled.query.authored_file.query_sql,
+                    &compiled.query.relative_path,
+                    compiled.query.authored_file.query_span.start_line,
+                    compiled.query.authored_file.query_span.start_column,
+                    input_schema.as_ref(),
+                    vec![route.field.clone()],
+                )?;
+                if analyzed.upstream != compiled.query.parsed_query.upstream
+                    || analyzed.authored_ast_hash != compiled.query.parsed_query.authored_ast_hash
+                {
+                    return Err(CdfError::internal(
+                        "routed query analysis changed the parsed upstream or authored AST identity",
+                    ));
+                }
+                let plan = apply_semantics(
+                    analyzed.relational_plan,
+                    &compiled.query.effective.semantics.value,
+                    semantic_catalog,
+                )?;
+                validate_output_bindings(
+                    &compiled.query.effective,
+                    &plan.output_schema,
+                    semantic_catalog,
+                )?;
+                Ok(RoutedRelationalExpressionPlan { route_value, plan })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        compiled.resource = compiled
+            .resource
+            .with_routed_relational_expression_plans(routed)?;
+    }
     Ok(compiled)
 }
 

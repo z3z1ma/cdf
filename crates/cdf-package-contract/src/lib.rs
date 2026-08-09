@@ -20,7 +20,7 @@ pub use access::{SharedVerifiedPackageAccess, VerifiedPackageAccess};
 pub use artifacts::{
     DEDUP_PROVENANCE_DIRECTORY, DEDUP_PROVENANCE_VERSION, DEDUP_SUMMARY_FILE,
     DEDUP_SUMMARY_VERSION, DESTINATION_COMMIT_PLAN_FILE, DESTINATION_COMMIT_PLAN_VERSION,
-    DestinationCommitPlanPreimage, IdempotencyTokenSource,
+    DestinationCommitPlanPreimage, EPOCH_FRONTIER_FILE, IdempotencyTokenSource,
     PARTITION_WATERMARK_STATE_ARTIFACT_VERSION, PARTITION_WATERMARK_STATE_FILE,
     PROCESSED_OBSERVATIONS_FILE, PROCESSED_OBSERVATIONS_VERSION, PackageDedupKeep,
     PackageDedupSummary, PackageReplayInputs, PackageRunSchemaAuthority,
