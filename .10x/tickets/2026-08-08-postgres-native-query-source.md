@@ -85,6 +85,10 @@ logical replication, a row/portal transport fallback, or changes to destination 
   query's full-scan completion position. Added explicit full-query resume validation and exact
   cursor-start predicates for String, signed/unsigned integer, finite float, Date32, and timestamp
   domains. The focused suite now passes 36 tests plus one live ignored test.
+- 2026-08-08: After the successful 500,000-row package/receipt/checkpoint lifecycle, planning the
+  independently compiled `VALUES` resource found that its cached pre-encoding physical plan had
+  not been invalidated. Bumped the current PostgreSQL driver authority to 2.1.0 so all cached plans
+  recompile. Deliberately added no legacy physical-plan reader because CDF remains unreleased.
 
 ## Blockers
 

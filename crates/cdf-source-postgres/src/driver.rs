@@ -68,7 +68,7 @@ impl PostgresSourceDriver {
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("postgres")?,
-                driver_version: "2.0.0".to_owned(),
+                driver_version: "2.1.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec!["postgres".to_owned()],
                 schemes: vec!["postgres".to_owned(), "postgresql".to_owned()],
