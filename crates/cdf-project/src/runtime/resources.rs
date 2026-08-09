@@ -132,6 +132,17 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.schema()
     }
 
+    fn routed_output_schemas(
+        &self,
+        route: &cdf_kernel::RoutePlan,
+    ) -> Result<Vec<(cdf_kernel::RouteScalar, arrow_schema::SchemaRef)>> {
+        self.inner.routed_output_schemas(route)
+    }
+
+    fn required_route_field(&self) -> Option<&str> {
+        self.inner.required_route_field()
+    }
+
     fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
@@ -217,6 +228,10 @@ impl ResourceStream for WindowScopedResource<'_> {
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.inner.effective_schema_runtime()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[cdf_kernel::EffectiveSchemaCatalogEntry] {
+        self.inner.baseline_observation_schema_catalog()
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {

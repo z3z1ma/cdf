@@ -674,6 +674,17 @@ impl ResourceStream for RegistryValidatedResource {
         self.inner.schema()
     }
 
+    fn routed_output_schemas(
+        &self,
+        route: &cdf_kernel::RoutePlan,
+    ) -> Result<Vec<(cdf_kernel::RouteScalar, arrow_schema::SchemaRef)>> {
+        self.inner.routed_output_schemas(route)
+    }
+
+    fn required_route_field(&self) -> Option<&str> {
+        self.inner.required_route_field()
+    }
+
     fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }

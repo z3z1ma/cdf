@@ -124,6 +124,13 @@ retention, and live replica-set/Atlas certification.
   current schema-binding-stable source semantics, so a driver capability correction cannot keep an
   obsolete executable source plan merely because its discovery interpretation is unchanged.
 
+- 2026-08-09: Live Atlas planning exposed that the registry-validation and window-scoping runtime
+  decorators forwarded the base schema but silently discarded routed output schema inventory and
+  its required routing field. Both decorators now preserve the complete `QueryableResource`
+  authority, including routed outputs and baseline observation schemas. The production binary now
+  compiles and plans the admitted two-collection Atlas database resource through `CDC_APPLY` with
+  one drain partition and six routed destination migrations.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -147,11 +154,12 @@ retention, and live replica-set/Atlas certification.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb cdc_ --lib` — 5 focused CDC compilation
   and discovery-authority tests passed, including cursor-free CDC, latest-versus-snapshot native
   option precedence, and inventory recovery from bound discovery evidence.
-- Release-binary Atlas evidence so far: `cdf compile mongo_live.atlas_database_cdc` succeeds
-  against the authorized Atlas database after discovering two isolated post-image-enabled
-  collections. Successive `cdf plan` attempts exposed the inventory handoff, duplicate capability,
-  observation binding, and projection-capability defects recorded above; full plan/run settlement
-  remains open until the live probe completes.
+- Release-binary Atlas evidence so far: `cdf compile mongo_live.atlas_database_cdc` and `cdf plan
+  mongo_live.atlas_database_cdc` succeed against two isolated, post-image-enabled collections in
+  the authorized Atlas database. The plan reports one drain partition, `cdc_apply`,
+  `effectively_once_per_position`, five logical fields, six routed destination migrations, and
+  `ready 1/1`. Full run settlement remains open: the first execution reached change-stream open
+  and failed through an over-broad MongoDB SDK error classification, which is now being narrowed.
 
 ## Review
 
