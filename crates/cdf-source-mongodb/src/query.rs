@@ -56,6 +56,7 @@ struct StoredOrder {
 
 pub(crate) struct MongoDbQuery {
     pub(crate) filter: Document,
+    pub(crate) projection: Document,
     pub(crate) sort: Document,
     pub(crate) limit: Option<i64>,
 }
@@ -183,6 +184,15 @@ pub(crate) fn build_query(
             filter
         }
     };
+    let mut projection = Document::new();
+    for name in &scan.projection {
+        let field = field_by_name(schema, name).ok_or_else(|| {
+            CdfError::contract(format!(
+                "MongoDB projection field `{name}` disappeared after validation"
+            ))
+        })?;
+        projection.insert(source_field(field)?, 1_i32);
+    }
     let mut sort = Document::new();
     for order in &scan.order_by {
         sort.insert(
@@ -201,6 +211,7 @@ pub(crate) fn build_query(
         .transpose()?;
     Ok(MongoDbQuery {
         filter,
+        projection,
         sort,
         limit,
     })

@@ -1401,6 +1401,10 @@ fn cursor_query_uses_numeric_frontier_and_object_id_tie_breaker() {
     let query = build_query(&descriptor, &schema, &partition, &scan).unwrap();
 
     assert_eq!(query.filter, doc! {"sequence": {"$gt": 41_i64}});
+    assert_eq!(
+        query.projection,
+        doc! {"_id": 1_i32, "sequence": 1_i32, "amount": 1_i32, "observed_at": 1_i32}
+    );
     assert_eq!(query.sort, doc! {"sequence": 1_i32, "_id": 1_i32});
     assert_eq!(query.limit, None);
 }
@@ -1426,6 +1430,10 @@ fn cursorless_snapshot_query_uses_stable_object_id_order() {
     let scan = scan_from_partition(&descriptor, &schema, &collection, &partition).unwrap();
     let query = build_query(&descriptor, &schema, &partition, &scan).unwrap();
 
+    assert_eq!(
+        query.projection,
+        doc! {"_id": 1_i32, "sequence": 1_i32, "amount": 1_i32, "observed_at": 1_i32}
+    );
     assert_eq!(query.sort, doc! {"_id": 1_i32});
 }
 

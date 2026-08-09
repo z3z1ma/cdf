@@ -162,7 +162,10 @@ pub(crate) async fn execute_mongodb_collection(
             )?,
         ))
         .await?;
-    let mut find = collection.find(query.filter).batch_size(input.batch_rows);
+    let mut find = collection
+        .find(query.filter)
+        .projection(query.projection)
+        .batch_size(input.batch_rows);
     if !query.sort.is_empty() {
         find = find.sort(query.sort);
     }

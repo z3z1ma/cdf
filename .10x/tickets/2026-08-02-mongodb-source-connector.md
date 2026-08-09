@@ -1,4 +1,4 @@
-Status: done
+Status: active
 Created: 2026-08-02
 Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
@@ -270,6 +270,15 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   verified across 18 identity files. Direct DuckDB checks returned 25 rows, 25 distinct ObjectIds,
   seven non-null opaque values, seven valid JSON values, zero invalid JSON values, and zero
   `_cdf_variant` rows. No document value or credential was recorded.
+- 2026-08-08: Reopened after the user requested a throughput run over the largest authorized Atlas
+  collection. Catalog statistics identified `depreciation-items` at 417,114 documents and
+  6,024,520,493 logical BSON bytes. Full and typed-projection runs repeatedly crossed the 32 MiB
+  progressive decode bound even when configured batch cardinality and measured document size
+  proved they should fit. Source inspection found the cause: `build_query` validated logical
+  projection fidelity but omitted a MongoDB projection document, and execution never called
+  `Find::projection`. Atlas therefore transmitted full documents while plan evidence claimed no
+  wider source fetch. This contradicts the existing projection-fidelity acceptance criterion and
+  owns a focused current-contract repair before the throughput run can be accepted.
 
 ## Blockers
 
