@@ -311,13 +311,28 @@ fn tier_b_negotiates_pushdown_fidelity_without_io() {
 
 #[test]
 fn query_first_relational_plan_executes_before_cli_residual_projection_and_limit() {
-    let mut batches = sample_batches();
-    for batch in &mut batches {
-        batch.header.source_position = Some(terminal_file_position());
-    }
-    let resource = MockResource::tier_b(batches)
+    let batches = sample_batches()
+        .into_iter()
+        .map(|batch| {
+            let record_batch = batch.record_batch().unwrap().project(&[0, 2]).unwrap();
+            let schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref()).unwrap();
+            let mut projected = Batch::from_record_batch(
+                batch.header.batch_id,
+                batch.header.resource_id,
+                batch.header.partition_id,
+                schema_hash,
+                record_batch,
+            )
+            .unwrap();
+            projected.header.source_position = Some(terminal_file_position());
+            projected
+        })
+        .collect();
+    let mut resource = MockResource::tier_b(sample_batches())
         .with_write_disposition(WriteDisposition::Append)
         .without_control_keys();
+    resource.batches = batches;
     let analyzed = crate::analyze_project_query_at(
         "SELECT id, CAST(id AS BIGINT) + 10 AS adjusted FROM upstream(source => 'warehouse', table => 'orders') WHERE active",
         "cdf/analytics/orders.cdf.sql",
@@ -343,12 +358,15 @@ fn query_first_relational_plan_executes_before_cli_residual_projection_and_limit
 
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
 
-    assert!(plan.scan.request.projection.is_none());
+    assert_eq!(
+        plan.scan.request.projection.as_deref(),
+        Some(["id".to_owned(), "active".to_owned()].as_slice())
+    );
     assert!(plan.scan.request.filters.is_empty());
     assert!(plan.scan.request.limit.is_none());
     assert_eq!(plan.residual_predicates.len(), 1);
     assert_eq!(plan.final_limit, Some(1));
-    assert!(!plan.explain.projection_pushed);
+    assert!(plan.explain.projection_pushed);
     assert!(!plan.explain.limit_pushed);
     plan.validate_compiled_expression_plan().unwrap();
 

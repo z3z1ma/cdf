@@ -279,6 +279,19 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   `Find::projection`. Atlas therefore transmitted full documents while plan evidence claimed no
   wider source fetch. This contradicts the existing projection-fidelity acceptance criterion and
   owns a focused current-contract repair before the throughput run can be accepted.
+- 2026-08-08: Established the missing live roofline before accepting connector throughput. On the
+  same Atlas collection and host, mongosh read the full 6,024,519,217-byte BSON projection in
+  353.636 seconds (1,179.5 documents/s, 16.25 MiB/s), while the 21-column typed projection read
+  417,114 documents / 133,424,436 bytes in 52.121 seconds (8,002.8 documents/s). A controlled
+  50,000-document full read took 11.018 seconds with a 1,000-row cursor batch but 72.795 seconds
+  with a 40-row cursor batch. The release CDF baseline took 853 seconds, admitted 167k rows, and
+  quarantined 251k after fetching the wide input: unacceptable and about 2.4x below the equivalent
+  full-read roofline before counting the projection loss. The runtime now (1) narrows query-first
+  source scans to exact filter/projection/control dependencies and rebinds typed scalar ordinals to
+  that projected schema, and (2) lets MongoDB form byte-bounded wire batches independently from
+  adaptive Arrow decode groups. Contract tests passed 101/101 executable cases, the engine planning
+  slice passed 19/19 including projected query execution, MongoDB passed 43/43, and strict Clippy
+  passed for all three affected crates. A release Atlas rerun remains required before closure.
 
 ## Blockers
 

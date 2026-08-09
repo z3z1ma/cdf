@@ -33,7 +33,7 @@ use crate::{
         MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC,
         MONGODB_VALUE_EXTENDED_JSON_SEMANTIC, SchemaInference, attach_expected_physical_types,
         compile_source_materializations, decode_batch, decode_batch_with_evidence,
-        decode_batch_with_physical_schema, parse_decimal128,
+        decode_batch_with_physical_schema, maximum_safe_decode_prefix, parse_decimal128,
     },
 };
 
@@ -1032,6 +1032,29 @@ fn sparse_wide_batches_fail_before_column_accumulator_growth() {
         error.message.contains("progressive decode bound"),
         "{error}"
     );
+}
+
+#[test]
+fn wire_batches_are_partitioned_at_the_decode_allocation_boundary() {
+    let schema = Schema::new(
+        (0..4_096)
+            .map(|index| Field::new(format!("field_{index}"), DataType::Int64, true))
+            .collect::<Vec<_>>(),
+    );
+    let document = RawDocumentBuf::try_from(&doc! {"field_0": 1_i64}).unwrap();
+    let documents = vec![document.as_ref(); 1_025];
+
+    let admitted = maximum_safe_decode_prefix(&schema, &documents, documents.len()).unwrap();
+
+    assert!(admitted > 0);
+    assert!(admitted < documents.len());
+    decode_batch_with_evidence(
+        Arc::new(schema.clone()),
+        Arc::new(schema),
+        &documents[..admitted],
+        0,
+    )
+    .unwrap();
 }
 
 #[test]

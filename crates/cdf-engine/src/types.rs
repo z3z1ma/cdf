@@ -160,8 +160,12 @@ impl EnginePlan {
     pub fn validate_compiled_expression_plan(&self) -> Result<()> {
         if let Some(relational) = &self.relational_expression_plan {
             relational.validate_recorded()?;
+            let constraint = self
+                .compiled_schema_admission
+                .constraint_schema
+                .to_arrow()?;
             if cdf_kernel::canonical_arrow_schema_hash(&relational.input_schema.to_arrow()?)?
-                != self.compiled_schema_admission.resource_schema_hash
+                != cdf_kernel::canonical_arrow_schema_hash(constraint.as_ref())?
             {
                 return Err(CdfError::data(
                     "relational expression input schema differs from compiled schema-admission authority",

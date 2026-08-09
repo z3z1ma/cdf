@@ -8,7 +8,7 @@ pub use cdf_kernel::{
     ScalarExpressionKind, ScalarExpressionNode, ScalarFunctionReference, ScalarFunctionVolatility,
     ScalarType, ScalarUnaryOperator,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cdf_kernel::{CanonicalArrowSchema, CdfError, Result};
 use serde::{Deserialize, Serialize};
@@ -374,6 +374,83 @@ impl RelationalExpressionPlan {
         Ok(())
     }
 
+    /// Narrows the runtime input to fields that can affect the recorded relational result.
+    ///
+    /// The compiled SQL plan retains exact typed scalar authority while the source receives a
+    /// projection instead of reading unrelated columns. Input fields stay in source-schema order
+    /// and every scalar ordinal is rebound into the projected schema.
+    pub fn narrow_input_to_dependencies(&self) -> Result<Self> {
+        self.validate_recorded()?;
+        let input = self.input_schema.to_arrow()?;
+        let mut required = self
+            .filter
+            .iter()
+            .chain(
+                self.projection
+                    .iter()
+                    .map(|projection| &projection.expression),
+            )
+            .flat_map(|expression| {
+                expression
+                    .column_dependencies()
+                    .iter()
+                    .map(|dependency| dependency.name.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        required.extend(self.control_fields.iter().cloned());
+        if required.is_empty() {
+            let first = input.fields().first().ok_or_else(|| {
+                CdfError::contract("relational source has no field available for row cardinality")
+            })?;
+            required.insert(first.name().to_owned());
+        }
+        let fields = input
+            .fields()
+            .iter()
+            .filter(|field| required.contains(field.name()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if fields.len() != required.len() {
+            return Err(CdfError::contract(
+                "relational expression dependency disappeared from its input schema",
+            ));
+        }
+        if fields.len() == input.fields().len() {
+            return Ok(self.clone());
+        }
+        let projected_input =
+            arrow_schema::Schema::new_with_metadata(fields, input.metadata().clone());
+        let projected_indexes = projected_input
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| (field.name().to_owned(), index))
+            .collect::<BTreeMap<_, _>>();
+        let filter = self
+            .filter
+            .as_ref()
+            .map(|expression| rebase_scalar_expression(expression, &projected_indexes))
+            .transpose()?;
+        let projection = self
+            .projection
+            .iter()
+            .map(|projection| {
+                Ok(ProjectionExpression::new(
+                    projection.ordinal,
+                    projection.name.clone(),
+                    rebase_scalar_expression(&projection.expression, &projected_indexes)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::current(
+            CanonicalArrowSchema::from_arrow(&projected_input)?,
+            filter,
+            projection,
+            self.output_schema.clone(),
+            self.control_fields.clone(),
+        )
+    }
+
     fn validate_structure(&self) -> Result<()> {
         let input = self.input_schema.to_arrow()?;
         let output = self.output_schema.to_arrow()?;
@@ -498,6 +575,68 @@ impl RelationalExpressionPlan {
             &self.output_schema,
             &self.control_fields,
         ))
+    }
+}
+
+fn rebase_scalar_expression(
+    expression: &ScalarExpression,
+    projected_indexes: &BTreeMap<String, usize>,
+) -> Result<ScalarExpression> {
+    ScalarExpression::current(rebase_scalar_node(&expression.root, projected_indexes)?)
+}
+
+fn rebase_scalar_node(
+    node: &ScalarExpressionNode,
+    projected_indexes: &BTreeMap<String, usize>,
+) -> Result<ScalarExpressionNode> {
+    match &node.expression {
+        ScalarExpressionKind::Column { name, .. } => {
+            let index = projected_indexes.get(name).copied().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "relational expression dependency {name:?} is absent from its source projection"
+                ))
+            })?;
+            Ok(ScalarExpressionNode::column(
+                name.clone(),
+                index,
+                node.scalar_type.clone(),
+            ))
+        }
+        ScalarExpressionKind::Literal { arrow_ipc } => Ok(ScalarExpressionNode::literal(
+            node.scalar_type.clone(),
+            arrow_ipc.clone(),
+        )),
+        ScalarExpressionKind::Unary { operator, argument } => ScalarExpressionNode::unary(
+            *operator,
+            rebase_scalar_node(argument, projected_indexes)?,
+            node.scalar_type.clone(),
+        ),
+        ScalarExpressionKind::Binary {
+            operator,
+            left,
+            right,
+        } => ScalarExpressionNode::binary(
+            *operator,
+            rebase_scalar_node(left, projected_indexes)?,
+            rebase_scalar_node(right, projected_indexes)?,
+            node.scalar_type.clone(),
+        ),
+        ScalarExpressionKind::Call {
+            function,
+            arguments,
+        } => ScalarExpressionNode::call(
+            function.clone(),
+            arguments
+                .iter()
+                .map(|argument| rebase_scalar_node(argument, projected_indexes))
+                .collect::<Result<Vec<_>>>()?,
+            node.scalar_type.clone(),
+        ),
+        ScalarExpressionKind::Cast { mode, argument, .. } => ScalarExpressionNode::cast(
+            *mode,
+            rebase_scalar_node(argument, projected_indexes)?,
+            node.scalar_type.clone(),
+        ),
     }
 }
 

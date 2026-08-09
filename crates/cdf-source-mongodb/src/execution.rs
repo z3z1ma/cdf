@@ -25,7 +25,7 @@ use crate::{
     identifier::MongoDbIdentifier,
     query::{build_query, field_by_name, scan_from_partition},
     resource::validate_resource_shape,
-    schema::decode_batch_with_physical_schema,
+    schema::{decode_batch_with_physical_schema, maximum_safe_decode_prefix},
 };
 
 pub(crate) const MONGODB_MAXIMUM_WIRE_BATCH_BYTES: u64 = 64 * 1024 * 1024;
@@ -33,6 +33,7 @@ pub(crate) const MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const MONGODB_FULL_SCAN_COMPLETION_PROTOCOL: &str = "mongodb.full_scan_completion.v1";
 const MONGODB_CLIENT_POOL_BYTES: u64 = 64 * 1024 * 1024;
+const MONGODB_CURSOR_BATCH_ROWS: u32 = 100_000;
 
 pub(crate) struct MongoDbClientHandle {
     pub(crate) client: Client,
@@ -165,7 +166,7 @@ pub(crate) async fn execute_mongodb_collection(
     let mut find = collection
         .find(query.filter)
         .projection(query.projection)
-        .batch_size(input.batch_rows);
+        .batch_size(MONGODB_CURSOR_BATCH_ROWS);
     if !query.sort.is_empty() {
         find = find.sort(query.sort);
     }
@@ -214,74 +215,110 @@ pub(crate) async fn execute_mongodb_collection(
                     .ok_or_else(|| CdfError::data("MongoDB raw batch item is not a document"))
             })
             .collect::<Result<Vec<_>>>()?;
-        if documents.is_empty() {
-            continue;
-        }
-        let output_lease = cancellation
-            .await_or_cancel(reserve(
-                Arc::clone(&input.memory),
-                ReservationRequest::new(
-                    ConsumerKey::new("mongodb-arrow-decode", MemoryClass::Decode)?,
-                    MONGODB_MAXIMUM_DECODE_BYTES,
-                )?,
-            ))
+        let mut decoded_offset = 0_usize;
+        while decoded_offset < documents.len() {
+            let decode_rows = maximum_safe_decode_prefix(
+                decoder_schema.as_ref(),
+                &documents[decoded_offset..],
+                input.batch_rows as usize,
+            )?;
+            let decoded_end = decoded_offset.saturating_add(decode_rows);
+            decode_and_send_documents(
+                &input,
+                &scan.projection,
+                &decoder_schema,
+                &output_schema,
+                &physical_schema,
+                &documents[decoded_offset..decoded_end],
+                source_row_offset,
+                &mut batch_index,
+                full_scan_position.clone(),
+                &mut sender,
+                &cancellation,
+            )
             .await?;
-        let decoded = decode_batch_with_physical_schema(
-            Arc::clone(&input.decoder_schema),
-            Arc::clone(&decoder_schema),
-            Arc::clone(&output_schema),
-            Arc::clone(&physical_schema),
-            &documents,
-            source_row_offset,
-        )?;
-        let progressive_evidence_bytes = decoded.pre_contract_evidence_bytes;
-        let record_batch = decoded.record_batch;
-        let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-        batch_index = batch_index.saturating_add(1);
-        let source_position =
-            batch_cursor_position(&input.descriptor, &scan.projection, &record_batch)?
-                .or_else(|| full_scan_position.clone());
-        let mut batch = Batch::from_record_batch(
-            BatchId::new(format!(
-                "{}-mongodb-{batch_index:06}",
-                sanitize_id_part(input.descriptor.resource_id.as_str())
-            ))?,
-            input.descriptor.resource_id.clone(),
-            input.partition.partition_id.clone(),
-            cdf_kernel::canonical_arrow_schema_hash(&decoded.physical_schema)?,
-            record_batch,
-        )?;
-        batch
-            .header
-            .mark_materialized_output(&decoded.physical_schema)?;
-        batch
-            .header
-            .extend_residual_candidates(decoded.residual_candidates);
-        batch
-            .header
-            .extend_physical_reconciliations(decoded.physical_reconciliations);
-        batch.header.mark_materialized_residuals_complete();
-        batch.header.source_position = source_position;
-        let evidence_bytes =
-            progressive_evidence_bytes.max(batch.header.pre_contract_evidence_retained_bytes()?);
-        let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
-            CdfError::internal("MongoDB decoded batch retained-memory accounting overflow")
-        })?;
-        if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
-            return Err(CdfError::data(format!(
-                "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
-            )));
+            source_row_offset = source_row_offset.saturating_add(decode_rows as u64);
+            decoded_offset = decoded_end;
         }
-        output_lease.reconcile(retained_total)?;
-        let batch = batch.with_retention(PayloadRetention::new(
-            Arc::new(output_lease),
-            retained_total,
-        )?)?;
-        sender.send(batch).await?;
-        source_row_offset = source_row_offset.saturating_add(documents.len() as u64);
     }
     drop(cursor_lease);
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn decode_and_send_documents(
+    input: &MongoDbExecutionInput,
+    projection: &[String],
+    decoder_schema: &SchemaRef,
+    output_schema: &SchemaRef,
+    physical_schema: &SchemaRef,
+    documents: &[&mongodb::bson::raw::RawDocument],
+    source_row_offset: u64,
+    batch_index: &mut u64,
+    full_scan_position: Option<SourcePosition>,
+    sender: &mut TaskStreamSender<Batch>,
+    cancellation: &RunCancellation,
+) -> Result<()> {
+    let output_lease = cancellation
+        .await_or_cancel(reserve(
+            Arc::clone(&input.memory),
+            ReservationRequest::new(
+                ConsumerKey::new("mongodb-arrow-decode", MemoryClass::Decode)?,
+                MONGODB_MAXIMUM_DECODE_BYTES,
+            )?,
+        ))
+        .await?;
+    let decoded = decode_batch_with_physical_schema(
+        Arc::clone(&input.decoder_schema),
+        Arc::clone(decoder_schema),
+        Arc::clone(output_schema),
+        Arc::clone(physical_schema),
+        documents,
+        source_row_offset,
+    )?;
+    let progressive_evidence_bytes = decoded.pre_contract_evidence_bytes;
+    let record_batch = decoded.record_batch;
+    let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+    *batch_index = batch_index.saturating_add(1);
+    let source_position =
+        batch_cursor_position(&input.descriptor, projection, &record_batch)?.or(full_scan_position);
+    let mut batch = Batch::from_record_batch(
+        BatchId::new(format!(
+            "{}-mongodb-{batch_index:06}",
+            sanitize_id_part(input.descriptor.resource_id.as_str())
+        ))?,
+        input.descriptor.resource_id.clone(),
+        input.partition.partition_id.clone(),
+        cdf_kernel::canonical_arrow_schema_hash(&decoded.physical_schema)?,
+        record_batch,
+    )?;
+    batch
+        .header
+        .mark_materialized_output(&decoded.physical_schema)?;
+    batch
+        .header
+        .extend_residual_candidates(decoded.residual_candidates);
+    batch
+        .header
+        .extend_physical_reconciliations(decoded.physical_reconciliations);
+    batch.header.mark_materialized_residuals_complete();
+    batch.header.source_position = source_position;
+    let evidence_bytes =
+        progressive_evidence_bytes.max(batch.header.pre_contract_evidence_retained_bytes()?);
+    let retained_total = retained_bytes.checked_add(evidence_bytes).ok_or_else(|| {
+        CdfError::internal("MongoDB decoded batch retained-memory accounting overflow")
+    })?;
+    if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
+        return Err(CdfError::data(format!(
+            "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
+        )));
+    }
+    output_lease.reconcile(retained_total)?;
+    let batch = batch.with_retention(PayloadRetention::new(
+        Arc::new(output_lease),
+        retained_total,
+    )?)?;
+    sender.send(batch).await
 }
 
 pub(crate) fn full_scan_completion_position(

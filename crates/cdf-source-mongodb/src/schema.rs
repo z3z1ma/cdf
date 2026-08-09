@@ -1001,6 +1001,39 @@ pub(crate) fn decode_batch_with_physical_schema(
     })
 }
 
+/// Returns the largest leading document group that the bounded decoder can admit.
+///
+/// MongoDB cursor batches are wire-transport units, not Arrow allocation authority. A server may
+/// therefore return more documents than one decoded batch can retain. Find the largest safe
+/// prefix without coupling the cursor's network batch cardinality to the decoder's row ceiling.
+pub(crate) fn maximum_safe_decode_prefix(
+    decoder_schema: &Schema,
+    documents: &[&RawDocument],
+    maximum_rows: usize,
+) -> Result<usize> {
+    if documents.is_empty() || maximum_rows == 0 {
+        return Err(CdfError::internal(
+            "MongoDB decode-prefix admission requires documents and a nonzero row ceiling",
+        ));
+    }
+    let upper = documents.len().min(maximum_rows);
+    if preflight_column_accumulator_bytes(decoder_schema, &documents[..upper]).is_ok() {
+        return Ok(upper);
+    }
+    preflight_column_accumulator_bytes(decoder_schema, &documents[..1])?;
+    let mut admitted = 1_usize;
+    let mut rejected = upper;
+    while admitted + 1 < rejected {
+        let candidate = admitted + (rejected - admitted) / 2;
+        if preflight_column_accumulator_bytes(decoder_schema, &documents[..candidate]).is_ok() {
+            admitted = candidate;
+        } else {
+            rejected = candidate;
+        }
+    }
+    Ok(admitted)
+}
+
 fn preflight_column_accumulator_bytes(schema: &Schema, documents: &[&RawDocument]) -> Result<bool> {
     let mut budget = DecodeAllocationBudget::default();
     budget.charge(

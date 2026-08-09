@@ -69,7 +69,7 @@ impl Planner {
         let logical_schema = relational_output_schema(resource, &input)?;
         let schema_admission_program = source_schema_admission_program(resource)?;
         let physical_request =
-            relational_source_scan_request(&input)?.unwrap_or_else(|| input.request.clone());
+            relational_source_scan_request(&input, false)?.unwrap_or_else(|| input.request.clone());
 
         let partitions = resource.plan_partitions(&physical_request)?;
         validate_tier_a_partition_intents(&partitions)?;
@@ -153,6 +153,11 @@ impl Planner {
             .keyed_effects
             .validate_for_disposition(&write_disposition)?;
         let logical_schema = relational_output_schema(resource, &input)?;
+        if resource.capabilities().projection == CapabilitySupport::Supported
+            && let Some(relational) = input.relational_expression_plan.as_ref()
+        {
+            input.relational_expression_plan = Some(relational.narrow_input_to_dependencies()?);
+        }
         let schema_admission_program = source_schema_admission_program(resource)?;
         let has_relational_plan = input.relational_expression_plan.is_some();
 
@@ -161,7 +166,9 @@ impl Planner {
         if let Some(cursor) = resource.descriptor().cursor.as_ref() {
             required_fields.push(cursor.field.clone());
         }
-        let physical_request = match relational_source_scan_request(&input)? {
+        let projection_supported =
+            resource.capabilities().projection == CapabilitySupport::Supported;
+        let physical_request = match relational_source_scan_request(&input, projection_supported)? {
             Some(request) => request,
             None => physical_scan_request(
                 &input.request,
@@ -199,14 +206,15 @@ impl Planner {
             resource.source_materializations(),
             &schema_admission_constraint,
         );
+        let projection_pushed = resource.capabilities().projection == CapabilitySupport::Supported
+            && (!has_relational_plan || scan.request.projection.is_some());
         let mut plan = self.finish_plan(
             scan,
             input,
             PlanFinishContext {
                 effect_key: resource.descriptor().merge_key.clone(),
                 write_disposition,
-                projection_pushed: !has_relational_plan
-                    && resource.capabilities().projection == CapabilitySupport::Supported,
+                projection_pushed,
                 limit_pushed: !has_relational_plan
                     && resource.capabilities().limits == CapabilitySupport::Supported,
                 estimate_support: resource.capabilities().estimates.clone(),
@@ -396,10 +404,13 @@ impl Planner {
     }
 }
 
-fn relational_source_scan_request(input: &EnginePlanInput) -> Result<Option<ScanRequest>> {
-    if input.relational_expression_plan.is_none() {
+fn relational_source_scan_request(
+    input: &EnginePlanInput,
+    projection_supported: bool,
+) -> Result<Option<ScanRequest>> {
+    let Some(relational) = input.relational_expression_plan.as_ref() else {
         return Ok(None);
-    }
+    };
     if !input.request.order_by.is_empty() {
         return Err(CdfError::contract(
             "ordering a query-first resource after SQL analysis is not supported by the current native plan",
@@ -407,7 +418,17 @@ fn relational_source_scan_request(input: &EnginePlanInput) -> Result<Option<Scan
     }
     Ok(Some(ScanRequest {
         resource_id: input.request.resource_id.clone(),
-        projection: None,
+        projection: projection_supported
+            .then(|| {
+                relational.input_schema.to_arrow().map(|schema| {
+                    schema
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().to_owned())
+                        .collect()
+                })
+            })
+            .transpose()?,
         filters: Vec::new(),
         limit: None,
         order_by: Vec::new(),
