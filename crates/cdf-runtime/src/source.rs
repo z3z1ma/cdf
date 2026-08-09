@@ -1999,7 +1999,11 @@ impl CompiledSourcePlan {
     }
 
     pub fn compiled_source_plan_hash(&self) -> Result<CompiledSourcePlanHash> {
-        CompiledSourcePlanHash::new(artifact_hash(self)?)
+        let mut canonical = serde_json::to_value(self).map_err(|error| {
+            CdfError::internal(format!("serialize compiled source plan: {error}"))
+        })?;
+        canonical.sort_all_objects();
+        CompiledSourcePlanHash::new(artifact_hash(&canonical)?)
     }
 }
 

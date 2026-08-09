@@ -412,7 +412,12 @@ impl PortablePlanResource {
             || self.resource_id != self.schema_authority.key().resource_id.as_str()
             || self.compiled_resource.schema_authority != self.schema_authority.compiled_authority()
             || self.compiled_source_plan_hash
-                != cdf_runtime::artifact_hash(&self.compiled_resource.resource.source_plan)?
+                != self
+                    .compiled_resource
+                    .resource
+                    .source_plan
+                    .compiled_source_plan_hash()?
+                    .as_str()
             || self.engine_plan.initial_committed_frontier != self.input_checkpoint_head
         {
             return Err(CdfError::data(format!(

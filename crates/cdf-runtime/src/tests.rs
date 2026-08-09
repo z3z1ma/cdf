@@ -1553,6 +1553,12 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         "synchronous source compilation must remain contact-free"
     );
     let portable_plan_bytes = serde_json::to_vec(&plan).unwrap();
+    let round_tripped: CompiledSourcePlan = serde_json::from_slice(&portable_plan_bytes).unwrap();
+    assert_eq!(
+        plan.compiled_source_plan_hash().unwrap(),
+        round_tripped.compiled_source_plan_hash().unwrap(),
+        "compiled source identity must survive canonical JSON transport"
+    );
     let portable_source = PortableSourceBinding {
         driver_id: descriptor.driver_id.clone(),
         driver_version: descriptor.driver_version.clone(),

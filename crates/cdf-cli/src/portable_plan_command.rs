@@ -97,7 +97,11 @@ pub(crate) fn build_resource_material(
             }
         }
     };
-    let source_plan_hash = cdf_runtime::artifact_hash(prepared.resource.source_plan())?;
+    let source_plan_hash = prepared
+        .resource
+        .source_plan()
+        .compiled_source_plan_hash()?
+        .to_string();
     let destination = PortableDestinationBinding {
         uri: destination_uri.to_owned(),
         configuration_hash: cdf_runtime::artifact_hash(&(
