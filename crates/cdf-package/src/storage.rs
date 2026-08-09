@@ -259,10 +259,10 @@ pub(crate) fn build_manifest(
 ) -> Result<PackageManifest> {
     validate_manifest_identity_paths(&files)?;
     cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
-    content.validate_segment_rows(
+    content.validate_segments(
         segments
             .iter()
-            .map(|segment| (&segment.kind, segment.row_count)),
+            .map(|segment| (&segment.segment_id, &segment.kind, segment.row_count)),
     )?;
     let identity = ManifestIdentity {
         manifest_version: MANIFEST_VERSION,

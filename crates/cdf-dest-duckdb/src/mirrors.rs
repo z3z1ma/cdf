@@ -211,6 +211,11 @@ fn expected_duckdb_duplicate(
             "DuckDB duplicate request differs from its typed commit plan",
         ));
     }
+    if stored.content != request.content {
+        return Err(CdfError::destination(
+            "DuckDB duplicate receipt content differs from the routed/package authority",
+        ));
+    }
     if !plan.migrations.is_empty() && plan.migrations != stored.migrations {
         return Err(CdfError::destination(
             "DuckDB duplicate receipt migrations differ from the applicable commit plan",
@@ -245,6 +250,20 @@ fn validate_duckdb_duplicate_counts(stored: &Receipt, segment_acks: &[SegmentAck
             .ok_or_else(|| CdfError::data("DuckDB duplicate row count overflowed"))
     })?;
     let counts = &stored.counts;
+    if matches!(
+        stored.content,
+        cdf_kernel::PackageContentAuthority::Routed { .. }
+    ) {
+        return if matches!(counts, CommitCounts::Routed { .. })
+            && counts.settled_effect_count() == Some(rows)
+        {
+            Ok(())
+        } else {
+            Err(CdfError::destination(
+                "DuckDB duplicate routed receipt counts contradict its segment acknowledgements",
+            ))
+        };
+    }
     let valid = if segment_acks.is_empty() {
         match (&stored.content, counts) {
             (
@@ -413,7 +432,7 @@ fn decode_duckdb_load_row(row: DuckDbLoadEvidenceRow) -> Result<LoadMirrorRow> {
         || receipt.idempotency_token.as_str() != idempotency_token
         || disposition_name(&receipt.disposition) != disposition
         || receipt.schema_hash.as_str() != schema_hash
-        || indexed_counts(&receipt.counts)
+        || indexed_counts(&receipt.counts)?
             != (rows_written, rows_inserted, rows_updated, rows_deleted)
         || receipt.segment_acks.len() as u64 != segment_count
         || receipt.migrations != migrations
@@ -455,7 +474,8 @@ fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
     let receipt = &mutation.receipt;
     let receipt_json = serde_json::to_string(receipt).map_err(json_error)?;
     let migrations_json = serde_json::to_string(&receipt.migrations).map_err(json_error)?;
-    let (rows_written, rows_inserted, rows_updated, rows_deleted) = indexed_counts(&receipt.counts);
+    let (rows_written, rows_inserted, rows_updated, rows_deleted) =
+        indexed_counts(&receipt.counts)?;
     conn.execute(
         "INSERT INTO _cdf_loads \
          (target, idempotency_token, package_hash, destination, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, segment_count, migrations_json, receipt_id, receipt_json, committed_at_ms) \
@@ -482,8 +502,10 @@ fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
     Ok(())
 }
 
-fn indexed_counts(counts: &CommitCounts) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
-    match counts {
+type IndexedCounts = (u64, Option<u64>, Option<u64>, Option<u64>);
+
+fn indexed_counts(counts: &CommitCounts) -> Result<IndexedCounts> {
+    Ok(match counts {
         CommitCounts::Rows {
             rows_written,
             rows_inserted,
@@ -503,7 +525,15 @@ fn indexed_counts(counts: &CommitCounts) -> (u64, Option<u64>, Option<u64>, Opti
             *rows_updated,
             hard_deletes.or(*soft_deletes),
         ),
-    }
+        CommitCounts::Routed { .. } => (
+            counts
+                .settled_effect_count()
+                .ok_or_else(|| CdfError::data("routed receipt count overflowed u64"))?,
+            None,
+            None,
+            None,
+        ),
+    })
 }
 
 fn insert_segment(conn: &Connection, mutation: &SegmentMirrorMutation) -> Result<()> {

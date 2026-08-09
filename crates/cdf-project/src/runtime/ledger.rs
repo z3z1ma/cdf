@@ -858,6 +858,17 @@ fn receipt_details(receipt: &Receipt) -> Result<RunEventDetails> {
                 }
             }
         }
+        cdf_kernel::CommitCounts::Routed { targets } => {
+            details.insert(
+                "target_count".to_owned(),
+                RunEventValue::U64(u64_from_usize(targets.len())?),
+            );
+            let settled = receipt
+                .counts
+                .settled_effect_count()
+                .ok_or_else(|| CdfError::data("routed receipt count overflowed u64"))?;
+            details.insert("rows_written".to_owned(), RunEventValue::U64(settled));
+        }
     }
     details.insert(
         "migration_count".to_owned(),

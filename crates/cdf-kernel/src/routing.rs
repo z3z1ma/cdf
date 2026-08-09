@@ -202,6 +202,15 @@ pub struct RouteTargetFamily {
     pub logical_target: TargetName,
     pub identifier_max_length: Option<u16>,
     pub bindings: Vec<RouteTargetBinding>,
+    pub schema_family_hash: SchemaHash,
+}
+
+#[derive(Serialize)]
+struct RouteTargetFamilyIdentity<'a> {
+    route: &'a RoutePlan,
+    logical_target: &'a TargetName,
+    identifier_max_length: Option<u16>,
+    bindings: &'a [RouteTargetBinding],
 }
 
 impl RouteTargetFamily {
@@ -306,11 +315,26 @@ where
             schema_hash,
         });
     }
+    let schema_family_hash = SchemaHash::new(format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(
+            serde_json::to_vec(&RouteTargetFamilyIdentity {
+                route: &route,
+                logical_target: &logical_target,
+                identifier_max_length,
+                bindings: &bindings,
+            })
+            .map_err(|error| {
+                CdfError::internal(format!("encode routed target family identity: {error}"))
+            })?
+        ))
+    ))?;
     Ok(RouteTargetFamily {
         route,
         logical_target,
         identifier_max_length,
         bindings,
+        schema_family_hash,
     })
 }
 

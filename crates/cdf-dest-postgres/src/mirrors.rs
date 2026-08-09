@@ -43,7 +43,7 @@ pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
         || receipt.idempotency_token.as_str() != row.get::<_, String>(5)
         || disposition_name(&receipt.disposition) != row.get::<_, String>(6)
         || receipt.schema_hash.as_str() != row.get::<_, String>(7)
-        || indexed_counts(&receipt.counts)
+        || indexed_counts(&receipt.counts)?
             != (rows_written, rows_inserted, rows_updated, rows_deleted)
         || receipt.segment_acks.len() as u64 != segment_count
         || receipt.migrations != migrations
@@ -56,10 +56,10 @@ pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
     Ok(LoadMirrorRow { receipt })
 }
 
-pub(crate) fn indexed_counts(
-    counts: &CommitCounts,
-) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
-    match counts {
+pub(crate) type IndexedCounts = (u64, Option<u64>, Option<u64>, Option<u64>);
+
+pub(crate) fn indexed_counts(counts: &CommitCounts) -> Result<IndexedCounts> {
+    Ok(match counts {
         CommitCounts::Rows {
             rows_written,
             rows_inserted,
@@ -79,7 +79,15 @@ pub(crate) fn indexed_counts(
             *rows_updated,
             (*hard_deletes).or(*soft_deletes),
         ),
-    }
+        CommitCounts::Routed { .. } => (
+            counts
+                .settled_effect_count()
+                .ok_or_else(|| CdfError::data("routed receipt count overflowed u64"))?,
+            None,
+            None,
+            None,
+        ),
+    })
 }
 
 fn load_count(value: i64, name: &str) -> Result<u64> {

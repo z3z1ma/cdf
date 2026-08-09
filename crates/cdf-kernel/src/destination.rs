@@ -12,7 +12,10 @@ use crate::{
         DestinationResidualReadback, DestinationSheetArtifact, RowProvenanceAddress,
     },
     error::Result,
-    ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, ReceiptId, SegmentId, TargetName},
+    ids::{
+        DestinationId, IdempotencyToken, OutputBindingId, PackageHash, PlanId, ReceiptId,
+        SchemaHash, SegmentId, TargetName,
+    },
     resource::{CapabilitySupport, WriteDisposition},
     retention::PayloadRetention,
 };
@@ -147,6 +150,18 @@ pub enum CommitCounts {
         missing_delete_keys: Option<u64>,
         ignored_deletes: Option<u64>,
     },
+    Routed {
+        targets: Vec<RoutedTargetCommitCounts>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutedTargetCommitCounts {
+    pub output_binding: OutputBindingId,
+    pub target: TargetName,
+    pub schema_hash: SchemaHash,
+    pub counts: Box<CommitCounts>,
 }
 
 pub type RowCommitOutcomes = (u64, Option<u64>, Option<u64>, Option<u64>);
@@ -206,6 +221,7 @@ impl CommitCounts {
                 rows_deleted,
             } => Some((*rows_written, *rows_inserted, *rows_updated, *rows_deleted)),
             Self::KeyedChanges { .. } => None,
+            Self::Routed { .. } => None,
         }
     }
 
@@ -213,6 +229,7 @@ impl CommitCounts {
         match self {
             Self::Rows { .. } => None,
             Self::KeyedChanges { intent, .. } => Some(*intent),
+            Self::Routed { .. } => None,
         }
     }
 
@@ -220,6 +237,7 @@ impl CommitCounts {
         match self {
             Self::Rows { rows_written, .. } => Some(*rows_written),
             Self::KeyedChanges { .. } => None,
+            Self::Routed { .. } => None,
         }
     }
 
@@ -228,6 +246,7 @@ impl CommitCounts {
             Self::Rows { rows_inserted, .. } | Self::KeyedChanges { rows_inserted, .. } => {
                 *rows_inserted
             }
+            Self::Routed { .. } => None,
         }
     }
 
@@ -236,6 +255,7 @@ impl CommitCounts {
             Self::Rows { rows_updated, .. } | Self::KeyedChanges { rows_updated, .. } => {
                 *rows_updated
             }
+            Self::Routed { .. } => None,
         }
     }
 
@@ -243,13 +263,17 @@ impl CommitCounts {
         match self {
             Self::Rows { rows_deleted, .. } => *rows_deleted,
             Self::KeyedChanges { .. } => None,
+            Self::Routed { .. } => None,
         }
     }
 
-    pub const fn settled_effect_count(&self) -> Option<u64> {
+    pub fn settled_effect_count(&self) -> Option<u64> {
         match self {
             Self::Rows { rows_written, .. } => Some(*rows_written),
             Self::KeyedChanges { intent, .. } => intent.upserts.checked_add(intent.deletes),
+            Self::Routed { targets } => targets.iter().try_fold(0_u64, |total, target| {
+                total.checked_add(target.counts.settled_effect_count()?)
+            }),
         }
     }
 }

@@ -654,20 +654,7 @@ impl DuckDbStagedIngressSession {
         }
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         let committed_at_ms = self.destination.committed_at_ms()?;
-        let counts = match &binding.commit().content {
-            cdf_kernel::PackageContentAuthority::Rows { .. } => CommitCounts::default(),
-            cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. } => {
-                CommitCounts::keyed_changes(
-                    reduction.surviving,
-                    Some(0),
-                    Some(0),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            }
-        };
+        let counts = binding.commit().content.zero_commit_counts()?;
         let receipt = build_receipt(
             binding.commit(),
             binding.plan(),
@@ -1047,6 +1034,7 @@ impl DestinationProtocol for DuckDbDestination {
     fn protocol_capabilities(&self) -> cdf_kernel::DestinationProtocolCapabilities {
         cdf_kernel::DestinationProtocolCapabilities::default()
             .with_corrections(duckdb_correction_capabilities())
+            .with_routed_target_families()
     }
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {

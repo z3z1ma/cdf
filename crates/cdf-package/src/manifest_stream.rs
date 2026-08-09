@@ -356,7 +356,7 @@ pub fn visit_package_manifest(
     let mut file_count = 0_u64;
     let mut file_bytes = 0_u64;
     let mut segment_count = 0_u64;
-    let mut segment_rows = std::collections::BTreeMap::new();
+    let mut segment_rows = Vec::new();
     let parsed = {
         let mut counted_file_visitor = |entry: FileEntry| {
             file_count = file_count
@@ -368,10 +368,7 @@ pub fn visit_package_manifest(
             file_visitor(entry)
         };
         let mut counted_segment_visitor = |entry: SegmentEntry| {
-            let rows = segment_rows.entry(entry.kind).or_insert(0_u64);
-            *rows = rows
-                .checked_add(entry.row_count)
-                .ok_or_else(|| CdfError::data("package manifest effect count overflowed u64"))?;
+            segment_rows.push((entry.segment_id.clone(), entry.kind, entry.row_count));
             segment_count = segment_count
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("package manifest segment count overflowed u64"))?;
@@ -400,10 +397,11 @@ pub fn visit_package_manifest(
             header.manifest_version, header.identity.manifest_version
         )));
     }
-    header
-        .identity
-        .content
-        .validate_segment_rows(segment_rows.iter().map(|(kind, rows)| (kind, *rows)))?;
+    header.identity.content.validate_segments(
+        segment_rows
+            .iter()
+            .map(|(id, kind, rows)| (id, kind, *rows)),
+    )?;
     Ok(header)
 }
 

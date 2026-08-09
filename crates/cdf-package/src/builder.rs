@@ -930,10 +930,14 @@ impl PackageBuilder {
             .clone();
         let mut segment_rows = Vec::new();
         draft_index.visit_segments(&mut |segment| {
-            segment_rows.push((segment.kind, segment.row_count));
+            segment_rows.push((segment.segment_id, segment.kind, segment.row_count));
             Ok(())
         })?;
-        content.validate_segment_rows(segment_rows.iter().map(|(kind, rows)| (kind, *rows)))?;
+        content.validate_segments(
+            segment_rows
+                .iter()
+                .map(|(id, kind, rows)| (id, kind, *rows)),
+        )?;
         let layout = package_layout();
         let package_hash = manifest_identity_hash_streaming(
             &self.package_id,

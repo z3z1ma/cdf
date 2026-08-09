@@ -76,6 +76,15 @@ user-ratified authority.
   hashes without overloading resource ids or destination names. The pre-production SQLite state
   component advances to version 3 and uses one length-delimited scalar key materialization for the
   tuple across every primary/foreign-key lookup.
+- 2026-08-09: Added package-native routed content authority: one hash-bound route family owns an
+  exact ordered output/schema/content/segment partition, and one routed receipt owns matching
+  per-target counts. Package building, manifest streaming, verified replay, checkpoint validation,
+  and destination mirrors now reject missing, duplicate, unassigned, or cross-output segments.
+- 2026-08-09: Added the generic finalized-package routed commit boundary and a DuckDB atomic-family
+  implementation. DuckDB plans all target tables before data application, performs all DDL and
+  row/keyed effects in one transaction, records one package receipt, and treats replay of the same
+  package token as a verified duplicate rather than a second application. Other destinations do
+  not advertise routed support until they implement the same settlement contract.
 
 ## Blockers
 
@@ -97,6 +106,13 @@ must not become a parallel implementation.
   `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-kernel schema_authority --lib` passed; and
   `DUCKDB_DOWNLOAD_LIB=1 cargo check --workspace` passed. This proves independent durable keys and
   histories, not yet a family-wide settlement permit or destination application.
+- Package/DuckDB settlement: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-kernel effect::tests --lib`
+  passed 3 tests and `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-dest-duckdb routed::tests --lib`
+  passed. The tests prove exact output-segment partition validation and atomic two-target DuckDB
+  application plus package-token replay without duplicate rows; they do not yet prove engine-side
+  route partition construction or PostgreSQL settlement.
+- Affected strict Clippy passed across kernel, package, runtime, project, DuckDB, PostgreSQL,
+  SQLite, and ClickHouse crates with `--all-targets -- -D warnings`; `git diff --check` passed.
 
 ## Review
 

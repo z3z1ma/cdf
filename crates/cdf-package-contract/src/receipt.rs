@@ -123,11 +123,11 @@ impl ReceiptDraft {
 }
 
 fn validate_ordinary_plan(request: &DestinationCommitRequest, plan: &CommitPlan) -> Result<()> {
-    request.content.validate_segment_rows(
+    request.content.validate_segments(
         request
             .segments
             .iter()
-            .map(|segment| (&segment.kind, segment.row_count)),
+            .map(|segment| (&segment.segment_id, &segment.kind, segment.row_count)),
     )?;
     if plan.target != request.target || plan.disposition != request.disposition {
         return Err(CdfError::contract(
@@ -162,11 +162,11 @@ fn validate_correction_plan(
 
 fn validate_receipt(receipt: &Receipt, expected_segments: &[ExpectedReceiptSegment]) -> Result<()> {
     receipt.content.validate()?;
-    receipt.content.validate_segment_rows(
+    receipt.content.validate_segments(
         receipt
             .segment_acks
             .iter()
-            .map(|ack| (&ack.kind, ack.row_count)),
+            .map(|ack| (&ack.segment_id, &ack.kind, ack.row_count)),
     )?;
     validate_commit_counts(&receipt.content, &receipt.counts)?;
     if receipt.committed_at_ms < 0 {
@@ -307,6 +307,30 @@ fn validate_commit_counts(
                         "soft",
                     )?;
                 }
+            }
+            Ok(())
+        }
+        (
+            cdf_kernel::PackageContentAuthority::Routed { family, outputs },
+            CommitCounts::Routed { targets },
+        ) => {
+            if targets.len() != outputs.len() {
+                return Err(CdfError::contract(
+                    "routed receipt counts must cover every output exactly once",
+                ));
+            }
+            for ((target, binding), output) in targets.iter().zip(&family.bindings).zip(outputs) {
+                if target.output_binding != binding.output_binding
+                    || target.target != binding.physical_target
+                    || target.schema_hash != binding.schema_hash
+                    || output.output_binding != binding.output_binding
+                    || matches!(target.counts.as_ref(), CommitCounts::Routed { .. })
+                {
+                    return Err(CdfError::contract(
+                        "routed receipt target counts differ from package route authority",
+                    ));
+                }
+                validate_commit_counts(output.content.as_ref(), target.counts.as_ref())?;
             }
             Ok(())
         }

@@ -2,10 +2,10 @@ use std::{any::Any, collections::BTreeMap};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitPlan, CommitSession, DestinationCommitRequest,
-    DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest, DestinationProtocol,
-    DestinationSheet, Receipt, ReceiptVerification, ResourceStream, Result, SchemaHash, StateDelta,
-    TargetName, WriteDisposition,
+    CapabilitySupport, CdfError, CommitPlan, CommitSegmentIterator, CommitSession,
+    DestinationCommitRequest, DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationProtocol, DestinationSheet, Receipt, ReceiptVerification, ResourceStream, Result,
+    SchemaHash, StateDelta, TargetName, WriteDisposition,
 };
 use cdf_package_contract::{PackageReplayInputs, SharedVerifiedPackageAccess};
 
@@ -382,6 +382,21 @@ pub trait DestinationRuntime {
     fn verify_receipt(&mut self, receipt: &Receipt) -> Result<ReceiptVerification> {
         self.ensure_protocol_ready()?;
         self.protocol().verify(receipt)
+    }
+
+    /// Atomically applies a manifest-bound routed target family.
+    ///
+    /// This path is separate from single-target ingress because one package may contain multiple
+    /// Arrow schemas and every physical target must share one destination transaction.
+    fn commit_routed_package(
+        &mut self,
+        _inputs: &PackageReplayInputs,
+        _segments: CommitSegmentIterator,
+    ) -> Result<DestinationCommitOutcome> {
+        Err(CdfError::destination(format!(
+            "destination {} does not support atomic routed target families",
+            self.describe().destination_id
+        )))
     }
 
     fn secret_redaction(&self) -> Option<&str> {

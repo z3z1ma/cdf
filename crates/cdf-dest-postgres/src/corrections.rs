@@ -1001,7 +1001,7 @@ fn insert_correction_load_mirror(
         .as_ref()
         .and_then(|metadata| metadata.values.get("xid"))
         .ok_or_else(|| CdfError::internal("Postgres correction receipt missing xid"))?;
-    let (indexed_written, _, indexed_updated, _) = crate::mirrors::indexed_counts(&receipt.counts);
+    let (indexed_written, _, indexed_updated, _) = crate::mirrors::indexed_counts(&receipt.counts)?;
     let rows_written = i64::try_from(indexed_written)
         .map_err(|_| CdfError::internal("correction rows_written exceeds BIGINT"))?;
     let rows_inserted = Some(0_i64);

@@ -133,6 +133,14 @@ impl DestinationRuntime for DuckDbDestination {
         self
     }
 
+    fn commit_routed_package(
+        &mut self,
+        inputs: &cdf_package_contract::PackageReplayInputs,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        self.commit_routed(inputs, segments)
+    }
+
     fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
         cdf_runtime::DestinationIngress::StagedSegments(self)
     }

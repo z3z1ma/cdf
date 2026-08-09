@@ -223,6 +223,7 @@ pub struct DestinationProtocolCapabilities {
     pub corrections: DestinationCorrectionCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_key_rules: Option<ObjectKeyRules>,
+    pub routed_target_families: CapabilitySupport,
 }
 
 impl Default for DestinationProtocolCapabilities {
@@ -231,6 +232,7 @@ impl Default for DestinationProtocolCapabilities {
             version: DESTINATION_PROTOCOL_CAPABILITIES_VERSION,
             corrections: DestinationCorrectionCapabilities::default(),
             object_key_rules: None,
+            routed_target_families: CapabilitySupport::Unsupported,
         }
     }
 }
@@ -243,6 +245,11 @@ impl DestinationProtocolCapabilities {
 
     pub fn with_object_key_rules(mut self, rules: ObjectKeyRules) -> Self {
         self.object_key_rules = Some(rules);
+        self
+    }
+
+    pub fn with_routed_target_families(mut self) -> Self {
+        self.routed_target_families = CapabilitySupport::Supported;
         self
     }
 
@@ -261,6 +268,14 @@ impl DestinationProtocolCapabilities {
             .validate(&sheet.transactions, &sheet.idempotency)?;
         if let Some(rules) = &self.object_key_rules {
             rules.validate()?;
+        }
+        if self.routed_target_families == CapabilitySupport::Supported
+            && (sheet.transactions != TransactionSupport::AtomicPackage
+                || sheet.idempotency != IdempotencySupport::PackageToken)
+        {
+            return Err(CdfError::contract(
+                "routed target families require atomic-package transactions and package-token idempotency",
+            ));
         }
         Ok(())
     }

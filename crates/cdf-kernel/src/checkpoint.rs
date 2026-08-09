@@ -89,10 +89,10 @@ impl StateDelta {
             position.validate()?;
         }
         self.content.validate()?;
-        self.content.validate_segment_rows(
+        self.content.validate_segments(
             self.segments
                 .iter()
-                .map(|segment| (&segment.kind, segment.row_count)),
+                .map(|segment| (&segment.segment_id, &segment.kind, segment.row_count)),
         )?;
         for segment in &self.segments {
             segment.output_position.validate()?;

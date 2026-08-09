@@ -22,6 +22,7 @@ pub(crate) fn duckdb_sheet() -> Result<DestinationSheet> {
             WriteDisposition::Append,
             WriteDisposition::Replace,
             WriteDisposition::Merge,
+            WriteDisposition::CdcApply,
         ],
         transactions: TransactionSupport::AtomicPackage,
         idempotency: IdempotencySupport::PackageToken,

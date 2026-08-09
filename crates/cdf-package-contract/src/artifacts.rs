@@ -413,11 +413,11 @@ impl PackageReplayInputs {
                 commit_plan.schema_hash, state_delta.schema_hash
             )));
         }
-        commit_plan.content.validate_segment_rows(
+        commit_plan.content.validate_segments(
             state_delta
                 .segments
                 .iter()
-                .map(|segment| (&segment.kind, segment.row_count)),
+                .map(|segment| (&segment.segment_id, &segment.kind, segment.row_count)),
         )?;
         validate_package_segments(package_segments, &state_delta.segments, processed.as_ref())?;
         if let Some(processed) = &processed {

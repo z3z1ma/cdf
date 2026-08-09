@@ -1078,15 +1078,25 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let inputs = package
         .reader()
         .replay_inputs_verified(package.verification())?;
-    let output_schema = package
-        .reader()
-        .runtime_arrow_schema_verified(package.verification())?;
-    let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
-    if output_schema_hash != inputs.state_delta.schema_hash {
-        return Err(CdfError::data(format!(
-            "package logical output schema {} does not match StateDelta schema {}",
-            output_schema_hash, inputs.state_delta.schema_hash
-        )));
+    let routed = matches!(
+        inputs.destination_commit.content,
+        cdf_kernel::PackageContentAuthority::Routed { .. }
+    );
+    let output_schema = (!routed)
+        .then(|| {
+            package
+                .reader()
+                .runtime_arrow_schema_verified(package.verification())
+        })
+        .transpose()?;
+    if let Some(output_schema) = output_schema {
+        let output_schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
+        if output_schema_hash != inputs.state_delta.schema_hash {
+            return Err(CdfError::data(format!(
+                "package logical output schema {} does not match StateDelta schema {}",
+                output_schema_hash, inputs.state_delta.schema_hash
+            )));
+        }
     }
 
     let quarantine_path = "quarantine/schema-observations.json";
@@ -1765,22 +1775,44 @@ where
             implemented_ingress_mode,
         )));
     }
-    let output_schema = package
-        .reader()
-        .runtime_arrow_schema_verified(package.verification())?;
+    let routed = matches!(
+        inputs.destination_commit.content,
+        cdf_kernel::PackageContentAuthority::Routed { .. }
+    );
+    let output_schema = (!routed)
+        .then(|| {
+            package
+                .reader()
+                .runtime_arrow_schema_verified(package.verification())
+        })
+        .transpose()?;
     // A live staged attempt has already crossed the destination mutation boundary under this
     // exact prepared path. Final package binding supplies identities that did not exist earlier;
     // it must not re-plan writer or batching policy. Artifact-only replay has no live attempt and
     // therefore prepares from the verified package inputs here.
-    let selected_bulk_path = match active_staged.as_ref() {
-        Some(active) => {
-            capabilities.validate_prepared_bulk_path(&active.bulk_path)?;
-            active.bulk_path.clone()
+    let selected_bulk_path = if routed {
+        if active_staged.is_some() {
+            return Err(CdfError::contract(
+                "routed target families cannot bind a single-target staged ingress attempt",
+            ));
         }
-        None => runtime.prepare_selected_bulk_path(
-            &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+        None
+    } else {
+        Some(match active_staged.as_ref() {
+            Some(active) => {
+                capabilities.validate_prepared_bulk_path(&active.bulk_path)?;
+                active.bulk_path.clone()
+            }
+            None => runtime.prepare_selected_bulk_path(
+                &cdf_runtime::BulkPathPreparationInput::new(
+                    output_schema
+                        .as_ref()
+                        .ok_or_else(|| CdfError::internal("ordinary package schema is absent"))?
+                        .as_ref(),
+                )
                 .with_commit(&inputs.destination_commit),
-        )?,
+            )?,
+        })
     };
     let active_staged = active_staged;
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
@@ -1817,9 +1849,29 @@ where
             package.reader_mut().update_status(PackageStatus::Loading)?;
         }
 
-        let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
-            cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
-                let outcome = match active_staged {
+        let (receipt, receipt_policy, commit_verification) = if routed {
+            let maximum_segment_bytes = capabilities
+                .max_in_flight_bytes
+                .unwrap_or(64 * 1024 * 1024)
+                .min(memory.snapshot().budget_bytes);
+            let stream = package.reader().verified_commit_segment_stream_with(
+                package.verification(),
+                &inputs.destination_commit.segments,
+                Arc::clone(&memory),
+                maximum_segment_bytes,
+            )?;
+            let segments =
+                stream.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
+            let outcome = runtime.commit_routed_package(&inputs, Box::new(segments))?;
+            (
+                outcome.receipt,
+                outcome.reporting_policy,
+                outcome.verification,
+            )
+        } else {
+            match capabilities.ingress_mode {
+                cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
+                    let outcome = match active_staged {
                     Some(active) => finalize_active_staged_ingress(
                         runtime,
                         package.reader(),
@@ -1833,7 +1885,9 @@ where
                         &package,
                         &inputs,
                         &capabilities,
-                        &selected_bulk_path,
+                        selected_bulk_path.as_ref().ok_or_else(|| {
+                            CdfError::internal("ordinary staged bulk path is absent")
+                        })?,
                         &hooks,
                         execution.ok_or_else(|| {
                             CdfError::contract(
@@ -1842,58 +1896,63 @@ where
                         })?,
                     ),
                 }?;
-                (
-                    outcome.receipt,
-                    outcome.reporting_policy,
-                    outcome.verification,
-                )
-            }
-            cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
-                let mut prepared = match runtime.ingress() {
-                    cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
-                        .prepare_package_commit(
-                            &inputs,
-                            &DestinationPlanningContext::new(
-                                Arc::new(package.clone()),
-                                &selected_bulk_path,
-                            ),
-                        ),
-                    cdf_runtime::DestinationIngress::StagedSegments(_) => Err(CdfError::contract(
-                        "finalized package reached a staged destination runtime",
-                    )),
-                }?;
-                prepared.validate_verified_inputs(&inputs)?;
-                if prepared.bulk_path() != &selected_bulk_path {
-                    return Err(CdfError::contract(
-                        "destination prepared a commit for a different bulk path than schema preflight selected",
-                    ));
+                    (
+                        outcome.receipt,
+                        outcome.reporting_policy,
+                        outcome.verification,
+                    )
                 }
-                capabilities.validate_prepared_bulk_path(prepared.bulk_path())?;
-                let receipt_policy = prepared.reporting_policy().clone();
-                notify_destination_replay_stage(
-                    &hooks,
-                    PackageReplayStage::DestinationCommitStarted {
-                        plan_id: &prepared.plan().plan_id,
-                        segment_count: cardinality_u64(
-                            prepared.commit().segments.len(),
-                            "prepared destination segment count",
-                        )?,
-                        bulk_path: prepared.bulk_path(),
-                    },
-                )?;
-                let receipt = commit_prepared_package_through_session(
-                    runtime,
-                    package.reader(),
-                    &mut prepared,
-                    memory,
-                    &hooks,
-                    package.verification(),
-                )?;
-                (
-                    receipt,
-                    receipt_policy,
-                    cdf_runtime::DestinationCommitVerification::Independent,
-                )
+                cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
+                    let mut prepared = match runtime.ingress() {
+                        cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
+                            .prepare_package_commit(
+                                &inputs,
+                                &DestinationPlanningContext::new(
+                                    Arc::new(package.clone()),
+                                    selected_bulk_path.as_ref().ok_or_else(|| {
+                                        CdfError::internal("ordinary finalized bulk path is absent")
+                                    })?,
+                                ),
+                            ),
+                        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+                            Err(CdfError::contract(
+                                "finalized package reached a staged destination runtime",
+                            ))
+                        }
+                    }?;
+                    prepared.validate_verified_inputs(&inputs)?;
+                    if Some(prepared.bulk_path()) != selected_bulk_path.as_ref() {
+                        return Err(CdfError::contract(
+                            "destination prepared a commit for a different bulk path than schema preflight selected",
+                        ));
+                    }
+                    capabilities.validate_prepared_bulk_path(prepared.bulk_path())?;
+                    let receipt_policy = prepared.reporting_policy().clone();
+                    notify_destination_replay_stage(
+                        &hooks,
+                        PackageReplayStage::DestinationCommitStarted {
+                            plan_id: &prepared.plan().plan_id,
+                            segment_count: cardinality_u64(
+                                prepared.commit().segments.len(),
+                                "prepared destination segment count",
+                            )?,
+                            bulk_path: prepared.bulk_path(),
+                        },
+                    )?;
+                    let receipt = commit_prepared_package_through_session(
+                        runtime,
+                        package.reader(),
+                        &mut prepared,
+                        memory,
+                        &hooks,
+                        package.verification(),
+                    )?;
+                    (
+                        receipt,
+                        receipt_policy,
+                        cdf_runtime::DestinationCommitVerification::Independent,
+                    )
+                }
             }
         };
 

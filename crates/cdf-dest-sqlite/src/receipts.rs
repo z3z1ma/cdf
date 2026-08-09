@@ -206,6 +206,10 @@ pub(crate) fn expected_counts(plan: &SqliteLoadPlan, stored: &Receipt) -> Result
     let settled = match &stored.counts {
         CommitCounts::Rows { rows_written, .. } => *rows_written,
         CommitCounts::KeyedChanges { intent, .. } => intent.total()?,
+        CommitCounts::Routed { .. } => stored
+            .counts
+            .settled_effect_count()
+            .ok_or_else(|| cdf_kernel::CdfError::data("routed receipt count overflowed u64"))?,
     };
     if settled != rows && !plan.segments.is_empty() {
         return Err(cdf_kernel::CdfError::destination(

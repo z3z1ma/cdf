@@ -13,7 +13,7 @@ bundled-duckdb = ["duckdb/bundled"]
 arrow-array = { version = "58.3.0", features = ["ffi"] }
 arrow-ipc = { version = "58.3.0", features = ["lz4"] }
 arrow-schema = "58.3.0"
-duckdb.workspace = true
+duckdb = { workspace = true, features = ["appender-arrow"] }
 cdf-contract = { path = "../cdf-contract" }
 cdf-dest-sql = { path = "../cdf-dest-sql" }
 cdf-kernel = { path = "../cdf-kernel" }

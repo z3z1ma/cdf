@@ -84,15 +84,15 @@ pub use destination::{
     CommitBatch, CommitBatchIterator, CommitCounts, CommitPlan, CommitSegment,
     CommitSegmentIterator, CommitSession, ConcurrencyLimit, DeliveryGuarantee,
     DestinationCommitRequest, DestinationProtocol, DestinationSheet, IdempotencySupport,
-    IdentifierRules, MigrationRecord, ReceiptVerification, SegmentAck, TransactionMetadata,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
+    IdentifierRules, MigrationRecord, ReceiptVerification, RoutedTargetCommitCounts, SegmentAck,
+    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
 };
 pub use effect::{
     DEDUP_KEY_ENCODING_VERSION, DeleteApplicationAuthority, DeleteApplicationPolicy,
     DeletionCaptureAuthority, DeletionCaptureSupport, KEYED_EFFECT_AUTHORITY_VERSION,
     KEYED_EFFECT_ORDER_VERSION, KeyAuthority, KeyedEffectCounts, KeyedEffectInputOrder,
     KeyedEffectPlanAuthority, KeyedEffectReductionAuthority, KeyedEffectWinnerPolicy,
-    PackageContentAuthority, PackageSegmentKind,
+    PackageContentAuthority, PackageSegmentKind, RoutedOutputContentAuthority,
 };
 pub use error::{CdfError, ErrorKind, Result, embedded_cdf_error, is_filesystem_loop};
 pub use execution_extent::{

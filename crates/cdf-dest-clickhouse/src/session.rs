@@ -2155,6 +2155,9 @@ fn settled_effects(counts: &CommitCounts) -> Result<u64> {
     match counts {
         CommitCounts::Rows { rows_written, .. } => Ok(*rows_written),
         CommitCounts::KeyedChanges { intent, .. } => intent.total(),
+        CommitCounts::Routed { .. } => counts
+            .settled_effect_count()
+            .ok_or_else(|| CdfError::data("routed receipt count overflowed u64")),
     }
 }
 

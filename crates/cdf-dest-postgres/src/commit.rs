@@ -211,20 +211,7 @@ impl PostgresCommitSession {
         let xid = query_xid(&mut client, &self.plan)?;
         let committed_at_ms = now_ms(&self.execution)?;
         let counts = if self.expected_segments.is_empty() {
-            match &self.plan.content {
-                cdf_kernel::PackageContentAuthority::Rows { .. } => CommitCounts::default(),
-                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. } => {
-                    CommitCounts::keyed_changes(
-                        reduction.surviving,
-                        Some(0),
-                        Some(0),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                }
-            }
+            self.plan.content.zero_commit_counts()?
         } else {
             apply_write_plan_after_payload(&mut client, &self.plan, copied_rows, deleted_rows)?
         };
@@ -1085,7 +1072,7 @@ fn insert_load_mirror(
     let disposition = disposition_name(&receipt.disposition);
     let schema_hash = receipt.schema_hash.as_str();
     let (indexed_written, indexed_inserted, indexed_updated, indexed_deleted) =
-        crate::mirrors::indexed_counts(&receipt.counts);
+        crate::mirrors::indexed_counts(&receipt.counts)?;
     let rows_written = to_i64(indexed_written, "rows_written")?;
     let rows_inserted = optional_to_i64(indexed_inserted, "rows_inserted")?;
     let rows_updated = optional_to_i64(indexed_updated, "rows_updated")?;

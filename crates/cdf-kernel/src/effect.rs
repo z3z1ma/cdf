@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::{CdfError, Result, SchemaHash};
+use crate::{
+    CanonicalArrowSchema, CdfError, OutputBindingId, Result, RouteTargetFamily, SchemaHash,
+    SegmentId,
+};
 
 pub const KEYED_EFFECT_AUTHORITY_VERSION: u16 = 1;
 pub const KEYED_EFFECT_ORDER_VERSION: u16 = 1;
@@ -32,6 +35,19 @@ pub enum PackageContentAuthority {
         deletion_capture: DeletionCaptureAuthority,
         delete_application: DeleteApplicationAuthority,
     },
+    Routed {
+        family: RouteTargetFamily,
+        outputs: Vec<RoutedOutputContentAuthority>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutedOutputContentAuthority {
+    pub output_binding: OutputBindingId,
+    pub schema: CanonicalArrowSchema,
+    pub content: Box<PackageContentAuthority>,
+    pub segment_ids: Vec<SegmentId>,
 }
 
 impl PackageContentAuthority {
@@ -50,6 +66,38 @@ impl PackageContentAuthority {
                 logical_schema_hash,
                 ..
             } => logical_schema_hash,
+            Self::Routed { family, .. } => &family.schema_family_hash,
+        }
+    }
+
+    pub fn zero_commit_counts(&self) -> Result<crate::CommitCounts> {
+        match self {
+            Self::Rows { .. } => Ok(crate::CommitCounts::default()),
+            Self::KeyedChanges { reduction, .. } => Ok(crate::CommitCounts::keyed_changes(
+                reduction.surviving,
+                Some(0),
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+            )),
+            Self::Routed { family, outputs } => {
+                let targets = family
+                    .bindings
+                    .iter()
+                    .zip(outputs)
+                    .map(|(binding, output)| {
+                        Ok(crate::RoutedTargetCommitCounts {
+                            output_binding: binding.output_binding.clone(),
+                            target: binding.physical_target.clone(),
+                            schema_hash: binding.schema_hash.clone(),
+                            counts: Box::new(output.content.zero_commit_counts()?),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(crate::CommitCounts::Routed { targets })
+            }
         }
     }
 
@@ -78,6 +126,38 @@ impl PackageContentAuthority {
                 deletion_capture.validate()?;
                 delete_application.validate(deletion_capture)
             }
+            Self::Routed { family, outputs } => {
+                family.validate()?;
+                if outputs.len() != family.bindings.len() {
+                    return Err(CdfError::data(
+                        "routed package content must bind every admitted family output exactly once",
+                    ));
+                }
+                for (output, binding) in outputs.iter().zip(&family.bindings) {
+                    let schema = output.schema.to_arrow()?;
+                    if output.output_binding != binding.output_binding
+                        || crate::canonical_arrow_schema_hash(schema.as_ref())?
+                            != binding.schema_hash
+                        || output.content.logical_schema_hash() != &binding.schema_hash
+                        || matches!(output.content.as_ref(), Self::Routed { .. })
+                    {
+                        return Err(CdfError::data(
+                            "routed package output content does not match its canonical output/schema binding",
+                        ));
+                    }
+                    output.content.validate()?;
+                }
+                let kinds = outputs
+                    .iter()
+                    .map(|output| matches!(output.content.as_ref(), Self::Rows { .. }))
+                    .collect::<BTreeSet<_>>();
+                if kinds.len() != 1 {
+                    return Err(CdfError::data(
+                        "one routed package cannot mix ordinary-row and keyed-change outputs",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -91,12 +171,34 @@ impl PackageContentAuthority {
         for (kind, row_count) in segments {
             match (self, kind) {
                 (Self::Rows { .. }, PackageSegmentKind::Row) => {}
+                (Self::Routed { outputs, .. }, PackageSegmentKind::Row)
+                    if outputs
+                        .iter()
+                        .all(|output| matches!(output.content.as_ref(), Self::Rows { .. })) => {}
                 (Self::KeyedChanges { .. }, PackageSegmentKind::Upsert) => {
                     upserts = upserts
                         .checked_add(row_count)
                         .ok_or_else(|| CdfError::data("upsert effect count overflowed u64"))?;
                 }
                 (Self::KeyedChanges { .. }, PackageSegmentKind::Delete) => {
+                    deletes = deletes
+                        .checked_add(row_count)
+                        .ok_or_else(|| CdfError::data("delete effect count overflowed u64"))?;
+                }
+                (Self::Routed { outputs, .. }, PackageSegmentKind::Upsert)
+                    if outputs.iter().all(|output| {
+                        matches!(output.content.as_ref(), Self::KeyedChanges { .. })
+                    }) =>
+                {
+                    upserts = upserts
+                        .checked_add(row_count)
+                        .ok_or_else(|| CdfError::data("upsert effect count overflowed u64"))?;
+                }
+                (Self::Routed { outputs, .. }, PackageSegmentKind::Delete)
+                    if outputs.iter().all(|output| {
+                        matches!(output.content.as_ref(), Self::KeyedChanges { .. })
+                    }) =>
+                {
                     deletes = deletes
                         .checked_add(row_count)
                         .ok_or_else(|| CdfError::data("delete effect count overflowed u64"))?;
@@ -111,6 +213,11 @@ impl PackageContentAuthority {
                         "keyed-change package contains an ordinary-row segment",
                     ));
                 }
+                (Self::Routed { .. }, _) => {
+                    return Err(CdfError::data(
+                        "routed package segment kind does not match its output content authority",
+                    ));
+                }
             }
         }
         if let Self::KeyedChanges { reduction, .. } = self
@@ -120,7 +227,104 @@ impl PackageContentAuthority {
                 "keyed-change segment row counts do not match surviving effect authority",
             ));
         }
+        if let Self::Routed { outputs, .. } = self {
+            let expected =
+                outputs
+                    .iter()
+                    .try_fold(KeyedEffectCounts::default(), |mut total, output| {
+                        if let Self::KeyedChanges { reduction, .. } = output.content.as_ref() {
+                            total.upserts = total
+                                .upserts
+                                .checked_add(reduction.surviving.upserts)
+                                .ok_or_else(|| {
+                                    CdfError::data("routed upsert count overflowed u64")
+                                })?;
+                            total.deletes = total
+                                .deletes
+                                .checked_add(reduction.surviving.deletes)
+                                .ok_or_else(|| {
+                                    CdfError::data("routed delete count overflowed u64")
+                                })?;
+                        }
+                        Ok::<_, CdfError>(total)
+                    })?;
+            if expected.upserts != upserts || expected.deletes != deletes {
+                return Err(CdfError::data(
+                    "routed keyed-change segment counts do not match per-output effect authority",
+                ));
+            }
+        }
         Ok(())
+    }
+
+    pub fn validate_routed_segment_rows<'a>(
+        &self,
+        segments: impl IntoIterator<Item = (&'a SegmentId, &'a PackageSegmentKind, u64)>,
+    ) -> Result<()> {
+        let Self::Routed { family, outputs } = self else {
+            return Err(CdfError::internal(
+                "output-bound segment validation requires routed package content",
+            ));
+        };
+        let segments = segments.into_iter().collect::<Vec<_>>();
+        let mut observed = BTreeSet::new();
+        if segments
+            .iter()
+            .any(|(segment_id, _, _)| !observed.insert(*segment_id))
+        {
+            return Err(CdfError::data(
+                "routed package contains a duplicate segment identity",
+            ));
+        }
+        let mut assigned = BTreeSet::new();
+        for (binding, output) in family.bindings.iter().zip(outputs) {
+            if output.segment_ids.iter().any(|id| !assigned.insert(id)) {
+                return Err(CdfError::data(
+                    "routed package assigns a segment to more than one output",
+                ));
+            }
+            output.content.validate_segment_rows(
+                segments
+                    .iter()
+                    .filter(|(candidate, _, _)| output.segment_ids.contains(candidate))
+                    .map(|(_, kind, rows)| (*kind, *rows)),
+            )?;
+            if output.output_binding != binding.output_binding {
+                return Err(CdfError::data(
+                    "routed package output order differs from its target family",
+                ));
+            }
+        }
+        if observed
+            .iter()
+            .any(|segment_id| !assigned.contains(segment_id))
+        {
+            return Err(CdfError::data(
+                "routed package contains a segment absent from its output authority",
+            ));
+        }
+        if assigned != observed {
+            return Err(CdfError::data(
+                "routed package output authority references a missing segment",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_segments<'a>(
+        &self,
+        segments: impl IntoIterator<Item = (&'a SegmentId, &'a PackageSegmentKind, u64)>,
+    ) -> Result<()> {
+        let segments = segments.into_iter().collect::<Vec<_>>();
+        if matches!(self, Self::Routed { .. }) {
+            self.validate_routed_segment_rows(segments)
+        } else {
+            self.validate_segment_rows(
+                segments
+                    .into_iter()
+                    .map(|(_, kind, row_count)| (kind, row_count)),
+            )
+        }
     }
 }
 
@@ -368,6 +572,8 @@ fn valid_sha256(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::StringArray;
+    use arrow_schema::{DataType, Field, Schema};
 
     fn keyed_content(upserts: u64, deletes: u64) -> PackageContentAuthority {
         let schema_hash = SchemaHash::new("sha256:logical-schema").unwrap();
@@ -436,5 +642,61 @@ mod tests {
             .validate_segment_rows([(&PackageSegmentKind::Row, 1)])
             .unwrap_err();
         assert!(error.message.contains("keyed-change"));
+    }
+
+    #[test]
+    fn routed_content_requires_an_exact_schema_and_segment_partition() {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let canonical = CanonicalArrowSchema::from_arrow(&schema).unwrap();
+        let schema_hash = crate::canonical_arrow_schema_hash(&schema).unwrap();
+        let values = StringArray::from(vec!["orders", "invoices"]);
+        let family = RouteTargetFamily::new(
+            crate::RoutePlan::new("source_collection", 2).unwrap(),
+            crate::TargetName::new("events").unwrap(),
+            Some(128),
+            (0..2).map(|row| {
+                (
+                    crate::RouteScalar::from_array(&values, row).unwrap(),
+                    schema_hash.clone(),
+                )
+            }),
+        )
+        .unwrap();
+        let first = SegmentId::new("route-orders-000001").unwrap();
+        let second = SegmentId::new("route-invoices-000001").unwrap();
+        let content = PackageContentAuthority::Routed {
+            outputs: family
+                .bindings
+                .iter()
+                .zip([first.clone(), second.clone()])
+                .map(|(binding, segment_id)| RoutedOutputContentAuthority {
+                    output_binding: binding.output_binding.clone(),
+                    schema: canonical.clone(),
+                    content: Box::new(PackageContentAuthority::rows(schema_hash.clone())),
+                    segment_ids: vec![segment_id],
+                })
+                .collect(),
+            family,
+        };
+
+        content
+            .validate_segments([
+                (&first, &PackageSegmentKind::Row, 2),
+                (&second, &PackageSegmentKind::Row, 3),
+            ])
+            .unwrap();
+
+        let error = content
+            .validate_segments([(&first, &PackageSegmentKind::Row, 2)])
+            .unwrap_err();
+        assert!(error.message.contains("missing segment"));
+
+        let error = content
+            .validate_segments([
+                (&first, &PackageSegmentKind::Row, 2),
+                (&first, &PackageSegmentKind::Row, 3),
+            ])
+            .unwrap_err();
+        assert!(error.message.contains("duplicate segment"));
     }
 }

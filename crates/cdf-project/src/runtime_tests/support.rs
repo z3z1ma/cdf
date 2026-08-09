@@ -1217,6 +1217,11 @@ impl CommitSession for MockCommitSession<'_> {
                         Some(0),
                     )
                 }
+                cdf_kernel::PackageContentAuthority::Routed { .. } => {
+                    return Err(CdfError::destination(
+                        "single-target mock session cannot settle routed package content",
+                    ));
+                }
             },
             schema_hash: self.schema_hash,
             migrations: self.plan.migrations.clone(),

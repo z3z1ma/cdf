@@ -33,7 +33,7 @@ pub(crate) fn plan_table(
                 create_target_columns_sql(fields)
             ));
         }
-        WriteDisposition::Append | WriteDisposition::Merge => {
+        WriteDisposition::Append | WriteDisposition::Merge | WriteDisposition::CdcApply => {
             if existing.is_empty() {
                 ddl.push(format!(
                     "CREATE TABLE {} ({})",
@@ -61,11 +61,6 @@ pub(crate) fn plan_table(
                 }
             }
         }
-        WriteDisposition::CdcApply => {
-            return Err(CdfError::contract(
-                "DuckDB destination does not support cdc_apply in the MVP sheet",
-            ));
-        }
     }
 
     Ok(TablePlan { target, ddl })
@@ -76,12 +71,6 @@ pub(crate) fn plan_absent_table(
     fields: &[FieldPlan],
     disposition: WriteDisposition,
 ) -> Result<TablePlan> {
-    if disposition == WriteDisposition::CdcApply {
-        return Err(CdfError::contract(
-            "DuckDB destination does not support cdc_apply in the MVP sheet",
-        ));
-    }
-
     let mut ddl = Vec::new();
     if target.schema.as_str() != MAIN_SCHEMA {
         ddl.push(format!(
