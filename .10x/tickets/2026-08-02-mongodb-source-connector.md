@@ -339,6 +339,13 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   call preserves typed error ownership through the existing MongoDB classifier. All 45 adapter
   tests, strict adapter Clippy, and all three focused portable-plan CLI tests pass. A final rebuilt
   release `plan --out` / `run --plan` remains the closure barrier.
+- 2026-08-08: The first live generation-attested portable run rejected no authority but panicked
+  before effects because MongoDB client/DNS initialization was polled by the coordinator's
+  deliberately runtime-neutral root future. Attestation now runs synchronously through the
+  injected execution host's managed Tokio I/O boundary and returns its already-materialized typed
+  result to the generic attestation future. This preserves runtime placement, cancellation, memory,
+  and error authority without adding an adapter-owned runtime. The 45 adapter tests, strict Clippy,
+  and three focused portable-plan tests pass again. A final release live run remains required.
 
 ## Blockers
 

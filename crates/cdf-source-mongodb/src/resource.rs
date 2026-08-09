@@ -11,7 +11,7 @@ use cdf_kernel::{
     ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
     ScopeKind, SourcePosition, source_name,
 };
-use cdf_runtime::{ExecutionServices, RunCancellation, SourceEgressScope, artifact_hash};
+use cdf_runtime::{ExecutionServices, SourceEgressScope, artifact_hash};
 
 use crate::{
     driver::{MongoDbRuntimeConfig, read_collection_metadata},
@@ -324,8 +324,8 @@ impl ResourceStream for MongoDbCollectionResource {
         let collection = self.collection.clone();
         let memory = execution.memory();
         let egress = self.egress.clone();
-        PartitionAttestationAttempt::materialized(Box::pin(async move {
-            let cancellation = RunCancellation::default();
+        let cancellation = execution.run_cancellation();
+        let attestation = execution.run_io(async move {
             let handle = client
                 .get_or_try_init(|| {
                     crate::execution::connect_mongodb(&runtime, memory, &egress, &cancellation)
@@ -347,7 +347,8 @@ impl ResourceStream for MongoDbCollectionResource {
                 position,
                 physical_schema_hash,
             )))
-        }))
+        });
+        PartitionAttestationAttempt::materialized(Box::pin(async move { attestation }))
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
