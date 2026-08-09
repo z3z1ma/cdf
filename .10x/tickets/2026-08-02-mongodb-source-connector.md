@@ -346,6 +346,17 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   result to the generic attestation future. This preserves runtime placement, cancellation, memory,
   and error authority without adding an adapter-owned runtime. The 45 adapter tests, strict Clippy,
   and three focused portable-plan tests pass again. A final release live run remains required.
+- 2026-08-08: Final release `9009a1bb` exported and executed the fresh current-model Atlas plan.
+  Whole-plan preflight reattested the exact hashed collection generation before effects; the run
+  then loaded all 417,114 rows, retained 250,610 variant-bearing rows, quarantined none, and
+  committed its package, DuckDB receipt, and checkpoint. Direct DuckDB verification returned
+  417,114 rows and 417,114 distinct ids. Package inspection matched manifest and ledger hash
+  `sha256:e3b5a1b35c068b645ba5fb8b697a2ef81f5cc89f80fcbfbb103aafc246f29060` and status
+  `checkpointed`. This remote sample took 124.8 seconds versus the earlier same-code selector
+  extraction's 21.1 seconds while both consumed about ten seconds host CPU; the evidence records
+  both and attributes the spread to Atlas/network wait rather than hiding it. The finite connector's
+  projection, throughput, schemaless drift, portability, package, receipt, checkpoint, and direct
+  destination closure barriers are satisfied.
 
 ## Blockers
 
@@ -368,7 +379,7 @@ Two obligations follow from that decision and belong to this ticket's closure:
 
 ## Evidence
 
-- Forty-two focused source unit tests pass, including exact BSON mapping, depth-bounded discovery,
+- Forty-five focused source unit tests pass, including exact BSON mapping, depth-bounded discovery,
   opaque Canonical Extended JSON, drift, duplicate-key,
   injection, portability/redaction, cursor, payload-bound, and error-wrapper behavior.
 - The authorized Atlas 7.0.40 finite lifecycle reaches compile, plan, package, DuckDB receipt,

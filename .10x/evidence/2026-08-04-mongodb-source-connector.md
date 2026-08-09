@@ -14,11 +14,13 @@ IAM authentication, discovery, bounded full-replace, package, DuckDB receipt, ch
 verification path against real data. A fresh release lifecycle also proves default-depth discovery
 keeps a top-level MongoDB document as opaque Canonical Extended JSON without producing governed
 residual rows. The final clean release roofline for revision `89786e35` clears the required 0.90
-ratio.
+ratio. A later real-Atlas throughput and portable-plan certificate reads the largest inspected
+collection end to end, retains governed drift without quarantine, and proves bounded
+collection-generation preflight before any run effect.
 
 ## Procedure
 
-- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib --locked` passed all 42 current
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib --locked` passed all 45 current
   unit tests. In addition to the existing residual-cardinality, overlapping-payload,
   duplicate/dotted/nested BSON, and physical-reconciliation boundaries, the suite now proves the
   default top-level-only schema, configured depth two, opaque Canonical Extended JSON decoding,
@@ -117,6 +119,28 @@ ratio.
   dispersion bound; three cells cleared the ratio gate and selection followed the recorded
   minimum-pool-then-fastest-passing policy. Rows, useful Arrow bytes, and content checksum matched
   the direct driver in every sample.
+- Release revision `d4ddde9a` read the authorized Atlas 7.0.40 `depreciation-items` collection with
+  the exact 21-field projection and an 8,192-row wire cursor independent from adaptive decode/output
+  batches. It extracted all 417,114 documents in 21.1 seconds (19.7k documents/s), completed the
+  DuckDB replace lifecycle in 21.88 seconds, quarantined zero rows, and retained 250,610 rows with
+  governed variant evidence. User CPU was 7.18 seconds, system CPU 2.50 seconds, and maximum RSS
+  438,124,544 bytes. The prior 1,000-row CDF wire request took 180 seconds for the same row set; a
+  controlled 40-row request had measured 6.6x slower than 1,000 in the direct client. Live mongosh
+  sweeps rejected oversized 32,768 and 100,000 requests and selected 8,192 as the remote operating
+  point, although full-run latency varied materially with Atlas/network state.
+- Final release revision `9009a1bb` (binary SHA-256
+  `911b3467906bf6818e7fe8092855286943746eb021948118b0339cb3c26d508a`) compiled a fresh
+  `atlas_throughput.depreciation_items_portable` resource, established schema generation 1, and
+  exported canonical plan
+  `sha256:06c93654e9f3f4dacdb2c043b1a9bbe7702b7e5d0ffa90e30b53048c59439438`.
+  `cdf run --plan` first re-read the hashed collection UUID/collation/validator generation on the
+  managed I/O runtime, passed whole-plan preflight, then loaded all 417,114 rows. This slower remote
+  sample took 124.8 seconds of package execution / 129.74 seconds wall time but only 9.78 seconds of
+  host CPU, further isolating Atlas/network wait variance rather than local decode saturation.
+  Direct DuckDB aggregates returned 417,114 rows, 417,114 distinct ids, and 250,610 non-null
+  `_cdf_variant` rows. Package inspection verified manifest/ledger hash
+  `sha256:e3b5a1b35c068b645ba5fb8b697a2ef81f5cc89f80fcbfbb103aafc246f29060`, one segment,
+  available receipt, committed checkpoint, and `checkpointed` lifecycle.
 - `DUCKDB_DOWNLOAD_LIB=1 ... cargo nextest run -p cdf-conformance --locked --no-fail-fast`
   passed all 92 executed tests (eight governed skips) after repairing current query-first
   integration defects exposed by the source certificate.
@@ -160,10 +184,12 @@ their shared authorities without compatibility paths.
 
 ## Limits
 
-The live evidence covers both a local digest-pinned MongoDB Community 8.0.13 server and an
-authorized Atlas 7.0.40 collection. Each Atlas observation is a finite 25-document lifecycle, not
-a load/performance certificate or a cross-shard transaction-snapshot claim. The source is finite
-collection reading only; change streams and resume tokens are explicit non-goals. The
+The live evidence covers both a local digest-pinned MongoDB Community 8.0.13 server and authorized
+Atlas 7.0.40 collections, including one 417,114-document throughput and portability lifecycle. The
+remote timing samples vary from 21.1 to 124.8 seconds with nearly constant host CPU, so they prove a
+credible high-throughput operating point and lack of local CPU saturation but not a stable Atlas
+service-level floor. They do not claim cross-shard transaction-snapshot isolation. The source is
+finite collection reading only; change streams and resume tokens are explicit non-goals. The
 aggregate workspace run is not globally green because the explicitly separate ergonomics worker
 owns three failures and local ClickHouse integration credentials were unavailable; neither limit
 intersects the MongoDB source leaf or its executed generic source matrix.
