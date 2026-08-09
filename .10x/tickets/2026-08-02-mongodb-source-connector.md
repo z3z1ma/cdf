@@ -306,6 +306,14 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   collection. This lets later physical mismatches follow the already-compiled `capture_variant`
   policy while the typed value becomes null. All 43 MongoDB unit tests and strict all-target
   Clippy pass. A single rebuilt-release Atlas rerun remains the closure barrier.
+- 2026-08-08: The fresh Atlas `plan --out` proved the nullable schema and exact 21-field scan, but
+  `run --plan` failed its no-effect preflight because compiled-resource hashing still serialized
+  nested object maps in insertion order. The earlier source-plan-only canonicalization was too
+  narrow. Compiled resource bytes and identity, manifest identities, and the enclosing portable
+  plan bytes and identity now recursively sort every JSON object before hashing/serialization.
+  Focused canonical-identity, plan publication/no-overwrite, portable tamper/generation, portable
+  first-use execution, and strict project/CLI Clippy checks pass. A rebuilt release plan/run remains
+  the closure barrier; the failed live preflight created no package or source read.
 
 ## Blockers
 

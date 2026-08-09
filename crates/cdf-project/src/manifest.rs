@@ -1857,7 +1857,11 @@ fn definition_id(definition: &SemanticDefinition) -> String {
 }
 
 fn canonical_hash<T: Serialize + ?Sized>(value: &T) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| {
+    let mut value = serde_json::to_value(value).map_err(|error| {
+        CdfError::internal(format!("serialize canonical manifest identity: {error}"))
+    })?;
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec(&value).map_err(|error| {
         CdfError::internal(format!("serialize canonical manifest identity: {error}"))
     })?;
     Ok(bytes_hash(&bytes))

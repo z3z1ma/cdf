@@ -777,7 +777,8 @@ pub fn effective_environment_binding_hash(environment: &EffectiveEnvironment) ->
 }
 
 fn canonical_pretty_json<T: Serialize>(value: &T, max: usize, label: &str) -> Result<Vec<u8>> {
-    let mut bytes = serde_json::to_vec_pretty(value)
+    let value = canonical_json_value(value, label)?;
+    let mut bytes = serde_json::to_vec_pretty(&value)
         .map_err(|error| CdfError::internal(format!("serialize {label}: {error}")))?;
     bytes.push(b'\n');
     if bytes.len() > max {
@@ -789,9 +790,17 @@ fn canonical_pretty_json<T: Serialize>(value: &T, max: usize, label: &str) -> Re
 }
 
 fn canonical_hash<T: Serialize>(value: &T) -> Result<String> {
-    serde_json::to_vec(value)
+    let value = canonical_json_value(value, "canonical identity")?;
+    serde_json::to_vec(&value)
         .map(|bytes| sha256(&bytes))
         .map_err(|error| CdfError::internal(format!("serialize canonical identity: {error}")))
+}
+
+fn canonical_json_value<T: Serialize>(value: &T, label: &str) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| CdfError::internal(format!("serialize {label}: {error}")))?;
+    value.sort_all_objects();
+    Ok(value)
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -937,6 +946,21 @@ fn read_optional_file_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_identity_sorts_nested_object_keys() {
+        let left: serde_json::Value = serde_json::from_str(r#"{"outer":{"z":1,"a":2}}"#).unwrap();
+        let right: serde_json::Value = serde_json::from_str(r#"{"outer":{"a":2,"z":1}}"#).unwrap();
+
+        assert_eq!(
+            canonical_hash(&left).unwrap(),
+            canonical_hash(&right).unwrap()
+        );
+        assert_eq!(
+            canonical_pretty_json(&left, 1_024, "test value").unwrap(),
+            canonical_pretty_json(&right, 1_024, "test value").unwrap()
+        );
+    }
 
     fn authority() -> (ProjectConfig, EffectiveEnvironment) {
         let config = parse_cdf_toml(

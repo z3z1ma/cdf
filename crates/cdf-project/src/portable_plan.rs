@@ -363,7 +363,8 @@ impl PortablePlanArtifact {
 
     pub fn canonical_json_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let mut bytes = serde_json::to_vec_pretty(self)
+        let value = canonical_json_value(self, "portable plan")?;
+        let mut bytes = serde_json::to_vec_pretty(&value)
             .map_err(|error| CdfError::internal(format!("serialize portable plan: {error}")))?;
         bytes.push(b'\n');
         if bytes.len() > PORTABLE_PLAN_MAX_BYTES {
@@ -375,18 +376,21 @@ impl PortablePlanArtifact {
     }
 
     fn identity_hash(&self) -> Result<String> {
-        cdf_runtime::artifact_hash(&PortablePlanIdentity {
-            version: self.version,
-            cdf_version: &self.cdf_version,
-            project_id: &self.project_id,
-            project: &self.project,
-            environment: &self.environment,
-            environment_binding_hash: &self.environment_binding_hash,
-            selection: &self.selection,
-            failure_policy: self.failure_policy,
-            required_host: &self.required_host,
-            resources: &self.resources,
-        })
+        canonical_artifact_hash(
+            &PortablePlanIdentity {
+                version: self.version,
+                cdf_version: &self.cdf_version,
+                project_id: &self.project_id,
+                project: &self.project,
+                environment: &self.environment,
+                environment_binding_hash: &self.environment_binding_hash,
+                selection: &self.selection,
+                failure_policy: self.failure_policy,
+                required_host: &self.required_host,
+                resources: &self.resources,
+            },
+            "portable plan identity",
+        )
     }
 }
 
@@ -470,6 +474,18 @@ pub fn parse_portable_plan(bytes: &[u8]) -> Result<PortablePlanArtifact> {
         return Err(CdfError::data("portable plan bytes are not canonical"));
     }
     Ok(artifact)
+}
+
+fn canonical_artifact_hash(value: &impl Serialize, label: &str) -> Result<String> {
+    let value = canonical_json_value(value, label)?;
+    cdf_runtime::artifact_hash(&value)
+}
+
+fn canonical_json_value(value: &impl Serialize, label: &str) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| CdfError::internal(format!("serialize {label}: {error}")))?;
+    value.sort_all_objects();
+    Ok(value)
 }
 
 fn validate_relative_artifact_path(path: &str) -> Result<()> {
