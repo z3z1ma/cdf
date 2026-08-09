@@ -6872,13 +6872,19 @@ fn prepare_delete_effect_batch(
     }
     let output_schema = plan.output_schema.to_arrow()?;
     let input_schema = input.schema();
-    if input.num_columns() != plan.effect_key.len() {
+    let route_field = plan
+        .route_family
+        .as_ref()
+        .map(|family| family.route.field.as_str())
+        .filter(|field| !plan.effect_key.iter().any(|key| key == field));
+    let expected_columns = plan.effect_key.len() + usize::from(route_field.is_some());
+    if input.num_columns() != expected_columns {
         return Err(CdfError::data(
-            "CDC delete batches must contain exactly the complete ordered effect key",
+            "CDC delete batches must contain exactly the complete ordered effect key and, when routed, its protected route field",
         ));
     }
-    let mut output_indices = Vec::with_capacity(plan.effect_key.len());
-    let mut columns = Vec::with_capacity(plan.effect_key.len());
+    let mut output_indices = Vec::with_capacity(expected_columns);
+    let mut columns = Vec::with_capacity(expected_columns);
     for key in &plan.effect_key {
         let output_matches = output_schema
             .fields()
@@ -6910,6 +6916,39 @@ fn prepare_delete_effect_batch(
         if input.column(*input_index).null_count() != 0 {
             return Err(CdfError::data(format!(
                 "CDC delete key `{key}` contains null values"
+            )));
+        }
+        output_indices.push(*output_index);
+        columns.push(Arc::clone(input.column(*input_index)));
+    }
+    if let Some(route_field) = route_field {
+        let output_matches = output_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.name() == route_field)
+            .collect::<Vec<_>>();
+        let [(output_index, output_field)] = output_matches.as_slice() else {
+            return Err(CdfError::contract(format!(
+                "CDC route field `{route_field}` does not resolve exactly once in the compiled output schema"
+            )));
+        };
+        let input_matches = input_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.name() == route_field)
+            .collect::<Vec<_>>();
+        let [(input_index, input_field)] = input_matches.as_slice() else {
+            return Err(CdfError::data(format!(
+                "CDC route field `{route_field}` does not resolve exactly once in the delete payload"
+            )));
+        };
+        if input_field.as_ref() != output_field.as_ref()
+            || input.column(*input_index).null_count() != 0
+        {
+            return Err(CdfError::data(format!(
+                "CDC route field `{route_field}` must preserve its non-null compiled Arrow field authority"
             )));
         }
         output_indices.push(*output_index);
@@ -7062,15 +7101,33 @@ fn keyed_effect_key_authority(
         indices.push(*index);
     }
     let key_schema = output.project(&indices).map_err(CdfError::from)?;
-    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&key_schema)?;
+    let key_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&key_schema)?;
+    let mut delete_indices = indices;
+    if let Some(family) = &plan.route_family
+        && !plan.effect_key.contains(&family.route.field)
+    {
+        let route_index = output
+            .fields()
+            .iter()
+            .position(|field| field.name() == &family.route.field)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "route field `{}` is absent from the normalized output schema",
+                    family.route.field
+                ))
+            })?;
+        delete_indices.push(route_index);
+    }
+    let delete_schema = output.project(&delete_indices).map_err(CdfError::from)?;
+    let delete_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&delete_schema)?;
     Ok((
         cdf_kernel::KeyAuthority {
             version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
             fields: plan.effect_key.clone(),
             encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
-            schema_hash: schema_hash.clone(),
+            schema_hash: key_schema_hash,
         },
-        schema_hash,
+        delete_schema_hash,
     ))
 }
 

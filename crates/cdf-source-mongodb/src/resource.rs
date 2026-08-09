@@ -186,7 +186,9 @@ impl MongoDbCollectionResource {
     }
 }
 
-fn current_physical_schema(compiled: &cdf_runtime::CompiledSourcePlan) -> Result<SchemaRef> {
+pub(crate) fn current_physical_schema(
+    compiled: &cdf_runtime::CompiledSourcePlan,
+) -> Result<SchemaRef> {
     if let Some(runtime) = compiled.effective_schema_runtime.as_ref() {
         let [observation] = runtime.evidence.observations() else {
             return Err(CdfError::data(

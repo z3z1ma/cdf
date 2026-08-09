@@ -83,6 +83,120 @@ fn descriptor(cursor: bool) -> ResourceDescriptor {
     }
 }
 
+fn cdc_descriptor(cursor: bool, key: &str) -> ResourceDescriptor {
+    let mut descriptor = descriptor(cursor);
+    descriptor.write_disposition = WriteDisposition::CdcApply;
+    descriptor.primary_key = vec![key.to_owned()];
+    descriptor.merge_key = vec![key.to_owned()];
+    descriptor
+}
+
+#[test]
+fn cdc_compilation_uses_native_resume_tokens_without_requiring_a_cursor() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let envelope = Schema::new(vec![
+        Field::new("source_database", DataType::Utf8, false),
+        Field::new("source_collection", DataType::Utf8, false),
+        Field::new("document_key", DataType::Utf8, false),
+        Field::new("document", DataType::Utf8, false),
+    ]);
+    let plan = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+            ]),
+            resource_options: BTreeMap::from([
+                ("mode".to_owned(), serde_json::json!("cdc")),
+                ("watch".to_owned(), serde_json::json!("database")),
+                (
+                    "representation".to_owned(),
+                    serde_json::json!("envelope"),
+                ),
+                ("bootstrap".to_owned(), serde_json::json!("latest")),
+                (
+                    "include_collections".to_owned(),
+                    serde_json::json!(["orders", "invoice_*"]),
+                ),
+                (
+                    "exclude_collections".to_owned(),
+                    serde_json::json!(["invoice_tmp_*"]),
+                ),
+                (
+                    "change_pipeline".to_owned(),
+                    serde_json::json!(r#"[{"$match":{"operationType":{"$in":["insert","update","replace","delete"]}}}]"#),
+                ),
+            ]),
+            descriptor: cdc_descriptor(false, "document_key"),
+            schema: envelope,
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    assert!(!plan.execution_capabilities.bounded);
+    assert!(plan.execution_capabilities.resumable);
+    assert!(plan.stream_capabilities.is_some());
+    assert!(plan.descriptor.cursor.is_none());
+    assert_eq!(
+        plan.resource_capabilities.incremental,
+        cdf_kernel::IncrementalShape::Cdc
+    );
+    assert_eq!(plan.redacted_options["change_pipeline_stages"], 1);
+    assert!(plan.redacted_options.get("change_pipeline").is_none());
+}
+
+#[test]
+fn cdc_rejects_declared_cursor_and_snapshot_only_pipeline_options() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let mut options = BTreeMap::from([
+        ("collection".to_owned(), serde_json::json!("orders")),
+        ("mode".to_owned(), serde_json::json!("cdc")),
+        ("bootstrap".to_owned(), serde_json::json!("latest")),
+    ]);
+    let request = |descriptor, options| SourceCompileRequest {
+        source_kind: "mongodb".to_owned(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "warehouse".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options: BTreeMap::from([
+            (
+                "endpoint".to_owned(),
+                serde_json::json!("mongodb://warehouse.example:27017"),
+            ),
+            ("database".to_owned(), serde_json::json!("analytics")),
+        ]),
+        resource_options: options,
+        descriptor,
+        schema: schema(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    };
+    let error = driver
+        .compile(request(cdc_descriptor(true, "id"), options.clone()))
+        .unwrap_err();
+    assert!(error.message.contains("must not declare a resource cursor"));
+
+    options.insert("filter".to_owned(), serde_json::json!(r#"{"active":true}"#));
+    let error = driver
+        .compile(request(cdc_descriptor(false, "id"), options))
+        .unwrap_err();
+    assert!(error.message.contains("does not accept snapshot filter"));
+}
+
 fn semantic_field(field: Field, reference: &str) -> Field {
     with_semantic(field, &reference.parse().unwrap())
 }

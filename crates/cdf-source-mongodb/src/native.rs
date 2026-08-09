@@ -402,6 +402,42 @@ impl MongoDbNativeExtraction {
         Ok(extraction)
     }
 
+    pub(crate) fn validate_for_cdc(&self) -> Result<()> {
+        let empty_find =
+            matches!(&self.input, MongoDbNativeInput::Find { filter } if filter.is_empty());
+        if !empty_find
+            || self.max_time_ms.is_some()
+            || self.allow_disk_use
+            || self.hint.is_some()
+            || self.collation.is_some()
+            || self.let_vars.is_some()
+        {
+            return Err(CdfError::contract(
+                "MongoDB CDC does not accept snapshot filter, pipeline, max_time_ms, allow_disk_use, hint, collation, or let options; use change_pipeline for read-only change-event filtering",
+            ));
+        }
+        if self
+            .read_concern
+            .as_ref()
+            .is_some_and(|concern| concern.level != ReadConcernLevel::Majority)
+        {
+            return Err(CdfError::contract(
+                "MongoDB change streams accept only majority read concern or the server default",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn change_stream_read_concern(&self) -> Option<ReadConcern> {
+        self.read_concern.clone()
+    }
+
+    pub(crate) fn change_stream_selection_criteria(&self) -> Option<SelectionCriteria> {
+        self.read_preference
+            .clone()
+            .map(SelectionCriteria::ReadPreference)
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if let Some(max_time_ms) = self.max_time_ms
             && !(1..=3_600_000).contains(&max_time_ms)
@@ -653,7 +689,7 @@ fn combine_filters(base: Document, outer: Document) -> Document {
     mongodb::bson::doc! {"$and": [base, outer]}
 }
 
-fn parse_pipeline(value: &str) -> Result<Vec<Document>> {
+pub(crate) fn parse_pipeline(value: &str) -> Result<Vec<Document>> {
     let value = parse_ordered_json("pipeline", value)?;
     let OrderedJson::Array(stages) = value else {
         return Err(CdfError::contract(

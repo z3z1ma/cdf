@@ -89,6 +89,24 @@ retention, and live replica-set/Atlas certification.
   checkpoint crash certificate for MongoDB event-prefix resume tokens. Generic routed target
   families are now the sole implementation dependency.
 
+- 2026-08-09: Implemented the first executable change-stream slice without coupling CDC to the
+  resource cursor grammar. `mode => 'cdc'` now requires `CDC_APPLY`, forbids a declared cursor,
+  compiles an exact native resume-token scope, and advertises unbounded/resumable stream
+  capabilities. Snapshot resources retain their existing optional cursor/full-replacement path.
+
+- 2026-08-09: Added collection/database watch compilation, explicit latest/snapshot bootstrap,
+  typed/envelope selection, source defaults with resource overrides, closed `$match`-only change
+  pipelines, deterministic include/exclude glob admission, per-collection database discovery, and
+  a compiled collection inventory. Database envelope discovery inspects metadata but never samples
+  documents or infers nested fields.
+
+- 2026-08-09: Added executable latest-bootstrap change streams for typed collection and envelope
+  database modes. Runtime preflight proves MongoDB 7+, replica-set/sharded topology, and enabled
+  post-images for every admitted collection. Events carry exact BSON resume-token positions and
+  begin/data/terminal event-prefix settlement; Canonical Extended JSON envelope rows preserve BSON
+  meaning and unknown collections/DDL fail before their token advances. Gapless snapshot bootstrap
+  and typed heterogeneous database execution remain open.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -96,7 +114,15 @@ retention, and live replica-set/Atlas certification.
 
 ## Evidence
 
-None yet.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib` — 55 adapter behavioral tests
+  passed, including native resume-token BSON round-trip, cursor prohibition for CDC, unbounded
+  stream capability compilation, redacted pipeline evidence, canonical Extended JSON, and routed
+  delete envelope shape. This is synthetic evidence and does not certify a live MongoDB server.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine
+  cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families --lib` — existing
+  receipt/package CDC effect reduction remains green after routed delete-key projection changes.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-source-mongodb -p cdf-kernel -p cdf-engine -p
+  cdf-cli --all-targets -- -D warnings` — strict affected-package Clippy passed.
 
 ## Review
 

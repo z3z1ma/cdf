@@ -2384,6 +2384,24 @@ impl EffectiveSchemaRuntime {
 pub trait ResourceStream: Send + Sync {
     fn descriptor(&self) -> &ResourceDescriptor;
     fn schema(&self) -> SchemaRef;
+    /// Returns the complete source-admitted route inventory for a compiled route declaration.
+    ///
+    /// Runtime observations may select only from this set. Sources that cannot establish a
+    /// deterministic inventory leave the default empty result and routed planning fails before
+    /// extraction.
+    fn routed_output_schemas(
+        &self,
+        _route: &crate::RoutePlan,
+    ) -> Result<Vec<(crate::RouteScalar, SchemaRef)>> {
+        Ok(Vec::new())
+    }
+    /// Names a source-owned routing field that must be present in the authored resource.
+    ///
+    /// Database-scoped sources use this to prevent extraction from starting without the route
+    /// that keeps distinct upstream entities in distinct physical targets.
+    fn required_route_field(&self) -> Option<&str> {
+        None
+    }
     /// Returns the canonical compiler artifact that produced this executable resource.
     ///
     /// Engine plans compiled from a source driver require this external binding before crossing

@@ -318,11 +318,25 @@ fn scan_one_with_portable(
         prepared.resource.as_queryable().descriptor(),
         &PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
     )?;
+    let route = context
+        .resource_query(&args.resource_id)
+        .and_then(|query| query.effective.route.value.as_ref());
+    let identifier_max_length = resolved
+        .destination
+        .destination_sheet_artifact()?
+        .sheet
+        .identifier_rules
+        .max_length;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         args,
         None,
         committed_frontier,
+        RoutePlanningContext {
+            logical_target: &target,
+            route,
+            identifier_max_length,
+        },
         &resolved.destination.runtime_capabilities(),
         execution,
     )?;
@@ -399,11 +413,25 @@ pub(crate) fn preview(
         "preview",
         None,
     )?;
+    let route = context
+        .resource_query(&args.resource_id)
+        .and_then(|query| query.effective.route.value.as_ref());
+    let identifier_max_length = resolved
+        .destination
+        .destination_sheet_artifact()?
+        .sheet
+        .identifier_rules
+        .max_length;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
         None,
         None,
+        RoutePlanningContext {
+            logical_target: &target,
+            route,
+            identifier_max_length,
+        },
         &resolved.destination.runtime_capabilities(),
         execution,
     )?;
@@ -615,6 +643,7 @@ pub(crate) fn build_engine_plan_for_resource(
     args: &ScanArgs,
     run_package_id: Option<&str>,
     committed_frontier: Option<SourcePosition>,
+    routing: RoutePlanningContext<'_>,
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<EnginePlan, CliError> {
@@ -644,9 +673,55 @@ pub(crate) fn build_engine_plan_for_resource(
         relational_expression_plan: source.relational_expression_plan().cloned(),
         committed_frontier,
     };
-    let plan = Planner::new()
+    let mut plan = Planner::new()
         .plan_tier_b(resource, input)
         .map_err(CliError::from)?;
+    if let Some(required) = resource.required_route_field() {
+        let route = routing.route.ok_or_else(|| {
+            CdfError::contract(format!(
+                "resource `{}` requires `ROUTE BY {required}` for its selected source scope",
+                resource.descriptor().resource_id,
+            ))
+        })?;
+        if route.field != required {
+            return Err(CdfError::contract(format!(
+                "resource `{}` must route by protected source field `{required}`, not `{}`",
+                resource.descriptor().resource_id,
+                route.field,
+            ))
+            .into());
+        }
+    }
+    if let Some(route) = routing.route {
+        let outputs = resource.routed_output_schemas(route)?;
+        if outputs.is_empty() {
+            return Err(CdfError::contract(format!(
+                "resource `{}` declares routing but its source established no routed output inventory; run `cdf discover {}` and compile again",
+                resource.descriptor().resource_id,
+                resource.descriptor().resource_id,
+            ))
+            .into());
+        }
+        let input_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+        for (_, schema) in &outputs {
+            if cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())? != input_schema_hash {
+                return Err(CdfError::contract(
+                    "heterogeneous routed source schemas require independently compiled output plans",
+                )
+                .into());
+            }
+        }
+        let family = cdf_kernel::RouteTargetFamily::new(
+            route.clone(),
+            routing.logical_target.clone(),
+            routing.identifier_max_length,
+            outputs
+                .into_iter()
+                .map(|(value, _)| (value, plan.output_schema.arrow_schema_hash.clone())),
+        )?;
+        plan = plan.bind_route_family(family)?;
+    }
     let source_plan = source.source_plan();
     plan.bind_compiled_source(source_plan)
         .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
@@ -654,6 +729,12 @@ pub(crate) fn build_engine_plan_for_resource(
             plan.bind_resolved_transaction_limit(execution.spill().snapshot().budget_bytes)
         })
         .map_err(CliError::from)
+}
+
+pub(crate) struct RoutePlanningContext<'a> {
+    pub(crate) logical_target: &'a TargetName,
+    pub(crate) route: Option<&'a cdf_kernel::RoutePlan>,
+    pub(crate) identifier_max_length: Option<u16>,
 }
 
 pub(crate) fn planning_frontier(

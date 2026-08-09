@@ -91,6 +91,11 @@ user-ratified authority.
   identity; per-output content/count authority is derived from the segments actually persisted.
   Project planning now asks a destination to plan the complete empty family, rejects unadvertised
   atomic-family support, and DuckDB previews all target DDL read-only without creating its file.
+- 2026-08-09: Sources can now publish a deterministic compiled route inventory and declare a
+  required protected route field. CLI plan/run bind that source authority to the authored logical
+  target before extraction. Routed CDC delete batches retain the non-null route field beside the
+  ordered effect key while package key authority remains key-only, allowing exact target selection
+  without inventing nullable delete payload columns.
 
 ## Blockers
 
@@ -130,6 +135,11 @@ must not become a parallel implementation.
   routed::tests::routed_rows_commit_atomically_and_replay_once -- --exact` passed again after the
   shared planning refactor. Strict affected-package Clippy passed for engine, runtime, project,
   DuckDB, and CLI with all targets and warnings denied.
+- Routed CDC compatibility: the MongoDB adapter tests prove key-plus-route delete payload shape,
+  and `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine
+  cdc_apply_reduces_complete_upserts_and_key_only_deletes_across_effect_families --lib` preserves
+  the existing non-routed key-only behavior. A live multi-target routed delete remains part of the
+  MongoDB CDC acceptance certificate.
 
 ## Review
 

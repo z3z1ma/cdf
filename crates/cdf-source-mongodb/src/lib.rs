@@ -1,5 +1,6 @@
 #![doc = "Finite, read-only MongoDB collection source adapter for cdf."]
 
+mod cdc;
 mod driver;
 mod error;
 mod execution;

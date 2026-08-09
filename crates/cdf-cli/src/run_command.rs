@@ -46,7 +46,10 @@ use crate::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
         RunPackageCollectionReport, RunSchemaAuthorityReport,
     },
-    scan_command::{build_engine_plan_for_resource, planning_frontier, planning_frontier_at},
+    scan_command::{
+        RoutePlanningContext, build_engine_plan_for_resource, planning_frontier,
+        planning_frontier_at,
+    },
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
@@ -770,6 +773,15 @@ fn prepare_single(
     .map_err(|error| {
         run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
     })?;
+    let route = context
+        .resource_query(&explicit.resource_id)
+        .and_then(|query| query.effective.route.value.as_ref());
+    let identifier_max_length = resolved
+        .destination
+        .destination_sheet_artifact()?
+        .sheet
+        .identifier_rules
+        .max_length;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &ScanArgs {
@@ -783,6 +795,11 @@ fn prepare_single(
         },
         Some(&explicit.package_id),
         committed_frontier,
+        RoutePlanningContext {
+            logical_target: &explicit.target,
+            route,
+            identifier_max_length,
+        },
         &resolved.destination.runtime_capabilities(),
         &run_services,
     )?;

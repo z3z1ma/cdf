@@ -18,10 +18,12 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-semantic = { path = "../cdf-semantic" }
 futures = "0.3.31"
+glob = "0.3.3"
 mongodb = { version = "=3.8.0", default-features = false, features = ["aws-auth", "compat-3-3-0", "bson-3", "dns-resolver", "rustls-tls"] }
 percent-encoding = "2.3.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2 = "0.10.9"
 tokio = { version = "1.49.0", features = ["sync"] }
 url = "2.5.8"
 
