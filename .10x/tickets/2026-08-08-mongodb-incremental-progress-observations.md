@@ -56,6 +56,11 @@ during a long read rather than only at final package publication.
   observations coalesce until the 30-second heartbeat, retry notices remain immediate, and the
   project recorder publishes no durable event. Focused tests and strict affected-package Clippy
   pass; the release Atlas visual certificate remains.
+- 2026-08-08: The first release Atlas run correctly showed advancing source counters but falsified
+  phase isolation at the durable segment frontier: the existing renderer still classified package
+  segment increments as extraction, doubling the final Read rows from 417,114 to 834k. Repaired
+  package-segment attribution to a concurrently visible Package phase without ending an active
+  Read phase. A focused overlap regression now proves source and package totals never combine.
 
 ## Blockers
 

@@ -519,8 +519,10 @@ impl ProgressState {
             _ => phase_for_event(event),
         };
         let physical_measurement = event.kind == RunEventKind::PhaseMeasured;
+        let background_progress = event.kind == RunEventKind::PackageSegmentRecorded;
         if !physical_measurement {
-            if phase != self.current_phase
+            if !background_progress
+                && phase != self.current_phase
                 && let Some(active_run_id) = &self.active_run_id
                 && let Some(current) = self
                     .phases
@@ -529,7 +531,9 @@ impl ProgressState {
             {
                 current.complete(ProgressStatus::Succeeded, now);
             }
-            self.current_phase = phase;
+            if !background_progress {
+                self.current_phase = phase;
+            }
         }
 
         let terminal = terminal_for_event(event.kind);
@@ -1143,11 +1147,11 @@ fn phase_for_event(event: &RunEvent) -> ProgressPhase {
     }
     match event.kind {
         RunEventKind::RunStarted | RunEventKind::PlanRecorded => ProgressPhase::Plan,
-        RunEventKind::PackageStarted
-        | RunEventKind::PackageSegmentRecorded
-        | RunEventKind::SourceRetryRecorded => ProgressPhase::Extract,
+        RunEventKind::PackageStarted | RunEventKind::SourceRetryRecorded => ProgressPhase::Extract,
         RunEventKind::ValidationDepthTransitionRecorded => ProgressPhase::Validate,
-        RunEventKind::PackageFinalized | RunEventKind::PhaseMeasured => ProgressPhase::Package,
+        RunEventKind::PackageSegmentRecorded
+        | RunEventKind::PackageFinalized
+        | RunEventKind::PhaseMeasured => ProgressPhase::Package,
         RunEventKind::DestinationCommitStarted
         | RunEventKind::DestinationSegmentAcknowledged
         | RunEventKind::ReplayRecorded => ProgressPhase::Commit,
@@ -1779,16 +1783,16 @@ mod tests {
             false,
             started_at + Duration::from_secs(4),
         );
-        let extract = snapshot
+        let package = snapshot
             .phases
             .iter()
-            .find(|phase| phase.phase == ProgressPhase::Extract)
+            .find(|phase| phase.phase == ProgressPhase::Package)
             .unwrap();
-        assert_eq!(extract.metrics.rows, Some(1_500));
-        assert_eq!(extract.metrics.bytes, Some(1_572_864));
-        assert_eq!(extract.metrics.batches, Some(3));
-        assert_eq!(extract.metrics.segments, Some(2));
-        assert_eq!(progress_rate(extract).as_deref(), Some("750 rows/s"));
+        assert_eq!(package.metrics.rows, Some(1_500));
+        assert_eq!(package.metrics.bytes, Some(1_572_864));
+        assert_eq!(package.metrics.batches, Some(3));
+        assert_eq!(package.metrics.segments, Some(2));
+        assert_eq!(progress_rate(package).as_deref(), Some("500 rows/s"));
         let gate = snapshot
             .phases
             .iter()
@@ -1797,6 +1801,71 @@ mod tests {
         assert_eq!(gate.metrics.rows, Some(1_600));
         assert_eq!(gate.metrics.bytes, Some(1_677_721));
         assert_eq!(gate.metrics.segments, Some(3));
+    }
+
+    #[test]
+    fn source_and_package_progress_remain_phase_local_while_pipeline_overlaps() {
+        let config = ProgressConfig::new(tty_config(), DisplayVerbosity::Normal);
+        let mut state = ProgressState::default();
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+        state.apply_event_at(&started, &config, MilestoneOverflow::Coalesce, started_at);
+        state.apply_observation(
+            &RunProgressObservation {
+                run_id: RunId::new("run-progress-test").unwrap(),
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-progress-test".to_owned(),
+                phase: RunPhase::SourceRead,
+                kind: RunProgressObservationKind::SourceBatchProgress {
+                    row_count: 417_114,
+                    byte_count: 60_000_000,
+                    batch_count: 51,
+                },
+            },
+            started_at + Duration::from_secs(1),
+        );
+        let mut segment = event(2, RunEventKind::PackageSegmentRecorded);
+        segment
+            .details
+            .attributes
+            .insert("row_count".to_owned(), RunEventValue::U64(417_114));
+        segment
+            .details
+            .attributes
+            .insert("byte_count".to_owned(), RunEventValue::U64(13_000_000));
+        state.apply_event_at(
+            &segment,
+            &config,
+            MilestoneOverflow::Coalesce,
+            started_at + Duration::from_secs(2),
+        );
+
+        let snapshot = state.snapshot_at(
+            DisplayVerbosity::Normal,
+            false,
+            started_at + Duration::from_secs(3),
+        );
+        let extract = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Extract)
+            .unwrap();
+        let package = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Package)
+            .unwrap();
+        assert_eq!(snapshot.current_phase, ProgressPhase::Extract);
+        assert_eq!(extract.metrics.rows, Some(417_114));
+        assert_eq!(extract.metrics.bytes, Some(60_000_000));
+        assert_eq!(extract.metrics.batches, Some(51));
+        assert_eq!(extract.metrics.segments, None);
+        assert_eq!(package.metrics.rows, Some(417_114));
+        assert_eq!(package.metrics.bytes, Some(13_000_000));
+        assert_eq!(package.metrics.batches, None);
+        assert_eq!(package.metrics.segments, Some(1));
     }
 
     #[test]
@@ -2127,7 +2196,7 @@ mod tests {
             (RunEventKind::RunStarted, ProgressPhase::Plan),
             (RunEventKind::PlanRecorded, ProgressPhase::Plan),
             (RunEventKind::PackageStarted, ProgressPhase::Extract),
-            (RunEventKind::PackageSegmentRecorded, ProgressPhase::Extract),
+            (RunEventKind::PackageSegmentRecorded, ProgressPhase::Package),
             (
                 RunEventKind::ValidationDepthTransitionRecorded,
                 ProgressPhase::Validate,
