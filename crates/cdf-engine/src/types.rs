@@ -2246,8 +2246,18 @@ pub struct EngineExecutionInvocation {
     config: EngineExecutionConfig,
     pub(crate) cancellation: cdf_runtime::RunCancellation,
     pub(crate) retry_journal: cdf_runtime::SourceRetryJournal,
+    pub(crate) source_batch_progress: Option<Arc<SourceBatchProgressObserver>>,
     pub(crate) source_retry_progress: Option<Arc<SourceRetryProgressObserver>>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceBatchProgress {
+    pub row_count: u64,
+    pub byte_count: u64,
+    pub batch_count: u64,
+}
+
+pub type SourceBatchProgressObserver = dyn Fn(SourceBatchProgress) + Send + Sync;
 
 pub type SourceRetryProgressObserver =
     dyn Fn(&cdf_runtime::ScheduledPartition, &cdf_runtime::SourceRetryHistoryEntry) + Send + Sync;
@@ -2286,6 +2296,7 @@ impl EngineExecutionConfig {
             config: self.clone(),
             cancellation: cdf_runtime::RunCancellation::default(),
             retry_journal: cdf_runtime::SourceRetryJournal::default(),
+            source_batch_progress: None,
             source_retry_progress: None,
         }
     }
@@ -2299,6 +2310,14 @@ impl EngineExecutionInvocation {
 
     pub fn source_retry_evidence(&self) -> cdf_runtime::SourceRetryEvidenceView {
         self.retry_journal.evidence_view()
+    }
+
+    pub fn with_source_batch_progress(
+        mut self,
+        observer: Arc<SourceBatchProgressObserver>,
+    ) -> Self {
+        self.source_batch_progress = Some(observer);
+        self
     }
 
     pub fn with_source_retry_progress(

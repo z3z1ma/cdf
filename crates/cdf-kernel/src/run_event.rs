@@ -246,6 +246,11 @@ pub struct RunProgressObservation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunProgressObservationKind {
+    SourceBatchProgress {
+        row_count: u64,
+        byte_count: u64,
+        batch_count: u64,
+    },
     SourceRetry {
         failed_attempt: u16,
         cause: ErrorKind,

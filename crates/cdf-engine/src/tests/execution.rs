@@ -6,9 +6,10 @@ use super::support::{
     FieldCoercionDecision, MockResource, Ordering, PREVIEW_POLICY_BALANCED_STRATIFIED_V1, Planner,
     STRATIFIED_HASH_SELECTOR_V1, Schema, SchemaHash, StandaloneExecutionHost, StringArray, TempDir,
     batch_for_partition_with_schema, block_on, bound_effective_schema_evidence, execute_to_package,
-    execute_to_package_with_segment_positions_and_pre_finalize, fast_test_retry_policy,
-    mock_compiled_source_plan, plan_input, plan_input_for_schema, preview_resource, sample_batches,
-    sample_schema, sample_stream_epoch_policy, schema_observation_binding, terminal_file_position,
+    execute_to_package_with_invocation, execute_to_package_with_segment_positions_and_pre_finalize,
+    fast_test_retry_policy, mock_compiled_source_plan, plan_input, plan_input_for_schema,
+    preview_resource, sample_batches, sample_schema, sample_stream_epoch_policy,
+    schema_observation_binding, terminal_file_position,
 };
 
 #[test]
@@ -29,6 +30,51 @@ fn reusable_engine_execution_config_creates_isolated_invocation_state() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn source_batch_progress_reports_cumulative_metrics_before_finalization() {
+    let batches = sample_batches();
+    let mut expected = Vec::new();
+    let mut rows = 0_u64;
+    let mut bytes = 0_u64;
+    for (index, batch) in batches.iter().enumerate() {
+        rows = rows.saturating_add(batch.header.row_count);
+        bytes = bytes.saturating_add(batch.header.byte_count);
+        expected.push(crate::SourceBatchProgress {
+            row_count: rows,
+            byte_count: bytes,
+            batch_count: u64::try_from(index + 1).unwrap(),
+        });
+    }
+    let resource = MockResource::tier_b(batches).without_control_keys();
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let package_dir = TempDir::new().unwrap();
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let progress = Arc::clone(&observed);
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    let options = EngineExecutionConfig::default()
+        .with_execution_services(services)
+        .new_invocation()
+        .with_source_batch_progress(Arc::new(move |observation| {
+            progress.lock().unwrap().push(observation);
+        }));
+
+    let output = block_on(execute_to_package_with_invocation(
+        &plan,
+        &resource,
+        package_dir.path(),
+        options,
+    ))
+    .unwrap();
+
+    assert_eq!(*observed.lock().unwrap(), expected);
+    assert_eq!(output.output.profile.output_rows, rows);
 }
 
 #[test]

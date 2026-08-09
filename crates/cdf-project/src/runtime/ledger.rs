@@ -241,6 +241,31 @@ impl<'a> ProjectRunRecorder<'a> {
         }))
     }
 
+    pub(super) fn source_batch_progress_observer(
+        &self,
+    ) -> Option<Arc<cdf_engine::SourceBatchProgressObserver>> {
+        let sink = self.events.progress_sink()?;
+        let run_id = self.run_id.clone();
+        let resource_id = self.context.resource_id.clone();
+        let scope = self.context.scope.clone();
+        let package_id = self.context.package_id.clone();
+        Some(Arc::new(move |progress| {
+            let observation = RunProgressObservation {
+                run_id: run_id.clone(),
+                resource_id: resource_id.clone(),
+                scope: scope.clone(),
+                package_id: package_id.clone(),
+                phase: RunPhase::SourceRead,
+                kind: RunProgressObservationKind::SourceBatchProgress {
+                    row_count: progress.row_count,
+                    byte_count: progress.byte_count,
+                    batch_count: progress.batch_count,
+                },
+            };
+            let _ = sink.try_emit_progress(&observation);
+        }))
+    }
+
     pub(super) fn append_validation_depth_transition_recorded(
         &self,
         package_hash: &PackageHash,
@@ -976,6 +1001,85 @@ mod tests {
             self.events.lock().unwrap().push(event.clone());
             cdf_kernel::RunEventSinkResult::Accepted
         }
+    }
+
+    struct RecordingProgressSink {
+        observations: Mutex<Vec<RunProgressObservation>>,
+    }
+
+    impl RunProgressSink for RecordingProgressSink {
+        fn try_emit_progress(
+            &self,
+            observation: &RunProgressObservation,
+        ) -> cdf_kernel::RunEventSinkResult {
+            self.observations.lock().unwrap().push(observation.clone());
+            cdf_kernel::RunEventSinkResult::Accepted
+        }
+    }
+
+    struct ProgressEventSink {
+        progress: Arc<RecordingProgressSink>,
+    }
+
+    impl RunEventSink for ProgressEventSink {
+        fn try_emit(&self, _event: &cdf_kernel::RunEvent) -> cdf_kernel::RunEventSinkResult {
+            cdf_kernel::RunEventSinkResult::Accepted
+        }
+
+        fn progress_sink(&self) -> Option<Arc<dyn RunProgressSink>> {
+            Some(self.progress.clone())
+        }
+    }
+
+    #[test]
+    fn source_batch_progress_is_process_local_and_cumulative() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run = ledger
+            .create_run(Some(RunId::new("run-source-batch-progress").unwrap()))
+            .unwrap();
+        let progress = Arc::new(RecordingProgressSink {
+            observations: Mutex::new(Vec::new()),
+        });
+        let sink = ProgressEventSink {
+            progress: Arc::clone(&progress),
+        };
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run.run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-source-batch-progress".to_owned(),
+                package_path: "pkg-source-batch-progress".to_owned(),
+                destination_id: DestinationId::new("duckdb").unwrap(),
+                plan_id: PlanId::new("plan-source-batch-progress").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-source-batch-progress").unwrap(),
+            },
+            Some(&sink),
+            RunTelemetryConfig::disabled(),
+        );
+        recorder.source_batch_progress_observer().unwrap()(cdf_engine::SourceBatchProgress {
+            row_count: 250,
+            byte_count: 4_096,
+            batch_count: 2,
+        });
+
+        assert!(ledger.events(&run.run_id).unwrap().is_empty());
+        assert_eq!(
+            progress.observations.lock().unwrap().as_slice(),
+            &[RunProgressObservation {
+                run_id: run.run_id,
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-source-batch-progress".to_owned(),
+                phase: RunPhase::SourceRead,
+                kind: RunProgressObservationKind::SourceBatchProgress {
+                    row_count: 250,
+                    byte_count: 4_096,
+                    batch_count: 2,
+                },
+            }]
+        );
     }
 
     #[test]

@@ -85,8 +85,8 @@ pub use types::{
     EstimateExplain, ExecutionProfile, ExplainData, LineageInputObservation, LineageSummary,
     OperatorNode, PREVIEW_POLICY_BALANCED_STRATIFIED_V1, PartitionExplain,
     PhysicalObservationEvidence, PredicateExplain, SCHEMA_ADMISSION_CACHE_KEY_FIELDS,
-    SchemaQuarantineObservationEvidence, SourceRetryProgressObserver, StreamAdmissionCompletion,
-    StreamAdmissionObservationEvidence,
+    SchemaQuarantineObservationEvidence, SourceBatchProgress, SourceBatchProgressObserver,
+    SourceRetryProgressObserver, StreamAdmissionCompletion, StreamAdmissionObservationEvidence,
 };
 pub use worker_task::{
     AdmittedEnginePartitionEvidence, EngineIsolatedSegmentExecutor, EnginePartitionTaskInput,

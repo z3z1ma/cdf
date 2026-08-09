@@ -68,6 +68,25 @@ pub(super) async fn execute_to_package(
     super::execute_to_package(&plan, resource, package_dir).await
 }
 
+pub(super) async fn execute_to_package_with_invocation(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+    options: EngineExecutionInvocation,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let plan = executable_mock_plan(plan, resource)?;
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    super::execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        resource,
+        package_dir,
+        &pre_finalize,
+        options,
+    )
+    .await
+}
+
 pub(super) async fn preview_resource(
     plan: &EnginePlan,
     resource: &MockResource,

@@ -830,8 +830,11 @@ fn parse_inspect(matches: &ArgMatches) -> Result<InspectArgs, CliError> {
             InspectNoun::Destinations
         }
         "package" => {
-            let path =
-                required_first_value("inspect package", &values, "requires a package directory")?;
+            let path = required_first_value(
+                "inspect package",
+                &values,
+                "requires a package identifier or directory",
+            )?;
             no_extra_values("inspect package", &values[1..])?;
             InspectNoun::Package(PathBuf::from(path))
         }

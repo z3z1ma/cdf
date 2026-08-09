@@ -3856,6 +3856,9 @@ where
     let mut consumed_partition_count = 0_u64;
     let mut drain_finished_noop = false;
     let mut source_progress_observed = false;
+    let mut source_progress_rows = 0_u64;
+    let mut source_progress_bytes = 0_u64;
+    let mut source_progress_batches = 0_u64;
     let mut last_drain_partition_resume = None::<Box<crate::DrainPartitionResume>>;
     let mut drain_partition_positions = drain_source_continuation_positions(
         drain_controller
@@ -4484,6 +4487,17 @@ where
                 partition_input_bytes = partition_input_bytes
                     .checked_add(batch.header.byte_count)
                     .ok_or_else(|| CdfError::internal("drain partition input byte count overflow"))?;
+                source_progress_rows = source_progress_rows.saturating_add(batch.header.row_count);
+                source_progress_bytes =
+                    source_progress_bytes.saturating_add(batch.header.byte_count);
+                source_progress_batches = source_progress_batches.saturating_add(1);
+                if let Some(observer) = options.source_batch_progress.as_deref() {
+                    observer(crate::SourceBatchProgress {
+                        row_count: source_progress_rows,
+                        byte_count: source_progress_bytes,
+                        batch_count: source_progress_batches,
+                    });
+                }
                 observe_cdc_order_identity(&mut cdc_order_identity, &batch.header)?;
                 if let Some(watermarks) = partition_watermarks.as_ref() {
                     for watermark in &batch.header.watermarks {
@@ -4787,6 +4801,18 @@ where
                                 &plan.scan.request.resource_id,
                                 &partition,
                             )?;
+                            source_progress_rows =
+                                source_progress_rows.saturating_add(drained.header.row_count);
+                            source_progress_bytes =
+                                source_progress_bytes.saturating_add(drained.header.byte_count);
+                            source_progress_batches = source_progress_batches.saturating_add(1);
+                            if let Some(observer) = options.source_batch_progress.as_deref() {
+                                observer(crate::SourceBatchProgress {
+                                    row_count: source_progress_rows,
+                                    byte_count: source_progress_bytes,
+                                    batch_count: source_progress_batches,
+                                });
+                            }
                             let decoded_input_bytes = drained.header.byte_count;
                             phase_measurements.add(
                                 RunPhase::Decode,

@@ -480,6 +480,10 @@ impl ProjectOperationalContext {
         )
     }
 
+    pub fn package_root(&self) -> PathBuf {
+        absolute_under_root(&self.root, &self.environment.packages)
+    }
+
     pub fn state_store_path(&self) -> CdfResult<PathBuf> {
         sqlite_uri_path(&self.root, &self.environment.state)
     }

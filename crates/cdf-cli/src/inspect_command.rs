@@ -1,7 +1,11 @@
 mod render;
 
-use std::path::PathBuf;
+use std::{
+    fs, io,
+    path::{Component, Path, PathBuf},
+};
 
+use cdf_kernel::CdfError;
 use cdf_project::{EffectiveEnvironment, ProjectConfig, resolve_project_resource_selection};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -18,7 +22,7 @@ pub(crate) fn inspect(
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     match args.noun {
-        InspectNoun::Package(path) => inspect_package(path),
+        InspectNoun::Package(path) => inspect_package(cli, path),
         InspectNoun::Run(id) => {
             let context =
                 ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
@@ -92,10 +96,57 @@ pub(crate) fn inspect(
     }
 }
 
-fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
+fn inspect_package(cli: &Cli, operand: PathBuf) -> Result<CommandOutput, CliError> {
+    let (path, expected_id) = match package_identifier(&operand) {
+        Some(package_id) => {
+            let context =
+                ProjectOperationalContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let package_root = context.package_root();
+            let path = package_root.join(package_id);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(CdfError::data(format!(
+                        "package identifier `{package_id}` was not found under {}; run `cdf package ls` for the selected project and environment",
+                        package_root.display()
+                    ))
+                    .into());
+                }
+                Err(error) => {
+                    return Err(CdfError::environment(format!(
+                        "inspect package identifier `{package_id}` under {}: {error}; check path permissions and device health before retrying",
+                        package_root.display()
+                    ))
+                    .into());
+                }
+            }
+            (path, Some(package_id))
+        }
+        None => (operand, None),
+    };
     let manifest = redact_typed(cdf_package::read_manifest(&path)?)?;
+    if let Some(expected_id) = expected_id
+        && manifest.identity.package_id != expected_id
+    {
+        return Err(CdfError::data(format!(
+            "package identifier `{expected_id}` resolved to a manifest declaring `{}`; inspect the package root and retry with an exact package id",
+            manifest.identity.package_id
+        ))
+        .into());
+    }
     let report = InspectPackageReport { path, manifest };
     CommandOutput::rendered("inspect package", render::package_document(&report), report)
+}
+
+fn package_identifier(operand: &Path) -> Option<&str> {
+    if operand.is_absolute() {
+        return None;
+    }
+    let mut components = operand.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(identifier)), None) => identifier.to_str(),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -440,17 +440,29 @@ impl ProgressState {
                 metrics: ProgressMetrics::default(),
                 notice: None,
             });
-        progress.notice = Some(match &observation.kind {
+        match &observation.kind {
+            RunProgressObservationKind::SourceBatchProgress {
+                row_count,
+                byte_count,
+                batch_count,
+            } => {
+                progress.metrics.rows = Some(*row_count);
+                progress.metrics.bytes = Some(*byte_count);
+                progress.metrics.batches = Some(*batch_count);
+                progress.notice = None;
+            }
             RunProgressObservationKind::SourceRetry {
                 failed_attempt,
                 cause,
                 delay_ms,
-            } => format!(
-                "retry {failed_attempt} after {}; waiting {}",
-                error_kind_label(cause),
-                humanize_duration(Duration::from_millis(*delay_ms))
-            ),
-        });
+            } => {
+                progress.notice = Some(format!(
+                    "retry {failed_attempt} after {}; waiting {}",
+                    error_kind_label(cause),
+                    humanize_duration(Duration::from_millis(*delay_ms))
+                ));
+            }
+        }
     }
 
     fn apply_event(
@@ -914,20 +926,30 @@ impl LiveProgressRenderer {
 
     fn process_observation(&mut self, observation: &RunProgressObservation) {
         let now = Instant::now();
+        let immediate = matches!(
+            &observation.kind,
+            RunProgressObservationKind::SourceRetry { .. }
+        );
         let Ok(mut state) = self.state.lock() else {
             return;
         };
         state.apply_observation(observation, now);
         drop(state);
         if self.interactive {
-            self.redraw_at(now);
-            self.last_refresh = now;
-            self.pending_redraw = false;
+            if immediate
+                || now.saturating_duration_since(self.last_refresh) >= INTERACTIVE_REFRESH_INTERVAL
+            {
+                self.redraw_at(now);
+                self.last_refresh = now;
+                self.pending_redraw = false;
+            } else {
+                self.pending_redraw = true;
+            }
         } else {
             if self.headless_run_id.as_deref() != Some(observation.run_id.as_str()) {
                 self.headless_run_id = Some(observation.run_id.as_str().to_owned());
             }
-            self.emit_headless_updates(now, false, true, Some(observation.run_id.as_str()));
+            self.emit_headless_updates(now, false, immediate, Some(observation.run_id.as_str()));
         }
     }
 
@@ -1934,6 +1956,99 @@ mod tests {
             rendered.contains("retry 1 after rate_limited; waiting 2s"),
             "{rendered:?}"
         );
+    }
+
+    #[test]
+    fn source_batch_observations_replace_cumulative_extract_metrics() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = CliProgressSink::live_with_writer(
+            ProgressConfig::new(tty_config(), DisplayVerbosity::Normal),
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+        assert_eq!(
+            sink.try_emit(&event(1, RunEventKind::PackageStarted)),
+            RunEventSinkResult::Accepted
+        );
+        let progress = sink.progress_sink().unwrap();
+        for (rows, byte_count, batches) in [(100, 2_048, 1), (250, 4_096, 2)] {
+            assert_eq!(
+                progress.try_emit_progress(&RunProgressObservation {
+                    run_id: RunId::new("run-progress-test").unwrap(),
+                    resource_id: ResourceId::new("local.events").unwrap(),
+                    scope: ScopeKey::Resource,
+                    package_id: "pkg-progress-test".to_owned(),
+                    phase: RunPhase::SourceRead,
+                    kind: RunProgressObservationKind::SourceBatchProgress {
+                        row_count: rows,
+                        byte_count,
+                        batch_count: batches,
+                    },
+                }),
+                RunEventSinkResult::Accepted
+            );
+        }
+        drop(progress);
+        let snapshot = sink.finish();
+        let extract = snapshot
+            .phases
+            .iter()
+            .find(|phase| phase.phase == ProgressPhase::Extract)
+            .unwrap();
+        assert_eq!(extract.metrics.rows, Some(250));
+        assert_eq!(extract.metrics.bytes, Some(4_096));
+        assert_eq!(extract.metrics.batches, Some(2));
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("250 rows"), "{rendered:?}");
+        assert!(rendered.contains("4 KiB"), "{rendered:?}");
+        assert!(rendered.contains("2 batches"), "{rendered:?}");
+    }
+
+    #[test]
+    fn headless_source_batch_observations_wait_for_heartbeat() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let mut renderer = LiveProgressRenderer::new(
+            ProgressConfig::new(headless_config(), DisplayVerbosity::Normal),
+            state,
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::ZERO,
+            }),
+        );
+        let started_at = Instant::now();
+        let mut started = event(1, RunEventKind::PackageStarted);
+        started.details.attributes.clear();
+        renderer.process_at(&started, started_at);
+        let start_len = bytes.lock().unwrap().len();
+
+        renderer.process_observation(&RunProgressObservation {
+            run_id: RunId::new("run-progress-test").unwrap(),
+            resource_id: ResourceId::new("local.events").unwrap(),
+            scope: ScopeKey::Resource,
+            package_id: "pkg-progress-test".to_owned(),
+            phase: RunPhase::SourceRead,
+            kind: RunProgressObservationKind::SourceBatchProgress {
+                row_count: 250,
+                byte_count: 4_096,
+                batch_count: 2,
+            },
+        });
+        assert_eq!(bytes.lock().unwrap().len(), start_len);
+
+        for emission in renderer.headless_phases.values_mut() {
+            emission.last_emitted_at = emission
+                .last_emitted_at
+                .checked_sub(HEADLESS_HEARTBEAT_INTERVAL)
+                .unwrap();
+        }
+        renderer.refresh_at(Instant::now());
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("rows=250"), "{rendered:?}");
+        assert!(rendered.contains("bytes=4 KiB"), "{rendered:?}");
+        assert!(rendered.contains("batches=2"), "{rendered:?}");
     }
 
     #[test]

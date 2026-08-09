@@ -837,6 +837,10 @@ async fn run_project_inner(
         None => config,
     };
     let options = config.new_invocation();
+    let options = match execution.recorder.source_batch_progress_observer() {
+        Some(observer) => options.with_source_batch_progress(observer),
+        None => options,
+    };
     let options = match execution.recorder.source_retry_progress_observer() {
         Some(observer) => options.with_source_retry_progress(observer),
         None => options,

@@ -93,6 +93,54 @@ fn inspect_package_typed_report_preserves_manifest_json_shape() {
 }
 
 #[test]
+fn inspect_package_exact_identifier_matches_explicit_path() {
+    let project = TestProject::new();
+    let package_id = "pkg-inspect-id";
+    let package_dir = build_archive_cli_package(&project.root.join(".cdf/packages"), package_id);
+
+    let by_id = run([
+        "cdf",
+        "--project",
+        project.root.to_str().unwrap(),
+        "--json",
+        "inspect",
+        "package",
+        package_id,
+    ]);
+    let by_path = run([
+        "cdf",
+        "--json",
+        "inspect",
+        "package",
+        package_dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(by_id.exit_code, 0, "stderr: {}", by_id.stderr);
+    assert_eq!(by_path.exit_code, 0, "stderr: {}", by_path.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&by_id.stdout)["result"],
+        stderr_or_stdout_json(&by_path.stdout)["result"]
+    );
+}
+
+#[test]
+fn inspect_package_unknown_identifier_names_selected_package_root() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--project",
+        project.root.to_str().unwrap(),
+        "inspect",
+        "package",
+        "pkg-missing",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(result.stderr.contains("pkg-missing"), "{}", result.stderr);
+    assert!(result.stderr.contains(".cdf/packages"), "{}", result.stderr);
+}
+
+#[test]
 fn package_ls_json_remains_array_while_human_uses_renderer() {
     let temp = TempDir::new("cdf-cli-package-ls");
     let package_dir = build_archive_cli_package(temp.path(), "pkg-ls-json-array");
