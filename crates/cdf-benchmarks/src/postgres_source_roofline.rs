@@ -13,12 +13,12 @@ use cdf_bench_core::{
     BenchResult, ComparabilityKey, HostCapabilityProvider, HostFingerprint, HostProbeConfig,
     IoMode, SystemHostProvider, bench_error, host_class,
 };
-use cdf_http::EgressAllowlist;
+use cdf_http::{EgressAllowlist, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
-    CdfError, OrderBy, QueryableResource, ResourceDescriptor, ResourceId, Result, ScanRequest,
-    SchemaSource, ScopeKey, SortDirection, TrustLevel, WriteDisposition,
+    CdfError, DestinationProtocol, OrderBy, QueryableResource, ResourceDescriptor, ResourceId,
+    Result, ScanRequest, SchemaSource, ScopeKey, SortDirection, TrustLevel, WriteDisposition,
 };
-use cdf_runtime::{SourceDriverId, SourceEgressScope};
+use cdf_runtime::{SourceDriverId, SourceEgressScope, SourceRegistry, SourceResolutionContext};
 use cdf_source_postgres::{
     PostgresSourceResource, PostgresTarget, discover_postgres_table_catalog_schema,
 };
@@ -103,6 +103,7 @@ pub struct PostgresSourceRooflineReport {
 enum Shape {
     Narrow,
     Mixed,
+    NativeQuery,
 }
 
 impl Shape {
@@ -110,6 +111,7 @@ impl Shape {
         match self {
             Self::Narrow => "narrow_numeric",
             Self::Mixed => "mixed_text_decimal",
+            Self::NativeQuery => "native_query_cte_join_window",
         }
     }
 
@@ -117,6 +119,21 @@ impl Shape {
         match self {
             Self::Narrow => NARROW_TABLE,
             Self::Mixed => MIXED_TABLE,
+            Self::NativeQuery => NARROW_TABLE,
+        }
+    }
+
+    fn native_query(self) -> Option<&'static str> {
+        match self {
+            Self::Narrow | Self::Mixed => None,
+            Self::NativeQuery => Some(concat!(
+                "WITH enriched AS (",
+                "SELECT n.id, n.metric, n.updated_at, ",
+                "(sum(n.metric) OVER (ORDER BY n.id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))::bigint AS running_metric ",
+                "FROM cdf_postgres_source_roofline_narrow AS n ",
+                "JOIN cdf_postgres_source_roofline_mixed AS m USING (id)",
+                ") SELECT id, metric, updated_at, running_metric FROM enriched"
+            )),
         }
     }
 
@@ -133,11 +150,22 @@ impl Shape {
                 "\"amount\"::numeric AS \"amount\", ",
                 "\"wide\"::numeric AS \"wide\""
             ),
+            Self::NativeQuery => concat!(
+                "\"id\"::bigint AS \"id\", ",
+                "\"metric\"::bigint AS \"metric\", ",
+                "\"updated_at\"::bigint AS \"updated_at\", ",
+                "\"running_metric\"::bigint AS \"running_metric\""
+            ),
         };
-        format!(
-            "COPY (SELECT {projection} FROM \"{}\" ORDER BY \"id\"::bigint ASC) TO STDOUT WITH (FORMAT BINARY)",
-            self.table()
-        )
+        match self.native_query() {
+            None => format!(
+                "COPY (SELECT {projection} FROM \"{}\" ORDER BY \"id\"::bigint ASC) TO STDOUT WITH (FORMAT BINARY)",
+                self.table()
+            ),
+            Some(query) => format!(
+                "COPY (SELECT {projection} FROM ({query}) AS \"_cdf_native_query\" ORDER BY \"id\"::bigint ASC) TO STDOUT WITH (FORMAT BINARY)"
+            ),
+        }
     }
 
     fn postgres_types(self) -> &'static [postgres::types::Type] {
@@ -145,7 +173,16 @@ impl Shape {
         match self {
             Self::Narrow => &[Type::INT8, Type::INT8, Type::INT8],
             Self::Mixed => &[Type::INT8, Type::TEXT, Type::NUMERIC, Type::NUMERIC],
+            Self::NativeQuery => &[Type::INT8, Type::INT8, Type::INT8, Type::INT8],
         }
+    }
+}
+
+struct FixedSecret(String);
+
+impl SecretProvider for FixedSecret {
+    fn resolve(&self, _uri: &SecretUri) -> Result<SecretValue> {
+        Ok(SecretValue::new(self.0.clone()))
     }
 }
 
@@ -181,7 +218,7 @@ pub fn run_postgres_source_roofline(
         .map(|value| format!("label-{value}"))
         .collect::<Vec<_>>();
     let mut cells = Vec::new();
-    for shape in [Shape::Narrow, Shape::Mixed] {
+    for shape in [Shape::Narrow, Shape::Mixed, Shape::NativeQuery] {
         let resource = compile_resource(database_url, shape, &execution)?;
         execution_host.block_on_root(read_cdf(resource.as_ref(), shape, rows, &labels))?;
         read_direct(database_url, shape, rows, &labels)?;
@@ -233,7 +270,7 @@ pub fn run_postgres_source_roofline(
     });
     let host = host_provider.fingerprint()?;
     let host_key = host_class(&host)?;
-    let comparability = [Shape::Narrow, Shape::Mixed]
+    let comparability = [Shape::Narrow, Shape::Mixed, Shape::NativeQuery]
         .into_iter()
         .map(|shape| ComparabilityKey {
             dataset_id: format!("postgres-source-roofline-{rows}-rows-{}", shape.name()),
@@ -334,6 +371,9 @@ fn compile_resource(
     shape: Shape,
     execution: &cdf_runtime::ExecutionServices,
 ) -> BenchResult<Arc<dyn QueryableResource>> {
+    if let Some(query) = shape.native_query() {
+        return compile_native_query_resource(database_url, query, execution);
+    }
     let target = PostgresTarget::parse(shape.table())?;
     let egress = SourceEgressScope::new(
         SourceDriverId::new("postgres")?,
@@ -363,6 +403,91 @@ fn compile_resource(
         PostgresSourceResource::new_table(database_url, descriptor, schema, target, egress)?
             .with_execution(execution.clone())?;
     Ok(Arc::new(resource))
+}
+
+fn compile_native_query_resource(
+    database_url: &str,
+    query: &str,
+    execution: &cdf_runtime::ExecutionServices,
+) -> BenchResult<Arc<dyn QueryableResource>> {
+    let fixture = tempfile::tempdir()?;
+    let root = fixture.path();
+    let secret_ref = "secret://bench/postgres";
+    let project_toml = format!(
+        r#"[project]
+id = "test-project"
+name = "postgres_source_roofline"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.sqlite"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[sources.roofline]
+type = "postgres"
+connection = "{secret_ref}"
+"#
+    );
+    let resource_dir = root.join("cdf/roofline");
+    fs::create_dir_all(&resource_dir)?;
+    fs::write(root.join("cdf.toml"), &project_toml)?;
+    fs::write(
+        resource_dir.join("native_query.cdf.sql"),
+        format!(
+            r#"RESOURCE
+DISPOSITION APPEND
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT id, metric, updated_at, running_metric
+FROM upstream(source => 'roofline', query => '{query}');
+"#
+        ),
+    )?;
+    let mut registry = SourceRegistry::new();
+    registry.register(cdf_source_postgres::PostgresSourceDriver::new()?)?;
+    let config = cdf_project::parse_cdf_toml(&project_toml)?;
+    let destination = cdf_dest_duckdb::DuckDbDestination::new(root.join(".cdf/compile.duckdb"))?;
+    let mut entries = cdf_project::compile_query_project_resources(
+        &registry,
+        &config,
+        root,
+        "dev",
+        destination.sheet(),
+        &cdf_semantic::SemanticCatalog::builtins()?,
+        &BTreeMap::new(),
+    )?;
+    let mut entry = entries
+        .pop()
+        .ok_or_else(|| bench_error("Postgres native-query roofline compiled no resource"))?;
+    if !entries.is_empty() {
+        return Err(bench_error(
+            "Postgres native-query roofline compiled multiple resources",
+        ));
+    }
+    let provisional = entry.resource.clone();
+    let context = SourceResolutionContext::new(
+        root,
+        Arc::new(FixedSecret(database_url.to_owned())),
+        execution,
+        Arc::new(EgressAllowlist::allow_any()),
+    );
+    let mut discovery = cdf_project::discover_resource_schema_with_source_registry(
+        &provisional,
+        &registry,
+        provisional.source_plan(),
+        &context,
+        cdf_project::SchemaDiscoveryExecutionOptions::new(),
+    )?;
+    entry.resource =
+        cdf_project::compile_discovered_schema_artifacts(&provisional, &mut discovery)?;
+    entry = cdf_project::finalize_query_project_resource(
+        entry,
+        &cdf_semantic::SemanticCatalog::builtins()?,
+    )?;
+    Ok(registry.resolve(entry.resource.source_plan(), &context)?)
 }
 
 async fn read_cdf(
@@ -501,6 +626,13 @@ enum DirectBuilders {
         amount: Decimal128Builder,
         wide: Decimal256Builder,
     },
+    NativeQuery {
+        schema: SchemaRef,
+        id: Int64Builder,
+        metric: Int64Builder,
+        updated_at: Int64Builder,
+        running_metric: Int64Builder,
+    },
 }
 
 impl DirectBuilders {
@@ -530,12 +662,26 @@ impl DirectBuilders {
                 wide: Decimal256Builder::with_capacity(DIRECT_BATCH_ROWS)
                     .with_data_type(DataType::Decimal256(60, 18)),
             },
+            Shape::NativeQuery => Self::NativeQuery {
+                schema: Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, true),
+                    Field::new("metric", DataType::Int64, true),
+                    Field::new("updated_at", DataType::Int64, true),
+                    Field::new("running_metric", DataType::Int64, true),
+                ])),
+                id: Int64Builder::with_capacity(DIRECT_BATCH_ROWS),
+                metric: Int64Builder::with_capacity(DIRECT_BATCH_ROWS),
+                updated_at: Int64Builder::with_capacity(DIRECT_BATCH_ROWS),
+                running_metric: Int64Builder::with_capacity(DIRECT_BATCH_ROWS),
+            },
         }
     }
 
     fn len(&self) -> usize {
         match self {
-            Self::Narrow { id, .. } | Self::Mixed { id, .. } => id.len(),
+            Self::Narrow { id, .. } | Self::Mixed { id, .. } | Self::NativeQuery { id, .. } => {
+                id.len()
+            }
         }
     }
 
@@ -569,6 +715,18 @@ impl DirectBuilders {
                 let wide_raw = row.try_get::<RawNumeric<'_>>(3)?;
                 wide.append_value(decode_numeric(wide_raw.0, 18)?);
             }
+            Self::NativeQuery {
+                id,
+                metric,
+                updated_at,
+                running_metric,
+                ..
+            } => {
+                id.append_value(row.try_get::<i64>(0)?);
+                metric.append_value(row.try_get::<i64>(1)?);
+                updated_at.append_value(row.try_get::<i64>(2)?);
+                running_metric.append_value(row.try_get::<i64>(3)?);
+            }
         }
         Ok(())
     }
@@ -601,6 +759,21 @@ impl DirectBuilders {
                     Arc::new(label.finish()),
                     Arc::new(amount.finish()),
                     Arc::new(wide.finish()),
+                ],
+            )?,
+            Self::NativeQuery {
+                schema,
+                id,
+                metric,
+                updated_at,
+                running_metric,
+            } => RecordBatch::try_new(
+                Arc::clone(schema),
+                vec![
+                    Arc::new(id.finish()),
+                    Arc::new(metric.finish()),
+                    Arc::new(updated_at.finish()),
+                    Arc::new(running_metric.finish()),
                 ],
             )?,
         })
@@ -676,6 +849,25 @@ impl<'a> Verifier<'a> {
                     )?;
                 }
             }
+            Shape::NativeQuery => {
+                if batch.num_columns() != 4 {
+                    return Err(CdfError::data(
+                        "Postgres native-query roofline column count changed",
+                    ));
+                }
+                let id = typed::<Int64Array>(batch, 0, "id")?;
+                let metric = typed::<Int64Array>(batch, 1, "metric")?;
+                let updated = typed::<Int64Array>(batch, 2, "updated_at")?;
+                let running = typed::<Int64Array>(batch, 3, "running_metric")?;
+                for row in 0..batch.num_rows() {
+                    self.observe_native_query(
+                        id.value(row),
+                        metric.value(row),
+                        updated.value(row),
+                        running.value(row),
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -736,6 +928,39 @@ impl<'a> Verifier<'a> {
         self.useful_arrow_bytes = self
             .useful_arrow_bytes
             .saturating_add(8 + 4 + label.len() as u64 + 16 + 32);
+        self.next_id = self.next_id.saturating_add(1);
+        Ok(())
+    }
+
+    fn observe_native_query(
+        &mut self,
+        id: i64,
+        metric: i64,
+        updated_at: i64,
+        running_metric: i64,
+    ) -> Result<()> {
+        let expected = i64::try_from(self.next_id)
+            .map_err(|_| CdfError::data("Postgres roofline row identity exceeds i64"))?;
+        let expected_metric = expected.saturating_mul(17);
+        let expected_running = expected
+            .saturating_mul(expected.saturating_add(1))
+            .saturating_div(2)
+            .saturating_mul(17);
+        if id != expected
+            || metric != expected_metric
+            || updated_at != expected
+            || running_metric != expected_running
+        {
+            return Err(CdfError::data(format!(
+                "Postgres native-query roofline value differed at row {}",
+                self.next_id
+            )));
+        }
+        self.checksum = mix(self.checksum, id as u64);
+        self.checksum = mix(self.checksum, metric as u64);
+        self.checksum = mix(self.checksum, updated_at as u64);
+        self.checksum = mix(self.checksum, running_metric as u64);
+        self.useful_arrow_bytes = self.useful_arrow_bytes.saturating_add(32);
         self.next_id = self.next_id.saturating_add(1);
         Ok(())
     }
@@ -991,6 +1216,7 @@ fn workspace_content_revision(workspace_root: &Path) -> BenchResult<(String, Vec
         "crates/cdf-source-postgres/src/catalog.rs",
         "crates/cdf-source-postgres/src/driver.rs",
         "crates/cdf-source-postgres/src/lib.rs",
+        "crates/cdf-source-postgres/src/native.rs",
         "crates/cdf-source-postgres/src/source.rs",
     ];
     let mut hasher = Sha256::new();
@@ -1033,6 +1259,10 @@ mod tests {
         assert_eq!(
             Shape::Mixed.copy_query(),
             "COPY (SELECT \"id\"::bigint AS \"id\", \"label\"::text AS \"label\", \"amount\"::numeric AS \"amount\", \"wide\"::numeric AS \"wide\" FROM \"cdf_postgres_source_roofline_mixed\" ORDER BY \"id\"::bigint ASC) TO STDOUT WITH (FORMAT BINARY)"
+        );
+        assert_eq!(
+            Shape::NativeQuery.copy_query(),
+            "COPY (SELECT \"id\"::bigint AS \"id\", \"metric\"::bigint AS \"metric\", \"updated_at\"::bigint AS \"updated_at\", \"running_metric\"::bigint AS \"running_metric\" FROM (WITH enriched AS (SELECT n.id, n.metric, n.updated_at, (sum(n.metric) OVER (ORDER BY n.id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))::bigint AS running_metric FROM cdf_postgres_source_roofline_narrow AS n JOIN cdf_postgres_source_roofline_mixed AS m USING (id)) SELECT id, metric, updated_at, running_metric FROM enriched) AS \"_cdf_native_query\" ORDER BY \"id\"::bigint ASC) TO STDOUT WITH (FORMAT BINARY)"
         );
     }
 }

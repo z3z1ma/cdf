@@ -548,10 +548,14 @@ fn active_compiled_source_resource(
     {
         return Ok(None);
     }
-    Ok(Some(cdf_project::hydrate_compiled_resource_artifact(
-        &context.root,
-        artifact,
-    )?))
+    let compiled = cdf_project::hydrate_compiled_resource_artifact(&context.root, artifact)?;
+    let current = context.resource(resource_id)?;
+    if compiled.source_plan().discovery_binding_hash()?
+        != current.source_plan().discovery_binding_hash()?
+    {
+        return Ok(None);
+    }
+    Ok(Some(compiled))
 }
 
 fn bind_active_logical_schema(
