@@ -47,7 +47,11 @@ impl SqliteSourceDriver {
                 "required": ["location"],
                 "properties": {
                     "location": {"type": "string", "pattern": "^sqlite://"},
-                    "dialect": {"const": "sqlite", "default": "sqlite"}
+                    "dialect": {"const": "sqlite", "default": "sqlite"},
+                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 32768},
+                    "busy_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+                    "cache_kib": {"type": "integer", "minimum": 64, "maximum": 1048576},
+                    "mmap_bytes": {"type": "integer", "minimum": 0, "maximum": 1073741824}
                 }
             },
             "resource": {
@@ -61,9 +65,7 @@ impl SqliteSourceDriver {
                     "table": {"type": "string", "minLength": 1},
                     "query": {"type": "string", "minLength": 1},
                     "stable_key": {"type": "string", "minLength": 1},
-                    "discovery_records": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 1000},
-                    "discovery_bytes": {"type": "integer", "minimum": 1024, "maximum": 67108864, "default": 16777216},
-                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 32768},
+                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000},
                     "busy_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
                     "cache_kib": {"type": "integer", "minimum": 64, "maximum": 1048576},
                     "mmap_bytes": {"type": "integer", "minimum": 0, "maximum": 1073741824},
@@ -77,7 +79,7 @@ impl SqliteSourceDriver {
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("sqlite")?,
-                driver_version: "3.0.0".to_owned(),
+                driver_version: "4.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec!["sqlite".to_owned()],
                 schemes: vec!["sqlite".to_owned()],
@@ -188,13 +190,17 @@ impl SourceDriver for SqliteSourceDriver {
         }
         let database_path = normalize_sqlite_location(&source.location)?;
         let input = SqliteSourceInput::from_authored(resource.table, resource.query)?;
+        SqliteNativeOptions::from_authored(
+            source.output_batch_rows,
+            source.busy_timeout_ms,
+            source.cache_kib,
+            source.mmap_bytes,
+        )?;
         let options = SqliteNativeOptions::from_authored(
-            resource.discovery_records,
-            resource.discovery_bytes,
-            resource.output_batch_rows,
-            resource.busy_timeout_ms,
-            resource.cache_kib,
-            resource.mmap_bytes,
+            resource.output_batch_rows.or(source.output_batch_rows),
+            resource.busy_timeout_ms.or(source.busy_timeout_ms),
+            resource.cache_kib.or(source.cache_kib),
+            resource.mmap_bytes.or(source.mmap_bytes),
         )?;
         let stable_key = resource.stable_key.map(SqliteIdentifier::new).transpose()?;
         let mut temporal_encodings = resource.temporal_encodings;
@@ -249,8 +255,6 @@ impl SourceDriver for SqliteSourceDriver {
                     "input": input.redacted_evidence(),
                     "stable_key": stable_key.as_ref().map(SqliteIdentifier::as_str),
                     "temporal_encodings": temporal_encodings,
-                    "discovery_records": options.discovery_records,
-                    "discovery_bytes": options.discovery_bytes,
                     "output_batch_rows": options.output_batch_rows,
                     "busy_timeout_ms": options.busy_timeout_ms,
                     "cache_kib": options.cache_kib,
@@ -374,14 +378,12 @@ impl SourceAddPlanner for SqliteSourceDriver {
         if !request.location.starts_with("sqlite://") {
             return Ok(None);
         }
-        const KEYS: [&str; 11] = [
+        const KEYS: [&str; 9] = [
             "table",
             "query",
             "cursor",
             "stable_key",
             "cursor_encoding",
-            "discovery_records",
-            "discovery_bytes",
             "output_batch_rows",
             "busy_timeout_ms",
             "cache_kib",
@@ -419,15 +421,11 @@ impl SourceAddPlanner for SqliteSourceDriver {
             .map(|value| serde_json::from_value::<SqliteTemporalEncoding>(serde_json::Value::String(value.clone()))
                 .map_err(|_| CdfError::contract("SQLite cursor_encoding must be iso8601_text, unix_seconds, unix_milliseconds, unix_microseconds, or unix_nanoseconds")))
             .transpose()?;
-        let discovery_records = parse_add_u64(&request.options, "discovery_records")?;
-        let discovery_bytes = parse_add_u64(&request.options, "discovery_bytes")?;
         let output_batch_rows = parse_add_u64(&request.options, "output_batch_rows")?;
         let busy_timeout_ms = parse_add_u64(&request.options, "busy_timeout_ms")?;
         let cache_kib = parse_add_u64(&request.options, "cache_kib")?;
         let mmap_bytes = parse_add_u64(&request.options, "mmap_bytes")?;
         SqliteNativeOptions::from_authored(
-            discovery_records,
-            discovery_bytes,
             output_batch_rows,
             busy_timeout_ms,
             cache_kib,
@@ -458,8 +456,6 @@ impl SourceAddPlanner for SqliteSourceDriver {
             );
         }
         for (name, value) in [
-            ("discovery_records", discovery_records),
-            ("discovery_bytes", discovery_bytes),
             ("output_batch_rows", output_batch_rows),
             ("busy_timeout_ms", busy_timeout_ms),
             ("cache_kib", cache_kib),
@@ -560,12 +556,9 @@ impl SourceDiscoverySession for SqliteDiscoverySession {
                         ("sample_complete".to_owned(), discovery.complete.to_string()),
                         (
                             "sample_record_limit".to_owned(),
-                            maximum_records.min(options.discovery_records).to_string(),
+                            maximum_records.to_string(),
                         ),
-                        (
-                            "sample_byte_limit".to_owned(),
-                            maximum_bytes.min(options.discovery_bytes).to_string(),
-                        ),
+                        ("sample_byte_limit".to_owned(), maximum_bytes.to_string()),
                     ]);
                     Ok((
                         discovery.schema,
@@ -590,6 +583,14 @@ struct SqliteSourceOptions {
     location: String,
     #[serde(default)]
     dialect: Option<String>,
+    #[serde(default)]
+    output_batch_rows: Option<u64>,
+    #[serde(default)]
+    busy_timeout_ms: Option<u64>,
+    #[serde(default)]
+    cache_kib: Option<u64>,
+    #[serde(default)]
+    mmap_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -603,10 +604,6 @@ struct SqliteResourceOptions {
     stable_key: Option<String>,
     #[serde(default)]
     temporal_encodings: BTreeMap<String, SqliteTemporalEncoding>,
-    #[serde(default)]
-    discovery_records: Option<u64>,
-    #[serde(default)]
-    discovery_bytes: Option<u64>,
     #[serde(default)]
     output_batch_rows: Option<u64>,
     #[serde(default)]
@@ -925,8 +922,18 @@ mod tests {
     #[test]
     fn compiles_native_query_and_identity_bearing_controls_without_literal_evidence() {
         let query = "SELECT id FROM private_events WHERE tenant = 'private-value'";
-        let plan = SqliteSourceDriver::new()
-            .unwrap()
+        let driver = SqliteSourceDriver::new().unwrap();
+        let source_options = BTreeMap::from([
+            (
+                "location".to_owned(),
+                serde_json::json!("sqlite://fixtures/events.sqlite"),
+            ),
+            ("output_batch_rows".to_owned(), serde_json::json!(4_096)),
+            ("busy_timeout_ms".to_owned(), serde_json::json!(2_500)),
+            ("cache_kib".to_owned(), serde_json::json!(32_768)),
+            ("mmap_bytes".to_owned(), serde_json::json!(134_217_728)),
+        ]);
+        let source_default_plan = driver
             .compile(SourceCompileRequest {
                 source_kind: "sqlite".to_owned(),
                 context: cdf_runtime::SourceCompileContext {
@@ -934,14 +941,40 @@ mod tests {
                     project_root: None,
                     cursor_pushdown: None,
                 },
-                source_options: BTreeMap::from([(
-                    "location".to_owned(),
-                    serde_json::json!("sqlite://fixtures/events.sqlite"),
-                )]),
+                source_options: source_options.clone(),
+                resource_options: BTreeMap::from([("query".to_owned(), serde_json::json!(query))]),
+                descriptor: descriptor(),
+                schema: Schema::new(vec![Field::new("id", DataType::Int64, true)]),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(source_default_plan.driver.driver_version, "4.0.0");
+        assert_eq!(
+            source_default_plan.redacted_options["output_batch_rows"],
+            4_096
+        );
+        assert_eq!(
+            source_default_plan.redacted_options["busy_timeout_ms"],
+            2_500
+        );
+        assert_eq!(source_default_plan.redacted_options["cache_kib"], 32_768);
+        assert_eq!(
+            source_default_plan.redacted_options["mmap_bytes"],
+            134_217_728
+        );
+        let plan = driver
+            .compile(SourceCompileRequest {
+                source_kind: "sqlite".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "local".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options,
                 resource_options: BTreeMap::from([
                     ("query".to_owned(), serde_json::json!(query)),
-                    ("discovery_records".to_owned(), serde_json::json!(250)),
-                    ("discovery_bytes".to_owned(), serde_json::json!(1_048_576)),
                     ("output_batch_rows".to_owned(), serde_json::json!(8_192)),
                     ("busy_timeout_ms".to_owned(), serde_json::json!(5_000)),
                     ("cache_kib".to_owned(), serde_json::json!(65_536)),
@@ -959,8 +992,10 @@ mod tests {
         assert!(!evidence.contains("private-value"));
         assert_eq!(plan.redacted_options["output_batch_rows"], 8_192);
         let physical = decode_physical_plan(&plan).unwrap();
-        assert_eq!(physical.options.discovery_records, 250);
         assert_eq!(physical.options.output_batch_rows, 8_192);
+        assert_eq!(physical.options.busy_timeout_ms, Some(5_000));
+        assert_eq!(physical.options.cache_kib, Some(65_536));
+        assert_eq!(physical.options.mmap_bytes, Some(268_435_456));
         let SqliteSourceInput::Query { sql, .. } = physical.input else {
             panic!("compiled input must remain a native query");
         };
@@ -985,8 +1020,6 @@ mod tests {
                 current_dir: project.path().to_owned(),
                 options: BTreeMap::from([
                     ("query".to_owned(), query.to_owned()),
-                    ("discovery_records".to_owned(), "250".to_owned()),
-                    ("discovery_bytes".to_owned(), "1048576".to_owned()),
                     ("output_batch_rows".to_owned(), "8192".to_owned()),
                     ("busy_timeout_ms".to_owned(), "5000".to_owned()),
                     ("cache_kib".to_owned(), "65536".to_owned()),
@@ -1003,14 +1036,42 @@ mod tests {
             "sqlite://events.sqlite"
         );
         assert_eq!(proposal.resource_options["query"], query);
-        assert_eq!(proposal.resource_options["discovery_records"], 250);
-        assert_eq!(proposal.resource_options["discovery_bytes"], 1_048_576);
         assert_eq!(proposal.resource_options["output_batch_rows"], 8_192);
         assert_eq!(proposal.resource_options["busy_timeout_ms"], 5_000);
         assert_eq!(proposal.resource_options["cache_kib"], 65_536);
         assert_eq!(proposal.resource_options["mmap_bytes"], 268_435_456);
         assert!(proposal.display_selection.starts_with("query:sha256:"));
         assert!(!proposal.display_selection.contains("private-value"));
+    }
+
+    #[test]
+    fn sql_resources_reject_authored_discovery_sampling_bounds() {
+        let error = SqliteSourceDriver::new()
+            .unwrap()
+            .compile(SourceCompileRequest {
+                source_kind: "sqlite".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "local".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options: BTreeMap::from([(
+                    "location".to_owned(),
+                    serde_json::json!("sqlite://fixtures/events.sqlite"),
+                )]),
+                resource_options: BTreeMap::from([
+                    ("table".to_owned(), serde_json::json!("events")),
+                    ("discovery_records".to_owned(), serde_json::json!(250)),
+                ]),
+                descriptor: descriptor(),
+                schema: Schema::new(vec![Field::new("id", DataType::Int64, true)]),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("discovery_records"));
     }
 
     #[test]

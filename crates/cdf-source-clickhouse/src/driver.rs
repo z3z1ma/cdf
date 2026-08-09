@@ -65,14 +65,17 @@ impl ClickHouseSourceDriver {
                 "required": ["table"],
                 "properties": {
                     "table": {"type": "string", "minLength": 1},
-                    "stable_key": {"type": "string", "minLength": 1}
+                    "stable_key": {"type": "string", "minLength": 1},
+                    "max_threads": {"type": "integer", "minimum": 1, "maximum": 256},
+                    "max_block_rows": {"type": "integer", "minimum": 1, "maximum": 1000000},
+                    "stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 64}
                 }
             }
         });
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("clickhouse")?,
-                driver_version: "1.0.0".to_owned(),
+                driver_version: "2.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec!["clickhouse".to_owned()],
                 schemes: vec!["clickhouse".to_owned(), "clickhouses".to_owned()],
@@ -174,6 +177,7 @@ impl SourceDriver for ClickHouseSourceDriver {
                 "ClickHouse source dialect must be `clickhouse` when declared",
             ));
         }
+        source.validate_operational_defaults()?;
         let endpoint = normalize_endpoint(&source.endpoint)?;
         let database = ClickHouseIdentifier::new(source.database)?;
         let table = ClickHouseIdentifier::new(resource.table)?;
@@ -190,9 +194,11 @@ impl SourceDriver for ClickHouseSourceDriver {
             stable_key: stable_key.clone(),
             username: username.map(|value| value.as_str().to_owned()),
             password: password.map(|value| value.as_str().to_owned()),
-            max_threads: source.max_threads,
-            max_block_rows: source.max_block_rows,
-            stream_buffer_batches: source.stream_buffer_batches,
+            max_threads: resource.max_threads.unwrap_or(source.max_threads),
+            max_block_rows: resource.max_block_rows.unwrap_or(source.max_block_rows),
+            stream_buffer_batches: resource
+                .stream_buffer_batches
+                .unwrap_or(source.stream_buffer_batches),
         };
         physical.validate()?;
         validate_compile_shape(
@@ -480,12 +486,45 @@ struct ClickHouseSourceOptions {
     stream_buffer_batches: usize,
 }
 
+impl ClickHouseSourceOptions {
+    fn validate_operational_defaults(&self) -> Result<()> {
+        validate_source_default("max_threads", self.max_threads, 1, 256)?;
+        validate_source_default("max_block_rows", self.max_block_rows, 1, 1_000_000)?;
+        validate_source_default(
+            "stream_buffer_batches",
+            u64::try_from(self.stream_buffer_batches).map_err(|_| {
+                CdfError::contract(
+                    "ClickHouse source stream_buffer_batches exceeds platform bounds",
+                )
+            })?,
+            1,
+            64,
+        )?;
+        Ok(())
+    }
+}
+
+fn validate_source_default(name: &str, value: u64, minimum: u64, maximum: u64) -> Result<()> {
+    if !(minimum..=maximum).contains(&value) {
+        return Err(CdfError::contract(format!(
+            "ClickHouse source {name} must be in {minimum}..={maximum}",
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClickHouseResourceOptions {
     table: String,
     #[serde(default)]
     stable_key: Option<String>,
+    #[serde(default)]
+    max_threads: Option<u64>,
+    #[serde(default)]
+    max_block_rows: Option<u64>,
+    #[serde(default)]
+    stream_buffer_batches: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

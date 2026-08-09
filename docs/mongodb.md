@@ -18,6 +18,14 @@ database = "analytics"
 username = "secret://env/MONGODB_USER"
 password = "secret://env/MONGODB_PASSWORD"
 auth_source = "admin"
+schema_depth = 1
+discovery_records = 1000
+discovery_bytes = 16777216
+cursor_batch_rows = 8192
+output_batch_rows = 65536
+max_time_ms = 300000
+read_concern = "majority"
+read_preference = '{"mode":"secondaryPreferred"}'
 ```
 
 Atlas IAM authentication uses the same credential-free endpoint boundary. Keep the access key,
@@ -56,8 +64,7 @@ Compilation and portable-plan validation do not contact MongoDB. Schema discover
 1,000 documents and 16 MiB by default, records those limits, and caches the resulting physical
 observation. A sample is evidence about the sampled documents, not a claim that an unvalidated
 schemaless collection is globally uniform. Execution applies the active state-backed schema and
-compiled drift policy to every later document. `schema_depth` is resource-scoped, accepts `1..=32`,
-and defaults to `1`; omit it for the default behavior.
+compiled drift policy to every later document. `schema_depth` accepts `1..=32` and defaults to `1`.
 
 ## Native filters and aggregations
 
@@ -104,7 +111,11 @@ FROM upstream(
 locally, but portable plan export fails until every referenced collection can be independently
 attested.
 
-These resource-level controls apply identically to discovery and execution:
+Schema/discovery budgets, cursor/output batching, operation timeout, read concern, and read
+preference may be source defaults or resource overrides. Resolution is built-in default, then
+source default, then explicit resource override. `allow_disk_use`, `hint`, `collation`, `let`, and
+`comment` remain resource-only because they define one operation rather than shared connection
+policy. Resolved controls apply identically to discovery and execution:
 
 | Option | Default | Purpose |
 | --- | ---: | --- |

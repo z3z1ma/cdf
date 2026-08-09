@@ -130,6 +130,9 @@ fn compile_is_contact_free_redacted_and_io_owned() {
                     "password".to_owned(),
                     serde_json::json!("secret://env/CLICKHOUSE_PASSWORD"),
                 ),
+                ("max_threads".to_owned(), serde_json::json!(2)),
+                ("max_block_rows".to_owned(), serde_json::json!(4_096)),
+                ("stream_buffer_batches".to_owned(), serde_json::json!(2)),
             ]),
             resource_options: BTreeMap::from([
                 ("table".to_owned(), serde_json::json!("events")),
@@ -144,6 +147,10 @@ fn compile_is_contact_free_redacted_and_io_owned() {
         .unwrap();
 
     assert_eq!(plan.driver.driver_id.as_str(), "clickhouse");
+    assert_eq!(plan.driver.driver_version, "2.0.0");
+    assert_eq!(plan.redacted_options["max_threads"], 2);
+    assert_eq!(plan.redacted_options["max_block_rows"], 4_096);
+    assert_eq!(plan.redacted_options["stream_buffer_batches"], 2);
     assert_eq!(
         plan.execution_capabilities.executor_class,
         SourceExecutorClass::Io
@@ -169,6 +176,46 @@ fn compile_is_contact_free_redacted_and_io_owned() {
     };
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
     assert!(error.message.contains("catalog-backed physical schema"));
+}
+
+#[test]
+fn resource_controls_override_clickhouse_source_defaults() {
+    let plan = ClickHouseSourceDriver::new()
+        .unwrap()
+        .compile(SourceCompileRequest {
+            source_kind: "clickhouse".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("clickhouse://warehouse.example:8123"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+                ("max_threads".to_owned(), serde_json::json!(2)),
+                ("max_block_rows".to_owned(), serde_json::json!(4_096)),
+                ("stream_buffer_batches".to_owned(), serde_json::json!(2)),
+            ]),
+            resource_options: BTreeMap::from([
+                ("table".to_owned(), serde_json::json!("events")),
+                ("max_threads".to_owned(), serde_json::json!(3)),
+                ("max_block_rows".to_owned(), serde_json::json!(8_192)),
+                ("stream_buffer_batches".to_owned(), serde_json::json!(4)),
+            ]),
+            descriptor: descriptor(false),
+            schema: schema(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(plan.redacted_options["max_threads"], 3);
+    assert_eq!(plan.redacted_options["max_block_rows"], 8_192);
+    assert_eq!(plan.redacted_options["stream_buffer_batches"], 4);
 }
 
 #[test]

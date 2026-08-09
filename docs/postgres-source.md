@@ -3,6 +3,19 @@
 CDF reads PostgreSQL through one binary `COPY (SELECT ...) TO STDOUT` stream. A resource chooses
 exactly one native input: a table or a read query.
 
+Reusable transaction and output policy belongs on the configured source:
+
+```toml
+[sources.warehouse]
+type = "postgres"
+connection = "secret://env/WAREHOUSE_URL"
+isolation = "repeatable_read"
+statement_timeout_ms = 300000
+lock_timeout_ms = 5000
+output_batch_rows = 65536
+search_path = ["analytics", "public"]
+```
+
 ```sql
 -- Table input
 FROM upstream(source => 'warehouse', table => 'public.orders')
@@ -32,7 +45,8 @@ operations, lateral references, and read functions. CDF rejects multiple stateme
 prepares and executes the query in a server-enforced read-only transaction. The configured
 PostgreSQL role remains the authority for function permissions and external effects.
 
-The resource-level controls are:
+Each control may be a source default or a resource override. Resolution is built-in default, then
+source default, then explicit resource override:
 
 - `isolation`: `read_committed`, `repeatable_read` (default), or `serializable`.
 - `statement_timeout_ms` and `lock_timeout_ms`: optional values from 1 through 3,600,000,

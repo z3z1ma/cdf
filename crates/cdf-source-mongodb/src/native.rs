@@ -356,7 +356,7 @@ impl MongoDbNativeExtraction {
             && !(1..=3_600_000).contains(&max_time_ms)
         {
             return Err(CdfError::contract(
-                "MongoDB resource max_time_ms must be in 1..=3600000",
+                "MongoDB max_time_ms must be in 1..=3600000",
             ));
         }
         if let Some(comment) = options.comment.as_ref()
@@ -725,7 +725,7 @@ fn parse_read_concern(value: &str) -> Result<ReadConcern> {
         "local" | "majority" | "linearizable" | "available" | "snapshot"
     ) {
         return Err(CdfError::contract(
-            "MongoDB resource read_concern must be local, majority, linearizable, available, or snapshot",
+            "MongoDB read_concern must be local, majority, linearizable, available, or snapshot",
         ));
     }
     Ok(ReadConcern::custom(value))
@@ -735,7 +735,7 @@ fn parse_read_preference(value: &str) -> Result<ReadPreference> {
     let value = parse_ordered_json("read_preference", value)?;
     let OrderedJson::Object(fields) = &value else {
         return Err(CdfError::contract(
-            "MongoDB resource read_preference must be an Extended JSON document",
+            "MongoDB read_preference must be an Extended JSON document",
         ));
     };
     reject_unknown_fields(
@@ -745,7 +745,7 @@ fn parse_read_preference(value: &str) -> Result<ReadPreference> {
     )?;
     let preference: ReadPreference = serde_json::from_value(value.into_json()).map_err(|_| {
         CdfError::contract(
-            "MongoDB resource read_preference is not a valid MongoDB read-preference document",
+            "MongoDB read_preference is not a valid MongoDB read-preference document",
         )
     })?;
     validate_read_preference_options(&preference)?;

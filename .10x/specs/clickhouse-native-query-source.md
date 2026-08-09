@@ -1,13 +1,13 @@
 Status: active
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # ClickHouse native query source
 
 ## Purpose and authority
 
 This specification extends `.10x/specs/clickhouse-table-source.md` with native read queries and
-resource-scoped ClickHouse settings. It supersedes that specification's arbitrary-SQL exclusion.
+inheritable ClickHouse settings. It supersedes that specification's arbitrary-SQL exclusion.
 Official ArrowStream transport, type fidelity, response/IPC limits, query-instance consistency,
 errors, cancellation, and roofline requirements remain authoritative.
 
@@ -19,7 +19,8 @@ server-native read expressions permitted by the configured role. It MUST be one 
 rejects DDL, DML, `INSERT ... SELECT`, `INTO OUTFILE`, session control, and known mutation forms,
 and every request applies ClickHouse `readonly = 2` as server-enforced defense in depth.
 
-Resource controls are:
+These controls MAY be configured as source defaults and MAY be overridden by a resource.
+Resolution order is built-in default, then source default, then explicit resource override:
 
 | Option | Contract |
 | --- | --- |

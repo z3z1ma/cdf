@@ -367,8 +367,8 @@ impl ResourceStream for SqliteSourceResource {
                         &descriptor.resource_id,
                         &input,
                         &options,
-                        options.discovery_records,
-                        options.discovery_bytes,
+                        crate::native::SQLITE_DEFAULT_DISCOVERY_RECORDS,
+                        crate::native::SQLITE_DEFAULT_DISCOVERY_BYTES,
                     )?
                     .schema
                 }

@@ -2,8 +2,8 @@
   "sources": [
     {
       "id": "clickhouse",
-      "descriptor_sha256": "sha256:a646652d758ac6308572d06ae31868884a0e329bc9ccfe286c8a636776dede38",
-      "option_schema_sha256": "sha256:7f208f34e09679d97b65c837753210355cecc6254f5de619fb0e29217d58f5ba"
+      "descriptor_sha256": "sha256:d84240602795af7d589ad62e68a611c1d70362af7d05bb59e10fbcf98520e595",
+      "option_schema_sha256": "sha256:00da0331974f27d6afd850dd4b3b8fe2c9a468233a845a29ddb6ec01c23b3fd0"
     },
     {
       "id": "files",
@@ -22,13 +22,13 @@
     },
     {
       "id": "mongodb",
-      "descriptor_sha256": "sha256:ff1c06acffa77d23bb318e0220ea9730cc1c71050dacfda784bb790c84ceafe5",
-      "option_schema_sha256": "sha256:f08c639b735b5381f86b4ff2d456a2c3650094d4e9f1b7b1b98c944ebe7a375b"
+      "descriptor_sha256": "sha256:f24dcb8fe5f2435aaea25aed4d37b590f3f02f671e77bcc682b3417e8ffb41dd",
+      "option_schema_sha256": "sha256:224c484429eb18146f5e86674c7b37ffbf3895e56d6fffecd32ebd53712c6e69"
     },
     {
       "id": "postgres",
-      "descriptor_sha256": "sha256:370560dec63454c09dfe423fb3d004f3b9e08fdffdc15e49f3f6c6493135fdf7",
-      "option_schema_sha256": "sha256:21dd0736f03183266df460010adff85da59bd79319f2961b6361587b18bd4542"
+      "descriptor_sha256": "sha256:d8b79c169b36c2ec234cd14fa2546ac8522d08b526bdbe480fd57965f80e8c90",
+      "option_schema_sha256": "sha256:a1d5b13bcc2567a27c8ea2479773d6e454048cceef0860394748ad97fbdca9e2"
     },
     {
       "id": "python",
@@ -42,8 +42,8 @@
     },
     {
       "id": "sqlite",
-      "descriptor_sha256": "sha256:149e7e861f160e9e83d4164dad90a6625d86d807435d13aa2a0b239341688af9",
-      "option_schema_sha256": "sha256:b7e6e5bccf316e4146d60e66bb2c29893acddde6cd8344bfe89604d7279eba01"
+      "descriptor_sha256": "sha256:f4eee5c844c00648986e3750cd1f1cb1ab829f097e83e05895a14d90e7e52dea",
+      "option_schema_sha256": "sha256:41e808c1866db003758eb5281bf821512f69c685f6b387951253566df7c9040e"
     }
   ],
   "formats": [

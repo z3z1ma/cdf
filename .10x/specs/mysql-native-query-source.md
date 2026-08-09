@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # MySQL finite native query source
 
@@ -24,7 +24,8 @@ expressions permitted by the configured role. It MUST be one statement. CDF reje
 `INTO OUTFILE`/`DUMPFILE`, `LOAD`, `CALL`, transaction/session control, and multiple statements;
 execution also uses a read-only transaction and a source account without write authority.
 
-Resource controls are:
+These controls MAY be configured as source defaults and MAY be overridden by a resource.
+Resolution order is built-in default, then source default, then explicit resource override:
 
 | Option | Contract |
 | --- | --- |
@@ -35,9 +36,9 @@ Resource controls are:
 | `lock_wait_timeout_ms` | optional `1..=3600000`, transaction-local |
 | `use_invisible_indexes` | boolean, default `false`, transaction-local |
 
-Source configuration owns TLS, authentication, pool limits, shared in-flight work, and default
-database. Resource controls are canonical compiled inputs and receive no ambient environment
-override.
+Source configuration additionally owns TLS, authentication, pool limits, shared in-flight work,
+and default database. Resolved controls are canonical compiled inputs and receive no ambient
+environment override.
 
 ## Discovery, types, and execution
 

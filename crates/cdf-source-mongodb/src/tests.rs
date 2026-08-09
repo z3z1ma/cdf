@@ -236,7 +236,49 @@ fn compile_keeps_measured_defaults_and_binds_resource_tuning_controls() {
             serde_json::json!("mongodb://warehouse.example:27017"),
         ),
         ("database".to_owned(), serde_json::json!("analytics")),
+        ("schema_depth".to_owned(), serde_json::json!(2)),
+        ("discovery_records".to_owned(), serde_json::json!(1_500)),
+        ("discovery_bytes".to_owned(), serde_json::json!(4_194_304)),
+        ("cursor_batch_rows".to_owned(), serde_json::json!(2_048)),
+        ("output_batch_rows".to_owned(), serde_json::json!(16_384)),
+        ("max_time_ms".to_owned(), serde_json::json!(15_000)),
+        ("read_concern".to_owned(), serde_json::json!("local")),
+        (
+            "read_preference".to_owned(),
+            serde_json::json!(r#"{"mode":"primary"}"#),
+        ),
     ]);
+    let source_default_plan = driver
+        .compile(request(
+            source_options.clone(),
+            BTreeMap::from([("collection".to_owned(), serde_json::json!("events"))]),
+        ))
+        .unwrap();
+    assert_eq!(source_default_plan.redacted_options["schema_depth"], 2);
+    assert_eq!(
+        source_default_plan.redacted_options["cursor_batch_rows"],
+        2_048
+    );
+    assert_eq!(
+        source_default_plan.redacted_options["output_batch_rows"],
+        16_384
+    );
+    assert_eq!(
+        source_default_plan.redacted_options["discovery_records"],
+        1_500
+    );
+    assert_eq!(
+        source_default_plan.redacted_options["native"]["max_time_ms"],
+        15_000
+    );
+    assert_eq!(
+        source_default_plan.redacted_options["native"]["read_concern"],
+        true
+    );
+    assert_eq!(
+        source_default_plan.redacted_options["native"]["read_preference"],
+        true
+    );
     let plan = driver
         .compile(request(
             source_options.clone(),
@@ -246,17 +288,26 @@ fn compile_keeps_measured_defaults_and_binds_resource_tuning_controls() {
                 ("discovery_bytes".to_owned(), serde_json::json!(8_388_608)),
                 ("cursor_batch_rows".to_owned(), serde_json::json!(4_096)),
                 ("output_batch_rows".to_owned(), serde_json::json!(32_768)),
+                ("schema_depth".to_owned(), serde_json::json!(3)),
+                ("max_time_ms".to_owned(), serde_json::json!(30_000)),
+                ("read_concern".to_owned(), serde_json::json!("majority")),
+                (
+                    "read_preference".to_owned(),
+                    serde_json::json!(r#"{"mode":"secondaryPreferred"}"#),
+                ),
             ]),
         ))
         .unwrap();
 
-    assert_eq!(plan.driver.driver_version, "2.0.0");
+    assert_eq!(plan.driver.driver_version, "3.0.0");
+    assert_eq!(plan.redacted_options["schema_depth"], 3);
     assert_eq!(plan.redacted_options["cursor_batch_rows"], 4_096);
     assert_eq!(plan.redacted_options["output_batch_rows"], 32_768);
     assert_eq!(plan.redacted_options["discovery_records"], 2_500);
     assert_eq!(plan.redacted_options["discovery_bytes"], 8_388_608);
     assert_eq!(plan.physical_plan["cursor_batch_rows"], 4_096);
     assert_eq!(plan.physical_plan["output_batch_rows"], 32_768);
+    assert_eq!(plan.redacted_options["native"]["max_time_ms"], 30_000);
 
     let mut legacy_source = source_options;
     legacy_source.insert("batch_rows".to_owned(), serde_json::json!(1_000));

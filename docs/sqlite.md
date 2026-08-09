@@ -13,6 +13,10 @@ Keep the database below the project root so compiled plans remain portable:
 [source.local]
 kind = "sqlite"
 location = "sqlite://data/events.sqlite"
+output_batch_rows = 32768
+busy_timeout_ms = 5000
+cache_kib = 65536
+mmap_bytes = 268435456
 
 [resource.events]
 table = "events"
@@ -49,6 +53,10 @@ tables, or another read expression:
 [source.local]
 kind = "sqlite"
 location = "sqlite://data/events.sqlite"
+output_batch_rows = 32768
+busy_timeout_ms = 5000
+cache_kib = 65536
+mmap_bytes = 268435456
 
 [resource.enriched_events]
 query = """
@@ -61,12 +69,6 @@ WITH ranked AS (
 )
 SELECT id, category, value, ordinal FROM ranked
 """
-discovery_records = 1000
-discovery_bytes = 16777216
-output_batch_rows = 32768
-busy_timeout_ms = 5000
-cache_kib = 65536
-mmap_bytes = 268435456
 write_disposition = "replace"
 trust = "governed"
 schema = { fields = [
@@ -91,21 +93,22 @@ cdf add local.enriched_events sqlite://data/events.sqlite \
   --option busy_timeout_ms=5000
 ```
 
-The controls are resource-scoped and identity-bearing:
+The operational controls may be source defaults or resource overrides. Resolution is built-in
+default, then source default, then resource override; the resolved values are identity-bearing:
 
 | Option | Range and default | Purpose |
 | --- | --- | --- |
-| `discovery_records` | `1..=100000`; `1000` | Maximum rows sampled to infer dynamic query expressions |
-| `discovery_bytes` | `1024..=67108864`; `16777216` | Maximum sampled value bytes |
 | `output_batch_rows` | `1..=100000`; `32768` | Arrow row target; the default is the measured roofline setting |
 | `busy_timeout_ms` | optional `1..=3600000` | Connection-local busy wait |
 | `cache_kib` | optional `64..=1048576` | Connection-local SQLite cache budget |
 | `mmap_bytes` | optional `0..=1073741824` | Connection-local SQLite mmap ceiling |
 
-The cache, mmap, and busy settings do not mutate persistent database pragmas. Query discovery is
-necessarily bounded: it combines prepared output metadata with the observed runtime storage
-classes and reports its actual row/byte limits. Mixed incompatible classes or columns whose type
-cannot be established fail discovery instead of inventing a lossy schema.
+The cache, mmap, and busy settings do not mutate persistent database pragmas. Table discovery uses
+catalog metadata and never samples rows. Query discovery uses prepared output metadata. Only an
+SQLite expression without a declared result type may require observing runtime storage classes;
+that observation uses the `cdf discover` request's own row/byte budget rather than an authored SQL
+source or resource option. Mixed incompatible classes or columns whose type cannot be established
+fail discovery instead of inventing a lossy schema.
 
 ## Configure a cursor source
 

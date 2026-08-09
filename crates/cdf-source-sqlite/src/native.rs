@@ -142,8 +142,6 @@ impl SqliteSourceInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SqliteNativeOptions {
-    pub(crate) discovery_records: u64,
-    pub(crate) discovery_bytes: u64,
     pub(crate) output_batch_rows: usize,
     pub(crate) busy_timeout_ms: Option<u64>,
     pub(crate) cache_kib: Option<u64>,
@@ -153,8 +151,6 @@ pub(crate) struct SqliteNativeOptions {
 impl Default for SqliteNativeOptions {
     fn default() -> Self {
         Self {
-            discovery_records: SQLITE_DEFAULT_DISCOVERY_RECORDS,
-            discovery_bytes: SQLITE_DEFAULT_DISCOVERY_BYTES,
             output_batch_rows: SQLITE_DEFAULT_OUTPUT_BATCH_ROWS,
             busy_timeout_ms: None,
             cache_kib: None,
@@ -165,8 +161,6 @@ impl Default for SqliteNativeOptions {
 
 impl SqliteNativeOptions {
     pub(crate) fn from_authored(
-        discovery_records: Option<u64>,
-        discovery_bytes: Option<u64>,
         output_batch_rows: Option<u64>,
         busy_timeout_ms: Option<u64>,
         cache_kib: Option<u64>,
@@ -177,8 +171,6 @@ impl SqliteNativeOptions {
         )
         .map_err(|_| CdfError::contract("SQLite output_batch_rows exceeds platform bounds"))?;
         let options = Self {
-            discovery_records: discovery_records.unwrap_or(SQLITE_DEFAULT_DISCOVERY_RECORDS),
-            discovery_bytes: discovery_bytes.unwrap_or(SQLITE_DEFAULT_DISCOVERY_BYTES),
             output_batch_rows,
             busy_timeout_ms,
             cache_kib,
@@ -189,13 +181,6 @@ impl SqliteNativeOptions {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        validate_range("discovery_records", self.discovery_records, 1, 100_000)?;
-        validate_range(
-            "discovery_bytes",
-            self.discovery_bytes,
-            1_024,
-            64 * 1024 * 1024,
-        )?;
         let output_batch_rows = u64::try_from(self.output_batch_rows)
             .map_err(|_| CdfError::contract("SQLite output_batch_rows exceeds u64 bounds"))?;
         validate_range("output_batch_rows", output_batch_rows, 1, 100_000)?;
@@ -275,8 +260,8 @@ pub(crate) fn discover_sqlite_query(
             "SQLite query discovery received a table input",
         ));
     };
-    let record_limit = maximum_records.min(options.discovery_records);
-    let byte_limit = maximum_bytes.min(options.discovery_bytes);
+    let record_limit = maximum_records;
+    let byte_limit = maximum_bytes;
     let mut connection = options.open_read_only(
         database_path,
         "open SQLite native query for schema discovery",
@@ -718,16 +703,10 @@ mod tests {
 
     #[test]
     fn controls_preserve_measured_defaults_and_enforce_bounds() {
-        let defaults =
-            SqliteNativeOptions::from_authored(None, None, None, None, None, None).unwrap();
-        assert_eq!(defaults.discovery_records, 1_000);
-        assert_eq!(defaults.discovery_bytes, 16 * 1024 * 1024);
+        let defaults = SqliteNativeOptions::from_authored(None, None, None, None).unwrap();
         assert_eq!(defaults.output_batch_rows, 32 * 1024);
-        assert!(SqliteNativeOptions::from_authored(None, None, Some(0), None, None, None).is_err());
-        assert!(
-            SqliteNativeOptions::from_authored(None, None, None, None, Some(1_048_577), None)
-                .is_err()
-        );
+        assert!(SqliteNativeOptions::from_authored(Some(0), None, None, None).is_err());
+        assert!(SqliteNativeOptions::from_authored(None, None, Some(1_048_577), None).is_err());
     }
 
     #[test]

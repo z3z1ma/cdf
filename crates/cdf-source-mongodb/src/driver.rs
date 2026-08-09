@@ -63,7 +63,15 @@ impl MongoDbSourceDriver {
                     "auth_mechanism": {"type": "string", "enum": ["MONGODB-AWS"]},
                     "aws_session_token": {"type": "string", "pattern": "^secret://"},
                     "max_pool_size": {"type": "integer", "minimum": 1, "maximum": 8, "default": DEFAULT_MAX_POOL_SIZE},
-                    "stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 16, "default": DEFAULT_STREAM_BUFFER_BATCHES}
+                    "stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 16, "default": DEFAULT_STREAM_BUFFER_BATCHES},
+                    "schema_depth": {"type": "integer", "minimum": 1, "maximum": MAXIMUM_SCHEMA_DEPTH, "default": DEFAULT_SCHEMA_DEPTH},
+                    "discovery_records": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_DISCOVERY_RECORDS},
+                    "discovery_bytes": {"type": "integer", "minimum": 1024, "maximum": 67108864, "default": DEFAULT_DISCOVERY_BYTES},
+                    "cursor_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_CURSOR_BATCH_ROWS},
+                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_OUTPUT_BATCH_ROWS},
+                    "max_time_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+                    "read_concern": {"type": "string", "enum": ["local", "majority", "linearizable", "available", "snapshot"]},
+                    "read_preference": {"type": "string", "minLength": 2}
                 }
             },
             "resource": {
@@ -72,11 +80,11 @@ impl MongoDbSourceDriver {
                 "required": ["collection"],
                 "properties": {
                     "collection": {"type": "string", "minLength": 1},
-                    "schema_depth": {"type": "integer", "minimum": 1, "maximum": MAXIMUM_SCHEMA_DEPTH, "default": DEFAULT_SCHEMA_DEPTH},
-                    "discovery_records": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_DISCOVERY_RECORDS},
-                    "discovery_bytes": {"type": "integer", "minimum": 1024, "maximum": 67108864, "default": DEFAULT_DISCOVERY_BYTES},
-                    "cursor_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_CURSOR_BATCH_ROWS},
-                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": DEFAULT_OUTPUT_BATCH_ROWS},
+                    "schema_depth": {"type": "integer", "minimum": 1, "maximum": MAXIMUM_SCHEMA_DEPTH},
+                    "discovery_records": {"type": "integer", "minimum": 1, "maximum": 100000},
+                    "discovery_bytes": {"type": "integer", "minimum": 1024, "maximum": 67108864},
+                    "cursor_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000},
+                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000},
                     "filter": {"type": "string", "minLength": 2},
                     "pipeline": {"type": "string", "minLength": 2},
                     "max_time_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
@@ -93,7 +101,7 @@ impl MongoDbSourceDriver {
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("mongodb")?,
-                driver_version: "2.0.0".to_owned(),
+                driver_version: "3.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec!["mongodb".to_owned()],
                 schemes: vec!["mongodb".to_owned(), "mongodb+srv".to_owned()],
@@ -187,6 +195,7 @@ impl SourceDriver for MongoDbSourceDriver {
             decode_options("MongoDB source", request.source_options)?;
         let resource: MongoDbResourceOptions =
             decode_options("MongoDB resource", request.resource_options)?;
+        source.validate_operational_defaults()?;
         let endpoint = normalize_endpoint(&source.endpoint)?;
         let database = MongoDbIdentifier::new(source.database)?;
         let collection = MongoDbIdentifier::new(resource.collection)?;
@@ -194,7 +203,11 @@ impl SourceDriver for MongoDbSourceDriver {
         let password = source.password.map(SecretUri::new).transpose()?;
         let auth_source = source.auth_source.map(MongoDbIdentifier::new).transpose()?;
         let aws_session_token = source.aws_session_token.map(SecretUri::new).transpose()?;
-        let native = MongoDbNativeExtraction::compile(resource.native)?;
+        let mut native_options = resource.native;
+        native_options.max_time_ms = native_options.max_time_ms.or(source.max_time_ms);
+        native_options.read_concern = native_options.read_concern.or(source.read_concern);
+        native_options.read_preference = native_options.read_preference.or(source.read_preference);
+        let native = MongoDbNativeExtraction::compile(native_options)?;
         native.validate_for_descriptor(&request.descriptor)?;
         let physical = MongoDbPhysicalPlan {
             endpoint: endpoint.clone(),
@@ -207,11 +220,26 @@ impl SourceDriver for MongoDbSourceDriver {
             aws_session_token: aws_session_token.map(|value| value.as_str().to_owned()),
             max_pool_size: source.max_pool_size,
             stream_buffer_batches: source.stream_buffer_batches,
-            cursor_batch_rows: resource.cursor_batch_rows,
-            output_batch_rows: resource.output_batch_rows,
-            discovery_records: resource.discovery_records,
-            discovery_bytes: resource.discovery_bytes,
-            schema_depth: resource.schema_depth,
+            cursor_batch_rows: resource
+                .cursor_batch_rows
+                .or(source.cursor_batch_rows)
+                .unwrap_or(DEFAULT_CURSOR_BATCH_ROWS),
+            output_batch_rows: resource
+                .output_batch_rows
+                .or(source.output_batch_rows)
+                .unwrap_or(DEFAULT_OUTPUT_BATCH_ROWS),
+            discovery_records: resource
+                .discovery_records
+                .or(source.discovery_records)
+                .unwrap_or(DEFAULT_DISCOVERY_RECORDS),
+            discovery_bytes: resource
+                .discovery_bytes
+                .or(source.discovery_bytes)
+                .unwrap_or(DEFAULT_DISCOVERY_BYTES),
+            schema_depth: resource
+                .schema_depth
+                .or(source.schema_depth)
+                .unwrap_or(DEFAULT_SCHEMA_DEPTH),
             native,
         };
         physical.validate()?;
@@ -580,11 +608,21 @@ fn validate_add_resource_options(options: &BTreeMap<String, serde_json::Value>) 
     let resource: MongoDbResourceOptions =
         decode_options("MongoDB cdf add resource", options.clone())?;
     MongoDbIdentifier::new(resource.collection)?;
-    validate_schema_depth(resource.schema_depth)?;
-    if !(1..=100_000).contains(&resource.discovery_records)
-        || !(1_024..=67_108_864).contains(&resource.discovery_bytes)
-        || !(1..=100_000).contains(&resource.cursor_batch_rows)
-        || !(1..=100_000).contains(&resource.output_batch_rows)
+    if let Some(schema_depth) = resource.schema_depth {
+        validate_schema_depth(schema_depth)?;
+    }
+    if resource
+        .discovery_records
+        .is_some_and(|value| !(1..=100_000).contains(&value))
+        || resource
+            .discovery_bytes
+            .is_some_and(|value| !(1_024..=67_108_864).contains(&value))
+        || resource
+            .cursor_batch_rows
+            .is_some_and(|value| !(1..=100_000).contains(&value))
+        || resource
+            .output_batch_rows
+            .is_some_and(|value| !(1..=100_000).contains(&value))
     {
         return Err(CdfError::contract(
             "MongoDB cdf add discovery, cursor, or output bounds are invalid",
@@ -1101,6 +1139,65 @@ struct MongoDbSourceOptions {
     max_pool_size: u32,
     #[serde(default = "default_stream_buffer_batches")]
     stream_buffer_batches: usize,
+    #[serde(default)]
+    schema_depth: Option<u8>,
+    #[serde(default)]
+    discovery_records: Option<u64>,
+    #[serde(default)]
+    discovery_bytes: Option<u64>,
+    #[serde(default)]
+    cursor_batch_rows: Option<u32>,
+    #[serde(default)]
+    output_batch_rows: Option<u32>,
+    #[serde(default)]
+    max_time_ms: Option<u64>,
+    #[serde(default)]
+    read_concern: Option<String>,
+    #[serde(default)]
+    read_preference: Option<String>,
+}
+
+impl MongoDbSourceOptions {
+    fn validate_operational_defaults(&self) -> Result<()> {
+        if let Some(value) = self.schema_depth {
+            validate_schema_depth(value)?;
+        }
+        validate_optional_source_bound("discovery_records", self.discovery_records, 1, 100_000)?;
+        validate_optional_source_bound("discovery_bytes", self.discovery_bytes, 1_024, 67_108_864)?;
+        validate_optional_source_bound(
+            "cursor_batch_rows",
+            self.cursor_batch_rows.map(u64::from),
+            1,
+            100_000,
+        )?;
+        validate_optional_source_bound(
+            "output_batch_rows",
+            self.output_batch_rows.map(u64::from),
+            1,
+            100_000,
+        )?;
+        MongoDbNativeExtraction::compile(MongoDbNativeResourceOptions {
+            max_time_ms: self.max_time_ms,
+            read_concern: self.read_concern.clone(),
+            read_preference: self.read_preference.clone(),
+            ..MongoDbNativeResourceOptions::default()
+        })?;
+        Ok(())
+    }
+}
+
+fn validate_optional_source_bound(
+    name: &str,
+    value: Option<u64>,
+    minimum: u64,
+    maximum: u64,
+) -> Result<()> {
+    if value.is_some_and(|value| !(minimum..=maximum).contains(&value)) {
+        return Err(CdfError::contract(format!(
+            "MongoDB source {name} must be in {minimum}..={maximum}",
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1113,16 +1210,16 @@ pub(crate) enum MongoDbAuthMechanism {
 #[serde(deny_unknown_fields)]
 struct MongoDbResourceOptions {
     collection: String,
-    #[serde(default = "default_schema_depth")]
-    schema_depth: u8,
-    #[serde(default = "default_discovery_records")]
-    discovery_records: u64,
-    #[serde(default = "default_discovery_bytes")]
-    discovery_bytes: u64,
-    #[serde(default = "default_cursor_batch_rows")]
-    cursor_batch_rows: u32,
-    #[serde(default = "default_output_batch_rows")]
-    output_batch_rows: u32,
+    #[serde(default)]
+    schema_depth: Option<u8>,
+    #[serde(default)]
+    discovery_records: Option<u64>,
+    #[serde(default)]
+    discovery_bytes: Option<u64>,
+    #[serde(default)]
+    cursor_batch_rows: Option<u32>,
+    #[serde(default)]
+    output_batch_rows: Option<u32>,
     #[serde(flatten)]
     native: MongoDbNativeResourceOptions,
 }
@@ -1258,7 +1355,7 @@ fn validate_auth_configuration(
 fn validate_schema_depth(value: u8) -> Result<()> {
     if usize::from(value) > MAXIMUM_SCHEMA_DEPTH || value == 0 {
         return Err(CdfError::contract(
-            "MongoDB resource schema_depth must be an integer in 1..=32",
+            "MongoDB schema_depth must be an integer in 1..=32",
         ));
     }
     Ok(())
@@ -1357,24 +1454,9 @@ fn execution_capabilities(
     }
 }
 
-const fn default_cursor_batch_rows() -> u32 {
-    DEFAULT_CURSOR_BATCH_ROWS
-}
-const fn default_output_batch_rows() -> u32 {
-    DEFAULT_OUTPUT_BATCH_ROWS
-}
 const fn default_max_pool_size() -> u32 {
     DEFAULT_MAX_POOL_SIZE
 }
 const fn default_stream_buffer_batches() -> usize {
     DEFAULT_STREAM_BUFFER_BATCHES
-}
-const fn default_discovery_records() -> u64 {
-    DEFAULT_DISCOVERY_RECORDS
-}
-const fn default_discovery_bytes() -> u64 {
-    DEFAULT_DISCOVERY_BYTES
-}
-const fn default_schema_depth() -> u8 {
-    DEFAULT_SCHEMA_DEPTH
 }

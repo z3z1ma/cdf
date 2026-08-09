@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 Depends-On: `.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`
 
@@ -57,6 +57,9 @@ statements, or credential literals.
 
 - 2026-08-08: Opened as the corrected B2 executable owner after the user rejected pre-adapter
   commons and ratified adapter-native query surfaces.
+- 2026-08-09: The user ratified source defaults plus explicit resource overrides for operational
+  controls. The MySQL implementation MUST ship that precedence from its first version; no
+  resource-only intermediate surface or compatibility path is allowed.
 
 ## Blockers
 

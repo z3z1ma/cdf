@@ -91,6 +91,11 @@ trust = "governed"
 schema_mode = "discover"
 ```
 
+`max_threads`, `max_block_rows`, and `stream_buffer_batches` are source defaults. A resource may
+override any of them; the resource value wins and the resolved value is compiled into plan
+identity. This keeps shared warehouse policy concise while allowing one unusually wide or
+latency-sensitive resource to use a tighter setting.
+
 Compilation and portable-plan validation make no network contact. Discovery contacts only the
 configured table catalog and a `LIMIT 0` Arrow schema probe, then establishes the exact Arrow
 schema in environment state on first use.

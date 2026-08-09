@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # MongoDB native extraction surface
 
@@ -8,8 +8,7 @@ Updated: 2026-08-08
 
 This specification extends `.10x/specs/mongodb-collection-source.md` with the user-ratified
 connector-native extraction surface. It supersedes that specification's aggregation-pipeline
-exclusion and any source-level placement of controls that govern one resource's discovery or
-cursor. MongoDB 7.0+ and all existing BSON, schema-depth, drift, memory, checkpoint, and roofline
+exclusion. MongoDB 7.0+ and all existing BSON, schema-depth, drift, memory, checkpoint, and roofline
 requirements remain authoritative.
 
 ## Resource contract
@@ -26,7 +25,14 @@ MUST reject `$out`, `$merge`, `$changeStream`, and nested occurrences of write/c
 before contact. Other server-supported read stages, including joins, unions, search, grouping, and
 source-native expressions, are allowed when the configured role/server permits them.
 
-The resource MAY set these adapter-owned controls:
+The configured source MAY provide defaults for `schema_depth`, `discovery_records`,
+`discovery_bytes`, `cursor_batch_rows`, `output_batch_rows`, `max_time_ms`, `read_concern`, and
+`read_preference`. A resource MAY override any of those defaults. Resolution order is built-in
+default, then source default, then explicit resource override. The resource MAY additionally set
+the following query-specific controls, which never inherit: `allow_disk_use`, `hint`, `collation`,
+`let`, and `comment`.
+
+The adapter-owned controls are:
 
 | Option | Contract |
 | --- | --- |
@@ -44,9 +50,9 @@ The resource MAY set these adapter-owned controls:
 | `read_concern` | optional MongoDB read-concern level supported by the server |
 | `read_preference` | optional MongoDB read-preference mode with optional bounded tag sets |
 
-The former source options `batch_rows`, `discovery_records`, and `discovery_bytes` are deleted.
-They have not shipped and receive no aliases or compatibility reader. Pool size and bounded
-in-flight stream capacity remain source/connection controls because they govern shared transport.
+The former ambiguous source option `batch_rows` is deleted. It has not shipped and receives no
+alias or compatibility reader. Pool size and bounded in-flight stream capacity remain
+source/connection-only controls because they govern shared transport.
 
 ## Discovery and execution
 
@@ -91,7 +97,7 @@ pipeline. Server permissions remain the authority for read access and source-nat
 - An aggregation with `$match`, `$lookup`, `$group`, and `$project` discovers the pipeline output,
   runs read-only, and supports outer CDF SQL against that output.
 - Write/change-stream stages are rejected recursively before source contact.
-- Resource-specific sample and cursor batch sizes change their respective server operations but do
+- Source-default and resource-specific sample and cursor batch sizes change their respective server operations but do
   not change package bytes when logical output is identical.
 - A pipeline cursor succeeds when cursor/key fields survive and fails before execution otherwise.
 - Atlas/local live tests cover find, aggregation, discovery bounds, option validation, package,

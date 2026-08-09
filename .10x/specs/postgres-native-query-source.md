@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # PostgreSQL native query source
 
@@ -25,7 +25,9 @@ before contact, then prepares, discovers, and executes it inside a server-enforc
 transaction. Authored functions execute under the configured PostgreSQL role; that role remains
 the permission authority for functions with external effects.
 
-Resource controls are adapter-native:
+These adapter-native controls MAY be configured as source defaults and MAY be overridden by a
+resource. Resolution order is built-in default, then source default, then explicit resource
+override:
 
 | Option | Contract |
 | --- | --- |

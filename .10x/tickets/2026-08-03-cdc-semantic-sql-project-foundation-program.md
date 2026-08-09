@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-03
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # CDC, semantic, and SQL-project foundation program
 
@@ -607,6 +607,11 @@ disposition/merge keys, semantics, execution policy, relational exclusions, iden
 diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
+
+- 2026-08-09: Closed child `.10x/tickets/2026-08-09-database-source-defaults-and-resource-overrides.md`.
+  Implemented database source defaults with explicit resource precedence across current SQLite,
+  MongoDB, PostgreSQL, and ClickHouse drivers; removed authored SQL sampling bounds; and fixed the
+  same contract for the open MySQL implementation.
 
 - 2026-08-08: The user rejected a unified grammar and explicitly ratified world-class connector-
   native extraction before any engine/runtime commons. Accepted

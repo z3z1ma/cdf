@@ -1,13 +1,13 @@
 Status: active
 Created: 2026-08-08
-Updated: 2026-08-08
+Updated: 2026-08-09
 
 # SQLite native query source
 
 ## Purpose and authority
 
 This specification extends `.10x/specs/sqlite-table-source.md` with native read queries and
-resource-scoped operational controls. It supersedes that specification's arbitrary-query
+inheritable operational controls. It supersedes that specification's arbitrary-query
 exclusion. Read-only connection/snapshot, dynamic-type reconciliation, cursor, portability,
 memory, cancellation, error, and roofline requirements remain authoritative.
 
@@ -19,12 +19,11 @@ read expressions supported by the linked SQLite. It MUST prepare as exactly one 
 `sqlite3_stmt_readonly` MUST prove it read-only. The connection is also opened read-only with
 `query_only` defense in depth.
 
-Resource controls are:
+Operational controls MAY be declared on the configured source and MAY be overridden by a resource.
+Resolution order is the built-in default, then source default, then explicit resource override:
 
 | Option | Contract |
 | --- | --- |
-| `discovery_records` | `1..=100000`, default `1000`, for dynamic expression types |
-| `discovery_bytes` | `1024..=67108864`, default `16777216` |
 | `output_batch_rows` | `1..=100000`, default `32768` (the measured passing SQLite roofline default) |
 | `busy_timeout_ms` | optional `1..=3600000`, connection-local |
 | `cache_kib` | optional `64..=1048576`, connection-local and non-persistent |
@@ -35,10 +34,13 @@ forbidden. Changing a control changes compiled identity.
 
 ## Discovery and execution
 
-Table discovery retains declared/catalog types. Query discovery combines prepared output metadata
-with bounded rows from the exact query because SQLite expression columns may have no declared type
-and runtime storage classes can differ. The sample records its row/byte limits and cannot claim
-global uniformity. Execution holds one read transaction from first query step through stream EOF.
+Table discovery retains declared/catalog types and never samples rows. Query discovery first uses
+prepared output metadata. When an SQLite expression has no declared result type, discovery MAY
+observe rows from the exact query within the caller-owned discovery request budget because runtime
+storage classes can differ. Row/byte limits are discovery-command policy, MUST NOT be authored as
+source or resource options, and cannot claim global uniformity. An explicitly governed schema
+remains execution authority. Execution holds one read transaction from first query step through
+stream EOF.
 
 The query output becomes the relation consumed by CDF SQL. Exact projection, predicates, cursor
 bounds, stable ordering, and limit are wrapped outside the authored query using bound values and
@@ -51,7 +53,8 @@ the query output and retain explicit temporal encoding when temporal.
 - A write pragma, DDL/DML, attach, extension load, or second statement fails before stepping.
 - Table and query paths support CDF operations, portable relative paths, package/replay/checkpoint,
   cancellation, progress, and dynamic drift policy.
-- Resource batch/sample/cache controls are bounded, identity-bearing, non-persistent, and do not
+- Source-default and resource-override batch/cache controls are bounded, identity-bearing,
+  non-persistent, and do not
   alter logical package bytes when output is identical.
 - Live query and table cells retain the direct-`rusqlite` roofline requirement.
 

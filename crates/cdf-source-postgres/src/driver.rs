@@ -36,19 +36,7 @@ impl PostgresSourceDriver {
                 "required": ["connection"],
                 "properties": {
                     "connection": {"type": "string", "pattern": "^secret://"},
-                    "dialect": {"const": "postgres", "default": "postgres"}
-                }
-            },
-            "resource": {
-                "type": "object",
-                "additionalProperties": false,
-                "oneOf": [
-                    {"type": "object", "required": ["table"], "properties": {"table": {"type": "string"}}},
-                    {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}}
-                ],
-                "properties": {
-                    "table": {"type": "string", "minLength": 1},
-                    "query": {"type": "string", "minLength": 1},
+                    "dialect": {"const": "postgres", "default": "postgres"},
                     "isolation": {
                         "type": "string",
                         "enum": ["read_committed", "repeatable_read", "serializable"],
@@ -63,12 +51,36 @@ impl PostgresSourceDriver {
                         "items": {"type": "string", "minLength": 1}
                     }
                 }
+            },
+            "resource": {
+                "type": "object",
+                "additionalProperties": false,
+                "oneOf": [
+                    {"type": "object", "required": ["table"], "properties": {"table": {"type": "string"}}},
+                    {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}}
+                ],
+                "properties": {
+                    "table": {"type": "string", "minLength": 1},
+                    "query": {"type": "string", "minLength": 1},
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["read_committed", "repeatable_read", "serializable"]
+                    },
+                    "statement_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+                    "lock_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+                    "output_batch_rows": {"type": "integer", "minimum": 1, "maximum": 100000},
+                    "search_path": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1}
+                    }
+                }
             }
         });
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("postgres")?,
-                driver_version: "2.1.0".to_owned(),
+                driver_version: "3.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec!["postgres".to_owned()],
                 schemes: vec!["postgres".to_owned(), "postgresql".to_owned()],
@@ -169,12 +181,34 @@ impl SourceDriver for PostgresSourceDriver {
         }
         let connection = SecretUri::new(source.connection.clone())?;
         let input = PostgresSourceInput::from_authored(resource.table, resource.query)?;
+        if source.search_path.as_ref().is_some_and(Vec::is_empty) {
+            return Err(CdfError::contract(
+                "Postgres source search_path must contain at least one identifier when declared",
+            ));
+        }
+        if resource.search_path.as_ref().is_some_and(Vec::is_empty) {
+            return Err(CdfError::contract(
+                "Postgres resource search_path must contain at least one identifier when declared",
+            ));
+        }
+        PostgresNativeOptions::from_authored(
+            source.isolation.unwrap_or_default(),
+            source.statement_timeout_ms,
+            source.lock_timeout_ms,
+            source.output_batch_rows,
+            source.search_path.clone().unwrap_or_default(),
+        )?;
         let options = PostgresNativeOptions::from_authored(
-            resource.isolation,
-            resource.statement_timeout_ms,
-            resource.lock_timeout_ms,
-            resource.output_batch_rows,
-            resource.search_path,
+            resource.isolation.or(source.isolation).unwrap_or_default(),
+            resource
+                .statement_timeout_ms
+                .or(source.statement_timeout_ms),
+            resource.lock_timeout_ms.or(source.lock_timeout_ms),
+            resource.output_batch_rows.or(source.output_batch_rows),
+            resource
+                .search_path
+                .or(source.search_path)
+                .unwrap_or_default(),
         )?;
         let physical_plan = PostgresPhysicalPlan {
             connection: connection.as_str().to_owned(),
@@ -545,6 +579,16 @@ struct PostgresSourceOptions {
     connection: String,
     #[serde(default)]
     dialect: Option<String>,
+    #[serde(default)]
+    isolation: Option<PostgresIsolation>,
+    #[serde(default)]
+    statement_timeout_ms: Option<u64>,
+    #[serde(default)]
+    lock_timeout_ms: Option<u64>,
+    #[serde(default)]
+    output_batch_rows: Option<u64>,
+    #[serde(default)]
+    search_path: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,7 +599,7 @@ struct PostgresResourceOptions {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
-    isolation: PostgresIsolation,
+    isolation: Option<PostgresIsolation>,
     #[serde(default)]
     statement_timeout_ms: Option<u64>,
     #[serde(default)]
@@ -563,7 +607,7 @@ struct PostgresResourceOptions {
     #[serde(default)]
     output_batch_rows: Option<u64>,
     #[serde(default)]
-    search_path: Vec<String>,
+    search_path: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -728,6 +772,57 @@ mod tests {
     fn compiles_native_query_controls_without_literal_evidence() {
         let driver = PostgresSourceDriver::new().unwrap();
         let query = "SELECT id, amount FROM private_ledger WHERE tenant = 'private-value'";
+        let source_options = BTreeMap::from([
+            (
+                "connection".to_owned(),
+                serde_json::json!("secret://env/WAREHOUSE_URL"),
+            ),
+            ("isolation".to_owned(), serde_json::json!("read_committed")),
+            ("statement_timeout_ms".to_owned(), serde_json::json!(15_000)),
+            ("lock_timeout_ms".to_owned(), serde_json::json!(2_500)),
+            ("output_batch_rows".to_owned(), serde_json::json!(4_096)),
+            (
+                "search_path".to_owned(),
+                serde_json::json!(["source_default"]),
+            ),
+        ]);
+        let source_default_plan = driver
+            .compile(SourceCompileRequest {
+                source_kind: "postgres".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "warehouse".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options: source_options.clone(),
+                resource_options: BTreeMap::from([("query".to_owned(), serde_json::json!(query))]),
+                descriptor: descriptor(),
+                schema: Schema::new(vec![
+                    Field::new("id", DataType::Int64, true),
+                    Field::new("amount", DataType::Utf8, true),
+                ]),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(source_default_plan.driver.driver_version, "3.0.0");
+        assert_eq!(
+            source_default_plan.redacted_options["isolation"],
+            "read_committed"
+        );
+        assert_eq!(
+            source_default_plan.redacted_options["statement_timeout_ms"],
+            15_000
+        );
+        assert_eq!(
+            source_default_plan.redacted_options["output_batch_rows"],
+            4_096
+        );
+        assert_eq!(
+            source_default_plan.redacted_options["search_path"],
+            serde_json::json!(["source_default"])
+        );
         let plan = driver
             .compile(SourceCompileRequest {
                 source_kind: "postgres".to_owned(),
@@ -736,10 +831,7 @@ mod tests {
                     project_root: None,
                     cursor_pushdown: None,
                 },
-                source_options: BTreeMap::from([(
-                    "connection".to_owned(),
-                    serde_json::json!("secret://env/WAREHOUSE_URL"),
-                )]),
+                source_options,
                 resource_options: BTreeMap::from([
                     ("query".to_owned(), serde_json::json!(query)),
                     ("isolation".to_owned(), serde_json::json!("serializable")),
@@ -777,6 +869,10 @@ mod tests {
         };
         assert_eq!(sql, query);
         assert_eq!(physical.options.output_batch_rows, 8_192);
+        assert_eq!(physical.options.isolation, PostgresIsolation::Serializable);
+        assert_eq!(physical.options.statement_timeout_ms, Some(30_000));
+        assert_eq!(physical.options.lock_timeout_ms, Some(5_000));
+        assert_eq!(physical.options.search_path[0].as_str(), "analytics");
         driver.validate_portable_plan(&plan).unwrap();
 
         let error = driver
