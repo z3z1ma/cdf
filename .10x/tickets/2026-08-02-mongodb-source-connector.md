@@ -314,6 +314,17 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   Focused canonical-identity, plan publication/no-overwrite, portable tamper/generation, portable
   first-use execution, and strict project/CLI Clippy checks pass. A rebuilt release plan/run remains
   the closure barrier; the failed live preflight created no package or source read.
+- 2026-08-08: The first all-row release rerun accepted and loaded all 417,114 documents with zero
+  quarantine and 251k governed residual rows, proving the nullable/capture-variant correction, but
+  its 1,000-row wire cursor took 180 seconds to read (about 2.3k documents/s) while using only five
+  percent host CPU. The configured 40-row decode/output safety bound had previously been allowed to
+  constrain network fetches; it is now explicitly unrelated to cursor transport. A live Atlas wire
+  sweep on the exact 21-field projection measured 8,192 rows at 10,075 documents/s over a warm 50k
+  interval and 4,790 documents/s across the full 417,114-row collection despite substantial remote
+  variance; 32,768 managed only 2,224 documents/s and 100,000 only 2,599 documents/s over comparable
+  samples. The transport request is therefore fixed at the measured 8,192-row operating point,
+  while adaptive decoding and output remain independently bounded by configured rows and admitted
+  bytes. A rebuilt release portable-plan run remains the closure barrier.
 
 ## Blockers
 
