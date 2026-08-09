@@ -20,6 +20,7 @@ use crate::{
         execute_mongodb_collection,
     },
     identifier::MongoDbIdentifier,
+    native::MongoDbNativeExtraction,
     query::{MONGODB_SOURCE_KIND, predicate_fidelity, scan_from_partition},
     schema::{attach_expected_physical_types, validate_mongodb_schema},
 };
@@ -37,7 +38,9 @@ pub(crate) struct MongoDbCollectionResource {
     database: MongoDbIdentifier,
     collection: MongoDbIdentifier,
     collection_generation: SourcePosition,
-    batch_rows: u32,
+    cursor_batch_rows: u32,
+    output_batch_rows: u32,
+    native: MongoDbNativeExtraction,
     stream_buffer_batches: usize,
     runtime: MongoDbRuntimeConfig,
     client: Arc<tokio::sync::OnceCell<MongoDbClientHandle>>,
@@ -58,8 +61,10 @@ impl MongoDbCollectionResource {
         endpoint: String,
         database: MongoDbIdentifier,
         collection: MongoDbIdentifier,
-        batch_rows: u32,
+        cursor_batch_rows: u32,
+        output_batch_rows: u32,
         stream_buffer_batches: usize,
+        native: MongoDbNativeExtraction,
         runtime: MongoDbRuntimeConfig,
         egress: SourceEgressScope,
         execution: ExecutionServices,
@@ -75,9 +80,13 @@ impl MongoDbCollectionResource {
         let decoder_schema = attach_expected_physical_types(&schema, observed_schema.as_ref())?;
         validate_resource_shape(&compiled.descriptor, &schema, &collection)?;
         validate_compiled_schema_evidence(compiled)?;
-        if !(1..=100_000).contains(&batch_rows) || !(1..=16).contains(&stream_buffer_batches) {
+        native.validate_for_descriptor(&compiled.descriptor)?;
+        if !(1..=100_000).contains(&cursor_batch_rows)
+            || !(1..=100_000).contains(&output_batch_rows)
+            || !(1..=16).contains(&stream_buffer_batches)
+        {
             return Err(CdfError::contract(
-                "MongoDB batch_rows must be 1..=100000 and stream_buffer_batches must be 1..=16",
+                "MongoDB cursor_batch_rows and output_batch_rows must be 1..=100000 and stream_buffer_batches must be 1..=16",
             ));
         }
         Ok(Self {
@@ -89,7 +98,9 @@ impl MongoDbCollectionResource {
             database,
             collection,
             collection_generation,
-            batch_rows,
+            cursor_batch_rows,
+            output_batch_rows,
+            native,
             stream_buffer_batches,
             runtime,
             client: Arc::new(tokio::sync::OnceCell::new()),
@@ -142,7 +153,9 @@ impl MongoDbCollectionResource {
                         physical_schema: self.physical_schema,
                         database: self.database,
                         collection: self.collection,
-                        batch_rows: self.batch_rows,
+                        cursor_batch_rows: self.cursor_batch_rows,
+                        output_batch_rows: self.output_batch_rows,
+                        native: self.native,
                         partition,
                         memory,
                         egress: self.egress,
@@ -206,7 +219,9 @@ impl fmt::Debug for MongoDbCollectionResource {
             .field("endpoint", &self.endpoint)
             .field("database", &self.database)
             .field("collection", &self.collection)
-            .field("batch_rows", &self.batch_rows)
+            .field("cursor_batch_rows", &self.cursor_batch_rows)
+            .field("output_batch_rows", &self.output_batch_rows)
+            .field("native", &self.native.redacted_summary())
             .field("stream_buffer_batches", &self.stream_buffer_batches)
             .field("managed_execution", &self.execution.is_some())
             .finish_non_exhaustive()

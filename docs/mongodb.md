@@ -1,9 +1,9 @@
 # MongoDB collection source
 
 CDF reads one finite MongoDB 7.0+ collection through the built-in `mongodb` source and the
-official asynchronous Rust driver's raw-BSON cursor. Change streams, resume tokens, arbitrary
-aggregation pipelines, map-reduce, and ObjectId-only cursor positions are not part of this
-connector.
+official asynchronous Rust driver's raw-BSON cursor. A resource may use a native `find` filter or
+a read-only aggregation pipeline before its surrounding CDF SQL. Change streams, resume tokens,
+server-side writes, map-reduce output, and ObjectId-only cursor positions are separate concerns.
 
 ## Configure a collection
 
@@ -59,6 +59,72 @@ schemaless collection is globally uniform. Execution applies the active state-ba
 compiled drift policy to every later document. `schema_depth` is resource-scoped, accepts `1..=32`,
 and defaults to `1`; omit it for the default behavior.
 
+## Native filters and aggregations
+
+`filter` is a duplicate-free Extended JSON document. It becomes the base MongoDB `find` selector;
+exact CDF predicates are combined with it without changing its meaning:
+
+```sql
+RESOURCE
+DISPOSITION REPLACE
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT id, status, amount
+FROM upstream(
+  source => 'warehouse',
+  collection => 'events',
+  filter => '{"status":{"$in":["open","ready"]}}',
+  hint => '"status_1"',
+  max_time_ms => 30000
+);
+```
+
+`pipeline` is a duplicate-free Extended JSON array. CDF runs the authored stages in order, then
+applies exact outer CDF filters, ordering, projection, and limit to the produced relation:
+
+```sql
+RESOURCE
+DISPOSITION REPLACE
+TRUST GOVERNED
+EXECUTION BOUNDED
+AS
+SELECT customer_id, total
+FROM upstream(
+  source => 'warehouse',
+  collection => 'events',
+  pipeline => '[{"$match":{"status":"posted"}},{"$group":{"_id":"$customer_id","total":{"$sum":"$amount"}}},{"$project":{"_id":0,"customer_id":"$_id","total":1}}]',
+  allow_disk_use => true,
+  let => '{"minimum_amount":0}'
+);
+```
+
+`filter` and `pipeline` are mutually exclusive. CDF recursively rejects `$out`, `$merge`, and
+`$changeStream` before contact. A pipeline using `$lookup`, `$unionWith`, or `$graphLookup` runs
+locally, but portable plan export fails until every referenced collection can be independently
+attested.
+
+These resource-level controls apply identically to discovery and execution:
+
+| Option | Default | Purpose |
+| --- | ---: | --- |
+| `discovery_records` | `1000` | Maximum sampled documents |
+| `discovery_bytes` | `16777216` | Maximum sampled BSON bytes |
+| `cursor_batch_rows` | `8192` | MongoDB wire-cursor request; measured Atlas default |
+| `output_batch_rows` | `65536` | Maximum rows considered for one adaptive Arrow output batch |
+| `max_time_ms` | unset | MongoDB operation deadline, up to one hour |
+| `allow_disk_use` | `false` | Permit aggregation spill; invalid for `find` |
+| `hint` | unset | Extended JSON index name or compound key document |
+| `collation` | unset | Extended JSON MongoDB collation document |
+| `let` | unset | Extended JSON aggregation variable document |
+| `comment` | unset | Profiler comment, at most 1024 UTF-8 bytes |
+| `read_concern` | unset | `local`, `majority`, `linearizable`, `available`, or `snapshot` |
+| `read_preference` | unset | Extended JSON mode, optional tag sets, and max staleness |
+
+Native BSON input is stored in compiled plans as exact BSON bytes so numeric widths and ordered
+documents survive plan export/import. Human evidence contains only its shape and digest, never
+filter, pipeline, variable, hint, or comment literals.
+
 ## Cursor reads
 
 Finite numeric, UTC DateTime, and schema-established date cursors are supported. The collection must
@@ -78,9 +144,9 @@ FROM upstream(source => 'warehouse', collection => 'events');
 
 ObjectId itself is not a checkpoint cursor. Strings are not guessed to be dates or timestamps.
 Exact supported comparisons, cursor bounds, and finite snapshot limits use typed BSON documents;
-field paths and collection names are validated rather than interpolated into user SQL. Projection
-governs the Arrow output, while the source reads complete BSON documents so unknown-field drift
-cannot be hidden by a server projection.
+field paths and collection names are validated rather than interpolated into user SQL. The source
+projects the exact compiled output, filter, order, stable-key, and cursor dependencies on the
+server. Discovery owns source-shape observation; runtime does not transfer unrelated wide fields.
 Predicates whose missing/null, array, numeric, collation, or timezone behavior is not exactly Arrow
 equivalent remain residual CDF work.
 
@@ -121,12 +187,13 @@ domains above; CDF does not silently stringify ordinary typed fields or widen th
 
 ## Runtime and operations
 
-One resource owns one reusable official client and native pool. The measured defaults are 65,536
-cursor rows, one pool connection, one logical query, and a one-batch queue. Queue, producer, and
-consumer can retain at most three output batches. Each poll admits at most 64 MiB of raw BSON plus
-a 128 MiB decode working set covering construction scratch, retained Arrow output, and drift
-evidence; the emitted batch is capped at 64 MiB. Reduce `batch_rows` or project fewer fields if a
-document shape exceeds the output bound. The host owns async execution, memory, cancellation,
+One resource owns one reusable official client and native pool. The measured defaults are an
+8,192-row wire cursor request, a 65,536-row adaptive Arrow output ceiling, one pool connection, one
+logical query, and a one-batch queue. Queue, producer, and consumer can retain at most three output
+batches. Each poll admits at most 64 MiB of raw BSON plus a 128 MiB decode working set covering
+construction scratch, retained Arrow output, and drift evidence; the emitted batch is capped at 64
+MiB. Reduce `output_batch_rows` or project fewer fields if a document shape exceeds the output
+bound. The host owns async execution, memory, cancellation,
 egress, and retries. The
 connector creates no private runtime, worker pool, semaphore, retry loop, or unbounded queue.
 
@@ -135,13 +202,14 @@ connector creates no private runtime, worker pool, semaphore, retry loop, or unb
 - Authentication failures remain `Auth`; server throttling remains `RateLimited`; recoverable
   transport and timeout failures remain `Transient` with driver retry metadata preserved.
 - Host permission, DNS, TLS, socket, and resource failures remain `Environment` failures.
-- Errors, plans, reports, and debug output retain only credential-safe topology and secret
-  references; they do not echo secret values.
+- Errors, human reports, and debug output retain only credential-safe topology, secret references,
+  and native-input hashes; they do not echo secret or native-query literal values.
 
 The release-mode local 100,000-row mixed BSON sweep uses MongoDB 8.0.13 from the digest-pinned
 `mongo` image. Five samples compare the shipped raw-BSON/Arrow path with the same official client,
 complete fixed-fixture documents, stable sort, duplicate-key validation, field conversion, Arrow
-construction, and full content verification. The selected 65,536-row, one-connection cell measured a 0.905 median
-throughput ratio against the favorable direct path, above the required 0.900 roofline. The raw,
-host-labelled report is
+construction, and full content verification. The final clean 32,768-row, one-connection cell
+measured a 0.922 median throughput ratio against the favorable direct path, above the required
+0.900 roofline. Operational defaults independently use the live-Atlas-selected 8,192-row wire
+request and a byte-adaptive output ceiling of 65,536 rows. The raw, host-labelled report is
 [`2026-08-04-mongodb-source-roofline.json`](../.10x/evidence/.storage/2026-08-04-mongodb-source-roofline.json).

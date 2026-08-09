@@ -4,6 +4,7 @@ mod driver;
 mod error;
 mod execution;
 mod identifier;
+mod native;
 mod query;
 mod resource;
 mod schema;

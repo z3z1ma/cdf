@@ -57,9 +57,11 @@ create a client per partition, private executor, unbounded queue, semaphore, or 
 
 ## Query and cursor semantics
 
-Limit, supported comparison filters, and cursor ranges compile to typed BSON filters. Logical
-projection controls governed Arrow materialization, but execution reads complete BSON documents so
-unknown-field drift remains observable; it MUST NOT use server projection to hide source shape.
+Limit, supported comparison filters, and cursor ranges compile to typed BSON filters. Execution
+MUST use a server projection containing the exact compiled output, filter, ordering, stable-key,
+and cursor dependencies. Discovery remains the authority for source-shape observation; execution
+MUST NOT fetch unrelated wide fields after compilation or claim drift authority over fields outside
+the compiled relation.
 A filter is exact only when MongoDB missing/null, array, numeric comparison, collation, and timezone
 semantics match Arrow; otherwise CDF reapplies it. Field paths and collection names are validated,
 and values are BSON bindings rather than JSON/string fragments.

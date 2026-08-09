@@ -331,7 +331,9 @@ fn canonical_order(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    if !order.iter().any(|item| item.source_field == "_id") {
+    if field_by_source_name(schema, "_id").is_some()
+        && !order.iter().any(|item| item.source_field == "_id")
+    {
         order.push(StoredOrder {
             source_field: "_id".to_owned(),
             direction: SortDirection::Asc,

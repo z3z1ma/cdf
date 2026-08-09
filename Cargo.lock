@@ -2149,6 +2149,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-schema",
+ "base64",
  "bson",
  "cdf-http",
  "cdf-kernel",

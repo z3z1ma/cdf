@@ -372,6 +372,21 @@ or implicit Extended JSON coercion.
   both and attributes the spread to Atlas/network wait rather than hiding it. The finite connector's
   projection, throughput, schemaless drift, portability, package, receipt, checkpoint, and direct
   destination closure barriers are satisfied.
+- 2026-08-08: Implemented the connector-native finite extraction surface without changing the
+  measured data-path defaults: `cursor_batch_rows=8192`, `output_batch_rows=65536`, pool size one,
+  and one buffered batch. Discovery, cursor, output, and query controls are now resource-scoped;
+  only pool and stream capacity remain connection-scoped. Filter and aggregation inputs use
+  duplicate-free ordered Extended JSON, recursively reject write/change-stream stages, preserve
+  authored pipeline order, and run through the same raw-BSON cursor in discovery and execution.
+  Exact outer CDF match/sort/projection/limit stages remain adapter-owned. Compiled artifacts store
+  every BSON-bearing option as exact base64 BSON so integer width and document order survive plan
+  export/import, while human evidence carries only shape and hashes. Cross-collection aggregation
+  remains locally executable but portable export fails before contact until dependency attestation
+  exists. The focused suite now passes 51 tests, strict all-target/all-feature Clippy passes, and
+  the data-driven built-in catalog passes all three integrity/graph tests with the versioned MongoDB
+  driver schema. `cargo machete --with-metadata` found no unused dependency; the focused cognitive-
+  complexity diagnostic reported only the pre-existing kernel Arrow-type parser, outside this
+  change. `graphify update .` remains unavailable because `graphify` is not installed.
 
 ## Blockers
 

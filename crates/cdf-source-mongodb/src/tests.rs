@@ -13,7 +13,7 @@ use cdf_kernel::{
 };
 use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceExecutorClass};
 use mongodb::bson::{
-    Binary, DateTime, Decimal128, doc,
+    Binary, DateTime, Decimal128, Document, doc,
     oid::ObjectId,
     raw::{CString, RawDocumentBuf, RawJavaScriptCodeWithScope, cstr},
     spec::BinarySubtype,
@@ -27,7 +27,8 @@ use crate::{
         MONGODB_FULL_SCAN_COMPLETION_PROTOCOL, cursor_value, full_scan_completion_position,
     },
     identifier::{MongoDbIdentifier, validate_field_path},
-    query::{build_query, scan_from_partition},
+    native::{MongoDbNativeExtraction, MongoDbNativeResourceOptions, MongoDbReadCommand},
+    query::{MongoDbQuery, build_query, scan_from_partition},
     resource::{
         MONGODB_COLLECTION_GENERATION_PROTOCOL, mongodb_collection_generation_position,
         rebind_mongodb_partition_for_resume,
@@ -157,7 +158,10 @@ fn compile_is_contact_free_redacted_and_io_owned() {
         plan.execution_capabilities.maximum_decode_bytes,
         128 * 1024 * 1024
     );
-    assert_eq!(plan.redacted_options["batch_rows"], 65_536);
+    assert_eq!(plan.redacted_options["cursor_batch_rows"], 8_192);
+    assert_eq!(plan.redacted_options["output_batch_rows"], 65_536);
+    assert_eq!(plan.redacted_options["discovery_records"], 1_000);
+    assert_eq!(plan.redacted_options["discovery_bytes"], 16 * 1024 * 1024);
     assert_eq!(plan.redacted_options["max_pool_size"], 1);
     assert_eq!(plan.redacted_options["stream_buffer_batches"], 1);
     assert_eq!(plan.redacted_options["schema_depth"], 1);
@@ -206,6 +210,318 @@ fn compile_binds_schema_depth_and_rejects_invalid_values() {
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
         assert!(error.message.contains("schema_depth"), "{error}");
     }
+}
+
+#[test]
+fn compile_keeps_measured_defaults_and_binds_resource_tuning_controls() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let request = |source_options, resource_options| SourceCompileRequest {
+        source_kind: "mongodb".to_owned(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "warehouse".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options,
+        resource_options,
+        descriptor: descriptor(false),
+        schema: schema(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    };
+    let source_options = BTreeMap::from([
+        (
+            "endpoint".to_owned(),
+            serde_json::json!("mongodb://warehouse.example:27017"),
+        ),
+        ("database".to_owned(), serde_json::json!("analytics")),
+    ]);
+    let plan = driver
+        .compile(request(
+            source_options.clone(),
+            BTreeMap::from([
+                ("collection".to_owned(), serde_json::json!("events")),
+                ("discovery_records".to_owned(), serde_json::json!(2_500)),
+                ("discovery_bytes".to_owned(), serde_json::json!(8_388_608)),
+                ("cursor_batch_rows".to_owned(), serde_json::json!(4_096)),
+                ("output_batch_rows".to_owned(), serde_json::json!(32_768)),
+            ]),
+        ))
+        .unwrap();
+
+    assert_eq!(plan.driver.driver_version, "2.0.0");
+    assert_eq!(plan.redacted_options["cursor_batch_rows"], 4_096);
+    assert_eq!(plan.redacted_options["output_batch_rows"], 32_768);
+    assert_eq!(plan.redacted_options["discovery_records"], 2_500);
+    assert_eq!(plan.redacted_options["discovery_bytes"], 8_388_608);
+    assert_eq!(plan.physical_plan["cursor_batch_rows"], 4_096);
+    assert_eq!(plan.physical_plan["output_batch_rows"], 32_768);
+
+    let mut legacy_source = source_options;
+    legacy_source.insert("batch_rows".to_owned(), serde_json::json!(1_000));
+    let error = driver
+        .compile(request(
+            legacy_source,
+            BTreeMap::from([("collection".to_owned(), serde_json::json!("events"))]),
+        ))
+        .unwrap_err();
+    assert!(
+        error.message.contains("unknown field `batch_rows`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn native_find_compilation_is_literal_safe_in_redacted_evidence() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let plan = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+            ]),
+            resource_options: BTreeMap::from([
+                ("collection".to_owned(), serde_json::json!("events")),
+                (
+                    "filter".to_owned(),
+                    serde_json::json!(
+                        r#"{"tenant":{"$oid":"64b64c27f6f1a00f92d66c6a"},"status":"do-not-render"}"#
+                    ),
+                ),
+                ("hint".to_owned(), serde_json::json!(r#""tenant_1""#)),
+                (
+                    "collation".to_owned(),
+                    serde_json::json!(r#"{"locale":"en","strength":2}"#),
+                ),
+                ("max_time_ms".to_owned(), serde_json::json!(30_000)),
+                ("read_concern".to_owned(), serde_json::json!("majority")),
+                (
+                    "read_preference".to_owned(),
+                    serde_json::json!(
+                        r#"{"mode":"secondaryPreferred","tagSets":[{"nodeType":"ANALYTICS"}]}"#
+                    ),
+                ),
+            ]),
+            descriptor: descriptor(false),
+            schema: schema(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(plan.redacted_options["native"]["input_kind"], "find");
+    assert_eq!(plan.redacted_options["native"]["max_time_ms"], 30_000);
+    assert_eq!(plan.redacted_options["native"]["hint"], true);
+    assert_eq!(plan.redacted_options["native"]["collation"], true);
+    let redacted = serde_json::to_string(&plan.redacted_options).unwrap();
+    assert!(!redacted.contains("do-not-render"));
+    assert!(!redacted.contains("64b64c27f6f1a00f92d66c6a"));
+    let physical = serde_json::to_string(&plan.physical_plan).unwrap();
+    assert!(physical.contains("bson_base64"));
+    assert!(!physical.contains("do-not-render"));
+    driver.validate_portable_plan(&plan).unwrap();
+}
+
+#[test]
+fn native_bson_artifact_round_trip_preserves_numeric_width_and_document_order() {
+    let native = MongoDbNativeExtraction::compile(MongoDbNativeResourceOptions {
+        filter: Some(
+            r#"{"small":1,"wide":{"$numberLong":"1"},"profile.id":7,"nested":{"second":2,"first":1}}"#.to_owned(),
+        ),
+        hint: Some(r#"{"second":-1,"first":1}"#.to_owned()),
+        collation: Some(r#"{"locale":"en","numericOrdering":true}"#.to_owned()),
+        read_preference: Some(
+            r#"{"mode":"secondaryPreferred","tagSets":[{"nodeType":"ANALYTICS","region":"west"}],"maxStalenessSeconds":120}"#.to_owned(),
+        ),
+        ..Default::default()
+    })
+    .unwrap();
+    let identity = native.identity_hash().unwrap();
+    let artifact = serde_json::to_value(&native).unwrap();
+    let decoded: MongoDbNativeExtraction = serde_json::from_value(artifact).unwrap();
+    assert_eq!(decoded.identity_hash().unwrap(), identity);
+
+    let MongoDbReadCommand::Find { filter, options } = decoded.execution_command(
+        MongoDbQuery {
+            filter: Document::new(),
+            projection: doc! {"small": 1_i32},
+            sort: Document::new(),
+            limit: None,
+        },
+        8_192,
+    ) else {
+        panic!("find input must produce a find command");
+    };
+    assert_eq!(filter.get_i32("small").unwrap(), 1);
+    assert_eq!(filter.get_i64("wide").unwrap(), 1);
+    assert_eq!(filter.get_i32("profile.id").unwrap(), 7);
+    let nested = filter.get_document("nested").unwrap();
+    assert_eq!(nested.keys().collect::<Vec<_>>(), vec!["second", "first"]);
+    let mongodb::options::Hint::Keys(hint) = options.hint.unwrap() else {
+        panic!("document hint must remain a key hint");
+    };
+    assert_eq!(hint.keys().collect::<Vec<_>>(), vec!["second", "first"]);
+}
+
+#[test]
+fn native_pipeline_validation_rejects_unsafe_and_ambiguous_inputs() {
+    let compile = |descriptor: ResourceDescriptor, resource_options| {
+        MongoDbSourceDriver::new()
+            .unwrap()
+            .compile(SourceCompileRequest {
+                source_kind: "mongodb".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "warehouse".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options: BTreeMap::from([
+                    (
+                        "endpoint".to_owned(),
+                        serde_json::json!("mongodb://warehouse.example:27017"),
+                    ),
+                    ("database".to_owned(), serde_json::json!("analytics")),
+                ]),
+                resource_options,
+                descriptor,
+                schema: schema(),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+            })
+    };
+
+    let cases = [
+        BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            ("filter".to_owned(), serde_json::json!(r#"{"x":1}"#)),
+            ("pipeline".to_owned(), serde_json::json!("[]")),
+        ]),
+        BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            (
+                "pipeline".to_owned(),
+                serde_json::json!(r#"[{"$facet":{"sink":[{"$merge":"forbidden"}]}}]"#),
+            ),
+        ]),
+        BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            (
+                "pipeline".to_owned(),
+                serde_json::json!(r#"[{"$match":{"x":1,"x":2}}]"#),
+            ),
+        ]),
+        BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            ("filter".to_owned(), serde_json::json!(r#"{"x":1}"#)),
+            ("allow_disk_use".to_owned(), serde_json::json!(true)),
+        ]),
+    ];
+    for resource_options in cases {
+        let error = compile(descriptor(false), resource_options).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract, "{error}");
+    }
+
+    let nondeterministic = compile(
+        descriptor(true),
+        BTreeMap::from([
+            ("collection".to_owned(), serde_json::json!("events")),
+            (
+                "pipeline".to_owned(),
+                serde_json::json!(r#"[{"$sample":{"size":10}}]"#),
+            ),
+        ]),
+    )
+    .unwrap_err();
+    assert!(nondeterministic.message.contains("nondeterministic"));
+}
+
+#[test]
+fn cross_collection_pipeline_is_local_only_until_each_dependency_is_attested() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let plan = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+            ]),
+            resource_options: BTreeMap::from([
+                ("collection".to_owned(), serde_json::json!("events")),
+                (
+                    "pipeline".to_owned(),
+                    serde_json::json!(r#"[{"$lookup":{"from":"accounts","localField":"tenant","foreignField":"_id","as":"account"}}]"#),
+                ),
+            ]),
+            descriptor: descriptor(false),
+            schema: schema(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    let error = driver.validate_portable_plan(&plan).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert!(error.message.contains("additional collections"));
+}
+
+#[test]
+fn native_commands_preserve_authored_pipeline_and_apply_outer_cdf_stages() {
+    let native = MongoDbNativeExtraction::compile(MongoDbNativeResourceOptions {
+        pipeline: Some(r#"[{"$match":{"tenant":"t1"}},{"$group":{"_id":"$kind","sequence":{"$max":"$sequence"}}}]"#.to_owned()),
+        allow_disk_use: true,
+        let_vars: Some(r#"{"minimum":1}"#.to_owned()),
+        max_time_ms: Some(90_000),
+        ..Default::default()
+    })
+    .unwrap();
+    let identity = native.identity_hash().unwrap();
+    let native: MongoDbNativeExtraction =
+        serde_json::from_value(serde_json::to_value(&native).unwrap()).unwrap();
+    assert_eq!(native.identity_hash().unwrap(), identity);
+    let query = MongoDbQuery {
+        filter: doc! {"sequence": {"$gt": 10_i64}},
+        projection: doc! {"_id": 1_i32, "sequence": 1_i32},
+        sort: doc! {"sequence": 1_i32},
+        limit: Some(25),
+    };
+    let MongoDbReadCommand::Aggregate { pipeline, options } =
+        native.execution_command(query, 8_192)
+    else {
+        panic!("aggregation input must produce an aggregate command");
+    };
+
+    assert_eq!(pipeline.len(), 6);
+    assert!(pipeline[0].contains_key("$match"));
+    assert!(pipeline[1].contains_key("$group"));
+    assert!(pipeline[2].contains_key("$match"));
+    assert!(pipeline[3].contains_key("$sort"));
+    assert!(pipeline[4].contains_key("$project"));
+    assert!(pipeline[5].contains_key("$limit"));
+    assert_eq!(options.batch_size, Some(8_192));
+    assert_eq!(options.allow_disk_use, Some(true));
+    assert_eq!(options.max_time, Some(std::time::Duration::from_secs(90)));
+    assert_eq!(options.let_vars, Some(doc! {"minimum": 1_i32}));
 }
 
 #[test]
@@ -268,6 +584,11 @@ fn add_planner_compiles_authority_collection_and_private_credentials() {
         options: BTreeMap::from([
             ("cursor".to_owned(), "sequence".to_owned()),
             ("schema_depth".to_owned(), "2".to_owned()),
+            ("discovery_records".to_owned(), "2500".to_owned()),
+            ("discovery_bytes".to_owned(), "8388608".to_owned()),
+            ("cursor_batch_rows".to_owned(), "4096".to_owned()),
+            ("output_batch_rows".to_owned(), "32768".to_owned()),
+            ("filter".to_owned(), r#"{"status":"active"}"#.to_owned()),
         ]),
         project_options: None,
     };
@@ -286,7 +607,17 @@ fn add_planner_compiles_authority_collection_and_private_credentials() {
     assert_eq!(proposal.source_options["database"], "analytics");
     assert_eq!(proposal.resource_options["collection"], "events");
     assert_eq!(proposal.resource_options["schema_depth"], 2);
+    assert_eq!(proposal.resource_options["discovery_records"], 2_500);
+    assert_eq!(proposal.resource_options["discovery_bytes"], 8_388_608);
+    assert_eq!(proposal.resource_options["cursor_batch_rows"], 4_096);
+    assert_eq!(proposal.resource_options["output_batch_rows"], 32_768);
+    assert_eq!(
+        proposal.resource_options["filter"],
+        r#"{"status":"active"}"#
+    );
     assert!(!proposal.source_options.contains_key("schema_depth"));
+    assert!(!proposal.source_options.contains_key("discovery_records"));
+    assert!(!proposal.source_options.contains_key("cursor_batch_rows"));
     assert_eq!(proposal.cursor.as_ref().unwrap().field, "sequence");
     assert_eq!(proposal.private_files.len(), 2);
     let rendered = format!("{proposal:?}");
@@ -1548,10 +1879,22 @@ fn cursorless_snapshot_has_deterministic_full_scan_completion_authority() {
         retry_safety: PartitionRetrySafety::Forbidden,
         metadata: BTreeMap::new(),
     };
-    let first =
-        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
-    let repeated =
-        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
+    let first = full_scan_completion_position(
+        &descriptor,
+        &database,
+        &collection,
+        &partition,
+        "sha256:native-a",
+    )
+    .unwrap();
+    let repeated = full_scan_completion_position(
+        &descriptor,
+        &database,
+        &collection,
+        &partition,
+        "sha256:native-a",
+    )
+    .unwrap();
 
     first.validate().unwrap();
     assert_eq!(first, repeated);
@@ -1565,8 +1908,14 @@ fn cursorless_snapshot_has_deterministic_full_scan_completion_authority() {
     assert_eq!(first_state.protocol, MONGODB_FULL_SCAN_COMPLETION_PROTOCOL);
 
     partition.scan_intent.limit = Some(1);
-    let limited =
-        full_scan_completion_position(&descriptor, &database, &collection, &partition).unwrap();
+    let limited = full_scan_completion_position(
+        &descriptor,
+        &database,
+        &collection,
+        &partition,
+        "sha256:native-b",
+    )
+    .unwrap();
     assert_ne!(first, limited);
 }
 

@@ -23,6 +23,7 @@ use crate::{
     driver::MongoDbRuntimeConfig,
     error::classify_mongodb_error,
     identifier::MongoDbIdentifier,
+    native::{MongoDbNativeExtraction, MongoDbReadCommand},
     query::{build_query, field_by_name, scan_from_partition},
     resource::validate_resource_shape,
     schema::{decode_batch_with_physical_schema, maximum_safe_decode_prefix},
@@ -33,11 +34,6 @@ pub(crate) const MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MONGODB_MAXIMUM_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const MONGODB_FULL_SCAN_COMPLETION_PROTOCOL: &str = "mongodb.full_scan_completion.v1";
 const MONGODB_CLIENT_POOL_BYTES: u64 = 64 * 1024 * 1024;
-// MongoDB also caps replies by bytes. This request size is independent of the project's bounded
-// Arrow/package batch size: live Atlas sweeps found 8,192 rows closest to the remote scan roofline,
-// while both 1,000-row round-trip churn and oversized 32,768/100,000-row requests were slower.
-const MONGODB_CURSOR_BATCH_ROWS: u32 = 8_192;
-
 pub(crate) struct MongoDbClientHandle {
     pub(crate) client: Client,
     _pool_lease: MemoryLease,
@@ -52,7 +48,9 @@ pub(crate) struct MongoDbExecutionInput {
     pub(crate) physical_schema: SchemaRef,
     pub(crate) database: MongoDbIdentifier,
     pub(crate) collection: MongoDbIdentifier,
-    pub(crate) batch_rows: u32,
+    pub(crate) cursor_batch_rows: u32,
+    pub(crate) output_batch_rows: u32,
+    pub(crate) native: MongoDbNativeExtraction,
     pub(crate) partition: PartitionPlan,
     pub(crate) memory: Arc<dyn MemoryCoordinator>,
     pub(crate) egress: SourceEgressScope,
@@ -122,6 +120,11 @@ pub(crate) async fn execute_mongodb_collection(
         &input.partition,
     )?;
     let query = build_query(&input.descriptor, &input.schema, &input.partition, &scan)?;
+    input.native.validate_for_descriptor(&input.descriptor)?;
+    let native_identity_sha256 = input.native.identity_hash()?;
+    let command = input
+        .native
+        .execution_command(query, input.cursor_batch_rows);
     let full_scan_position = input
         .descriptor
         .cursor
@@ -132,6 +135,7 @@ pub(crate) async fn execute_mongodb_collection(
                 &input.database,
                 &input.collection,
                 &input.partition,
+                &native_identity_sha256,
             )
         })
         .transpose()?;
@@ -166,21 +170,21 @@ pub(crate) async fn execute_mongodb_collection(
             )?,
         ))
         .await?;
-    let mut find = collection
-        .find(query.filter)
-        .projection(query.projection)
-        .batch_size(MONGODB_CURSOR_BATCH_ROWS);
-    if !query.sort.is_empty() {
-        find = find.sort(query.sort);
-    }
-    if let Some(limit) = query.limit {
-        find = find.limit(limit);
-    }
     let mut cursor = cancellation
         .await_or_cancel(async {
-            find.batch()
-                .await
-                .map_err(|error| classify_mongodb_error("open MongoDB raw BSON cursor", error))
+            match command {
+                MongoDbReadCommand::Find { filter, options } => {
+                    collection.find(filter).with_options(*options).batch().await
+                }
+                MongoDbReadCommand::Aggregate { pipeline, options } => {
+                    collection
+                        .aggregate(pipeline)
+                        .with_options(*options)
+                        .batch()
+                        .await
+                }
+            }
+            .map_err(|error| classify_mongodb_error("open MongoDB raw BSON cursor", error))
         })
         .await?;
     let mut batch_index = 0_u64;
@@ -223,7 +227,7 @@ pub(crate) async fn execute_mongodb_collection(
             let decode_rows = maximum_safe_decode_prefix(
                 decoder_schema.as_ref(),
                 &documents[decoded_offset..],
-                input.batch_rows as usize,
+                input.output_batch_rows as usize,
             )?;
             let decoded_end = decoded_offset.saturating_add(decode_rows);
             decode_and_send_documents(
@@ -313,7 +317,7 @@ async fn decode_and_send_documents(
     })?;
     if retained_bytes == 0 || retained_total > MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES {
         return Err(CdfError::data(format!(
-            "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce batch_rows or project fewer fields"
+            "MongoDB Arrow batch and drift evidence retain {retained_total} bytes outside the compiled 1..={MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES}-byte bound; reduce output_batch_rows or project fewer fields"
         )));
     }
     output_lease.reconcile(retained_total)?;
@@ -329,6 +333,7 @@ pub(crate) fn full_scan_completion_position(
     database: &MongoDbIdentifier,
     collection: &MongoDbIdentifier,
     partition: &PartitionPlan,
+    native_identity_sha256: &str,
 ) -> Result<SourcePosition> {
     let authority = (
         MONGODB_FULL_SCAN_COMPLETION_PROTOCOL,
@@ -337,6 +342,7 @@ pub(crate) fn full_scan_completion_position(
         collection.as_str(),
         partition.partition_id.as_str(),
         &partition.scan_intent,
+        native_identity_sha256,
     );
     let opaque_blob = serde_json::to_vec(&authority).map_err(|error| {
         CdfError::internal(format!("serialize MongoDB full-scan authority: {error}"))
