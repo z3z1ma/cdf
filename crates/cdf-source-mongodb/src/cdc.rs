@@ -14,7 +14,9 @@ use cdf_kernel::{
 };
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{ExecutionServices, SourceEgressScope, TaskStreamSender};
+use futures::StreamExt;
 use mongodb::{
+    bson::{Document, doc},
     change_stream::{
         ChangeStream,
         event::{ChangeStreamEvent, OperationType, ResumeToken},
@@ -31,12 +33,17 @@ use crate::{
     },
     error::classify_mongodb_error,
     execution::{
-        MONGODB_MAXIMUM_DECODE_BYTES, MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES, MongoDbClientHandle,
-        connect_mongodb,
+        MONGODB_MAXIMUM_DECODE_BYTES, MONGODB_MAXIMUM_OUTPUT_BATCH_BYTES,
+        MONGODB_MAXIMUM_WIRE_BATCH_BYTES, MongoDbClientHandle, connect_mongodb,
     },
     identifier::MongoDbIdentifier,
+    native::MongoDbReadCommand,
+    query::{MongoDbQuery, source_field},
     resource::{current_physical_schema, validate_compiled_schema_evidence},
-    schema::{attach_expected_physical_types, decode_batch_with_physical_schema},
+    schema::{
+        attach_expected_physical_types, decode_batch_with_physical_schema,
+        maximum_safe_decode_prefix,
+    },
 };
 
 const MONGODB_CDC_PARTITION: &str = "mongodb-cdc";
@@ -53,6 +60,7 @@ pub(crate) struct MongoDbCdcResource {
     collection: Option<MongoDbIdentifier>,
     watch: MongoDbWatch,
     representation: MongoDbRepresentation,
+    bootstrap: MongoDbBootstrap,
     admitted_collections: Vec<String>,
     include_collections: Vec<glob::Pattern>,
     exclude_collections: Vec<glob::Pattern>,
@@ -60,6 +68,9 @@ pub(crate) struct MongoDbCdcResource {
     change_batch_rows: u32,
     change_max_await_ms: u64,
     change_comment: Option<String>,
+    snapshot_native: crate::native::MongoDbNativeExtraction,
+    cursor_batch_rows: u32,
+    output_batch_rows: u32,
     read_concern: Option<mongodb::options::ReadConcern>,
     selection_criteria: Option<mongodb::options::SelectionCriteria>,
     scope: cdf_kernel::MongoChangeStreamScope,
@@ -94,6 +105,13 @@ struct MongoDbCdcEventBatch {
     residuals_complete: bool,
 }
 
+struct MongoDbDecodedChangeEvent {
+    position: SourcePosition,
+    collection: String,
+    operation: CdcOperation,
+    batch: MongoDbCdcEventBatch,
+}
+
 impl MongoDbCdcEventBatch {
     fn exact(record_batch: RecordBatch, observed_schema: Option<SchemaRef>) -> Self {
         Self {
@@ -115,18 +133,13 @@ impl MongoDbCdcResource {
         egress: SourceEgressScope,
         execution: ExecutionServices,
     ) -> Result<Self> {
-        if physical.bootstrap == Some(MongoDbBootstrap::Snapshot) {
-            return Err(CdfError::contract(
-                "MongoDB CDC snapshot bootstrap requires the gapless snapshot handoff runtime, which is not available in this build",
-            ));
-        }
         let watch = physical
             .watch
             .ok_or_else(|| CdfError::contract("MongoDB CDC omitted its watch scope"))?;
         let representation = physical
             .representation
             .ok_or_else(|| CdfError::contract("MongoDB CDC omitted its representation"))?;
-        physical
+        let bootstrap = physical
             .bootstrap
             .ok_or_else(|| CdfError::contract("MongoDB CDC omitted its bootstrap"))?;
         validate_compiled_schema_evidence(compiled)?;
@@ -221,6 +234,7 @@ impl MongoDbCdcResource {
             collection: physical.collection.clone(),
             watch,
             representation,
+            bootstrap,
             admitted_collections,
             include_collections: compile_globs(&physical.include_collections)?,
             exclude_collections: compile_globs(&physical.exclude_collections)?,
@@ -228,6 +242,9 @@ impl MongoDbCdcResource {
             change_batch_rows: physical.change_batch_rows,
             change_max_await_ms: physical.change_max_await_ms,
             change_comment: physical.change_comment.clone(),
+            snapshot_native: physical.native.clone(),
+            cursor_batch_rows: physical.cursor_batch_rows,
+            output_batch_rows: physical.output_batch_rows,
             read_concern: physical.native.change_stream_read_concern(),
             selection_criteria: physical.native.change_stream_selection_criteria(),
             scope: mongodb_change_stream_scope(&physical)?,
@@ -658,34 +675,80 @@ async fn execute_change_stream(
     preflight_change_stream(&resource, handle, &cancellation).await?;
     let mut stream = open_change_stream(&resource, handle, resume, &cancellation).await?;
     let mut ordinal = 0_u64;
-    if partition.start_position.is_none()
-        && let Some(token) = stream.resume_token()
-    {
-        let position = encode_resume_position(
-            &token,
-            &resource.scope,
-            cdf_kernel::MongoResumeTokenSource::PostBatch,
-        )?;
-        send_control(
-            &resource,
-            &partition,
-            &memory,
-            &mut sender,
-            &mut ordinal,
-            CdcSettlementBoundary::Begin,
-            &position,
-        )
-        .await?;
-        send_control(
-            &resource,
-            &partition,
-            &memory,
-            &mut sender,
-            &mut ordinal,
-            CdcSettlementBoundary::Terminal,
-            &position,
-        )
-        .await?;
+    if partition.start_position.is_none() {
+        match resource.bootstrap {
+            MongoDbBootstrap::Latest => {
+                if let Some(token) = stream.resume_token() {
+                    let position = encode_resume_position(
+                        &token,
+                        &resource.scope,
+                        cdf_kernel::MongoResumeTokenSource::PostBatch,
+                    )?;
+                    send_empty_prefix(
+                        &resource,
+                        &partition,
+                        &memory,
+                        &mut sender,
+                        &mut ordinal,
+                        &position,
+                    )
+                    .await?;
+                }
+            }
+            MongoDbBootstrap::Snapshot => {
+                let (position, pending_event) =
+                    initial_snapshot_frontier(&resource, &mut stream, &cancellation).await?;
+                send_control(
+                    &resource,
+                    &partition,
+                    &memory,
+                    &mut sender,
+                    &mut ordinal,
+                    CdcSettlementBoundary::Begin,
+                    &position,
+                )
+                .await?;
+                publish_snapshot(
+                    &resource,
+                    &partition,
+                    handle,
+                    &memory,
+                    &mut sender,
+                    &mut ordinal,
+                    &position,
+                    &cancellation,
+                )
+                .await?;
+                if let Some(event) = pending_event {
+                    let decoded = decode_change_event(&resource, event)?;
+                    if decoded.position != position {
+                        return Err(CdfError::internal(
+                            "MongoDB snapshot bootstrap event token changed after binding",
+                        ));
+                    }
+                    send_decoded_change_event(
+                        &resource,
+                        &partition,
+                        decoded,
+                        &memory,
+                        &mut sender,
+                        &mut ordinal,
+                        None,
+                    )
+                    .await?;
+                }
+                send_control(
+                    &resource,
+                    &partition,
+                    &memory,
+                    &mut sender,
+                    &mut ordinal,
+                    CdcSettlementBoundary::Terminal,
+                    &position,
+                )
+                .await?;
+            }
+        }
     }
     loop {
         cancellation.check()?;
@@ -709,6 +772,71 @@ async fn execute_change_stream(
             &mut ordinal,
         )
         .await?;
+    }
+}
+
+async fn send_empty_prefix(
+    resource: &MongoDbCdcResource,
+    partition: &PartitionPlan,
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    sender: &mut TaskStreamSender<Batch>,
+    ordinal: &mut u64,
+    position: &SourcePosition,
+) -> Result<()> {
+    send_control(
+        resource,
+        partition,
+        memory,
+        sender,
+        ordinal,
+        CdcSettlementBoundary::Begin,
+        position,
+    )
+    .await?;
+    send_control(
+        resource,
+        partition,
+        memory,
+        sender,
+        ordinal,
+        CdcSettlementBoundary::Terminal,
+        position,
+    )
+    .await
+}
+
+async fn initial_snapshot_frontier(
+    resource: &MongoDbCdcResource,
+    stream: &mut ChangeStream<ChangeStreamEvent<Document>>,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<(SourcePosition, Option<ChangeStreamEvent<Document>>)> {
+    loop {
+        cancellation.check()?;
+        if let Some(token) = stream.resume_token() {
+            return Ok((
+                encode_resume_position(
+                    &token,
+                    &resource.scope,
+                    cdf_kernel::MongoResumeTokenSource::PostBatch,
+                )?,
+                None,
+            ));
+        }
+        let event = cancellation
+            .await_or_cancel(async {
+                stream.next_if_any().await.map_err(|error| {
+                    classify_mongodb_error("establish MongoDB snapshot handoff token", error)
+                })
+            })
+            .await?;
+        if let Some(event) = event {
+            let position = encode_resume_position(
+                &event.id,
+                &resource.scope,
+                cdf_kernel::MongoResumeTokenSource::Event,
+            )?;
+            return Ok((position, Some(event)));
+        }
     }
 }
 
@@ -872,6 +1000,300 @@ fn runtime_change_pipeline(resource: &MongoDbCdcResource) -> Vec<mongodb::bson::
     pipeline
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn publish_snapshot(
+    resource: &MongoDbCdcResource,
+    partition: &PartitionPlan,
+    handle: &MongoDbClientHandle,
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    sender: &mut TaskStreamSender<Batch>,
+    ordinal: &mut u64,
+    position: &SourcePosition,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<()> {
+    for collection in &resource.admitted_collections {
+        publish_collection_snapshot(
+            resource,
+            partition,
+            handle,
+            collection,
+            memory,
+            sender,
+            ordinal,
+            position,
+            cancellation,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_collection_snapshot(
+    resource: &MongoDbCdcResource,
+    partition: &PartitionPlan,
+    handle: &MongoDbClientHandle,
+    collection_name: &str,
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    sender: &mut TaskStreamSender<Batch>,
+    ordinal: &mut u64,
+    position: &SourcePosition,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<()> {
+    let command = resource.snapshot_native.execution_command(
+        snapshot_query(resource, collection_name)?,
+        resource.cursor_batch_rows,
+    );
+    let collection = handle
+        .client
+        .database(resource.database.as_str())
+        .collection::<Document>(collection_name);
+    let cursor_lease = cancellation
+        .await_or_cancel(reserve(
+            Arc::clone(memory),
+            ReservationRequest::new(
+                ConsumerKey::new("mongodb-cdc-snapshot-cursor", MemoryClass::Decode)?,
+                MONGODB_MAXIMUM_WIRE_BATCH_BYTES,
+            )?,
+        ))
+        .await?;
+    let mut cursor = cancellation
+        .await_or_cancel(async {
+            match command {
+                MongoDbReadCommand::Find { filter, options } => {
+                    collection.find(filter).with_options(*options).batch().await
+                }
+                MongoDbReadCommand::Aggregate { pipeline, options } => {
+                    collection
+                        .aggregate(pipeline)
+                        .with_options(*options)
+                        .batch()
+                        .await
+                }
+            }
+            .map_err(|error| classify_mongodb_error("open MongoDB CDC snapshot cursor", error))
+        })
+        .await?;
+    let mut source_row_offset = 0_u64;
+    while let Some(raw_batch) =
+        cancellation
+            .await_or_cancel(async {
+                cursor.next().await.transpose().map_err(|error| {
+                    classify_mongodb_error("read MongoDB CDC snapshot cursor", error)
+                })
+            })
+            .await?
+    {
+        let raw_bytes = u64::try_from(raw_batch.as_raw_document().as_bytes().len())
+            .map_err(|_| CdfError::internal("MongoDB CDC snapshot batch exceeds u64"))?;
+        if raw_bytes > MONGODB_MAXIMUM_WIRE_BATCH_BYTES {
+            return Err(CdfError::data(format!(
+                "MongoDB CDC snapshot wire batch contains {raw_bytes} bytes beyond the {MONGODB_MAXIMUM_WIRE_BATCH_BYTES}-byte admitted bound"
+            )));
+        }
+        let documents = raw_batch
+            .doc_slices()
+            .map_err(|error| classify_mongodb_error("decode MongoDB CDC snapshot batch", error))?
+            .into_iter()
+            .map(|value| {
+                value
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "MongoDB CDC snapshot contains malformed BSON: {error}"
+                        ))
+                    })?
+                    .as_document()
+                    .ok_or_else(|| CdfError::data("MongoDB CDC snapshot item is not a document"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut decoded_offset = 0_usize;
+        while decoded_offset < documents.len() {
+            let decoded_rows =
+                snapshot_decode_rows(resource, collection_name, &documents[decoded_offset..])?;
+            let decoded_end = decoded_offset
+                .checked_add(decoded_rows)
+                .ok_or_else(|| CdfError::internal("MongoDB CDC snapshot decode offset overflow"))?;
+            let decode_lease = cancellation
+                .await_or_cancel(reserve(
+                    Arc::clone(memory),
+                    ReservationRequest::new(
+                        ConsumerKey::new("mongodb-cdc-snapshot-decode", MemoryClass::Decode)?,
+                        MONGODB_MAXIMUM_DECODE_BYTES,
+                    )?,
+                ))
+                .await?;
+            let batch = decode_snapshot_batch(
+                resource,
+                collection_name,
+                &documents[decoded_offset..decoded_end],
+                source_row_offset,
+            )?;
+            send_decoded_change_event(
+                resource,
+                partition,
+                MongoDbDecodedChangeEvent {
+                    position: position.clone(),
+                    collection: collection_name.to_owned(),
+                    operation: CdcOperation::Insert,
+                    batch,
+                },
+                memory,
+                sender,
+                ordinal,
+                Some(decode_lease),
+            )
+            .await?;
+            source_row_offset = source_row_offset
+                .checked_add(u64::try_from(decoded_rows).map_err(|_| {
+                    CdfError::internal("MongoDB CDC snapshot row count exceeds u64")
+                })?)
+                .ok_or_else(|| CdfError::internal("MongoDB CDC snapshot row offset overflow"))?;
+            decoded_offset = decoded_end;
+        }
+    }
+    drop(cursor_lease);
+    Ok(())
+}
+
+fn snapshot_query(resource: &MongoDbCdcResource, collection: &str) -> Result<MongoDbQuery> {
+    let mut projection = Document::new();
+    if resource.representation == MongoDbRepresentation::Typed {
+        let schema = if resource.watch == MongoDbWatch::Database {
+            &resource.typed_route(collection)?.document_effective_schema
+        } else {
+            &resource.schema
+        };
+        for field in schema.fields() {
+            projection.insert(source_field(field.as_ref())?, 1_i32);
+        }
+    }
+    Ok(MongoDbQuery {
+        filter: Document::new(),
+        projection,
+        sort: doc! {"_id": 1_i32},
+        limit: None,
+    })
+}
+
+fn snapshot_decode_rows(
+    resource: &MongoDbCdcResource,
+    collection: &str,
+    documents: &[&mongodb::bson::raw::RawDocument],
+) -> Result<usize> {
+    if resource.representation == MongoDbRepresentation::Envelope {
+        return Ok(documents
+            .len()
+            .min(resource.output_batch_rows as usize)
+            .max(1));
+    }
+    let decoder = if resource.watch == MongoDbWatch::Database {
+        &resource.typed_route(collection)?.decoder_schema
+    } else {
+        resource
+            .decoder_schema
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("typed MongoDB CDC omitted decoder schema"))?
+    };
+    maximum_safe_decode_prefix(
+        decoder.as_ref(),
+        documents,
+        resource.output_batch_rows as usize,
+    )
+}
+
+fn decode_snapshot_batch(
+    resource: &MongoDbCdcResource,
+    collection: &str,
+    documents: &[&mongodb::bson::raw::RawDocument],
+    source_row_offset: u64,
+) -> Result<MongoDbCdcEventBatch> {
+    if resource.representation == MongoDbRepresentation::Envelope {
+        return envelope_snapshot_batch(resource, collection, documents);
+    }
+    let route = (resource.watch == MongoDbWatch::Database)
+        .then(|| resource.typed_route(collection))
+        .transpose()?;
+    let decoder = route
+        .map(|route| &route.decoder_schema)
+        .or(resource.decoder_schema.as_ref())
+        .ok_or_else(|| CdfError::internal("typed MongoDB CDC omitted snapshot decoder schema"))?;
+    let physical = route
+        .map(|route| &route.document_physical_schema)
+        .or(resource.physical_schema.as_ref())
+        .ok_or_else(|| CdfError::internal("typed MongoDB CDC omitted snapshot physical schema"))?;
+    let effective = route
+        .map(|route| &route.document_effective_schema)
+        .unwrap_or(&resource.schema);
+    let decoded = decode_batch_with_physical_schema(
+        Arc::clone(decoder),
+        Arc::clone(decoder),
+        Arc::clone(effective),
+        Arc::clone(physical),
+        documents,
+        source_row_offset,
+    )?;
+    let observed_schema = route
+        .map(|route| Arc::clone(&route.physical_schema))
+        .or_else(|| resource.physical_schema.clone());
+    let record_batch = match route {
+        Some(route) => append_collection_route(
+            decoded.record_batch,
+            Arc::clone(&route.effective_schema),
+            collection,
+        )?,
+        None => decoded.record_batch,
+    };
+    Ok(MongoDbCdcEventBatch {
+        record_batch,
+        observed_schema,
+        residual_candidates: decoded.residual_candidates,
+        physical_reconciliations: decoded.physical_reconciliations,
+        pre_contract_evidence_bytes: decoded.pre_contract_evidence_bytes,
+        residuals_complete: true,
+    })
+}
+
+fn envelope_snapshot_batch(
+    resource: &MongoDbCdcResource,
+    collection: &str,
+    documents: &[&mongodb::bson::raw::RawDocument],
+) -> Result<MongoDbCdcEventBatch> {
+    let mut keys = Vec::with_capacity(documents.len());
+    let mut values = Vec::with_capacity(documents.len());
+    for raw in documents {
+        let document =
+            mongodb::bson::deserialize_from_slice::<Document>(raw.as_bytes()).map_err(|error| {
+                CdfError::data(format!("decode MongoDB CDC snapshot document: {error}"))
+            })?;
+        let id = document
+            .get("_id")
+            .cloned()
+            .ok_or_else(|| CdfError::data("MongoDB CDC snapshot document omitted `_id`"))?;
+        keys.push(canonical_extjson(&doc! {"_id": id})?);
+        values.push(canonical_extjson(&document)?);
+    }
+    let rows = documents.len();
+    let record_batch = RecordBatch::try_new(
+        Arc::clone(&resource.schema),
+        vec![
+            Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                resource.database.as_str(),
+                rows,
+            ))) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                collection, rows,
+            ))) as ArrayRef,
+            Arc::new(StringArray::from(keys)) as ArrayRef,
+            Arc::new(StringArray::from(values)) as ArrayRef,
+        ],
+    )
+    .map_err(CdfError::from)?;
+    Ok(MongoDbCdcEventBatch::exact(
+        record_batch,
+        resource.physical_schema.clone(),
+    ))
+}
+
 async fn publish_event(
     resource: &MongoDbCdcResource,
     partition: &PartitionPlan,
@@ -880,6 +1302,35 @@ async fn publish_event(
     sender: &mut TaskStreamSender<Batch>,
     ordinal: &mut u64,
 ) -> Result<()> {
+    let decoded = decode_change_event(resource, event)?;
+    let position = decoded.position.clone();
+    send_control(
+        resource,
+        partition,
+        memory,
+        sender,
+        ordinal,
+        CdcSettlementBoundary::Begin,
+        &position,
+    )
+    .await?;
+    send_decoded_change_event(resource, partition, decoded, memory, sender, ordinal, None).await?;
+    send_control(
+        resource,
+        partition,
+        memory,
+        sender,
+        ordinal,
+        CdcSettlementBoundary::Terminal,
+        &position,
+    )
+    .await
+}
+
+fn decode_change_event(
+    resource: &MongoDbCdcResource,
+    event: ChangeStreamEvent<Document>,
+) -> Result<MongoDbDecodedChangeEvent> {
     let position = encode_resume_position(
         &event.id,
         &resource.scope,
@@ -914,17 +1365,7 @@ async fn publish_event(
             )));
         }
     };
-    send_control(
-        resource,
-        partition,
-        memory,
-        sender,
-        ordinal,
-        CdcSettlementBoundary::Begin,
-        &position,
-    )
-    .await?;
-    let decoded = match (resource.representation, operation) {
+    let batch = match (resource.representation, operation) {
         (MongoDbRepresentation::Envelope, CdcOperation::Delete) => MongoDbCdcEventBatch::exact(
             envelope_delete_batch(resource, collection, event.document_key.as_ref())?,
             None,
@@ -946,16 +1387,44 @@ async fn publish_event(
             typed_upsert_batch(resource, collection, event.full_document.as_ref())?
         }
     };
+    Ok(MongoDbDecodedChangeEvent {
+        position,
+        collection: collection.to_owned(),
+        operation,
+        batch,
+    })
+}
+
+async fn send_decoded_change_event(
+    resource: &MongoDbCdcResource,
+    partition: &PartitionPlan,
+    decoded: MongoDbDecodedChangeEvent,
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    sender: &mut TaskStreamSender<Batch>,
+    ordinal: &mut u64,
+    preallocated_lease: Option<cdf_memory::MemoryLease>,
+) -> Result<()> {
+    let MongoDbDecodedChangeEvent {
+        position,
+        collection,
+        operation,
+        batch: decoded,
+    } = decoded;
     let record_batch = decoded.record_batch;
     let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-    let lease = reserve(
-        Arc::clone(memory),
-        ReservationRequest::new(
-            ConsumerKey::new("mongodb-cdc-event", MemoryClass::Decode)?,
-            MONGODB_MAXIMUM_DECODE_BYTES,
-        )?,
-    )
-    .await?;
+    let lease = match preallocated_lease {
+        Some(lease) => lease,
+        None => {
+            reserve(
+                Arc::clone(memory),
+                ReservationRequest::new(
+                    ConsumerKey::new("mongodb-cdc-event", MemoryClass::Decode)?,
+                    MONGODB_MAXIMUM_DECODE_BYTES,
+                )?,
+            )
+            .await?
+        }
+    };
     *ordinal = ordinal.saturating_add(1);
     let observed_schema = decoded
         .observed_schema
@@ -981,7 +1450,7 @@ async fn publish_event(
     if decoded.residuals_complete {
         batch.header.mark_materialized_residuals_complete();
     }
-    if let Some(observation_id) = resource.observation_ids.get(collection) {
+    if let Some(observation_id) = resource.observation_ids.get(&collection) {
         batch
             .header
             .bind_schema_observation(observation_id.clone())?;
@@ -1004,17 +1473,7 @@ async fn publish_event(
     }
     lease.reconcile(retained_total)?;
     let batch = batch.with_retention(PayloadRetention::new(Arc::new(lease), retained_total)?)?;
-    sender.send(batch).await?;
-    send_control(
-        resource,
-        partition,
-        memory,
-        sender,
-        ordinal,
-        CdcSettlementBoundary::Terminal,
-        &position,
-    )
-    .await
+    sender.send(batch).await
 }
 
 async fn send_control(
@@ -1263,8 +1722,11 @@ fn append_collection_route(
             "typed MongoDB routed output schema does not append its collection authority",
         ));
     }
+    let rows = batch.num_rows();
     let mut columns = batch.columns().to_vec();
-    columns.push(Arc::new(StringArray::from(vec![collection])) as ArrayRef);
+    columns.push(Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+        collection, rows,
+    ))) as ArrayRef);
     RecordBatch::try_new(output_schema, columns).map_err(CdfError::from)
 }
 
@@ -1393,7 +1855,7 @@ fn decode_resume_position(
 mod tests {
     use std::str::FromStr;
 
-    use arrow_array::StringArray;
+    use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field};
 
     use super::*;
@@ -1492,6 +1954,35 @@ mod tests {
                 .unwrap()
                 .value(0),
             "order-1"
+        );
+    }
+
+    #[test]
+    fn routed_snapshot_batches_repeat_collection_authority_for_every_row() {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("source_collection", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StringArray::from(vec!["one", "two", "three"])) as ArrayRef],
+        )
+        .unwrap();
+
+        let routed = append_collection_route(batch, output_schema, "orders").unwrap();
+
+        assert_eq!(routed.num_rows(), 3);
+        let routes = routed
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            (0..routes.len())
+                .map(|row| routes.value(row))
+                .collect::<Vec<_>>(),
+            vec!["orders", "orders", "orders"]
         );
     }
 }

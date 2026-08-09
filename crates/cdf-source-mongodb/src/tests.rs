@@ -282,6 +282,39 @@ fn cdc_snapshot_accepts_snapshot_native_options() {
 
     assert_eq!(plan.redacted_options["bootstrap"], "snapshot");
     assert_eq!(plan.redacted_options["native"]["max_time_ms"], 300_000);
+
+    let error = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+            ]),
+            resource_options: BTreeMap::from([
+                ("collection".to_owned(), serde_json::json!("orders")),
+                ("mode".to_owned(), serde_json::json!("cdc")),
+                ("bootstrap".to_owned(), serde_json::json!("snapshot")),
+                (
+                    "read_preference".to_owned(),
+                    serde_json::json!(r#"{"mode":"secondaryPreferred"}"#),
+                ),
+            ]),
+            descriptor: cdc_descriptor(false, "id"),
+            schema: schema(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap_err();
+    assert!(error.message.contains("requires primary read preference"));
 }
 
 #[test]

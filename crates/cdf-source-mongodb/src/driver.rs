@@ -1916,7 +1916,7 @@ pub(crate) struct MongoDbPhysicalPlan {
     aws_session_token: Option<String>,
     max_pool_size: u32,
     pub(crate) stream_buffer_batches: usize,
-    cursor_batch_rows: u32,
+    pub(crate) cursor_batch_rows: u32,
     pub(crate) output_batch_rows: u32,
     discovery_records: u64,
     discovery_bytes: u64,

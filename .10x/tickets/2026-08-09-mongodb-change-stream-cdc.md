@@ -179,6 +179,17 @@ retention, and live replica-set/Atlas certification.
   receipt/checkpoint proof and do not create or replace a target. Destination planning now previews
   keyed package authority for merge/CDC rather than a fictitious row package.
 
+- 2026-08-09: Implemented integrated snapshot bootstrap for collection and database watches. The
+  adapter opens the exact change stream first, binds a server-issued post-batch/event resume token,
+  scans the canonical admitted inventory through the native raw-BSON batch and Arrow decoder path,
+  emits snapshot documents as complete CDC upserts inside one token-bound settlement prefix, then
+  consumes changes after that token. A first event encountered while establishing the token is
+  included in the same prefix, so it cannot be skipped by checkpoint recovery. Cursor/decode
+  memory is reserved before allocation, source cancellation remains active throughout, and the
+  compiled transaction ceiling fails the handoff before checkpoint advancement if the complete
+  bootstrap unit is too large. Snapshot bootstrap requires primary read preference; a lagging
+  secondary cannot establish gapless initial state relative to the stream token.
+
 ## Blockers
 
 None. Snapshot handoff, continuous epoch execution, and the remaining operational certificates are
@@ -259,6 +270,22 @@ open implementation work, not unresolved semantics.
   (`status=collection-updated-a`, `amount=2201`) and no deleted `-b` document. This run used the
   debug binary as an integration iteration; the required production-profile final certificate
   remains separately open.
+- Live Atlas typed database snapshot handoff: portable plan
+  `atlas-database-typed-cdc-snapshot1.plan.json` opened one database stream before scanning the two
+  compiled collections and package
+  `pkg-portable-mongo-live-atlas-database-typed-cdc-snapshot-83998-1786319275018883000` atomically
+  committed 32 independently typed snapshot upserts (9 invoices and 23 orders) across two routed
+  tables under one receipt/checkpoint. A document written during the handoff window is present in
+  the orders target. The next portable plan resumed from that checkpoint, applied only one
+  post-token update (not the 32-row snapshot), and the destination now contains
+  `status=handoff-resumed`, `amount=4401`. These were debug-binary integration iterations against
+  authorized Atlas; the separate production-profile full-database CDC certificate above remains
+  the final deployment-profile proof.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb --lib` — all 61 MongoDB adapter tests
+  pass after snapshot handoff, including multi-row typed route authority and primary-only snapshot
+  bootstrap validation. Strict affected-package Clippy passes for MongoDB, builtin composition,
+  project, and CLI; the explicit cognitive-complexity diagnostic reports only the pre-existing
+  kernel Arrow type parser and no changed MongoDB function.
 
 ## Review
 

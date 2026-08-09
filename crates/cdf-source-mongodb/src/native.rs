@@ -429,6 +429,16 @@ impl MongoDbNativeExtraction {
                 "MongoDB change streams accept only majority read concern or the server default",
             ));
         }
+        if bootstrap == crate::driver::MongoDbBootstrap::Snapshot
+            && self
+                .read_preference
+                .as_ref()
+                .is_some_and(|preference| !matches!(preference, ReadPreference::Primary))
+        {
+            return Err(CdfError::contract(
+                "MongoDB CDC snapshot bootstrap requires primary read preference so the snapshot cannot lag behind its change-stream handoff token",
+            ));
+        }
         Ok(())
     }
 
