@@ -33,7 +33,7 @@ during a long read rather than only at final package publication.
 
 - `.10x/specs/cli-live-progress.md`
 - `.10x/tickets/done/2026-08-06-u6b-default-live-telemetry.md`
-- `.10x/tickets/2026-08-02-mongodb-source-connector.md`
+- `.10x/tickets/done/2026-08-02-mongodb-source-connector.md`
 
 ## Assumptions
 

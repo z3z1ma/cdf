@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-02
 Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
@@ -387,6 +387,28 @@ or implicit Extended JSON coercion.
   driver schema. `cargo machete --with-metadata` found no unused dependency; the focused cognitive-
   complexity diagnostic reported only the pre-existing kernel Arrow-type parser, outside this
   change. `graphify update .` remains unavailable because `graphify` is not installed.
+- 2026-08-08: Closed the native live lifecycle with the ordinary thin-LTO `release` binary at
+  `e19ad6ef`, built with bundled DuckDB in 5m21s. The real sandbox statically validated all 22
+  authored resources after deleting the unshipped source-level batch option. The default-path
+  native `find` resource intentionally omitted cursor/output batch overrides; the aggregation
+  resource explicitly selected the unchanged 8,192-row wire and 65,536-row Arrow defaults. Both
+  compiled against Atlas 7.0.40, exported portable plans, passed no-effect preflight and first-use
+  authority validation, then executed against `floqast-fq12.depreciation-items`. The complete
+  `find` read 417,114 rows / 58 MiB in 51 wire batches over 61 seconds, packaged 417,114 rows /
+  13 MiB, loaded and verified DuckDB, recorded a receipt, and committed its checkpoint. The native
+  aggregation's authored `$match`/`$limit` pipeline read exactly 1,000 rows / 144 KiB, packaged and
+  loaded 1,000 rows / 32 KiB, recorded a receipt, and committed its checkpoint in 874ms. Direct
+  DuckDB queries returned exactly 417,114 and 1,000 rows. `cdf inspect run` classified both runs as
+  terminal success with available receipts, checkpointed packages, and committed checkpoints;
+  artifact-only replay of each package made no source contact and returned receipt-backed duplicate
+  no-ops. Live progress continuously reported elapsed time, rows, bytes, batches, segments, and
+  rates. No credential or native-query literal was recorded in this ticket.
+- 2026-08-08: An exploratory plan-level `--limit 1000` over the otherwise complete `find` scan
+  correctly remained checkpoint-ineligible under the canonical-frontier decision, but that fact
+  was detected only after reading one wire batch and writing a partial package. The immutable
+  package was preserved under a diagnostic sandbox name before the complete run. The product-level
+  fail-before-contact improvement is recorded separately; it does not challenge native MongoDB
+  correctness or the complete lifecycle evidence above.
 
 ## Blockers
 
@@ -409,9 +431,10 @@ Two obligations follow from that decision and belong to this ticket's closure:
 
 ## Evidence
 
-- Forty-five focused source unit tests pass, including exact BSON mapping, depth-bounded discovery,
+- Fifty-one focused source unit tests pass, including exact BSON mapping, depth-bounded discovery,
   opaque Canonical Extended JSON, drift, duplicate-key,
-  injection, portability/redaction, cursor, payload-bound, and error-wrapper behavior.
+  injection, native find/aggregation identity and validation, portability/redaction, cursor,
+  payload-bound, and error-wrapper behavior.
 - The authorized Atlas 7.0.40 finite lifecycle reaches compile, plan, package, DuckDB receipt,
   checkpoint, package verification, and direct destination row-count verification over real data.
 - The selected live generic source shard passes all required cells against MongoDB 8.0.13,
@@ -425,6 +448,10 @@ Two obligations follow from that decision and belong to this ticket's closure:
   and catalog gates pass; 91/92 general conformance laws pass, with the remaining pre-existing CLI
   fixture failure recorded in the journal. The fresh default-depth Atlas release lifecycle passed
   at `8260bfb9` with an opaque document column and no governed residual rows.
+- Release `e19ad6ef` proves native find and aggregation compile, portable plan export/import,
+  first-use attestation, live progress, package finalization, DuckDB receipt, checkpoint, direct
+  row counts, and source-free duplicate package replay against the largest authorized Atlas
+  collection while retaining the measured production defaults.
 
 ## Review
 
@@ -441,6 +468,11 @@ Two obligations follow from that decision and belong to this ticket's closure:
 - The user explicitly required no additional subagent/red-team pass for the bounded-depth change;
   closure relies on the existing independent connector reviews plus the focused behavioral,
   conformance, package-integrity, and live Atlas evidence recorded above.
+- The same user direction governs the native extension. A fresh primary closure inspection traced
+  option placement, canonical BSON/read-preference identity, discovery/runtime parity, read-only
+  stage rejection, redaction, source-generation attestation, and the complete live package gate.
+  No critical or significant issue remained; focused strict Clippy and the 51-test adapter suite
+  were already green, and both native live/replay paths closed successfully.
 
 ## Retrospective
 
@@ -462,3 +494,9 @@ Two obligations follow from that decision and belong to this ticket's closure:
   complex boundary values as opaque semantic values avoids map-key cardinality explosions while
   preserving useful top-level primitive typing and ordinary governed drift for later primitive
   incompatibilities.
+- Native query literals require two simultaneous representations: exact ordered BSON in compiled
+  authority and only shape/hash evidence in human surfaces. Reusing JSON maps for both would either
+  lose BSON meaning or leak literals.
+- Wire cursor cardinality and Arrow output cardinality are independent operational controls. The
+  live closure kept the measured 8,192/65,536 defaults and showed that resource-level knobs can be
+  explicit without changing the default path.

@@ -6,7 +6,7 @@ Updated: 2026-08-07
 
 ## Context
 
-`.10x/tickets/2026-08-02-mongodb-source-connector.md` was `blocked` on a gap between the advertised
+`.10x/tickets/done/2026-08-02-mongodb-source-connector.md` was `blocked` on a gap between the advertised
 MongoDB connection surface and CDF's egress authority.
 
 CDF authorizes source network egress through `SourceEgressAuthorizer`
@@ -69,6 +69,6 @@ same seam, at which point this decision should be revisited rather than extended
 
 ## References
 
-- `.10x/tickets/2026-08-02-mongodb-source-connector.md`
+- `.10x/tickets/done/2026-08-02-mongodb-source-connector.md`
 - `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 - `crates/cdf-runtime/src/source.rs`

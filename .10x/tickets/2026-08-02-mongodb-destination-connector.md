@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-02
 Updated: 2026-08-03
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
-Depends-On: .10x/tickets/2026-08-02-mongodb-source-connector.md
+Depends-On: .10x/tickets/done/2026-08-02-mongodb-source-connector.md
 
 # MongoDB destination connector
 

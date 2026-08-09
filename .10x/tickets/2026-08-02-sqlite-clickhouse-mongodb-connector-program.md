@@ -14,7 +14,7 @@ Deliver six first-party connectors in strict tranche order:
 2. `.10x/tickets/2026-08-02-sqlite-destination-connector.md`
 3. `.10x/tickets/2026-08-02-clickhouse-source-connector.md`
 4. `.10x/tickets/done/2026-08-02-clickhouse-destination-connector.md`
-5. `.10x/tickets/2026-08-02-mongodb-source-connector.md`
+5. `.10x/tickets/done/2026-08-02-mongodb-source-connector.md`
 6. `.10x/tickets/2026-08-02-mongodb-destination-connector.md`
 
 Each child owns implementation, focused connector validation, direct-library roofline evidence, an
