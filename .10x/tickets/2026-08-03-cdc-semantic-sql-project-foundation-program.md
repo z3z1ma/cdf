@@ -168,29 +168,32 @@ identity/graph work independently after the focused syntax/naming checkpoint is 
 
 ### Foundation lane B — Relational sources and MySQL
 
-**B0. Stable duplication map**
+**B0. Post-implementation duplication map**
 
-- inspect final Postgres/SQLite/ClickHouse source implementations after the active connector wave;
+- inspect final Postgres/SQLite/ClickHouse/MySQL native-query implementations after their adapter-
+  specific surfaces and live certificates close;
 - classify exact duplicate mechanics versus backend-specific SQL/catalog/protocol/decode behavior;
-- bound the first extraction and compiled-plan version effect of removing Postgres
-  `dialect=postgres`.
+- identify only stable engine/runtime concepts demonstrated by at least two connectors.
 
-**B1. `cdf-source-sql` extraction**
+Depends-On: completed adapter-native PostgreSQL, SQLite, ClickHouse, and MySQL query surfaces.
 
-- activate `.10x/specs/sql-source-commons.md` after ratification;
-- extract typed relational scan/catalog validation and shared conformance;
+**B1. Optional proven relational extraction**
+
+- shape a new focused contract from B0 evidence; the superseded `sql-source-commons` draft is not
+  implementation authority;
+- extract only typed relational scan/catalog concepts proven identical by finished adapters;
 - preserve concrete driver ids and adapter-owned dialect/protocol/error/performance;
-- remove the redundant Postgres dialect option intentionally.
+- preserve adapter-native public resource options and query validation.
 
-Depends-On: B0 and stable closure of overlapping active connector source work.
+Depends-On: B0.
 
 **B2. MySQL finite source**
 
-- new focused source spec/ticket based on current official protocol research;
+- implement `.10x/specs/mysql-native-query-source.md` in one `cdf-source-mysql` crate;
 - native binary path, consistent snapshot, complete type sheet, catalog/cursor semantics, roofline;
-- validate B1 without broadening it speculatively.
+- table and native query resources precede B0/B1 and reveal rather than consume common concepts.
 
-Depends-On: B1 and semantic-registry stop-line C1 unless explicitly waived.
+Depends-On: semantic-registry stop-line C1.
 
 **B3. MySQL destination**
 
@@ -478,7 +481,10 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/specs/retention-aware-package-collection.md`
 - `.10x/specs/shared-upstream-fanout-execution.md`
 - `.10x/specs/routed-destination-target-families.md`
-- `.10x/specs/sql-source-commons.md`
+- `.10x/specs/superseded/sql-source-commons.md`
+- `.10x/decisions/connector-native-capability-before-commons.md`
+- `.10x/specs/postgres-native-query-source.md`
+- `.10x/specs/mysql-native-query-source.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-source-resource-layout.md`
@@ -591,8 +597,9 @@ deferred lanes are explicitly parked with owners. For a full close:
   ratification: C1 closed at
   `.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`, so the MongoDB
   destination is an ordinary open child of the finite connector program.
-- `.10x/specs/sql-source-commons.md` remains `draft` and B2/B3 MySQL specs do not yet exist; both
-  are downstream of the ratified MySQL sequencing and are shaping work, not blockers on lane A.
+- `.10x/specs/superseded/sql-source-commons.md` is superseded by connector-first authority. The active finite
+  MySQL contract is `.10x/specs/mysql-native-query-source.md`; B0/B1 follow the finished adapter
+  rather than blocking it. B3 still requires its own destination contract.
 
 D3 has no remaining semantic blocker. The user ratified its query-first form, independent identity
 model, explicit source binding, structured values, clause grammar/order, defaults, trust,
@@ -600,6 +607,13 @@ disposition/merge keys, semantics, execution policy, relational exclusions, iden
 diagnostics, manifest obligations, and current-only cutover in full on 2026-08-04.
 
 ## Journal
+
+- 2026-08-08: The user rejected a unified grammar and explicitly ratified world-class connector-
+  native extraction before any engine/runtime commons. Accepted
+  `.10x/decisions/connector-native-capability-before-commons.md`, superseded the draft
+  `sql-source-commons` contract, activated adapter-specific MongoDB/PostgreSQL/SQLite/ClickHouse/
+  MySQL read-query contracts, and corrected lane B so standalone MySQL B2 precedes the evidence-
+  driven B0/B1 audit/extraction.
 
 - 2026-08-08: Reconciled the hook authority after review found stale shaping text. E0 is complete:
   the active decision already selects in-process PyO3, first-party-only trust, compile-time-audited

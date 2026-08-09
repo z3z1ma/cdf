@@ -427,8 +427,8 @@ graphs.
 | REST `records_transform` is accepted but inert | significant | Configuration claims a transform that never runs | `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md` |
 | Log positions have no committed-transaction authority or usable aggregation | critical before CDC | A checkpoint could be incomparable or land mid-transaction | `.10x/specs/cdc-log-source-foundation.md` and the new parent program |
 | `CdcMetadata`/`cdc_apply` vocabulary has no complete source/destination protocol | critical before CDC | Existence of enums can be mistaken for delivery support | `.10x/specs/cdc-log-source-foundation.md` |
-| Query-shaped sources duplicate relational planning mechanics | significant before MySQL | MySQL would either copy behavior or force a rushed universal dialect | `.10x/specs/sql-source-commons.md` |
-| Postgres exposes a constant-only `dialect=postgres` option | minor alone, significant as a boundary signal | Users restate driver identity and Postgres appears to own generic SQL | `.10x/specs/sql-source-commons.md` |
+| Query-shaped sources duplicate relational planning mechanics | significant before MySQL | MySQL would either copy behavior or force a rushed universal dialect | `.10x/specs/superseded/sql-source-commons.md` |
+| Postgres exposes a constant-only `dialect=postgres` option | minor alone, significant as a boundary signal | Users restate driver identity and Postgres appears to own generic SQL | `.10x/specs/superseded/sql-source-commons.md` |
 | Semantic tags are free-form while affecting redaction/exact-value behavior | significant | Meaning can drift without version/lock authority | `.10x/specs/semantic-type-registry.md` |
 | Lockfile is incomplete as compile output | significant before DSL | SQL files cannot produce a complete inspectable/reproducible project graph | `.10x/specs/project-compilation-manifest.md` |
 | SQL target IR is narrower than the proposed language | significant | An unrestricted parser would lower into DataFusion-only runtime semantics or fake support | `.10x/specs/sql-project-authoring.md` |

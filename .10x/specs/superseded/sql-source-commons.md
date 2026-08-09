@@ -1,8 +1,11 @@
-Status: draft
+Status: superseded
 Created: 2026-08-03
 Updated: 2026-08-03
 
 # SQL source commons
+
+Superseded by `.10x/decisions/connector-native-capability-before-commons.md`. Concrete adapters now
+precede any shared extraction, and no common public resource grammar is planned.
 
 ## Status and purpose
 

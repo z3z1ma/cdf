@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-07
+Updated: 2026-08-08
 Supersedes: `.10x/specs/superseded/sql-project-authoring.md`
 
 # Query-first SQL project authoring and native CDF lowering
@@ -374,7 +374,8 @@ D3 rejects before external I/O or native-plan publication:
 - nondeterministic, stable/volatile, ambient-session, UDF, extension, opaque, or otherwise D2-
   inadmissible functions even if DataFusion knows an output type;
 - table functions other than CDF's `upstream(...)` boundary;
-- DDL/DML, stored procedures, arbitrary source-native SQL/aggregation pipelines;
+- DDL/DML and stored procedures in CDF's outer relational language; adapter-native read queries
+  are allowed only as closed-schema `upstream(...)` arguments governed by that source connector;
 - runtime table-discovery expansion and row-level Python/WASM.
 
 General joins require multi-input source positions, consistency, checkpoint alignment,
@@ -632,13 +633,16 @@ D3 is authorized to implement:
 11. bounded and purpose-built drain execution syntax;
 12. native lowering and complete manifest recording;
 13. rejection/deletion of every retired authoring surface;
-14. continued rejection of joins, set operations, and multiple upstream relations.
+14. continued rejection of joins, set operations, and multiple upstream relations in the outer CDF
+    query;
+15. adapter-owned native read-query/filter/pipeline arguments validated and compiled by the
+    selected driver's closed resource schema.
 
 D3 is not authorized to implement path-inferred source identity, resource namespace/source
 equality, SQL-declared ids, connection details in SQL, joins/static lookup joins, `UNION ALL`,
 multiple upstream relations, aggregation/windows/subqueries, arbitrary SQL pass-through, source-
-native query text, runtime DataFusion planning, resident supervision, generic option bags, or
-templating.
+native query text outside a driver-owned resource argument, runtime DataFusion planning, resident
+supervision, untyped generic option bags, or templating.
 
 ## References
 

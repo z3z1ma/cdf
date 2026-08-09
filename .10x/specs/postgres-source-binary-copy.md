@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-08
 
 # PostgreSQL source binary COPY
 
@@ -97,9 +97,10 @@ and the binary path preserves the existing declared-schema compatibility surface
 
 ## Exclusions
 
-This tranche does not add arbitrary SQL resources, CDC/logical replication, native Arrow extension
-dependencies, automatic data-scanning schema inference, or speculative table partitioning. It does
-not call `jsonb` text lexically identical to the JSON originally submitted to PostgreSQL.
+This tranche does not add CDC/logical replication, native Arrow extension dependencies, automatic
+data-scanning schema inference, or speculative table partitioning. Native read-query resources are
+governed by `.10x/specs/postgres-native-query-source.md`. This contract does not call `jsonb` text
+lexically identical to the JSON originally submitted to PostgreSQL.
 
 ## Acceptance Criteria
 

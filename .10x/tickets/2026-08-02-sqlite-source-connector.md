@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 
 # SQLite source connector
@@ -10,21 +10,23 @@ Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Implement and ship `cdf-source-sqlite` under the SQLite table-source contract. Add only the minimal
 protocol-sharing surface justified by the paired destination. Enroll the driver through
 `cdf-builtin-drivers`, add data-driven conformance/live fixtures, operator documentation, and a
-release-mode direct-`rusqlite` source roofline cell. In the same tranche, correct the shipped
-Postgres source kind from the broad `sql` category to the concrete `postgres` identity and repair
+release-mode direct-`rusqlite` source roofline cell. Complete it with native read queries and
+resource-scoped discovery, output, busy, cache, and mmap controls. In the same tranche, correct the
+shipped Postgres source kind from the broad `sql` category to the concrete `postgres` identity and repair
 all Postgres-owned configuration, fixture, example, discovery, generated-artifact, and conformance
 uses. Do not mechanically rewrite synthetic/generic `sql` test values that are not Postgres
 identity.
 
 ## Non-goals
 
-Destination writes, CDC/triggers/session changesets, arbitrary SQL, persistent pragma changes,
+Destination writes, CDC/triggers/session changesets, persistent pragma changes,
 network-filesystem support, parallel-connection snapshot claims, and generic dialect multiplexing.
 
 ## Acceptance Criteria
 
 - Source configuration, discovery, add, compile, portability, health, preview, and run follow
-  `.10x/specs/sqlite-table-source.md` with exact redaction and error ownership.
+  `.10x/specs/sqlite-table-source.md` and `.10x/specs/sqlite-native-query-source.md` with exact
+  redaction and error ownership.
 - SQLite owns source kind `sqlite`; Postgres owns source kind `postgres`; no first-party driver owns
   the broad kind `sql`; and every identity-bearing Postgres/SQLite artifact agrees without an alias.
 - Read-only transaction streaming, schema freeze/drift handling, exact/inexact pushdown, stable
@@ -39,6 +41,8 @@ network-filesystem support, parallel-connection snapshot claims, and generic dia
 ## References
 
 - `.10x/specs/sqlite-table-source.md`
+- `.10x/specs/sqlite-native-query-source.md`
+- `.10x/decisions/connector-native-capability-before-commons.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/decisions/database-source-kind-identity.md`
@@ -49,12 +53,17 @@ network-filesystem support, parallel-connection snapshot claims, and generic dia
 ## Assumptions
 
 - Finite snapshot plus numeric/timestamp/date cursor behavior is user-ratified.
-- Table-only authoring is the smallest complete form of the ratified Postgres-like source model;
-  arbitrary SQL remains excluded by the governing spec.
+- Table and native read-query resources are user-ratified adapter-owned surfaces; a generic SQL
+  source grammar remains excluded.
 - The bundled SQLite 3.53.2 is above the WAL-reset fix and is record-backed by the research.
 - Unique `sqlite` and `postgres` source kinds were explicitly user-ratified on 2026-08-02.
 
 ## Journal
+
+- 2026-08-08: The user superseded table-only authoring and rejected a universal connector grammar.
+  This ticket now owns SQLite-native read queries and connection-local resource controls under
+  `.10x/specs/sqlite-native-query-source.md`; read-only statement proof and snapshot semantics
+  remain mandatory.
 
 - 2026-08-02: Executable ticket opened from the ratified source and roofline contracts.
 - 2026-08-02: Execution started. Read this ticket, its parent, every direct reference, the source

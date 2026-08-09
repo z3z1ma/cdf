@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-08
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 
 # ClickHouse source connector
@@ -9,18 +9,19 @@ Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 
 Implement and ship `cdf-source-clickhouse` on the official Rust client plus the Arrow 58
 `clickhouse-ext-arrow` path. Add built-in enrollment, data-driven and live type/cursor fixtures,
-operator documentation, and a release-mode direct-ArrowStream source roofline cell.
+operator documentation, a release-mode direct-ArrowStream source roofline cell, native read-query
+resources, and bounded adapter-native ClickHouse settings.
 
 ## Non-goals
 
-Destination writes, CDC, arbitrary SQL, a private native/TCP protocol, string-inferred temporal
+Destination writes, CDC, a private native/TCP protocol, string-inferred temporal
 cursors, or cross-query snapshot claims.
 
 ## Acceptance Criteria
 
 - Driver configuration, discovery, schema mapping, compile/portability, health, query generation,
   pushdown fidelity, cursor ordering, partial-stream failure, and execution implement
-  `.10x/specs/clickhouse-table-source.md`.
+  `.10x/specs/clickhouse-table-source.md` and `.10x/specs/clickhouse-native-query-source.md`.
 - Supported ClickHouse types round-trip through Arrow 58; unsupported types fail during discovery
   with field/type remediation and no stringification.
 - The source streams the official extension's opt-in bounded Arrow query batches through injected
@@ -36,6 +37,8 @@ cursors, or cross-query snapshot claims.
 ## References
 
 - `.10x/specs/clickhouse-table-source.md`
+- `.10x/specs/clickhouse-native-query-source.md`
+- `.10x/decisions/connector-native-capability-before-commons.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
@@ -49,6 +52,11 @@ cursors, or cross-query snapshot claims.
 - CDF Arrow 58.3.0 matches the official extension's current Arrow 58 matrix.
 
 ## Journal
+
+- 2026-08-08: The user superseded table-only authoring and rejected a universal connector grammar.
+  This ticket now owns ClickHouse-native read queries and bounded native settings under
+  `.10x/specs/clickhouse-native-query-source.md`; ArrowStream, `readonly=2`, and CDF memory/response
+  ceilings remain mandatory.
 
 - 2026-08-02: Ticket opened; execution waits for complete SQLite tranche closure.
 - 2026-08-02: SQLite source and destination implementations have focused acceptance evidence and

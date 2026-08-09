@@ -150,5 +150,6 @@ closes the cursor and joins all admitted tasks. The direct-library roofline foll
 ## Explicit exclusions
 
 Change streams, resume tokens, update/delete CDC operations, `cdc_apply`, ObjectId cursor positions,
-arbitrary aggregation pipelines, map-reduce, unbounded discovery depth, and untagged Extended JSON
-coercion are excluded.
+map-reduce output collections, unbounded discovery depth, and untagged Extended JSON coercion are
+excluded. Read-only native filters and aggregation pipelines are governed by
+`.10x/specs/mongodb-native-extraction-surface.md`.

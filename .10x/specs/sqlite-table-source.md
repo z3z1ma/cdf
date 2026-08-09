@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-08
 
 # SQLite table source
 
@@ -19,8 +19,9 @@ contain a normalized project-relative or explicitly portable database locator, a
 identifier, schema/capability authority, and no open connection. Absolute coordinator-local paths
 MUST fail portable-plan validation.
 
-The initial resource is one table, not arbitrary user SQL. Discovery MUST use SQLite catalog and
-declared-type metadata through a read-only connection and MUST retain original names. Runtime MUST
+The base resource is one table. Native read-query resources are governed by
+`.10x/specs/sqlite-native-query-source.md`. Table discovery MUST use SQLite catalog and declared-
+type metadata through a read-only connection and MUST retain original names. Runtime MUST
 open a read-only transaction before querying and hold that transaction through stream completion,
 giving every emitted batch one database snapshot. It MUST NOT copy the database, force WAL, change
 pragmas with persistent effects, or open parallel snapshot connections.
@@ -76,6 +77,6 @@ reopen; it MUST otherwise fail with remediation. No query may mutate the databas
 
 ## Explicit exclusions
 
-Resident CDC, trigger installation, SQLite session-extension changesets, arbitrary SQL queries,
-network filesystems, persistent pragma changes, and multi-connection snapshot partitioning are
-excluded.
+Resident CDC, trigger installation, SQLite session-extension changesets, network filesystems,
+persistent pragma changes, and multi-connection snapshot partitioning are excluded. Native
+read-query resources are governed by `.10x/specs/sqlite-native-query-source.md`.

@@ -11,18 +11,20 @@ Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 Implement and ship `cdf-source-mongodb` for MongoDB 7.0+ finite collection reads using the official
 asynchronous driver's raw BSON cursor. Add bounded discovery/schema evidence, exact pushdown and
 cursor semantics, BSON-to-Arrow mapping, catalog enrollment, live fixtures, documentation, and a
-direct raw-BSON source roofline cell.
+direct raw-BSON source roofline cell. Complete the connector with adapter-native find filters,
+read-only aggregation pipelines, and resource-scoped discovery/cursor/output/query controls.
 
 ## Non-goals
 
-Change streams, resume tokens, CDC operations, ObjectId checkpoints, arbitrary aggregation
-pipelines, map-reduce, or implicit Extended JSON coercion.
+Change streams, resume tokens, CDC operations, ObjectId checkpoints, map-reduce output collections,
+or implicit Extended JSON coercion.
 
 ## Acceptance Criteria
 
 - Configuration, bounded discovery, freeze/drift, mapping, projection/filter fidelity,
   numeric/date/timestamp cursor ordering, compile/portability, health, and execution implement
-  `.10x/specs/mongodb-collection-source.md`.
+  `.10x/specs/mongodb-collection-source.md` and
+  `.10x/specs/mongodb-native-extraction-surface.md`.
 - Raw BSON mapping and variant/quarantine behavior cover heterogeneous documents, missing/null,
   nested arrays/documents, ObjectId, Decimal128, DateTime, duplicate keys, and unsupported types.
 - Resource-scoped `schema_depth` defaults to 1, accepts only `1..=32`, and bounds retained nested
@@ -37,10 +39,15 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 - The source macro benchmark reaches the 0.90 direct raw-BSON driver roofline with pool/batch
   settings recorded.
 - Independent review passes after closure repair.
+- Native find and aggregation resources use identical discovery/runtime input, recursively reject
+  write/change-stream stages, preserve outer CDF SQL/cursor semantics, and pass live Atlas/local
+  package, replay, checkpoint, progress, portability, and roofline cells.
 
 ## References
 
 - `.10x/specs/mongodb-collection-source.md`
+- `.10x/specs/mongodb-native-extraction-surface.md`
+- `.10x/decisions/connector-native-capability-before-commons.md`
 - `.10x/decisions/exact-value-text-fallbacks.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/specs/source-extension-runtime-contract.md`
@@ -52,12 +59,20 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 
 - Finite source semantics, deferred change streams, MongoDB 7.0+, and the 90% roofline are
   user-ratified.
-- Collection-only authoring is the smallest complete finite document-source surface.
+- A collection remains the base MongoDB authority; native find and read-only aggregation inputs
+  over it are user-ratified resource surfaces.
 - Top-level-only discovery by default, optional bounded per-resource depth, opaque boundary values,
   and a UTF-8 fallback for destinations without proven native semi-structured fidelity are
   user-ratified.
 
 ## Journal
+
+- 2026-08-08: The user explicitly superseded the collection-only/aggregation exclusion and chose
+  connector-first perfection before shared extraction. The finite ticket now owns MongoDB-native
+  filter/pipeline authoring and resource-level sampling, cursor, output, deadline, hint, collation,
+  variable, and read-routing controls under
+  `.10x/specs/mongodb-native-extraction-surface.md`. No common grammar or compatibility path is
+  authorized.
 
 - 2026-08-02: Ticket opened; execution waits for complete ClickHouse tranche closure.
 - 2026-08-03: Exact-value audit corrected schemaless BSON Decimal128 to tagged canonical text;

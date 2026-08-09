@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-08-04
+Updated: 2026-08-08
 
 # Active backlog and future roadmap
 
@@ -124,20 +124,17 @@ parked until at least one finite CDC source/destination proof closes. Historical
 
 - `.10x/tickets/cancelled/2026-07-05-cdc-and-streaming-supervisor.md`
 
-### Relational source commons and MySQL
+### Adapter-native query sources, then proven commons
 
-Postgres, SQLite, and ClickHouse now provide three real query-shaped source implementations, but no
-source-side SQL commons exists. Before MySQL, extract source-neutral relational catalog/scan/
-projection/filter/cursor validation into `cdf-source-sql` while concrete adapters retain every
-dialect, catalog query, consistency protocol, client, decoder, and error. Remove the redundant
-Postgres `dialect=postgres` option as a bounded versioned cleanup; no database owns source kind
-`sql`.
+Postgres, SQLite, ClickHouse, MongoDB, and MySQL each own a world-class native extraction surface.
+MySQL is implemented standalone before any common SQL-source layer. After the adapters close with
+live evidence, a duplication audit may extract only source-neutral engine/runtime concepts proven
+identical by at least two implementations; public resource grammars remain adapter-owned and no
+database owns source kind `sql`.
 
-- `.10x/specs/sql-source-commons.md`
+- `.10x/decisions/connector-native-capability-before-commons.md`
 - `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
-
-Execution waits for stable closure of the overlapping active connector source work and fresh MySQL
-protocol/snapshot/type research.
+- `.10x/specs/superseded/sql-source-commons.md`
 
 ### Semantic registry and SQL project compiler
 

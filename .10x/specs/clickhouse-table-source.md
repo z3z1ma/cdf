@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-08
 
 # ClickHouse table source
 
@@ -19,9 +19,10 @@ client's ArrowStream extension. It is further governed by
 the compiled plan retains only the redacted endpoint/database authority, validated table target,
 and fixed query/type policy. Compilation and portable-plan validation perform no contact.
 
-The initial resource is one table, not arbitrary user SQL. Discovery MUST use bounded ClickHouse
-metadata operations and freeze the exact Arrow schema before execution. Source contact obeys the
-compiled egress scope and current official security-supported server window.
+The base resource is one table. Native read-query resources are governed by
+`.10x/specs/clickhouse-native-query-source.md`. Table discovery MUST use bounded ClickHouse metadata
+operations and freeze the exact Arrow schema before execution. Source contact obeys the compiled
+egress scope and current official security-supported server window.
 
 Execution MUST use the official `clickhouse` client with `clickhouse-ext-arrow` matching CDF's
 Arrow 58 dependency. It MUST stream the official extension's opt-in bounded Arrow query record
@@ -133,5 +134,6 @@ terminates successfully; emitted data cannot authorize checkpoint advancement.
 
 ## Explicit exclusions
 
-Resident CDC, arbitrary SQL, private native protocol work, implicit string-to-temporal cursors,
-cross-query snapshot claims, and unsupported ClickHouse dynamic/aggregate types are excluded.
+Resident CDC, private native protocol work, implicit string-to-temporal cursors, cross-query
+snapshot claims, and unsupported ClickHouse dynamic/aggregate types are excluded. Native
+read-query resources are governed by `.10x/specs/clickhouse-native-query-source.md`.
