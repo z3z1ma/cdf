@@ -773,9 +773,10 @@ fn prepare_single(
     .map_err(|error| {
         run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
     })?;
-    let route = context
-        .resource_query(&explicit.resource_id)
-        .and_then(|query| query.effective.route.value.as_ref());
+    let resource_query = context.resource_query(&explicit.resource_id);
+    let route = resource_query.and_then(|query| query.effective.route.value.as_ref());
+    let delete_application =
+        resource_query.and_then(|query| query.effective.delete_application.value.as_ref());
     let identifier_max_length = resolved
         .destination
         .destination_sheet_artifact()?
@@ -799,6 +800,7 @@ fn prepare_single(
             logical_target: &explicit.target,
             route,
             identifier_max_length,
+            delete_application,
         },
         &resolved.destination.runtime_capabilities(),
         &run_services,

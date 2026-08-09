@@ -10,8 +10,8 @@ use cdf_engine::{
     ParsedProjectQuery, ProjectSqlSpan, analyze_project_query_at, parse_project_query_at,
 };
 use cdf_kernel::{
-    CanonicalArrowSchema, CdfError, CursorOrderingClaim, CursorSpec, DestinationSheet,
-    ResourceDescriptor, Result, SchemaSource, ScopeKey, TargetName, TrustLevel,
+    CanonicalArrowSchema, CdfError, CursorOrderingClaim, CursorSpec, DeleteApplicationPolicy,
+    DestinationSheet, ResourceDescriptor, Result, SchemaSource, ScopeKey, TargetName, TrustLevel,
     TypePolicyAllowances, WriteDisposition,
 };
 use cdf_runtime::{
@@ -21,8 +21,8 @@ use cdf_semantic::{SemanticAuthority, SemanticCatalog};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
-    ProjectConfig, ProjectResourceInput, ProjectResourceInventory,
+    AuthoredDeletePolicy, AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile,
+    AuthoredResourceForm, ProjectConfig, ProjectResourceInput, ProjectResourceInventory,
     ProjectResourceSelectionResolution, ProjectSourceBinding, TrustPreset, WriteDispositionPreset,
     internal::validate_secret_references_in_json,
     inventory_project_resources, parse_resource_file,
@@ -73,6 +73,7 @@ pub struct EffectiveResourceEnvelope {
     pub route: ResolvedResourceValue<Option<cdf_kernel::RoutePlan>>,
     pub disposition: ResolvedResourceValue<WriteDisposition>,
     pub merge_keys: ResolvedResourceValue<Vec<String>>,
+    pub delete_application: ResolvedResourceValue<Option<DeleteApplicationPolicy>>,
     pub cursor: ResolvedResourceValue<Option<String>>,
     pub trust: ResolvedResourceValue<TrustLevel>,
     pub semantics: ResolvedResourceValue<BTreeMap<String, String>>,
@@ -619,6 +620,11 @@ fn resolve_envelope(
                 keys.iter().map(|key| key.value.clone()).collect(),
                 Some(value.span.clone()),
             ),
+            AuthoredDisposition::CdcApply { keys } => (
+                WriteDisposition::CdcApply,
+                keys.iter().map(|key| key.value.clone()).collect(),
+                Some(value.span.clone()),
+            ),
         },
         None => match config.defaults.write_disposition {
             Some(WriteDispositionPreset::Append) => (WriteDisposition::Append, Vec::new(), None),
@@ -636,6 +642,38 @@ fn resolve_envelope(
     let disposition =
         ResolvedResourceValue::new(disposition, disposition_origin, disposition_span.clone())?;
     let merge_keys = ResolvedResourceValue::new(merge_keys, disposition_origin, disposition_span)?;
+    let (delete_application, delete_origin, delete_span) = match &authored.delete {
+        Some(value) => {
+            let policy = match &value.value {
+                AuthoredDeletePolicy::Ignore => DeleteApplicationPolicy::Ignore,
+                AuthoredDeletePolicy::Hard => DeleteApplicationPolicy::Hard,
+                AuthoredDeletePolicy::Soft { marker_field } => DeleteApplicationPolicy::Soft {
+                    marker_field: marker_field.value.clone(),
+                },
+            };
+            (
+                Some(policy),
+                ResolutionOrigin::Authored,
+                Some(value.span.clone()),
+            )
+        }
+        None => (None, ResolutionOrigin::Absent, None),
+    };
+    match (&disposition.value, &delete_application) {
+        (WriteDisposition::CdcApply, None) => {
+            return Err(CdfError::contract(
+                "[CDF-RESOURCE-DELETE-REQUIRED] DISPOSITION CDC_APPLY requires DELETE HARD, DELETE IGNORE, or DELETE SOFT(marker)",
+            ));
+        }
+        (WriteDisposition::CdcApply, Some(_)) | (_, None) => {}
+        (_, Some(_)) => {
+            return Err(CdfError::contract(
+                "[CDF-RESOURCE-DELETE-APPLICABILITY] DELETE is valid only with DISPOSITION CDC_APPLY",
+            ));
+        }
+    }
+    let delete_application =
+        ResolvedResourceValue::new(delete_application, delete_origin, delete_span)?;
     let cursor = match &authored.cursor {
         Some(value) => ResolvedResourceValue::new(
             Some(value.value.clone()),
@@ -700,6 +738,7 @@ fn resolve_envelope(
         route,
         disposition,
         merge_keys,
+        delete_application,
         cursor,
         trust,
         semantics,
@@ -743,6 +782,21 @@ fn validate_effective_applicability(
         return Err(CdfError::contract(
             "[CDF-EXECUTION-BOUNDED] bounded execution requires a source that truthfully advertises bounded completion",
         ));
+    }
+    if effective.disposition.value == cdf_kernel::WriteDisposition::CdcApply {
+        if source.resource_capabilities.incremental != cdf_kernel::IncrementalShape::Cdc {
+            return Err(CdfError::contract(
+                "[CDF-RESOURCE-CDC-SOURCE] DISPOSITION CDC_APPLY requires a source plan that advertises native CDC effects",
+            ));
+        }
+        if !matches!(
+            effective.execution.value,
+            cdf_kernel::ExecutionExtent::Drain { .. }
+        ) {
+            return Err(CdfError::contract(
+                "[CDF-RESOURCE-CDC-EXECUTION] DISPOSITION CDC_APPLY requires EXECUTION DRAIN",
+            ));
+        }
     }
     let declared_transaction_limit = match &effective.execution.value {
         cdf_kernel::ExecutionExtent::Drain { policy, .. } => policy.transaction_limit_bytes,
@@ -789,6 +843,20 @@ fn validate_output_bindings(
                     "[CDF-OUTPUT-BINDING] {label} {field:?} must resolve exactly once against the final output schema; matched {matches} fields"
                 )));
             }
+        }
+    }
+    if let Some(DeleteApplicationPolicy::Soft { marker_field }) =
+        &effective.delete_application.value
+    {
+        let field = schema.field_with_name(marker_field).map_err(|_| {
+            CdfError::contract(format!(
+                "[CDF-OUTPUT-BINDING] soft-delete marker {marker_field:?} must resolve exactly once against the final output schema"
+            ))
+        })?;
+        if field.data_type() != &arrow_schema::DataType::Boolean || field.is_nullable() {
+            return Err(CdfError::contract(format!(
+                "[CDF-OUTPUT-BINDING] soft-delete marker {marker_field:?} must be a non-null Boolean output field"
+            )));
         }
     }
     if let Some(route) = &effective.route.value {

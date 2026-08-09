@@ -96,6 +96,12 @@ user-ratified authority.
   target before extraction. Routed CDC delete batches retain the non-null route field beside the
   ordered effect key while package key authority remains key-only, allowing exact target selection
   without inventing nullable delete payload columns.
+- 2026-08-09: Added current `CDC_APPLY` plus explicit delete-policy project authoring and carried it
+  through manifest identity into CLI engine planning. Native source delete capture is enabled only
+  for compiled CDC resources and is hash-bound to exact driver/physical-plan semantics; ordinary
+  dispositions reject delete policy. Live MongoDB database-envelope planning is now exercising the
+  homogeneous routed family end to end; heterogeneous per-output planning and PostgreSQL family
+  settlement remain open.
 
 ## Blockers
 

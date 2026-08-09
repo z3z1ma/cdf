@@ -318,9 +318,10 @@ fn scan_one_with_portable(
         prepared.resource.as_queryable().descriptor(),
         &PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
     )?;
-    let route = context
-        .resource_query(&args.resource_id)
-        .and_then(|query| query.effective.route.value.as_ref());
+    let resource_query = context.resource_query(&args.resource_id);
+    let route = resource_query.and_then(|query| query.effective.route.value.as_ref());
+    let delete_application =
+        resource_query.and_then(|query| query.effective.delete_application.value.as_ref());
     let identifier_max_length = resolved
         .destination
         .destination_sheet_artifact()?
@@ -336,6 +337,7 @@ fn scan_one_with_portable(
             logical_target: &target,
             route,
             identifier_max_length,
+            delete_application,
         },
         &resolved.destination.runtime_capabilities(),
         execution,
@@ -413,9 +415,10 @@ pub(crate) fn preview(
         "preview",
         None,
     )?;
-    let route = context
-        .resource_query(&args.resource_id)
-        .and_then(|query| query.effective.route.value.as_ref());
+    let resource_query = context.resource_query(&args.resource_id);
+    let route = resource_query.and_then(|query| query.effective.route.value.as_ref());
+    let delete_application =
+        resource_query.and_then(|query| query.effective.delete_application.value.as_ref());
     let identifier_max_length = resolved
         .destination
         .destination_sheet_artifact()?
@@ -431,6 +434,7 @@ pub(crate) fn preview(
             logical_target: &target,
             route,
             identifier_max_length,
+            delete_application,
         },
         &resolved.destination.runtime_capabilities(),
         execution,
@@ -665,7 +669,7 @@ pub(crate) fn build_engine_plan_for_resource(
         request,
         validation_program,
         execution_extent: source.execution_extent().clone(),
-        keyed_effects: cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported(),
+        keyed_effects: keyed_effect_plan_authority(source, routing.delete_application)?,
         segmentation: segmentation_policy_from_tuning(&args.segmentation)?,
         package_id: run_package_id
             .map(ToOwned::to_owned)
@@ -731,10 +735,47 @@ pub(crate) fn build_engine_plan_for_resource(
         .map_err(CliError::from)
 }
 
+fn keyed_effect_plan_authority(
+    source: &crate::project_run_resource::CliProjectRunSource,
+    delete_application: Option<&cdf_kernel::DeleteApplicationPolicy>,
+) -> Result<cdf_kernel::KeyedEffectPlanAuthority, CliError> {
+    let disposition = &source.as_queryable().descriptor().write_disposition;
+    match (disposition, delete_application) {
+        (WriteDisposition::CdcApply, Some(policy)) => {
+            let source_plan = source.source_plan();
+            Ok(cdf_kernel::KeyedEffectPlanAuthority {
+                deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+                    support: cdf_kernel::DeletionCaptureSupport::Inherent,
+                    enabled: true,
+                    semantics_sha256: cdf_runtime::artifact_hash(&(
+                        "cdf.source-native-delete-capture.v1",
+                        source_plan.driver.driver_id.as_str(),
+                        source_plan.driver.driver_version.as_str(),
+                        source_plan.physical_plan_hash.as_str(),
+                    ))?,
+                },
+                delete_application: cdf_kernel::DeleteApplicationAuthority::Apply {
+                    policy: policy.clone(),
+                },
+            })
+        }
+        (WriteDisposition::CdcApply, None) => Err(CdfError::contract(
+            "cdc_apply execution omitted its compiled delete application policy",
+        )
+        .into()),
+        (_, Some(_)) => Err(CdfError::contract(
+            "delete application policy is valid only for cdc_apply execution",
+        )
+        .into()),
+        (_, None) => Ok(cdf_kernel::KeyedEffectPlanAuthority::deletes_unsupported()),
+    }
+}
+
 pub(crate) struct RoutePlanningContext<'a> {
     pub(crate) logical_target: &'a TargetName,
     pub(crate) route: Option<&'a cdf_kernel::RoutePlan>,
     pub(crate) identifier_max_length: Option<u16>,
+    pub(crate) delete_application: Option<&'a cdf_kernel::DeleteApplicationPolicy>,
 }
 
 pub(crate) fn planning_frontier(

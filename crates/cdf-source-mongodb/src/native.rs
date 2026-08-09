@@ -402,18 +402,22 @@ impl MongoDbNativeExtraction {
         Ok(extraction)
     }
 
-    pub(crate) fn validate_for_cdc(&self) -> Result<()> {
+    pub(crate) fn validate_for_cdc(
+        &self,
+        bootstrap: crate::driver::MongoDbBootstrap,
+    ) -> Result<()> {
         let empty_find =
             matches!(&self.input, MongoDbNativeInput::Find { filter } if filter.is_empty());
-        if !empty_find
-            || self.max_time_ms.is_some()
-            || self.allow_disk_use
-            || self.hint.is_some()
-            || self.collation.is_some()
-            || self.let_vars.is_some()
+        if bootstrap == crate::driver::MongoDbBootstrap::Latest
+            && (!empty_find
+                || self.max_time_ms.is_some()
+                || self.allow_disk_use
+                || self.hint.is_some()
+                || self.collation.is_some()
+                || self.let_vars.is_some())
         {
             return Err(CdfError::contract(
-                "MongoDB CDC does not accept snapshot filter, pipeline, max_time_ms, allow_disk_use, hint, collation, or let options; use change_pipeline for read-only change-event filtering",
+                "MongoDB CDC with `bootstrap => 'latest'` does not accept resource-level snapshot filter, pipeline, max_time_ms, allow_disk_use, hint, collation, or let options; use change_pipeline for read-only change-event filtering",
             ));
         }
         if self

@@ -112,6 +112,16 @@ retention, and live replica-set/Atlas certification.
   resume token before any event exists, and CDF must durably checkpoint that exact token without
   inventing a data row. Committed-transaction units still reject empty settlement.
 
+- 2026-08-09: Added current SQL authoring for `DISPOSITION CDC_APPLY(<keys>)` and mandatory
+  `DELETE HARD|IGNORE|SOFT(<boolean marker>)`, then bound the compiled delete policy into the
+  engine's native keyed-effect authority. Live Atlas compilation exposed and closed three
+  integration defects: source-level snapshot `max_time_ms` no longer poisons latest change
+  streams, the admitted database inventory now comes from bound discovery evidence rather than a
+  duplicate physical-plan copy, and compiled/resolved MongoDB CDC uses one capability authority.
+  Database envelope planning binds one representative observation only after proving every
+  admitted collection has the identical physical envelope schema; the full evidence inventory
+  remains the routing and unknown-collection authority.
+
 ## Blockers
 
 - `.10x/tickets/2026-08-07-a6-2-routed-target-families.md` must establish generic heterogeneous
@@ -132,6 +142,14 @@ retention, and live replica-set/Atlas certification.
   event_prefix_accepts_a_source_proven_empty_scanned_prefix --lib` — the neutral runtime accepts
   the MongoDB post-batch-token bootstrap frontier with zero fabricated rows while retaining the
   existing nonempty requirement for committed-transaction settlement.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb cdc_ --lib` — 5 focused CDC compilation
+  and discovery-authority tests passed, including cursor-free CDC, latest-versus-snapshot native
+  option precedence, and inventory recovery from bound discovery evidence.
+- Release-binary Atlas evidence so far: `cdf compile mongo_live.atlas_database_cdc` succeeds
+  against the authorized Atlas database after discovering two isolated post-image-enabled
+  collections. Successive `cdf plan` attempts exposed the inventory handoff, duplicate capability,
+  observation binding, and projection-capability defects recorded above; full plan/run settlement
+  remains open until the live probe completes.
 
 ## Review
 

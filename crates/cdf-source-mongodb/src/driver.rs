@@ -223,7 +223,11 @@ impl SourceDriver for MongoDbSourceDriver {
         let aws_session_token = source.aws_session_token.map(SecretUri::new).transpose()?;
         let resource_comment = resource.native.comment.clone();
         let mut native_options = resource.native;
-        native_options.max_time_ms = native_options.max_time_ms.or(source.max_time_ms);
+        if resource.mode == MongoDbMode::Snapshot
+            || resource.bootstrap == Some(MongoDbBootstrap::Snapshot)
+        {
+            native_options.max_time_ms = native_options.max_time_ms.or(source.max_time_ms);
+        }
         native_options.read_concern = native_options.read_concern.or(source.read_concern);
         native_options.read_preference = native_options.read_preference.or(source.read_preference);
         let native = MongoDbNativeExtraction::compile(native_options)?;
@@ -239,11 +243,6 @@ impl SourceDriver for MongoDbSourceDriver {
             &request.descriptor,
             &native,
         )?;
-        let admitted_collections = if compiled_mode.watch == Some(MongoDbWatch::Database) {
-            compiled_database_inventory(&database, request.effective_schema_runtime.as_ref())?
-        } else {
-            Vec::new()
-        };
         let physical = MongoDbPhysicalPlan {
             endpoint: endpoint.clone(),
             database: database.clone(),
@@ -254,7 +253,6 @@ impl SourceDriver for MongoDbSourceDriver {
             bootstrap: compiled_mode.bootstrap,
             include_collections: resource.include_collections,
             exclude_collections: resource.exclude_collections,
-            admitted_collections,
             change_pipeline: compiled_mode.change_pipeline,
             change_batch_rows: resource
                 .change_batch_rows
@@ -334,7 +332,6 @@ impl SourceDriver for MongoDbSourceDriver {
                     "bootstrap": physical.bootstrap,
                     "include_collections": physical.include_collections,
                     "exclude_collections": physical.exclude_collections,
-                    "admitted_collections": physical.admitted_collections,
                     "change_pipeline_sha256": artifact_hash(&physical.change_pipeline)?,
                     "change_pipeline_stages": physical.change_pipeline.len(),
                     "change_batch_rows": physical.change_batch_rows,
@@ -1661,12 +1658,12 @@ fn compile_resource_mode(
                     "MongoDB CDC uses its native receipt-gated resume token and must not declare a resource cursor",
                 ));
             }
-            native.validate_for_cdc()?;
             let bootstrap = bootstrap.ok_or_else(|| {
                 CdfError::contract(
                     "MongoDB CDC requires explicit `bootstrap => 'latest'` or `bootstrap => 'snapshot'`",
                 )
             })?;
+            native.validate_for_cdc(bootstrap)?;
             let watch = watch
                 .or(collection.map(|_| MongoDbWatch::Collection))
                 .ok_or_else(|| {
@@ -1744,7 +1741,7 @@ fn validate_collection_patterns(includes: &[String], excludes: &[String]) -> Res
     Ok(())
 }
 
-fn compiled_database_inventory(
+pub(crate) fn compiled_database_inventory(
     database: &MongoDbIdentifier,
     runtime: Option<&cdf_kernel::EffectiveSchemaRuntime>,
 ) -> Result<Vec<String>> {
@@ -1839,8 +1836,6 @@ pub(crate) struct MongoDbPhysicalPlan {
     pub(crate) bootstrap: Option<MongoDbBootstrap>,
     pub(crate) include_collections: Vec<String>,
     pub(crate) exclude_collections: Vec<String>,
-    #[serde(default)]
-    pub(crate) admitted_collections: Vec<String>,
     pub(crate) change_pipeline: Vec<Document>,
     pub(crate) change_batch_rows: u32,
     pub(crate) change_max_await_ms: u64,
@@ -1921,18 +1916,6 @@ impl MongoDbPhysicalPlan {
                     _ => {}
                 }
                 validate_collection_patterns(&self.include_collections, &self.exclude_collections)?;
-                if self
-                    .admitted_collections
-                    .windows(2)
-                    .any(|pair| pair[0] >= pair[1])
-                    || self.admitted_collections.iter().any(|name| {
-                        name.starts_with("system.") || MongoDbIdentifier::new(name).is_err()
-                    })
-                {
-                    return Err(CdfError::contract(
-                        "MongoDB admitted collection inventory must be unique, canonically sorted, and contain ordinary identifiers",
-                    ));
-                }
                 validate_change_pipeline(&self.change_pipeline)?;
             }
         }
@@ -2156,11 +2139,11 @@ fn execution_capabilities(
     }
 }
 
-fn mongodb_cdc_capabilities(
+pub(crate) fn mongodb_cdc_capabilities(
     descriptor: &cdf_kernel::ResourceDescriptor,
 ) -> cdf_kernel::ResourceCapabilities {
     cdf_kernel::ResourceCapabilities {
-        projection: cdf_kernel::CapabilitySupport::Supported,
+        projection: cdf_kernel::CapabilitySupport::Unsupported,
         filters: cdf_kernel::FilterCapabilities::default(),
         limits: cdf_kernel::CapabilitySupport::Unsupported,
         ordering: cdf_kernel::CapabilitySupport::Unsupported,
@@ -2215,7 +2198,6 @@ pub(crate) fn mongodb_change_stream_scope(
             "bootstrap": physical.bootstrap,
             "include_collections": physical.include_collections,
             "exclude_collections": physical.exclude_collections,
-            "admitted_collections": physical.admitted_collections,
             "change_batch_rows": physical.change_batch_rows,
             "change_max_await_ms": physical.change_max_await_ms,
             "full_document": "required",

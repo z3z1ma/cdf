@@ -146,6 +146,54 @@ fn resource_file_rejects_empty_duplicate_merge_and_semantic_bindings() {
 }
 
 #[test]
+fn resource_file_parses_cdc_apply_and_each_delete_policy() {
+    for (authored, expected) in [
+        ("DELETE HARD", AuthoredDeletePolicy::Hard),
+        ("DELETE IGNORE", AuthoredDeletePolicy::Ignore),
+    ] {
+        let parsed = parse_resource_file(
+            &format!(
+                "RESOURCE DISPOSITION CDC_APPLY(id, tenant_id) {authored} AS SELECT id, tenant_id FROM upstream(source => 'warehouse')"
+            ),
+            "cdf/analytics/orders.cdf.sql",
+        )
+        .unwrap();
+        let AuthoredDisposition::CdcApply { keys } = parsed.envelope.disposition.unwrap().value
+        else {
+            panic!("expected cdc_apply");
+        };
+        assert_eq!(
+            keys.into_iter().map(|key| key.value).collect::<Vec<_>>(),
+            ["id", "tenant_id"]
+        );
+        assert_eq!(parsed.envelope.delete.unwrap().value, expected);
+    }
+
+    let parsed = parse_resource_file(
+        "RESOURCE DISPOSITION CDC_APPLY(id) DELETE SOFT(is_deleted) AS SELECT id, is_deleted FROM upstream(source => 'warehouse')",
+        "cdf/analytics/orders.cdf.sql",
+    )
+    .unwrap();
+    let AuthoredDeletePolicy::Soft { marker_field } = parsed.envelope.delete.unwrap().value else {
+        panic!("expected soft delete");
+    };
+    assert_eq!(marker_field.value, "is_deleted");
+}
+
+#[test]
+fn resource_file_rejects_malformed_cdc_apply_and_delete_policy() {
+    for sql in [
+        "RESOURCE DISPOSITION CDC_APPLY() DELETE HARD AS SELECT id FROM upstream(source => 'warehouse')",
+        "RESOURCE DISPOSITION CDC_APPLY(id, id) DELETE HARD AS SELECT id FROM upstream(source => 'warehouse')",
+        "RESOURCE DISPOSITION CDC_APPLY(id) DELETE SOFT() AS SELECT id FROM upstream(source => 'warehouse')",
+        "RESOURCE DISPOSITION CDC_APPLY(id) DELETE SOMETIMES AS SELECT id FROM upstream(source => 'warehouse')",
+    ] {
+        let error = parse_resource_file(sql, "cdf/analytics/orders.cdf.sql").unwrap_err();
+        assert!(error.message.contains("CDF-RESOURCE"), "{error:?}");
+    }
+}
+
+#[test]
 fn resource_file_rejects_incomplete_or_zero_drain_policy() {
     for sql in [
         "RESOURCE EXECUTION DRAIN (CHECKPOINT ROWS 0, PACKAGE BYTES 1, UNTIL QUIESCENT, WATERMARK DISABLED, LATE DATA QUARANTINE, SAFE FRONTIER CANONICAL ADMITTED SOURCE POSITION) AS SELECT * FROM upstream(source => 'events')",

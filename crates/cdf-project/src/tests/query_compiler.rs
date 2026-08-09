@@ -192,6 +192,38 @@ fn query_compiler_rejects_transaction_limit_for_non_cdc_disposition() {
 }
 
 #[test]
+fn query_compiler_requires_delete_policy_exactly_for_cdc_apply() {
+    let schemas = BTreeMap::from([("analytics.orders".to_owned(), input_schema())]);
+    for (sql, expected) in [
+        (
+            "RESOURCE DISPOSITION CDC_APPLY(id) EXECUTION BOUNDED AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+            "CDF-RESOURCE-DELETE-REQUIRED",
+        ),
+        (
+            "RESOURCE DISPOSITION APPEND DELETE HARD AS SELECT id FROM upstream(source => 'warehouse', table => 'public.orders')",
+            "CDF-RESOURCE-DELETE-APPLICABILITY",
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        let config = project(&root, sql, "");
+        let error = compile_query_project_resources(
+            &registry(),
+            &config,
+            root.path(),
+            "dev",
+            &destination(),
+            &SemanticCatalog::builtins().unwrap(),
+            &schemas,
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains(expected),
+            "unexpected error: {error:?}"
+        );
+    }
+}
+
+#[test]
 fn query_compiler_rejects_unknown_resource_options_before_analysis() {
     let root = TempDir::new().unwrap();
     let config = project(

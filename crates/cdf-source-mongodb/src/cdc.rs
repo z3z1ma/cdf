@@ -4,14 +4,12 @@ use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::{Schema, SchemaRef};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdcMetadata, CdcOperation,
-    CdcSettlementBoundary, CdcSettlementMarker, CdcSettlementUnitKind, CdfError,
-    CompiledScanIntent, CompiledSourcePlanHash, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
-    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
-    PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
-    PlanId, PushdownFidelity, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceStream, Result, RoutePlan, RouteScalar, ScanPlan, ScanRequest,
-    ScopeKind, SourcePosition,
+    Batch, BatchId, BatchStream, CdcMetadata, CdcOperation, CdcSettlementBoundary,
+    CdcSettlementMarker, CdcSettlementUnitKind, CdfError, CompiledScanIntent,
+    CompiledSourcePlanHash, DeliveryGuarantee, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime,
+    PartitionAuthority, PartitionId, PartitionPlan, PayloadRetention, PlanId, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, RoutePlan, RouteScalar,
+    ScanPlan, ScanRequest, SourcePosition, bind_partition_schema_observation,
 };
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{ExecutionServices, SourceEgressScope, TaskStreamSender};
@@ -27,8 +25,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     driver::{
         MongoDbBootstrap, MongoDbPhysicalPlan, MongoDbRepresentation, MongoDbRuntimeConfig,
-        MongoDbWatch, mongodb_change_stream_scope, read_collection_metadata,
-        validate_server_version,
+        MongoDbWatch, compiled_database_inventory, mongodb_cdc_capabilities,
+        mongodb_change_stream_scope, read_collection_metadata, validate_server_version,
     },
     error::classify_mongodb_error,
     execution::{
@@ -119,14 +117,38 @@ impl MongoDbCdcResource {
                     .to_owned(),
             ],
             MongoDbWatch::Database => {
-                if physical.admitted_collections.is_empty() {
+                let inventory = compiled_database_inventory(
+                    &physical.database,
+                    compiled.effective_schema_runtime.as_ref(),
+                )?;
+                if inventory.is_empty() {
                     return Err(CdfError::data(
                         "MongoDB database CDC has no compiled collection inventory; run discovery and compile again",
                     ));
                 }
-                physical.admitted_collections.clone()
+                inventory
             }
         };
+        if watch == MongoDbWatch::Database && representation == MongoDbRepresentation::Envelope {
+            let envelope_hash = cdf_kernel::canonical_arrow_schema_hash(
+                crate::driver::mongodb_envelope_schema().as_ref(),
+            )?;
+            let runtime = compiled.effective_schema_runtime.as_ref().ok_or_else(|| {
+                CdfError::data(
+                    "MongoDB database CDC envelope omitted compiled discovery evidence; run discovery and compile again",
+                )
+            })?;
+            if runtime
+                .evidence
+                .observations()
+                .iter()
+                .any(|observation| observation.physical_schema_hash != envelope_hash)
+            {
+                return Err(CdfError::data(
+                    "MongoDB database CDC envelope discovery contains a non-envelope physical schema",
+                ));
+            }
+        }
         Ok(Self {
             descriptor: compiled.descriptor.clone(),
             schema,
@@ -176,7 +198,7 @@ impl MongoDbCdcResource {
 
     fn partition(&self, request: &ScanRequest) -> Result<PartitionPlan> {
         self.validate_scan_request(request)?;
-        Ok(PartitionPlan {
+        let mut partition = PartitionPlan {
             partition_id: PartitionId::new(MONGODB_CDC_PARTITION)?,
             scope: self.descriptor.state_scope.clone(),
             planned_position: None,
@@ -187,7 +209,29 @@ impl MongoDbCdcResource {
                 ("kind".to_owned(), MONGODB_CDC_PARTITION.to_owned()),
                 ("database".to_owned(), self.database.as_str().to_owned()),
             ]),
-        })
+        };
+        if let Some(runtime) = &self.effective_schema_runtime {
+            let observation_id = match self.watch {
+                MongoDbWatch::Collection => format!(
+                    "{}.{}",
+                    self.database,
+                    self.collection.as_ref().ok_or_else(|| {
+                        CdfError::internal("MongoDB collection CDC lost its collection")
+                    })?
+                ),
+                MongoDbWatch::Database => runtime
+                    .evidence
+                    .observations()
+                    .first()
+                    .ok_or_else(|| {
+                        CdfError::data("MongoDB database CDC discovery evidence is empty")
+                    })?
+                    .observation_id
+                    .clone(),
+            };
+            bind_partition_schema_observation(&mut partition, runtime, &observation_id)?;
+        }
+        Ok(partition)
     }
 
     fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
@@ -338,30 +382,6 @@ impl QueryableResource for MongoDbCdcResource {
             None,
             DeliveryGuarantee::EffectivelyOncePerPosition,
         ))
-    }
-}
-
-fn mongodb_cdc_capabilities(descriptor: &ResourceDescriptor) -> ResourceCapabilities {
-    ResourceCapabilities {
-        projection: CapabilitySupport::Supported,
-        filters: FilterCapabilities {
-            default_fidelity: PushdownFidelity::Unsupported,
-            supported_operators: Vec::new(),
-        },
-        limits: CapabilitySupport::Unsupported,
-        ordering: CapabilitySupport::Unsupported,
-        partitioning: PartitioningCapabilities {
-            parallel_partitions: false,
-            supported_scopes: match descriptor.state_scope.kind() {
-                ScopeKind::Resource => Vec::new(),
-                kind => vec![kind],
-            },
-        },
-        incremental: IncrementalShape::Cdc,
-        replay: ReplaySupport::FromPosition,
-        idempotent_reads: true,
-        backpressure: BackpressureSupport::Pausable,
-        estimates: EstimateSupport::None,
     }
 }
 

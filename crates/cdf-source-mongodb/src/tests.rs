@@ -21,7 +21,9 @@ use mongodb::bson::{
 
 use crate::{
     MongoDbSourceDriver,
-    driver::{collection_metadata_from_response, validate_server_version},
+    driver::{
+        collection_metadata_from_response, compiled_database_inventory, validate_server_version,
+    },
     error::classify_mongodb_error,
     execution::{
         MONGODB_FULL_SCAN_COMPLETION_PROTOCOL, cursor_value, full_scan_completion_position,
@@ -194,7 +196,136 @@ fn cdc_rejects_declared_cursor_and_snapshot_only_pipeline_options() {
     let error = driver
         .compile(request(cdc_descriptor(false, "id"), options))
         .unwrap_err();
-    assert!(error.message.contains("does not accept snapshot filter"));
+    assert!(
+        error
+            .message
+            .contains("does not accept resource-level snapshot filter")
+    );
+}
+
+#[test]
+fn cdc_latest_ignores_source_snapshot_timeout_but_rejects_resource_override() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let request = |resource_options| SourceCompileRequest {
+        source_kind: "mongodb".to_owned(),
+        context: cdf_runtime::SourceCompileContext {
+            source_name: "warehouse".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options: BTreeMap::from([
+            (
+                "endpoint".to_owned(),
+                serde_json::json!("mongodb://warehouse.example:27017"),
+            ),
+            ("database".to_owned(), serde_json::json!("analytics")),
+            ("max_time_ms".to_owned(), serde_json::json!(300_000)),
+        ]),
+        resource_options,
+        descriptor: cdc_descriptor(false, "id"),
+        schema: schema(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
+    };
+
+    let source_default = BTreeMap::from([
+        ("collection".to_owned(), serde_json::json!("orders")),
+        ("mode".to_owned(), serde_json::json!("cdc")),
+        ("bootstrap".to_owned(), serde_json::json!("latest")),
+    ]);
+    let plan = driver.compile(request(source_default.clone())).unwrap();
+    assert_eq!(
+        plan.redacted_options["native"]["max_time_ms"],
+        serde_json::Value::Null
+    );
+
+    let mut resource_override = source_default;
+    resource_override.insert("max_time_ms".to_owned(), serde_json::json!(30_000));
+    let error = driver.compile(request(resource_override)).unwrap_err();
+    assert!(error.message.contains("resource-level snapshot"));
+}
+
+#[test]
+fn cdc_snapshot_accepts_snapshot_native_options() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let plan = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+                ("max_time_ms".to_owned(), serde_json::json!(300_000)),
+            ]),
+            resource_options: BTreeMap::from([
+                ("collection".to_owned(), serde_json::json!("orders")),
+                ("mode".to_owned(), serde_json::json!("cdc")),
+                ("bootstrap".to_owned(), serde_json::json!("snapshot")),
+                ("filter".to_owned(), serde_json::json!(r#"{"active":true}"#)),
+            ]),
+            descriptor: cdc_descriptor(false, "id"),
+            schema: schema(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(plan.redacted_options["bootstrap"], "snapshot");
+    assert_eq!(plan.redacted_options["native"]["max_time_ms"], 300_000);
+}
+
+#[test]
+fn database_cdc_inventory_comes_from_bound_discovery_evidence() {
+    let database = MongoDbIdentifier::new("analytics").unwrap();
+    let descriptor = cdc_descriptor(false, "document_key");
+    let physical_schema = Arc::new(schema());
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let manifest = cdf_kernel::DiscoveryManifestReference {
+        manifest_hash: cdf_kernel::DiscoveryManifestHash::new("mongodb-inventory-manifest")
+            .unwrap(),
+        path: ".cdf/discovery/mongodb-inventory.json".to_owned(),
+    };
+    let runtime = cdf_kernel::EffectiveSchemaRuntime::new(
+        cdf_kernel::EffectiveSchemaEvidence::new(
+            descriptor.schema_source.baseline_reference().unwrap(),
+            physical_hash.clone(),
+            manifest,
+            ["analytics.invoices", "analytics.orders"]
+                .into_iter()
+                .map(|observation_id| {
+                    cdf_kernel::EffectiveSchemaObservationEvidence::new(
+                        observation_id,
+                        physical_hash.clone(),
+                        cdf_kernel::SchemaObservationBinding::new(format!(
+                            "sha256:{}",
+                            "0".repeat(64)
+                        ))
+                        .unwrap(),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap(),
+        vec![cdf_kernel::EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(
+        compiled_database_inventory(&database, Some(&runtime)).unwrap(),
+        vec!["invoices".to_owned(), "orders".to_owned()]
+    );
 }
 
 fn semantic_field(field: Field, reference: &str) -> Field {

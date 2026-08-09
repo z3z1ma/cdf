@@ -408,6 +408,7 @@ struct ResourceExecutionIdentity<'a> {
     effective_target: &'a cdf_kernel::TargetName,
     effective_disposition: &'a cdf_kernel::WriteDisposition,
     effective_merge_keys: &'a [String],
+    effective_delete_application: &'a Option<cdf_kernel::DeleteApplicationPolicy>,
     effective_cursor: &'a Option<String>,
     effective_trust: &'a cdf_kernel::TrustLevel,
     effective_semantics: &'a BTreeMap<String, String>,
@@ -1152,6 +1153,27 @@ fn validate_resource(
             ),
         );
     }
+    match (
+        &resource.effective.disposition.value,
+        &resource.effective.delete_application.value,
+    ) {
+        (cdf_kernel::WriteDisposition::CdcApply, Some(_))
+        | (
+            cdf_kernel::WriteDisposition::Append
+            | cdf_kernel::WriteDisposition::Replace
+            | cdf_kernel::WriteDisposition::Merge,
+            None,
+        ) => {}
+        _ => {
+            return manifest_error(
+                authority,
+                format!(
+                    "manifest resource `{}` contains an inapplicable or missing delete policy",
+                    resource.resource_id
+                ),
+            );
+        }
+    }
     let binding = CompiledSourceCompilerBinding::compile(&resource.source_plan)
         .map_err(|error| remap(error, authority))?;
     if binding != resource.source_binding {
@@ -1320,6 +1342,7 @@ fn resource_hash(resource: &ManifestResource) -> Result<String> {
         effective_target: &resource.effective.target.value,
         effective_disposition: &resource.effective.disposition.value,
         effective_merge_keys: &resource.effective.merge_keys.value,
+        effective_delete_application: &resource.effective.delete_application.value,
         effective_cursor: &resource.effective.cursor.value,
         effective_trust: &resource.effective.trust.value,
         effective_semantics: &resource.effective.semantics.value,

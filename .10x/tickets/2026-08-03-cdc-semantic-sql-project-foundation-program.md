@@ -608,6 +608,12 @@ diagnostics, manifest obligations, and current-only cutover in full on 2026-08-0
 
 ## Journal
 
+- 2026-08-09: Current project SQL now admits `DISPOSITION CDC_APPLY(key, ...)` with mandatory
+  `DELETE HARD|IGNORE|SOFT(marker)` and carries that authority through manifests into engine keyed
+  effects. The authorized Atlas MongoDB database-watch probe now compiles against two isolated
+  post-image-enabled collections and is being used as the live integration oracle for remaining
+  routed planning/execution gaps.
+
 - 2026-08-09: Closed child `.10x/tickets/2026-08-09-database-source-defaults-and-resource-overrides.md`.
   Implemented database source defaults with explicit resource precedence across current SQLite,
   MongoDB, PostgreSQL, and ClickHouse drivers; removed authored SQL sampling bounds; and fixed the

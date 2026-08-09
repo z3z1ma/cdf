@@ -32,6 +32,19 @@ pub enum AuthoredDisposition {
     Merge {
         keys: Vec<SpannedResourceValue<String>>,
     },
+    CdcApply {
+        keys: Vec<SpannedResourceValue<String>>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthoredDeletePolicy {
+    Ignore,
+    Hard,
+    Soft {
+        marker_field: SpannedResourceValue<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +67,7 @@ pub struct AuthoredResourceEnvelope {
     pub target: Option<SpannedResourceValue<TargetName>>,
     pub route: Option<SpannedResourceValue<AuthoredRoute>>,
     pub disposition: Option<SpannedResourceValue<AuthoredDisposition>>,
+    pub delete: Option<SpannedResourceValue<AuthoredDeletePolicy>>,
     pub cursor: Option<SpannedResourceValue<String>>,
     pub trust: Option<SpannedResourceValue<TrustPreset>>,
     pub semantics: Vec<AuthoredSemanticBinding>,
@@ -110,7 +124,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
                 "CDF-RESOURCE-CLAUSE",
                 file,
                 Some(&token.span),
-                "RESOURCE takes no identifier; expected TARGET, ROUTE, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION, or AS",
+                "RESOURCE takes no identifier; expected TARGET, ROUTE, DISPOSITION, DELETE, CURSOR, TRUST, SEMANTICS, EXECUTION, or AS",
             )
         })?;
         if rank <= previous_rank {
@@ -119,7 +133,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
                 file,
                 Some(&token.span),
                 format!(
-                    "{clause} is repeated or out of order; canonical order is TARGET, ROUTE, DISPOSITION, CURSOR, TRUST, SEMANTICS, EXECUTION"
+                    "{clause} is repeated or out of order; canonical order is TARGET, ROUTE, DISPOSITION, DELETE, CURSOR, TRUST, SEMANTICS, EXECUTION"
                 ),
             ));
         }
@@ -129,6 +143,7 @@ pub fn parse_resource_file(sql: &str, file: &str) -> Result<AuthoredResourceFile
             "TARGET" => envelope.target = Some(parser.parse_target(&token.span)?),
             "ROUTE" => envelope.route = Some(parser.parse_route(&token.span)?),
             "DISPOSITION" => envelope.disposition = Some(parser.parse_disposition(&token.span)?),
+            "DELETE" => envelope.delete = Some(parser.parse_delete_policy(&token.span)?),
             "CURSOR" => envelope.cursor = Some(parser.parse_name("cursor column")?),
             "TRUST" => envelope.trust = Some(parser.parse_trust()?),
             "SEMANTICS" => envelope.semantics = parser.parse_semantics()?,
@@ -162,10 +177,11 @@ fn clause_rank(token: &Token) -> Option<(u8, &'static str)> {
         (1, "TARGET"),
         (2, "ROUTE"),
         (3, "DISPOSITION"),
-        (4, "CURSOR"),
-        (5, "TRUST"),
-        (6, "SEMANTICS"),
-        (7, "EXECUTION"),
+        (4, "DELETE"),
+        (5, "CURSOR"),
+        (6, "TRUST"),
+        (7, "SEMANTICS"),
+        (8, "EXECUTION"),
     ]
     .into_iter()
     .find(|(_, clause)| token.is_word(clause))
@@ -316,57 +332,104 @@ impl<'a> EnvelopeParser<'a> {
         } else if kind.is_word("REPLACE") {
             AuthoredDisposition::Replace
         } else if kind.is_word("MERGE") {
-            self.expect_punctuation('(', "CDF-RESOURCE-MERGE")?;
-            let mut keys = Vec::new();
-            let mut seen = BTreeSet::new();
-            loop {
-                if self
-                    .tokens
-                    .get(self.cursor)
-                    .is_some_and(|token| token.kind == TokenKind::Punctuation(')'))
-                {
-                    if keys.is_empty() {
-                        return Err(resource_sql_error(
-                            "CDF-RESOURCE-MERGE-EMPTY",
-                            self.file,
-                            Some(&kind.span),
-                            "DISPOSITION MERGE requires at least one output key",
-                        ));
-                    }
-                    self.advance();
-                    break;
-                }
-                let key = self.parse_name("merge key")?;
-                if !seen.insert(key.value.clone()) {
-                    return Err(resource_sql_error(
-                        "CDF-RESOURCE-MERGE-DUPLICATE",
-                        self.file,
-                        Some(&key.span),
-                        format!("merge key {:?} appears more than once", key.value),
-                    ));
-                }
-                keys.push(key);
-                let separator = self.take()?;
-                match separator.kind {
-                    TokenKind::Punctuation(',') => {}
-                    TokenKind::Punctuation(')') => break,
-                    _ => {
-                        return Err(resource_sql_error(
-                            "CDF-RESOURCE-MERGE",
-                            self.file,
-                            Some(&separator.span),
-                            "expected comma or closing parenthesis after merge key",
-                        ));
-                    }
-                }
+            AuthoredDisposition::Merge {
+                keys: self.parse_effect_keys(&kind, "MERGE")?,
             }
-            AuthoredDisposition::Merge { keys }
+        } else if kind.is_word("CDC_APPLY") {
+            AuthoredDisposition::CdcApply {
+                keys: self.parse_effect_keys(&kind, "CDC_APPLY")?,
+            }
         } else {
             return Err(resource_sql_error(
                 "CDF-RESOURCE-DISPOSITION",
                 self.file,
                 Some(&kind.span),
-                "DISPOSITION must be APPEND, REPLACE, or MERGE(key, ...)",
+                "DISPOSITION must be APPEND, REPLACE, MERGE(key, ...), or CDC_APPLY(key, ...)",
+            ));
+        };
+        Ok(SpannedResourceValue {
+            value,
+            span: union_span(clause_span, &kind.span),
+        })
+    }
+
+    fn parse_effect_keys(
+        &mut self,
+        kind: &Token,
+        disposition: &'static str,
+    ) -> Result<Vec<SpannedResourceValue<String>>> {
+        let code = if disposition == "MERGE" {
+            "CDF-RESOURCE-MERGE"
+        } else {
+            "CDF-RESOURCE-CDC-APPLY"
+        };
+        self.expect_punctuation('(', code)?;
+        let mut keys = Vec::new();
+        let mut seen = BTreeSet::new();
+        loop {
+            if self
+                .tokens
+                .get(self.cursor)
+                .is_some_and(|token| token.kind == TokenKind::Punctuation(')'))
+            {
+                if keys.is_empty() {
+                    return Err(resource_sql_error(
+                        &format!("{code}-EMPTY"),
+                        self.file,
+                        Some(&kind.span),
+                        format!("DISPOSITION {disposition} requires at least one output key"),
+                    ));
+                }
+                self.advance();
+                break;
+            }
+            let key = self.parse_name("effect key")?;
+            if !seen.insert(key.value.clone()) {
+                return Err(resource_sql_error(
+                    &format!("{code}-DUPLICATE"),
+                    self.file,
+                    Some(&key.span),
+                    format!("{disposition} key {:?} appears more than once", key.value),
+                ));
+            }
+            keys.push(key);
+            let separator = self.take()?;
+            match separator.kind {
+                TokenKind::Punctuation(',') => {}
+                TokenKind::Punctuation(')') => break,
+                _ => {
+                    return Err(resource_sql_error(
+                        code,
+                        self.file,
+                        Some(&separator.span),
+                        format!("expected comma or closing parenthesis after {disposition} key"),
+                    ));
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    fn parse_delete_policy(
+        &mut self,
+        clause_span: &ProjectSqlSpan,
+    ) -> Result<SpannedResourceValue<AuthoredDeletePolicy>> {
+        let kind = self.take()?;
+        let value = if kind.is_word("IGNORE") {
+            AuthoredDeletePolicy::Ignore
+        } else if kind.is_word("HARD") {
+            AuthoredDeletePolicy::Hard
+        } else if kind.is_word("SOFT") {
+            self.expect_punctuation('(', "CDF-RESOURCE-DELETE-SOFT")?;
+            let marker_field = self.parse_name("soft-delete marker field")?;
+            self.expect_punctuation(')', "CDF-RESOURCE-DELETE-SOFT")?;
+            AuthoredDeletePolicy::Soft { marker_field }
+        } else {
+            return Err(resource_sql_error(
+                "CDF-RESOURCE-DELETE",
+                self.file,
+                Some(&kind.span),
+                "DELETE must be IGNORE, HARD, or SOFT(marker)",
             ));
         };
         Ok(SpannedResourceValue {

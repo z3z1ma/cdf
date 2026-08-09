@@ -188,8 +188,9 @@ pub use resource_selector::{
     resolve_project_resource_selection,
 };
 pub use resource_sql::{
-    AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
-    AuthoredRoute, AuthoredSemanticBinding, SpannedResourceValue, parse_resource_file,
+    AuthoredDeletePolicy, AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile,
+    AuthoredResourceForm, AuthoredRoute, AuthoredSemanticBinding, SpannedResourceValue,
+    parse_resource_file,
 };
 pub use runtime::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DestinationCommitPlanningInputs,
