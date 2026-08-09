@@ -325,6 +325,20 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
   samples. The transport request is therefore fixed at the measured 8,192-row operating point,
   while adaptive decoding and output remain independently bounded by configured rows and admitted
   bytes. A rebuilt release portable-plan run remains the closure barrier.
+- 2026-08-08: Release `d4ddde9a` completed the exact 21-field Atlas extraction in 21.1 seconds
+  (19.7k documents/s extraction, 19.2k documents/s end to end), accepted all 417,114 documents,
+  quarantined none, retained 251k governed residual rows, committed the DuckDB receipt/checkpoint,
+  and used only 9.68 seconds of host CPU. This is an 8.6x extraction improvement over the prior
+  1,000-row CDF run and disproves the 40-row transport coupling as the throughput limiter. The first
+  `run --plan` preflight then correctly had zero effects but exposed a separate portability gap:
+  MongoDB partitions carried no exact source-generation attestation. Discovery now hashes the
+  collection UUID plus collation/validator enforcement metadata into a secret-safe generation,
+  every planned partition binds that position, and portable preflight re-reads only bounded
+  `listCollections` metadata before payload I/O. Drop/recreate or contract-metadata changes require
+  a new plan; ordinary row/field drift retains the compiled schema-disposition behavior. The SDK
+  call preserves typed error ownership through the existing MongoDB classifier. All 45 adapter
+  tests, strict adapter Clippy, and all three focused portable-plan CLI tests pass. A final rebuilt
+  release `plan --out` / `run --plan` remains the closure barrier.
 
 ## Blockers
 

@@ -13,9 +13,10 @@ use cdf_kernel::{
 };
 use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceExecutorClass};
 use mongodb::bson::{
-    DateTime, Decimal128, doc,
+    Binary, DateTime, Decimal128, doc,
     oid::ObjectId,
     raw::{CString, RawDocumentBuf, RawJavaScriptCodeWithScope, cstr},
+    spec::BinarySubtype,
 };
 
 use crate::{
@@ -27,7 +28,10 @@ use crate::{
     },
     identifier::{MongoDbIdentifier, validate_field_path},
     query::{build_query, scan_from_partition},
-    resource::rebind_mongodb_partition_for_resume,
+    resource::{
+        MONGODB_COLLECTION_GENERATION_PROTOCOL, mongodb_collection_generation_position,
+        rebind_mongodb_partition_for_resume,
+    },
     schema::{
         MONGODB_ARRAY_EXTENDED_JSON_SEMANTIC, MONGODB_DECIMAL_TEXT_SEMANTIC,
         MONGODB_DOCUMENT_EXTENDED_JSON_SEMANTIC, MONGODB_OBJECT_ID_SEMANTIC,
@@ -730,6 +734,10 @@ fn collection_metadata_binds_complete_collation_and_validator_without_plaintext(
         "cursor": {"firstBatch": [{
             "name": "events",
             "type": "collection",
+            "info": {"uuid": Binary {
+                subtype: BinarySubtype::Uuid,
+                bytes: vec![7_u8; 16],
+            }},
             "options": {
                 "collation": {"locale": "en", "strength": 2_i32, "numericOrdering": true},
                 "validator": {"sequence": {"$type": "long"}},
@@ -745,6 +753,8 @@ fn collection_metadata_binds_complete_collation_and_validator_without_plaintext(
     let identity = metadata.identity();
 
     assert_eq!(identity["collection_type"], "collection");
+    assert!(identity["collection_uuid_sha256"].starts_with("sha256:"));
+    assert!(identity["collection_generation_sha256"].starts_with("sha256:"));
     assert!(identity["collation_identity"].starts_with("sha256:"));
     assert!(identity["validator_sha256"].starts_with("sha256:"));
     assert_eq!(identity["validation_level"], "strict");
@@ -752,6 +762,69 @@ fn collection_metadata_binds_complete_collation_and_validator_without_plaintext(
     let rendered = format!("{identity:?}");
     assert!(!rendered.contains("numericOrdering"));
     assert!(!rendered.contains("$type"));
+}
+
+#[test]
+fn collection_generation_changes_when_collection_uuid_changes() {
+    let response = |uuid_byte| {
+        doc! {"cursor": {"firstBatch": [{
+            "name": "events",
+            "type": "collection",
+            "info": {"uuid": Binary {
+                subtype: BinarySubtype::Uuid,
+                bytes: vec![uuid_byte; 16],
+            }},
+            "options": {}
+        }]}}
+    };
+    let collection = MongoDbIdentifier::new("events").unwrap();
+    let first = collection_metadata_from_response(&response(1), &collection).unwrap();
+    let second = collection_metadata_from_response(&response(2), &collection).unwrap();
+
+    assert_ne!(
+        first.identity()["collection_generation_sha256"],
+        second.identity()["collection_generation_sha256"]
+    );
+}
+
+#[test]
+fn collection_generation_position_binds_resource_and_collection_identity() {
+    let descriptor = descriptor(false);
+    let database = MongoDbIdentifier::new("ledger").unwrap();
+    let collection = MongoDbIdentifier::new("events").unwrap();
+    let first = mongodb_collection_generation_position(
+        &descriptor,
+        &database,
+        &collection,
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
+    let same = mongodb_collection_generation_position(
+        &descriptor,
+        &database,
+        &collection,
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
+    let changed = mongodb_collection_generation_position(
+        &descriptor,
+        &database,
+        &collection,
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    )
+    .unwrap();
+
+    assert_eq!(first, same);
+    assert_ne!(first, changed);
+    let SourcePosition::ForeignState(state) = first else {
+        panic!("MongoDB collection generation must use foreign-state authority");
+    };
+    assert_eq!(state.protocol, MONGODB_COLLECTION_GENERATION_PROTOCOL);
+
+    let error =
+        mongodb_collection_generation_position(&descriptor, &database, &collection, "not-a-hash")
+            .unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
 }
 
 #[test]

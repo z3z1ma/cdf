@@ -13,7 +13,7 @@ use cdf_runtime::{
     SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use futures::StreamExt;
-use mongodb::bson::{Bson, Document, doc};
+use mongodb::bson::{Bson, Document, doc, spec::BinarySubtype};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -746,6 +746,8 @@ async fn discover_mongodb_collection(
 #[derive(Clone, Debug)]
 pub(crate) struct MongoDbCollectionMetadata {
     collection_type: String,
+    collection_uuid_sha256: String,
+    collection_generation_sha256: String,
     collation_identity: String,
     validator_sha256: Option<String>,
     validation_level: Option<String>,
@@ -756,6 +758,14 @@ impl MongoDbCollectionMetadata {
     pub(crate) fn identity(&self) -> BTreeMap<String, String> {
         let mut identity = BTreeMap::from([
             ("collection_type".to_owned(), self.collection_type.clone()),
+            (
+                "collection_uuid_sha256".to_owned(),
+                self.collection_uuid_sha256.clone(),
+            ),
+            (
+                "collection_generation_sha256".to_owned(),
+                self.collection_generation_sha256.clone(),
+            ),
             (
                 "collation_identity".to_owned(),
                 self.collation_identity.clone(),
@@ -777,6 +787,10 @@ impl MongoDbCollectionMetadata {
         identity
     }
 
+    pub(crate) fn collection_generation_sha256(&self) -> &str {
+        &self.collection_generation_sha256
+    }
+
     fn schema_metadata(&self) -> std::collections::HashMap<String, String> {
         self.identity()
             .into_iter()
@@ -785,7 +799,7 @@ impl MongoDbCollectionMetadata {
     }
 }
 
-async fn read_collection_metadata(
+pub(crate) async fn read_collection_metadata(
     database: &mongodb::Database,
     collection: &MongoDbIdentifier,
     cancellation: &cdf_runtime::RunCancellation,
@@ -848,6 +862,26 @@ pub(crate) fn collection_metadata_from_response(
             "MongoDB source target `{collection}` is type `{collection_type}`; configure a collection rather than a view or timeseries alias"
         )));
     }
+    let info = entry.get_document("info").map_err(|_| {
+        CdfError::data("MongoDB listCollections entry omitted valid collection identity metadata")
+    })?;
+    let collection_uuid = match info.get("uuid") {
+        Some(Bson::Binary(uuid))
+            if uuid.bytes.len() == 16
+                && matches!(uuid.subtype, BinarySubtype::Uuid | BinarySubtype::UuidOld) =>
+        {
+            uuid
+        }
+        _ => {
+            return Err(CdfError::data(
+                "MongoDB listCollections entry omitted its 16-byte collection UUID",
+            ));
+        }
+    };
+    let collection_uuid_sha256 = artifact_hash(&(
+        u8::from(collection_uuid.subtype),
+        collection_uuid.bytes.as_slice(),
+    ))?;
     let options = entry.get_document("options").map_err(|_| {
         CdfError::data("MongoDB listCollections entry omitted valid collection options")
     })?;
@@ -885,8 +919,18 @@ pub(crate) fn collection_metadata_from_response(
             "MongoDB collection metadata contains unsupported validationAction `{action}`"
         )));
     }
+    let collection_generation_sha256 = artifact_hash(&(
+        collection_type,
+        &collection_uuid_sha256,
+        &collation_identity,
+        &validator_sha256,
+        &validation_level,
+        &validation_action,
+    ))?;
     Ok(MongoDbCollectionMetadata {
         collection_type: collection_type.to_owned(),
+        collection_uuid_sha256,
+        collection_generation_sha256,
         collation_identity,
         validator_sha256,
         validation_level,
@@ -1183,7 +1227,7 @@ fn execution_capabilities(
         retry_granularity: SourceRetryGranularity::None,
         retryable_errors: Vec::new(),
         retry_policy: None,
-        attestation: SourceAttestationStrength::None,
+        attestation: SourceAttestationStrength::Metadata,
         rate_limit: None,
         quota_authority: None,
         canonical_order: resumable,

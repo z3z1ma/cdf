@@ -4,15 +4,17 @@ use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, CompiledScanIntent,
     CompiledSourcePlanHash, DeliveryGuarantee, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime,
-    EstimateSupport, FilterCapabilities, IncrementalShape, PartitionAuthority, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanPredicate, ScanRequest, ScopeKind, SourcePosition, source_name,
+    EstimateSupport, FilterCapabilities, ForeignState, IncrementalShape,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PartitionAttestation, PartitionAttestationAttempt,
+    PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
+    PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    ScopeKind, SourcePosition, source_name,
 };
-use cdf_runtime::{ExecutionServices, SourceEgressScope};
+use cdf_runtime::{ExecutionServices, RunCancellation, SourceEgressScope, artifact_hash};
 
 use crate::{
-    driver::MongoDbRuntimeConfig,
+    driver::{MongoDbRuntimeConfig, read_collection_metadata},
     execution::{
         MONGODB_FULL_SCAN_COMPLETION_PROTOCOL, MongoDbClientHandle, MongoDbExecutionInput,
         execute_mongodb_collection,
@@ -21,6 +23,9 @@ use crate::{
     query::{MONGODB_SOURCE_KIND, predicate_fidelity, scan_from_partition},
     schema::{attach_expected_physical_types, validate_mongodb_schema},
 };
+
+pub(crate) const MONGODB_COLLECTION_GENERATION_PROTOCOL: &str = "mongodb.collection_generation.v1";
+const MONGODB_COLLECTION_GENERATION_SCHEMA_KEY: &str = "cdf:mongodb_collection_generation_sha256";
 
 #[derive(Clone)]
 pub(crate) struct MongoDbCollectionResource {
@@ -31,6 +36,7 @@ pub(crate) struct MongoDbCollectionResource {
     endpoint: String,
     database: MongoDbIdentifier,
     collection: MongoDbIdentifier,
+    collection_generation: SourcePosition,
     batch_rows: u32,
     stream_buffer_batches: usize,
     runtime: MongoDbRuntimeConfig,
@@ -60,6 +66,12 @@ impl MongoDbCollectionResource {
     ) -> Result<Self> {
         let schema = Arc::new(compiled.schema.clone());
         let observed_schema = current_physical_schema(compiled)?;
+        let collection_generation = collection_generation_from_schema(
+            &compiled.descriptor,
+            observed_schema.as_ref(),
+            &database,
+            &collection,
+        )?;
         let decoder_schema = attach_expected_physical_types(&schema, observed_schema.as_ref())?;
         validate_resource_shape(&compiled.descriptor, &schema, &collection)?;
         validate_compiled_schema_evidence(compiled)?;
@@ -76,6 +88,7 @@ impl MongoDbCollectionResource {
             endpoint,
             database,
             collection,
+            collection_generation,
             batch_rows,
             stream_buffer_batches,
             runtime,
@@ -239,8 +252,13 @@ impl ResourceStream for MongoDbCollectionResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let mut partition =
-            plan_mongodb_partition(&self.descriptor, &self.schema, &self.collection, request)?;
+        let mut partition = plan_mongodb_partition(
+            &self.descriptor,
+            &self.schema,
+            &self.collection,
+            &self.collection_generation,
+            request,
+        )?;
         partition.scan_intent = CompiledScanIntent::full_scan();
         if self.effective_schema_runtime.is_some() {
             cdf_kernel::bind_partition_schema_candidate(&mut partition, "runtime.mongodb")?;
@@ -266,6 +284,72 @@ impl ResourceStream for MongoDbCollectionResource {
         Ok(scan)
     }
 
+    fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        if partition.planned_position.as_ref() != Some(&self.collection_generation) {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "MongoDB partition collection generation differs from its compiled source authority",
+                ))
+            }));
+        }
+        if let Err(error) =
+            scan_from_partition(&self.descriptor, &self.schema, &self.collection, &partition)
+        {
+            return PartitionAttestationAttempt::materialized(Box::pin(async move { Err(error) }));
+        }
+        let physical_schema_hash = match partition
+            .metadata
+            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+            .map(|value| SchemaHash::new(value.clone()))
+            .transpose()
+        {
+            Ok(hash) => hash,
+            Err(error) => {
+                return PartitionAttestationAttempt::materialized(Box::pin(
+                    async move { Err(error) },
+                ));
+            }
+        };
+        let Some(execution) = self.execution.as_ref() else {
+            return PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "MongoDB source attestation requires injected execution services",
+                ))
+            }));
+        };
+        let runtime = self.runtime.clone();
+        let client = Arc::clone(&self.client);
+        let descriptor = self.descriptor.clone();
+        let database = self.database.clone();
+        let collection = self.collection.clone();
+        let memory = execution.memory();
+        let egress = self.egress.clone();
+        PartitionAttestationAttempt::materialized(Box::pin(async move {
+            let cancellation = RunCancellation::default();
+            let handle = client
+                .get_or_try_init(|| {
+                    crate::execution::connect_mongodb(&runtime, memory, &egress, &cancellation)
+                })
+                .await?;
+            let metadata = read_collection_metadata(
+                &handle.client.database(database.as_str()),
+                &collection,
+                &cancellation,
+            )
+            .await?;
+            let position = mongodb_collection_generation_position(
+                &descriptor,
+                &database,
+                &collection,
+                metadata.collection_generation_sha256(),
+            )?;
+            Ok(Some(PartitionAttestation::new(
+                position,
+                physical_schema_hash,
+            )))
+        }))
+    }
+
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.clone().open_owned(partition)
     }
@@ -277,8 +361,13 @@ impl QueryableResource for MongoDbCollectionResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        let mut scan =
-            negotiate_mongodb_scan(&self.descriptor, &self.schema, &self.collection, request)?;
+        let mut scan = negotiate_mongodb_scan(
+            &self.descriptor,
+            &self.schema,
+            &self.collection,
+            &self.collection_generation,
+            request,
+        )?;
         if self.effective_schema_runtime.is_some() {
             let partition = scan
                 .inline_partitions_mut()
@@ -290,6 +379,65 @@ impl QueryableResource for MongoDbCollectionResource {
         }
         Ok(scan)
     }
+}
+
+fn collection_generation_from_schema(
+    descriptor: &ResourceDescriptor,
+    schema: &arrow_schema::Schema,
+    database: &MongoDbIdentifier,
+    collection: &MongoDbIdentifier,
+) -> Result<SourcePosition> {
+    let generation = schema
+        .metadata()
+        .get(MONGODB_COLLECTION_GENERATION_SCHEMA_KEY)
+        .ok_or_else(|| {
+            CdfError::data(
+                "MongoDB compiled schema omitted collection-generation identity; compile the resource again",
+            )
+        })?;
+    mongodb_collection_generation_position(descriptor, database, collection, generation)
+}
+
+pub(crate) fn mongodb_collection_generation_position(
+    descriptor: &ResourceDescriptor,
+    database: &MongoDbIdentifier,
+    collection: &MongoDbIdentifier,
+    generation_sha256: &str,
+) -> Result<SourcePosition> {
+    let Some(generation_hex) = generation_sha256.strip_prefix("sha256:") else {
+        return Err(CdfError::data(
+            "MongoDB collection-generation identity must use sha256:<64 lowercase hex>",
+        ));
+    };
+    if generation_hex.len() != 64
+        || !generation_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(CdfError::data(
+            "MongoDB collection-generation identity must use sha256:<64 lowercase hex>",
+        ));
+    }
+    let authority = (
+        MONGODB_COLLECTION_GENERATION_PROTOCOL,
+        descriptor.resource_id.as_str(),
+        database.as_str(),
+        collection.as_str(),
+        generation_sha256,
+    );
+    let opaque_blob = serde_json::to_vec(&authority).map_err(|error| {
+        CdfError::internal(format!(
+            "serialize MongoDB collection-generation authority: {error}"
+        ))
+    })?;
+    let position = SourcePosition::ForeignState(ForeignState {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        protocol: MONGODB_COLLECTION_GENERATION_PROTOCOL.to_owned(),
+        blob_sha256: artifact_hash(&authority)?,
+        opaque_blob,
+    });
+    position.validate()?;
+    Ok(position)
 }
 
 pub(crate) fn rebind_mongodb_partition_for_resume(
@@ -460,6 +608,7 @@ fn negotiate_mongodb_scan(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
     collection: &MongoDbIdentifier,
+    collection_generation: &SourcePosition,
     request: &ScanRequest,
 ) -> Result<ScanPlan> {
     validate_request(descriptor, schema, collection, request)?;
@@ -468,7 +617,11 @@ fn negotiate_mongodb_scan(
         PlanId::new(format!("mongodb-scan-{}", descriptor.resource_id))?,
         request.clone(),
         PartitionAuthority::Inline(vec![plan_mongodb_partition(
-            descriptor, schema, collection, request,
+            descriptor,
+            schema,
+            collection,
+            collection_generation,
+            request,
         )?]),
         pushed,
         unsupported,
@@ -482,6 +635,7 @@ fn plan_mongodb_partition(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
     collection: &MongoDbIdentifier,
+    collection_generation: &SourcePosition,
     request: &ScanRequest,
 ) -> Result<PartitionPlan> {
     validate_request(descriptor, schema, collection, request)?;
@@ -501,7 +655,7 @@ fn plan_mongodb_partition(
     let partition = PartitionPlan {
         partition_id: PartitionId::new(MONGODB_SOURCE_KIND)?,
         scope: descriptor.state_scope.clone(),
-        planned_position: None,
+        planned_position: Some(collection_generation.clone()),
         start_position: None,
         scan_intent,
         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
