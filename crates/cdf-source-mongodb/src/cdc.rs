@@ -332,11 +332,13 @@ impl MongoDbCdcResource {
     fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
         let execution = self.execution.clone();
         let memory = execution.memory();
+        let graceful_stop = execution.graceful_stop();
         let task = match execution.spawn_io_stream(
             "mongodb-change-stream",
             self.stream_buffer_batches,
             move |sender, cancellation| async move {
-                execute_change_stream(self, partition, memory, sender, cancellation).await
+                execute_change_stream(self, partition, memory, sender, cancellation, graceful_stop)
+                    .await
             },
         ) {
             Ok(task) => task,
@@ -652,6 +654,7 @@ async fn execute_change_stream(
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     mut sender: TaskStreamSender<Batch>,
     cancellation: cdf_runtime::RunCancellation,
+    graceful_stop: cdf_runtime::RunGracefulStop,
 ) -> Result<()> {
     if partition.partition_id.as_str() != MONGODB_CDC_PARTITION {
         return Err(CdfError::contract("MongoDB CDC partition identity changed"));
@@ -752,14 +755,21 @@ async fn execute_change_stream(
     }
     loop {
         cancellation.check()?;
-        let event = cancellation
-            .await_or_cancel(async {
-                stream
-                    .next_if_any()
-                    .await
-                    .map_err(|error| classify_mongodb_error("read MongoDB change stream", error))
-            })
-            .await?;
+        if graceful_stop.is_requested() {
+            return Ok(());
+        }
+        let next_event = cancellation.await_or_cancel(async {
+            stream
+                .next_if_any()
+                .await
+                .map_err(|error| classify_mongodb_error("read MongoDB change stream", error))
+        });
+        let stop_requested = graceful_stop.requested();
+        futures::pin_mut!(next_event, stop_requested);
+        let event = match futures::future::select(next_event, stop_requested).await {
+            futures::future::Either::Left((event, _)) => event?,
+            futures::future::Either::Right(((), _)) => return Ok(()),
+        };
         let Some(event) = event else {
             continue;
         };

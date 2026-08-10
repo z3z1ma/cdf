@@ -190,10 +190,19 @@ retention, and live replica-set/Atlas certification.
   bootstrap unit is too large. Snapshot bootstrap requires primary read preference; a lagging
   secondary cannot establish gapless initial state relative to the stream token.
 
+- 2026-08-09: Added a runtime-level graceful-stop authority distinct from hard cancellation.
+  MongoDB change streams now wake immediately from an idle server wait on the first process
+  interrupt, finish any already-observed event-prefix unit, and let the normal receipt/checkpoint
+  gate close the drain; a second interrupt cancels promptly without advancing unfinished work.
+  This remains independent of resource cursors: bounded and replace runs need none, while MongoDB
+  CDC resumes from its native token frontier. Continuous drain epochs now invoke the canonical
+  retention collector after each committed checkpoint rather than accumulating package buffers
+  until the command exits.
+
 ## Blockers
 
-None. Snapshot handoff, continuous epoch execution, and the remaining operational certificates are
-open implementation work, not unresolved semantics.
+None. Continuous live-stop, envelope, replica-set, and remaining operational certificates are open
+implementation work, not unresolved semantics.
 
 ## Evidence
 

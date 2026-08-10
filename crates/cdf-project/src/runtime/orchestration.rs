@@ -210,7 +210,7 @@ async fn run_project_with_context(
         recorder: &recorder,
         after_receipt_verified,
         schema_hash,
-        services,
+        services: services.clone(),
         scheduler,
         telemetry,
         manifest_planning: ManifestPlanning::ResolveAgainstCheckpoint,
@@ -221,6 +221,7 @@ async fn run_project_with_context(
     // that state on the heap also prevents embedding it into every caller's future frame.
     match Box::pin(run_project_inner(execution, None)).await {
         Ok(ProjectRunUnitOutcome::Committed(unit)) => {
+            services.notify_checkpoint_committed(&unit.report.checkpoint)?;
             Ok(ProjectRunOutcome::Committed(Box::new(unit.report)))
         }
         Ok(ProjectRunUnitOutcome::NoOp(report)) => Ok(ProjectRunOutcome::NoOp(report)),
@@ -468,6 +469,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             observed_at_unix_milliseconds: drain_epoch.closure.observed_at_unix_milliseconds,
             closure: drain_epoch.closure.evidence,
         };
+        services.notify_checkpoint_committed(&unit.report.checkpoint)?;
         if controller.is_finished() {
             let mut report = unit.report;
             report.drain = Some(ProjectDrainRunReport {

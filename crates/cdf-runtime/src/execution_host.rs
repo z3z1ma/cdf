@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cdf_kernel::{BoxFuture, CdfError, ErrorKind, InvocationTermination, Result};
+use cdf_kernel::{BoxFuture, CdfError, Checkpoint, ErrorKind, InvocationTermination, Result};
 use cdf_memory::{MemoryBudgetResolution, MemoryCoordinator};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, future::Either};
@@ -36,6 +36,7 @@ pub type IoValue = Box<dyn Any + Send + 'static>;
 pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'static>;
+pub type CheckpointCommittedHook = dyn Fn(&Checkpoint) -> Result<()> + Send + Sync;
 
 pub struct TaskStreamSender<T> {
     sender: mpsc::Sender<T>,
@@ -206,6 +207,12 @@ struct CancellationState {
 }
 
 #[derive(Debug, Default)]
+struct GracefulStopState {
+    requested: AtomicBool,
+    waiters: Mutex<WakerRegistry>,
+}
+
+#[derive(Debug, Default)]
 struct WakerRegistry {
     next_id: u64,
     waiters: BTreeMap<u64, Waker>,
@@ -335,6 +342,71 @@ impl Drop for CancellationFuture {
     fn drop(&mut self) {
         if let Some(waiter_id) = self.waiter_id.take()
             && let Ok(mut waiters) = self.cancellation.0.waiters.lock()
+        {
+            waiters.unregister(waiter_id);
+        }
+    }
+}
+
+/// Process-local request to finish a long-running source at its next safe frontier.
+///
+/// This is deliberately distinct from [`RunCancellation`]. A graceful stop lets an adapter
+/// finish the protocol unit it has already observed so the destination receipt can safely gate
+/// checkpoint advancement. Cancellation remains the prompt abort path and must not advance
+/// unfinished work.
+#[derive(Clone, Debug, Default)]
+pub struct RunGracefulStop(Arc<GracefulStopState>);
+
+impl RunGracefulStop {
+    pub fn request(&self) {
+        if self.0.requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let waiters = self.0.waiters.lock_fail_stop().take_all();
+        for waiter in waiters {
+            waiter.wake();
+        }
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.0.requested.load(Ordering::Acquire)
+    }
+
+    pub fn requested(&self) -> GracefulStopFuture {
+        GracefulStopFuture {
+            stop: self.clone(),
+            waiter_id: None,
+        }
+    }
+}
+
+pub struct GracefulStopFuture {
+    stop: RunGracefulStop,
+    waiter_id: Option<u64>,
+}
+
+impl Future for GracefulStopFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let future = self.get_mut();
+        if future.stop.is_requested() {
+            return Poll::Ready(());
+        }
+        let mut waiters = future.stop.0.waiters.lock_fail_stop();
+        if future.stop.is_requested() {
+            return Poll::Ready(());
+        }
+        let waiter_id = waiters.register(future.waiter_id, context.waker());
+        future.waiter_id = Some(waiter_id);
+        Poll::Pending
+    }
+}
+
+impl Drop for GracefulStopFuture {
+    fn drop(&mut self) {
+        if let Some(waiter_id) = self.waiter_id.take()
+            && let Ok(mut waiters) = self.stop.0.waiters.lock()
         {
             waiters.unregister(waiter_id);
         }
@@ -722,6 +794,8 @@ impl ExecutionTaskScope for ReportingTaskScope {
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
     run_cancellation: RunCancellation,
+    graceful_stop: RunGracefulStop,
+    checkpoint_committed_hook: Option<Arc<CheckpointCommittedHook>>,
     memory_budget_resolution: Option<Arc<MemoryBudgetResolution>>,
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
@@ -1128,6 +1202,8 @@ impl ExecutionServices {
         Ok(Self {
             host,
             run_cancellation: RunCancellation::default(),
+            graceful_stop: RunGracefulStop::default(),
+            checkpoint_committed_hook: None,
             memory_budget_resolution: None,
             run_work: None,
             staging_leases: None,
@@ -1148,6 +1224,8 @@ impl ExecutionServices {
         Ok(Self {
             host: Arc::clone(&self.host),
             run_cancellation: self.run_cancellation.clone(),
+            graceful_stop: self.graceful_stop.clone(),
+            checkpoint_committed_hook: self.checkpoint_committed_hook.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: Some(Arc::new(RunWorkAdmission {
                 state: Mutex::new(RunWorkAdmissionState {
@@ -1176,6 +1254,8 @@ impl ExecutionServices {
         Ok(Self {
             host: Arc::clone(&self.host),
             run_cancellation: self.run_cancellation.clone(),
+            graceful_stop: self.graceful_stop.clone(),
+            checkpoint_committed_hook: self.checkpoint_committed_hook.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: Some(crate::StagingLeaseSupervisor::new(
@@ -1197,6 +1277,8 @@ impl ExecutionServices {
         Self {
             host: Arc::clone(&self.host),
             run_cancellation: self.run_cancellation.clone(),
+            graceful_stop: self.graceful_stop.clone(),
+            checkpoint_committed_hook: self.checkpoint_committed_hook.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
@@ -1258,6 +1340,34 @@ impl ExecutionServices {
     /// Returns the cancellation authority injected for this invocation.
     pub fn run_cancellation(&self) -> RunCancellation {
         self.run_cancellation.clone()
+    }
+
+    /// Returns invocation-local services carrying the graceful-stop authority for this run.
+    pub fn with_graceful_stop(&self, stop: RunGracefulStop) -> Self {
+        let mut services = self.clone();
+        services.graceful_stop = stop;
+        services
+    }
+
+    /// Returns the graceful-stop authority injected for this invocation.
+    pub fn graceful_stop(&self) -> RunGracefulStop {
+        self.graceful_stop.clone()
+    }
+
+    /// Installs process-local work that must run after every durable checkpoint, including every
+    /// epoch of a continuous drain. The hook cannot participate in checkpoint atomicity: failure
+    /// is reported after the committed checkpoint and is safe to retry.
+    pub fn with_checkpoint_committed_hook(&self, hook: Arc<CheckpointCommittedHook>) -> Self {
+        let mut services = self.clone();
+        services.checkpoint_committed_hook = Some(hook);
+        services
+    }
+
+    pub fn notify_checkpoint_committed(&self, checkpoint: &Checkpoint) -> Result<()> {
+        match &self.checkpoint_committed_hook {
+            Some(hook) => hook(checkpoint),
+            None => Ok(()),
+        }
     }
 
     pub fn with_memory_budget_resolution(
@@ -1388,6 +1498,11 @@ impl ExecutionServices {
     pub fn shares_runtime_authorities_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.host, &other.host)
             && Arc::ptr_eq(&self.run_cancellation.0, &other.run_cancellation.0)
+            && Arc::ptr_eq(&self.graceful_stop.0, &other.graceful_stop.0)
+            && option_arc_ptr_eq(
+                &self.checkpoint_committed_hook,
+                &other.checkpoint_committed_hook,
+            )
             && option_arc_ptr_eq(
                 &self.memory_budget_resolution,
                 &other.memory_budget_resolution,
@@ -1642,6 +1757,8 @@ impl ExecutionServices {
         Ok(Self {
             host: Arc::clone(&self.host),
             run_cancellation: self.run_cancellation.clone(),
+            graceful_stop: self.graceful_stop.clone(),
+            checkpoint_committed_hook: self.checkpoint_committed_hook.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
@@ -2197,6 +2314,29 @@ mod tests {
     }
 
     #[test]
+    fn graceful_stop_wakes_all_waiters_without_cancelling_the_run() {
+        let stop = RunGracefulStop::default();
+        let cancellation = RunCancellation::default();
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut first = Box::pin(stop.requested());
+        let mut second = Box::pin(stop.requested());
+
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
+        assert!(matches!(second.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(stop.0.waiters.lock().unwrap().len(), 2);
+
+        stop.request();
+        assert!(stop.0.waiters.lock().unwrap().is_empty());
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(())));
+        assert!(matches!(
+            second.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+        assert!(!cancellation.is_cancelled());
+    }
+
+    #[test]
     fn async_task_stream_send_cancels_while_bounded_queue_is_full() {
         futures_executor::block_on(async {
             let cancellation = RunCancellation::default();
@@ -2233,6 +2373,8 @@ mod tests {
             let services = ExecutionServices {
                 host: Arc::new(TestHost),
                 run_cancellation: RunCancellation::default(),
+                graceful_stop: RunGracefulStop::default(),
+                checkpoint_committed_hook: None,
                 memory_budget_resolution: None,
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,

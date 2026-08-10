@@ -1756,20 +1756,34 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
         .unwrap()
         .bind_operator_graph(&source, &resolved_destination.runtime_capabilities())
         .unwrap();
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::new(&bound),
-        plan,
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        state_store_path_ownership: crate::StateStorePathOwnership::Configured,
-        pipeline_id: PipelineId::new("pipeline-drain").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-drain").unwrap(),
-        destination: resolved_destination,
-        run_id: Some(RunId::new("run-drain").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let committed_checkpoints = Arc::new(Mutex::new(Vec::new()));
+    let hook_observations = Arc::clone(&committed_checkpoints);
+    let services =
+        test_execution_services().with_checkpoint_committed_hook(Arc::new(move |checkpoint| {
+            hook_observations
+                .lock()
+                .unwrap()
+                .push(checkpoint.delta.checkpoint_id.clone());
+            Ok(())
+        }));
+    let report = futures_executor::block_on(run_project_fixture(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(&bound),
+            plan,
+            package_root: package_root.clone(),
+            state_store_path: state_path.clone(),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: PipelineId::new("pipeline-drain").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-drain").unwrap(),
+            destination: resolved_destination,
+            run_id: Some(RunId::new("run-drain").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &services,
+        RunTelemetryConfig::disabled(),
+    ))
     .unwrap();
 
     let drain = report.drain.as_ref().expect("drain summary");
@@ -1808,6 +1822,13 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
         )
         .unwrap();
     assert_eq!(history.len(), 2);
+    assert_eq!(
+        committed_checkpoints.lock().unwrap().as_slice(),
+        [
+            CheckpointId::new("checkpoint-drain").unwrap(),
+            CheckpointId::new("checkpoint-drain-epoch-00000000000000000001").unwrap(),
+        ]
+    );
     assert_eq!(
         history[1].delta.parent_checkpoint_id,
         Some(history[0].delta.checkpoint_id.clone())

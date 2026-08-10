@@ -62,6 +62,11 @@ behavioral tests.
 - 2026-08-07: Moved tombstone publication before payload deletion so crashes never leave a live
   manifest claiming deleted canonical bytes. Archived packages with residual identity files are
   retryable candidates, while completed tombstones remain idempotent no-ops.
+- 2026-08-09: Corrected automatic collection for genuinely continuous execution. The project
+  orchestrator now invokes an invocation-local post-checkpoint hook after every committed drain
+  epoch, and the CLI binds that hook to the same canonical collector as `cdf package gc
+  --execute`. Collection no longer waits for the overall command to return, so a forever-running
+  source cannot retain every settled package buffer indefinitely.
 
 ## Blockers
 
@@ -79,6 +84,9 @@ None. The ticket is executable after this record-publication turn.
   run_automatically_collects_settled_packages_outside_retention --lib --locked` passed; two real
   source/destination epochs retained the newest package and tombstoned only the older settled
   package after the second checkpoint committed.
+- Continuous automatic behavior: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project
+  drain_project_settles_each_frontier_before_committing_the_next_epoch --lib --locked` passed and
+  observed the post-checkpoint hook once for each of two independently committed drain epochs.
 - Affected compilation: `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-project -p cdf-state-sqlite -p
   cdf-package -p cdf-cli-core -p cdf-cli --all-targets --locked` passed.
 

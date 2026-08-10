@@ -82,11 +82,12 @@ pub use drain_epoch::{
 };
 pub use execution_host::{
     BlockingLaneBinding, BlockingLaneSpec, BlockingTask, BlockingTaskStreamSender,
-    BlockingValueTask, CancellationFuture, CpuFutureTask, CpuTaskSpec, ExecutionHost,
-    ExecutionHostCapabilities, ExecutionServices, ExecutionTaskScope, InterruptionSafety, IoTask,
-    IoValue, IoValueTask, LaneAffinity, RunCancellation, RunWorkPermit, RunWorkReport,
-    RuntimeSchedulerReport, SchemaSettlementBinding, ScopedBlockingTask, ScopedTaskStream,
-    SourceIoController, SourceIoControllerLimits, SourceIoControllerMode, SourceIoControllerReport,
+    BlockingValueTask, CancellationFuture, CheckpointCommittedHook, CpuFutureTask, CpuTaskSpec,
+    ExecutionHost, ExecutionHostCapabilities, ExecutionServices, ExecutionTaskScope,
+    GracefulStopFuture, InterruptionSafety, IoTask, IoValue, IoValueTask, LaneAffinity,
+    RunCancellation, RunGracefulStop, RunWorkPermit, RunWorkReport, RuntimeSchedulerReport,
+    SchemaSettlementBinding, ScopedBlockingTask, ScopedTaskStream, SourceIoController,
+    SourceIoControllerLimits, SourceIoControllerMode, SourceIoControllerReport,
     SourceIoRequestPermit, SourceRateAdmissionReport, TaskScopeReport, TaskStreamSender,
 };
 pub use format::{

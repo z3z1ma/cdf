@@ -3,7 +3,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -55,6 +59,65 @@ use crate::{
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
 static ADHOC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+struct RunSignalGuard {
+    handle: signal_hook::iterator::Handle,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RunSignalGuard {
+    fn install(
+        graceful_stop: cdf_runtime::RunGracefulStop,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> Result<Self, CliError> {
+        let mut signals = signal_hook::iterator::Signals::new([
+            signal_hook::consts::SIGINT,
+            signal_hook::consts::SIGTERM,
+        ])
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "install run interruption handling: {error}; retry the command"
+            ))
+        })?;
+        let handle = signals.handle();
+        let thread = thread::Builder::new()
+            .name("cdf-run-signals".to_owned())
+            .spawn(move || {
+                let mut received = 0_u8;
+                for _ in signals.forever() {
+                    received = received.saturating_add(1);
+                    if received == 1 {
+                        graceful_stop.request();
+                        eprintln!(
+                            "\nStopping after the current safe source unit; press Ctrl-C again to abort."
+                        );
+                    } else {
+                        cancellation.cancel();
+                        eprintln!("\nAborting the active run without advancing unfinished work.");
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "start run interruption handler: {error}; retry the command"
+                ))
+            })?;
+        Ok(Self {
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for RunSignalGuard {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 pub(crate) fn run(
     cli: &Cli,
     args: RunArgs,
@@ -96,6 +159,15 @@ pub(crate) fn run(
             error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
     }
+    let graceful_stop = cdf_runtime::RunGracefulStop::default();
+    let cancellation = cdf_runtime::RunCancellation::default();
+    let _signal_guard = (progress_delivery == ProgressDelivery::LiveStderr)
+        .then(|| RunSignalGuard::install(graceful_stop.clone(), cancellation.clone()))
+        .transpose()?;
+    let run_services = services
+        .with_run_cancellation(cancellation)
+        .with_graceful_stop(graceful_stop);
+    let services = &run_services;
     if let Some(path) = args.plan.clone() {
         return run_portable_plan(
             cli,
@@ -888,10 +960,38 @@ fn execute_prepared(
         )?,
         None => run_services,
     };
+    let package_collection = Arc::new(Mutex::new(None::<RunPackageCollectionReport>));
+    let run_services = match retention_rule.as_ref() {
+        Some(rule) => {
+            let package_root = package_root.clone();
+            let state_store_path = state_store_path.clone();
+            let rule = rule.clone();
+            let package_collection = Arc::clone(&package_collection);
+            run_services.with_checkpoint_committed_hook(Arc::new(move |checkpoint| {
+                let report = collect_settled_packages(
+                    &package_root,
+                    &state_store_path,
+                    state_store_path_ownership,
+                    &checkpoint.delta.resource_id,
+                    &rule,
+                )
+                .map_err(|mut error| {
+                    error.message = format!(
+                        "checkpoint {} committed, but automatic package collection failed: {}; retry with `cdf package gc --execute`",
+                        checkpoint.delta.checkpoint_id, error.message
+                    );
+                    error
+                })?;
+                *package_collection.lock().map_err(|_| {
+                    CdfError::internal("automatic package collection report lock is poisoned")
+                })? = Some(report);
+                Ok(())
+            }))
+        }
+        None => run_services,
+    };
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
-    let collection_package_root = package_root.clone();
-    let collection_state_store_path = state_store_path.clone();
     let report = match host
         .block_on_root(run_project_with_scheduler_and_telemetry(
             ProjectRunRequest {
@@ -930,25 +1030,12 @@ fn execute_prepared(
     );
     match report {
         ProjectRunOutcome::Committed(report) => {
-            let package_collection = retention_rule
-                .as_ref()
-                .map(|rule| {
-                    collect_settled_packages(
-                        &collection_package_root,
-                        &collection_state_store_path,
-                        state_store_path_ownership,
-                        &report.checkpoint.delta.resource_id,
-                        rule,
-                    )
-                    .map_err(|mut error| {
-                        error.message = format!(
-                            "checkpoint {} committed, but automatic package collection failed: {}; retry with `cdf package gc --execute`",
-                            report.checkpoint.delta.checkpoint_id, error.message
-                        );
-                        error
-                    })
-                })
-                .transpose()?;
+            let package_collection = package_collection
+                .lock()
+                .map_err(|_| {
+                    CdfError::internal("automatic package collection report lock is poisoned")
+                })?
+                .clone();
             let mut cli_report = RunCliReport::from_report(
                 &report,
                 destination_report,
