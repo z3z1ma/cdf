@@ -89,6 +89,13 @@ None.
   `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-cli --bin cdf`: passed.
 - `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-builtin-drivers
   tests::catalog_matches_the_data_driven_first_party_fixture -- --exact`: passed.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo build -p cdf-benchmarks --bin
+  mysql-source-roofline --profile bench-max -j 12`, followed by five measured samples per cell on
+  MySQL 8.4.11: all six comparable cells passed the 0.90 floor. The 65,536-row production default
+  measured 0.956 of the direct `mysql_async` path for the mixed table and 0.939 for the native
+  window query; the fastest aggregate sweep setting was 8,192 rows at a minimum 1.013 ratio. Full
+  samples, dispersion, memory, host, executable, and comparison identity are recorded in
+  `.10x/evidence/.storage/2026-08-09-mysql-source-roofline.json`.
 - Release `cdf discover source mysql_native --progress never`: complete `mysql_relation` catalog;
   both live tables carried exact prepared schemas (6 and 14 fields).
 - Release bounded runs: exact decimal, UTF-8, binary, bit, JSON, negative/max TIME, enum/set, and
@@ -96,8 +103,7 @@ None.
 - Release cursor run: initial append committed 250,000 rows, then a newly inserted `id=250001`
   produced exactly one row and advanced the cursor checkpoint. Replaying that retained package was
   an existing-receipt no-op.
-- Remaining closure evidence: same-client `bench-max` roofline, final focused cancellation/error
-  certificates, and independent review.
+- Remaining tranche closure evidence: independent review after the CDC adapters land.
 
 ## Review
 
@@ -105,4 +111,13 @@ Pending.
 
 ## Retrospective
 
-Pending.
+- Live portable execution found the boundary unit tests missed: replace resources need generation
+  attestation but no resume cursor. Keeping native source position and authored cursor as separate
+  types made the correction surgical and preserved exact incremental behavior.
+- Prepared binary metadata and values cover MySQL's otherwise awkward decimal, temporal, JSON,
+  bit, and spatial domains without guesswork. Text is the lossless CDF representation where Arrow
+  lacks the source domain.
+- A fair same-client roofline needs logical Arrow bytes rather than retained buffer capacity;
+  otherwise different but equally valid builder allocation strategies falsely appear
+  non-equivalent. The final comparator verifies ordered identity and complete content separately
+  from retained-memory telemetry.
