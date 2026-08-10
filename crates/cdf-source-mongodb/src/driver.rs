@@ -2277,24 +2277,38 @@ pub(crate) fn mongodb_change_stream_scope(
 
 fn validate_envelope_schema(schema: &arrow_schema::Schema) -> Result<()> {
     let expected = mongodb_envelope_schema();
-    let envelope_fields = schema
+    let field_count = schema.fields().len();
+    let envelope_fields_match = schema
         .fields()
         .iter()
         .take(expected.fields().len())
-        .cloned()
-        .collect::<Vec<_>>();
-    let envelope =
-        arrow_schema::Schema::new_with_metadata(envelope_fields, schema.metadata().clone());
-    let field_count = schema.fields().len();
+        .zip(expected.fields())
+        .all(|(actual, expected)| envelope_field_matches(actual, expected));
     let valid_variant = field_count == expected.fields().len()
         || (field_count == expected.fields().len() + 1
             && cdf_contract::is_framework_variant_field(schema.field(field_count - 1)));
-    if envelope != *expected || !valid_variant {
+    if field_count < expected.fields().len()
+        || !envelope_fields_match
+        || schema.metadata() != expected.metadata()
+        || !valid_variant
+    {
         return Err(CdfError::contract(
             "MongoDB envelope CDC schema must contain non-null UTF-8 source_database, source_collection, document_key, and document fields in that order, with only the optional framework residual column",
         ));
     }
     Ok(())
+}
+
+fn envelope_field_matches(actual: &arrow_schema::Field, expected: &arrow_schema::Field) -> bool {
+    let mut metadata = actual.metadata().clone();
+    let source_name = metadata.remove(cdf_kernel::SOURCE_NAME_METADATA_KEY);
+    actual.name() == expected.name()
+        && actual.data_type() == expected.data_type()
+        && actual.is_nullable() == expected.is_nullable()
+        && source_name
+            .as_deref()
+            .is_none_or(|source_name| source_name == actual.name())
+        && metadata == *expected.metadata()
 }
 
 pub(crate) fn mongodb_envelope_schema() -> arrow_schema::SchemaRef {

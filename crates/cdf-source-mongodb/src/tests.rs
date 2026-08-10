@@ -182,10 +182,19 @@ fn envelope_cdc_accepts_the_framework_residual_column() {
             ),
         ]));
     let schema = Schema::new(vec![
-        Field::new("source_database", DataType::Utf8, false),
-        Field::new("source_collection", DataType::Utf8, false),
-        Field::new("document_key", DataType::Utf8, false),
-        Field::new("document", DataType::Utf8, false),
+        with_source_name(
+            Field::new("source_database", DataType::Utf8, false),
+            "source_database",
+        ),
+        with_source_name(
+            Field::new("source_collection", DataType::Utf8, false),
+            "source_collection",
+        ),
+        with_source_name(
+            Field::new("document_key", DataType::Utf8, false),
+            "document_key",
+        ),
+        with_source_name(Field::new("document", DataType::Utf8, false), "document"),
         variant,
     ]);
     let plan = driver
