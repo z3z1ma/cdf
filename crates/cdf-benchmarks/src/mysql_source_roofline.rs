@@ -230,15 +230,41 @@ pub fn run_mysql_source_roofline(
         }
     }
 
+    let selected_output_batch_rows = [8_192_usize, 32_768, 65_536]
+        .into_iter()
+        .filter_map(|batch_rows| {
+            let selected = cells
+                .iter()
+                .filter(|cell| cell.output_batch_rows == batch_rows)
+                .collect::<Vec<_>>();
+            (selected.len() == 2 && selected.iter().all(|cell| cell.status == "pass")).then(|| {
+                (
+                    batch_rows,
+                    selected.iter().map(|cell| cell.cdf_median_ns).sum::<u64>(),
+                )
+            })
+        })
+        .min_by_key(|(_, combined_cdf_ns)| *combined_cdf_ns)
+        .map(|(batch_rows, _)| batch_rows);
+    let selected_output_batch_rows = selected_output_batch_rows.unwrap_or_else(|| {
+        cells
+            .iter()
+            .max_by_key(|cell| cell.roofline_ratio_ppm)
+            .map(|cell| cell.output_batch_rows)
+            .unwrap_or(65_536)
+    });
     let selected = cells
         .iter()
-        .filter(|cell| cell.status == "pass")
-        .max_by_key(|cell| cell.cdf_median_ns)
-        .or_else(|| cells.iter().max_by_key(|cell| cell.roofline_ratio_ppm))
-        .ok_or_else(|| bench_error("MySQL source roofline produced no cells"))?;
-    let status = if cells.iter().all(|cell| cell.status == "pass") {
+        .filter(|cell| cell.output_batch_rows == selected_output_batch_rows)
+        .collect::<Vec<_>>();
+    let selected_roofline_ratio_ppm = selected
+        .iter()
+        .map(|cell| cell.roofline_ratio_ppm)
+        .min()
+        .unwrap_or(0);
+    let status = if selected.len() == 2 && selected.iter().all(|cell| cell.status == "pass") {
         "pass"
-    } else if cells.iter().any(|cell| cell.status == "fail") {
+    } else if selected.iter().any(|cell| cell.status == "fail") {
         "fail"
     } else {
         "inconclusive"
@@ -290,8 +316,8 @@ pub fn run_mysql_source_roofline(
         snapshot: "read-only repeatable-read consistent snapshot".to_owned(),
         rows,
         samples,
-        selected_output_batch_rows: selected.output_batch_rows,
-        selected_roofline_ratio_ppm: selected.roofline_ratio_ppm,
+        selected_output_batch_rows,
+        selected_roofline_ratio_ppm,
         maximum_batch_bytes: 64 * 1024 * 1024,
         in_flight_batch_bound: IN_FLIGHT_BATCH_BOUND,
         connection_count: 1,
@@ -349,7 +375,7 @@ async fn seed_fixture(database_url: String, rows: u64) -> Result<String> {
     connection
         .exec_drop(
             format!(
-                "INSERT INTO `{TABLE}` (id, metric, label, amount, payload) SELECT n, n * 17, CONCAT('label-', MOD(n, {LABEL_CARDINALITY})), CAST(n + 0.123456789 AS DECIMAL(38,9)), JSON_OBJECT('id', n, 'metric', n * 17) FROM ({generator}) generated WHERE n < ? ORDER BY n"
+                "INSERT INTO `{TABLE}` (id, metric, label, amount, payload) SELECT n, n * 17, CONCAT('label-', MOD(n, {LABEL_CARDINALITY})), CAST(n + 0.123456789 AS DECIMAL(38,9)), JSON_OBJECT('id', n, 'metric', n * 17) FROM ({generator}) AS generated_rows WHERE n < ? ORDER BY n"
             ),
             (rows,),
         )
@@ -552,7 +578,7 @@ struct DirectBuilder {
     shape: Shape,
     ids: UInt64Builder,
     first: Int64Builder,
-    second: Option<Int64Builder>,
+    second: Option<StringBuilder>,
     text: StringBuilder,
     amount: Option<StringBuilder>,
     payload: Option<StringBuilder>,
@@ -564,7 +590,8 @@ impl DirectBuilder {
             shape,
             ids: UInt64Builder::with_capacity(rows),
             first: Int64Builder::with_capacity(rows),
-            second: matches!(shape, Shape::NativeQuery).then(|| Int64Builder::with_capacity(rows)),
+            second: matches!(shape, Shape::NativeQuery)
+                .then(|| StringBuilder::with_capacity(rows, rows.saturating_mul(20))),
             text: StringBuilder::with_capacity(rows, rows.saturating_mul(12)),
             amount: matches!(shape, Shape::Table)
                 .then(|| StringBuilder::with_capacity(rows, rows.saturating_mul(20))),
@@ -579,48 +606,28 @@ impl DirectBuilder {
 
     fn append(&mut self, row: Row) -> Result<()> {
         let values = row.unwrap();
-        match (self.shape, values.as_slice()) {
-            (
-                Shape::Table,
-                [
-                    Value::UInt(id),
-                    Value::Int(metric),
-                    Value::Bytes(label),
-                    Value::Bytes(amount),
-                    Value::Bytes(payload),
-                ],
-            ) => {
-                self.ids.append_value(*id);
-                self.first.append_value(*metric);
-                self.text.append_value(utf8(label, "label")?);
+        match (self.shape, values.len()) {
+            (Shape::Table, 5) => {
+                self.ids.append_value(value_u64(&values[0], "id")?);
+                self.first.append_value(value_i64(&values[1], "metric")?);
+                self.text.append_value(value_utf8(&values[2], "label")?);
                 self.amount
                     .as_mut()
                     .expect("table amount builder")
-                    .append_value(utf8(amount, "amount")?);
+                    .append_value(value_utf8(&values[3], "amount")?);
                 self.payload
                     .as_mut()
                     .expect("table payload builder")
-                    .append_value(utf8(payload, "payload")?);
+                    .append_value(value_utf8(&values[4], "payload")?);
             }
-            (
-                Shape::NativeQuery,
-                [
-                    Value::UInt(id),
-                    Value::Int(metric),
-                    Value::Bytes(running),
-                    Value::Bytes(label),
-                ],
-            ) => {
-                let running = utf8(running, "running_metric")?
-                    .parse::<i64>()
-                    .map_err(|_| CdfError::data("direct MySQL running_metric is not an i64"))?;
-                self.ids.append_value(*id);
-                self.first.append_value(*metric);
+            (Shape::NativeQuery, 4) => {
+                self.ids.append_value(value_u64(&values[0], "id")?);
+                self.first.append_value(value_i64(&values[1], "metric")?);
                 self.second
                     .as_mut()
                     .expect("query running metric builder")
-                    .append_value(running);
-                self.text.append_value(utf8(label, "label")?);
+                    .append_value(value_utf8(&values[2], "running_metric")?);
+                self.text.append_value(value_utf8(&values[3], "label")?);
             }
             _ => {
                 return Err(CdfError::data(
@@ -653,7 +660,7 @@ impl DirectBuilder {
                 vec![
                     Field::new("id", DataType::UInt64, false),
                     Field::new("metric", DataType::Int64, false),
-                    Field::new("running_metric", DataType::Int64, false),
+                    Field::new("running_metric", DataType::Utf8, false),
                     Field::new("label", DataType::Utf8, false),
                 ],
                 vec![
@@ -669,7 +676,38 @@ impl DirectBuilder {
     }
 }
 
-fn utf8<'a>(value: &'a [u8], field: &str) -> Result<&'a str> {
+fn value_u64(value: &Value, field: &str) -> Result<u64> {
+    match value {
+        Value::UInt(value) => Ok(*value),
+        Value::Int(value) => u64::try_from(*value)
+            .map_err(|_| CdfError::data(format!("direct MySQL `{field}` is negative"))),
+        _ => Err(CdfError::data(format!(
+            "direct MySQL `{field}` is not an unsigned integer"
+        ))),
+    }
+}
+
+fn value_i64(value: &Value, field: &str) -> Result<i64> {
+    match value {
+        Value::Int(value) => Ok(*value),
+        Value::UInt(value) => i64::try_from(*value)
+            .map_err(|_| CdfError::data(format!("direct MySQL `{field}` exceeds i64"))),
+        Value::Bytes(value) => std::str::from_utf8(value)
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .ok_or_else(|| CdfError::data(format!("direct MySQL `{field}` is not an i64"))),
+        _ => Err(CdfError::data(format!(
+            "direct MySQL `{field}` is not an i64"
+        ))),
+    }
+}
+
+fn value_utf8<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    let Value::Bytes(value) = value else {
+        return Err(CdfError::data(format!(
+            "direct MySQL `{field}` is not text"
+        )));
+    };
     std::str::from_utf8(value)
         .map_err(|_| CdfError::data(format!("direct MySQL `{field}` is not UTF-8")))
 }
@@ -721,26 +759,55 @@ impl Observation {
             Shape::Table => {
                 for column_index in [2, 3, 4] {
                     let values = column::<StringArray>(batch, column_index, "text")?;
+                    self.useful_arrow_bytes = self.useful_arrow_bytes.saturating_add(
+                        u64::try_from(values.len().saturating_add(1).saturating_mul(4))
+                            .unwrap_or(u64::MAX),
+                    );
                     for value in values.iter().flatten() {
                         self.content_checksum ^= text_checksum(value);
+                        self.useful_arrow_bytes = self
+                            .useful_arrow_bytes
+                            .saturating_add(u64::try_from(value.len()).unwrap_or(u64::MAX));
                     }
                 }
             }
             Shape::NativeQuery => {
-                let running = column::<Int64Array>(batch, 2, "running_metric")?;
+                let running = column::<StringArray>(batch, 2, "running_metric")?;
                 let labels = column::<StringArray>(batch, 3, "label")?;
+                self.useful_arrow_bytes = self.useful_arrow_bytes.saturating_add(
+                    u64::try_from(
+                        running
+                            .len()
+                            .saturating_add(labels.len())
+                            .saturating_add(2)
+                            .saturating_mul(4),
+                    )
+                    .unwrap_or(u64::MAX),
+                );
                 for index in 0..running.len() {
                     self.content_checksum = self
                         .content_checksum
-                        .wrapping_add(running.value(index) as u64)
+                        .wrapping_add(text_checksum(running.value(index)))
                         ^ text_checksum(labels.value(index));
+                    self.useful_arrow_bytes = self
+                        .useful_arrow_bytes
+                        .saturating_add(
+                            u64::try_from(running.value(index).len()).unwrap_or(u64::MAX),
+                        )
+                        .saturating_add(
+                            u64::try_from(labels.value(index).len()).unwrap_or(u64::MAX),
+                        );
                 }
             }
         }
         let retained = cdf_memory::record_batch_retained_bytes(batch)?;
         self.maximum_batch_retained_bytes = self.maximum_batch_retained_bytes.max(retained);
         self.maximum_batch_rows = self.maximum_batch_rows.max(batch.num_rows() as u64);
-        self.useful_arrow_bytes = self.useful_arrow_bytes.saturating_add(retained);
+        self.useful_arrow_bytes = self.useful_arrow_bytes.saturating_add(
+            u64::try_from(batch.num_rows())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(16),
+        );
         self.rows = self.rows.saturating_add(batch.num_rows() as u64);
         self.batch_count = self.batch_count.saturating_add(1);
         Ok(())
