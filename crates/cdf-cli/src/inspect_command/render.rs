@@ -139,15 +139,20 @@ pub(super) fn destinations_document(report: &InspectDestinationsReport) -> Rende
                         "available".to_owned()
                     },
                     path.fallback.to_string(),
-                    path.measured_evidence_version
-                        .clone()
-                        .unwrap_or_else(|| "unmeasured".to_owned()),
+                    bulk_evidence_display(&path.evidence),
                 ])
             },
         );
         document = document.blank_line().push(paths);
     }
     document.blank_line().push(NextCommand::new("cdf plan"))
+}
+
+fn bulk_evidence_display(evidence: &cdf_runtime::BulkPathEvidence) -> String {
+    evidence.version().map_or_else(
+        || evidence.status().to_owned(),
+        |version| format!("{} ({version})", evidence.status()),
+    )
 }
 
 pub(super) fn package_document(report: &InspectPackageReport) -> RenderDocument {
@@ -215,4 +220,29 @@ fn path_display(path: &Path) -> String {
 
 fn state_scope_display(scope: &cdf_kernel::ScopeKey) -> String {
     serde_json::to_string(scope).unwrap_or_else(|_| format!("{scope:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bulk_evidence_display;
+
+    #[test]
+    fn bulk_evidence_rendering_never_calls_inconclusive_or_unmeasured_measured() {
+        assert_eq!(
+            bulk_evidence_display(&cdf_runtime::BulkPathEvidence::Measured {
+                version: "measured-v1".to_owned(),
+            }),
+            "measured (measured-v1)"
+        );
+        assert_eq!(
+            bulk_evidence_display(&cdf_runtime::BulkPathEvidence::Inconclusive {
+                version: "inconclusive-v1".to_owned(),
+            }),
+            "inconclusive (inconclusive-v1)"
+        );
+        assert_eq!(
+            bulk_evidence_display(&cdf_runtime::BulkPathEvidence::Unmeasured),
+            "unmeasured"
+        );
+    }
 }

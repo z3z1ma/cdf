@@ -85,11 +85,11 @@ pub(crate) fn system_table_ddl() -> Vec<PostgresStatement> {
 }
 
 pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<PostgresStatement>> {
-    match &input.existing_table {
-        None => Ok(vec![PostgresStatement::execute(
+    let mut migrations = match &input.existing_table {
+        None => vec![PostgresStatement::execute(
             "create_target",
             create_target_table_sql(&input.target, &input.columns, primary_key_for_create(input))?,
-        )]),
+        )],
         Some(existing) => {
             let mut migrations = Vec::new();
             for column in &input.columns {
@@ -136,13 +136,61 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
                     ));
                 }
             }
-            Ok(migrations)
+            migrations
+        }
+    };
+    if let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        delete_application:
+            cdf_kernel::DeleteApplicationAuthority::Apply {
+                policy: cdf_kernel::DeleteApplicationPolicy::Soft { marker_field },
+            },
+        ..
+    } = &input.content
+        && input.disposition == WriteDisposition::CdcApply
+    {
+        let existing_marker = input
+            .existing_table
+            .as_ref()
+            .and_then(|table| table.columns.get(marker_field));
+        match existing_marker {
+            Some(marker)
+                if marker.data_type.eq_ignore_ascii_case("BOOLEAN") && !marker.nullable => {}
+            Some(marker) => {
+                return Err(CdfError::destination(format!(
+                    "existing Postgres soft-delete marker {marker_field} is {}{}; it must be BOOLEAN NOT NULL",
+                    marker.data_type,
+                    if marker.nullable {
+                        " NULL"
+                    } else {
+                        " NOT NULL"
+                    }
+                )));
+            }
+            None => migrations.push(soft_marker_migration(&input.target, marker_field)?),
         }
     }
+    Ok(migrations)
+}
+
+pub(crate) fn soft_marker_migration(
+    target: &PostgresTarget,
+    marker: &str,
+) -> Result<PostgresStatement> {
+    let marker = quote_user_identifier(&PostgresIdentifier::user(marker)?)?;
+    Ok(PostgresStatement::execute(
+        "ensure_soft_delete_marker",
+        format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {marker} BOOLEAN NOT NULL DEFAULT FALSE",
+            validated_target_sql(target)?
+        ),
+    ))
 }
 
 pub(crate) fn primary_key_for_create(input: &PostgresLoadPlanInput) -> &[PostgresIdentifier] {
-    if input.disposition == WriteDisposition::Merge {
+    if matches!(
+        input.disposition,
+        WriteDisposition::Merge | WriteDisposition::CdcApply
+    ) {
         &input.merge_keys
     } else {
         &[]

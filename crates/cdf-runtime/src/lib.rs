@@ -45,8 +45,9 @@ pub use bounded_format::{
     decode_bounded_format, decode_format_stream,
 };
 pub use bulk::{
-    BulkFallbackMode, BulkOrdering, BulkPathDescriptor, BulkPathPreparation,
-    BulkPathPreparationInput, BulkPathRejection, BulkSizeRange, PreparedBulkPath,
+    BulkBatchMode, BulkFallbackMode, BulkOrdering, BulkPathDescriptor, BulkPathEvidence,
+    BulkPathPreparation, BulkPathPreparationInput, BulkPathRejection, BulkSizeRange,
+    PreparedBulkPath,
 };
 pub use canonical_frontier::{
     CanonicalBoxStream, CanonicalStreamCompletion, CanonicalStreamFrontier, CanonicalStreamOpener,

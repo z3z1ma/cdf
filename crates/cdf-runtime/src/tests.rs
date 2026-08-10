@@ -84,7 +84,6 @@ impl DestinationRuntime for MockRuntime {
             max_in_flight_bytes: Some(64 * 1024 * 1024),
             bulk_paths: vec![descriptor],
             bulk_path: Some("mock_finalized".to_owned()),
-            bulk_evidence_version: Some("mock-finalized-v1".to_owned()),
             ..Default::default()
         }
     }
@@ -287,7 +286,6 @@ impl DestinationRuntime for MockStagedRuntime {
             max_in_flight_bytes: Some(1024),
             bulk_paths: vec![test_prepared_bulk_path().descriptor],
             bulk_path: Some("mock_staged".to_owned()),
-            bulk_evidence_version: Some("mock-staged-v1".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
         }
@@ -633,7 +631,6 @@ impl DestinationDriver for MockDriver {
                     DestinationWriterModel::ConcurrentSegments,
                 )],
                 bulk_path: Some("mock_arrow".to_owned()),
-                bulk_evidence_version: Some("v1".to_owned()),
                 replay_requires_explicit_target: false,
                 replay_target_hint: None,
             },
@@ -863,7 +860,6 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
             DestinationWriterModel::ConcurrentSegments,
         )],
         bulk_path: Some("arrow".to_owned()),
-        bulk_evidence_version: Some("2026-07".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),
     };
@@ -892,13 +888,16 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
             preferred: 16_777_216,
             maximum: 67_108_864,
         },
-        max_useful_writers: 4,
+        batch_mode: BulkBatchMode::DestinationControlled,
+        maximum_writers: 4,
         blocking_lane: None,
         native_internal_parallelism: 1,
         external_staging: true,
         fallback,
         schema_preflight_version: "mock-schema@1".to_owned(),
-        measured_evidence_version: Some("mock-v1".to_owned()),
+        evidence: BulkPathEvidence::Measured {
+            version: "mock-v1".to_owned(),
+        },
     };
     let capabilities = DestinationRuntimeCapabilities {
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
@@ -918,18 +917,49 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
             descriptor("mock_scalar", BulkFallbackMode::PreflightOnly),
         ],
         bulk_path: Some("mock_arrow".to_owned()),
-        bulk_evidence_version: Some("mock-v1".to_owned()),
         ..Default::default()
     };
     capabilities.validate().unwrap();
     let json = serde_json::to_value(&capabilities).unwrap();
     assert_eq!(json["bulk_paths"][0]["path_id"], "mock_arrow");
     assert_eq!(json["bulk_paths"][1]["fallback"], "preflight_only");
-    assert_eq!(json["bulk_paths"][0]["max_useful_writers"], 4);
+    assert_eq!(json["bulk_paths"][0]["maximum_writers"], 4);
+    assert_eq!(
+        json["bulk_paths"][0]["batch_mode"],
+        "destination_controlled"
+    );
+    assert_eq!(json["bulk_paths"][0]["evidence"]["status"], "measured");
 }
 
 #[test]
-fn bulk_selection_rejects_descriptor_and_evidence_drift() {
+fn pass_through_bulk_paths_do_not_publish_effective_batch_settings() {
+    let mut descriptor = mock_bulk_descriptor(
+        "pass_through",
+        "pass-through-v1",
+        DestinationIngressMode::FinalizedPackageOnly,
+        DestinationWriterModel::SingleWriter,
+    );
+    descriptor.batch_mode = BulkBatchMode::PassThrough;
+    descriptor.evidence = BulkPathEvidence::Unmeasured;
+    let capabilities = DestinationRuntimeCapabilities {
+        bulk_paths: vec![descriptor],
+        bulk_path: Some("pass_through".to_owned()),
+        ..Default::default()
+    };
+
+    let selected = BulkPathPreparation::from_capabilities(&capabilities)
+        .unwrap()
+        .into_selected(&capabilities)
+        .unwrap();
+
+    assert_eq!(selected.rows_per_batch, None);
+    assert_eq!(selected.bytes_per_batch, None);
+    assert_eq!(selected.descriptor.evidence.status(), "unmeasured");
+    assert!(selected.controlled_batch_sizes().is_err());
+}
+
+#[test]
+fn bulk_selection_rejects_descriptor_drift_and_invalid_evidence() {
     let descriptor = mock_bulk_descriptor(
         "native",
         "native-v1",
@@ -939,7 +969,6 @@ fn bulk_selection_rejects_descriptor_and_evidence_drift() {
     let capabilities = DestinationRuntimeCapabilities {
         bulk_paths: vec![descriptor.clone()],
         bulk_path: Some("native".to_owned()),
-        bulk_evidence_version: Some("native-v1".to_owned()),
         ..Default::default()
     };
     capabilities.validate().unwrap();
@@ -957,14 +986,16 @@ fn bulk_selection_rejects_descriptor_and_evidence_drift() {
             .contains("ingress/writer model differs")
     );
 
-    let mut stale_evidence = capabilities.clone();
-    stale_evidence.bulk_evidence_version = Some("stale".to_owned());
+    let mut invalid_evidence = capabilities.clone();
+    invalid_evidence.bulk_paths[0].evidence = BulkPathEvidence::Measured {
+        version: "unsafe/version".to_owned(),
+    };
     assert!(
-        stale_evidence
+        invalid_evidence
             .validate()
             .unwrap_err()
             .message
-            .contains("evidence version differs")
+            .contains("bulk evidence version")
     );
 
     let mut undeclared = capabilities.clone();
@@ -982,8 +1013,8 @@ fn bulk_selection_rejects_descriptor_and_evidence_drift() {
             version: 2,
             ..descriptor
         },
-        rows_per_batch: 64 * 1024,
-        bytes_per_batch: 16 * 1024 * 1024,
+        rows_per_batch: Some(64 * 1024),
+        bytes_per_batch: Some(16 * 1024 * 1024),
         writers: 1,
     };
     assert!(
@@ -2404,7 +2435,6 @@ fn staged_capability_requires_cleanup_abort_and_byte_bounds() {
         max_in_flight_bytes: Some(1024),
         bulk_paths: Vec::new(),
         bulk_path: None,
-        bulk_evidence_version: None,
         replay_requires_explicit_target: false,
         replay_target_hint: None,
     };
@@ -2930,16 +2960,19 @@ fn test_prepared_bulk_path() -> PreparedBulkPath {
                 preferred: 16 * 1024 * 1024,
                 maximum: 64 * 1024 * 1024,
             },
-            max_useful_writers: 1,
+            batch_mode: BulkBatchMode::DestinationControlled,
+            maximum_writers: 1,
             blocking_lane: None,
             native_internal_parallelism: 1,
             external_staging: false,
             fallback: BulkFallbackMode::PreflightOnly,
             schema_preflight_version: "mock-schema@1".to_owned(),
-            measured_evidence_version: Some("mock-staged-v1".to_owned()),
+            evidence: BulkPathEvidence::Measured {
+                version: "mock-staged-v1".to_owned(),
+            },
         },
-        rows_per_batch: 64 * 1024,
-        bytes_per_batch: 16 * 1024 * 1024,
+        rows_per_batch: Some(64 * 1024),
+        bytes_per_batch: Some(16 * 1024 * 1024),
         writers: 1,
     }
 }
@@ -2966,13 +2999,16 @@ fn mock_bulk_descriptor(
             preferred: 16 * 1024 * 1024,
             maximum: 64 * 1024 * 1024,
         },
-        max_useful_writers: 1,
+        batch_mode: BulkBatchMode::DestinationControlled,
+        maximum_writers: 1,
         blocking_lane: None,
         native_internal_parallelism: 1,
         external_staging: false,
         fallback: BulkFallbackMode::PreflightOnly,
         schema_preflight_version: "mock-schema@1".to_owned(),
-        measured_evidence_version: Some(evidence_version.to_owned()),
+        evidence: BulkPathEvidence::Measured {
+            version: evidence_version.to_owned(),
+        },
     }
 }
 

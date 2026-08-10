@@ -1918,31 +1918,91 @@ fn parquet_destination_uri_compiles_compression_into_the_physical_path() {
         ("lz4", crate::ParquetCompression::Lz4Raw),
         ("zstd", crate::ParquetCompression::Zstd),
     ] {
-        let (path, compression) = crate::runtime::parse_parquet_destination_uri(&format!(
+        let parsed = crate::runtime::parse_parquet_destination_uri(&format!(
             "parquet://lake/data?compression={value}"
         ))
         .unwrap();
-        assert_eq!(path, "lake/data");
-        assert_eq!(compression, expected);
+        assert_eq!(parsed.path, "lake/data");
+        assert_eq!(parsed.compression, expected);
+        assert_eq!(parsed.object_layout, ParquetObjectLayoutPolicy::default());
         assert_eq!(
-            crate::runtime::parquet_runtime_capabilities(compression)
+            crate::runtime::parquet_runtime_capabilities(parsed.compression)
                 .bulk_path
                 .as_deref(),
-            Some(compression.path_id())
+            Some(parsed.compression.path_id())
         );
     }
-    let (_, default) =
-        crate::runtime::parse_parquet_destination_uri("parquet://lake/data").unwrap();
-    assert_eq!(default, crate::ParquetCompression::Zstd);
-    assert!(
-        crate::runtime::parse_parquet_destination_uri(
-            "parquet://lake/data?compression=snappy&compression=zstd"
-        )
-        .is_err()
+    let default = crate::runtime::parse_parquet_destination_uri("parquet://lake/data").unwrap();
+    assert_eq!(default.compression, crate::ParquetCompression::Zstd);
+    assert_eq!(default.object_layout, ParquetObjectLayoutPolicy::default());
+}
+
+#[test]
+fn parquet_destination_uri_compiles_layout_options_independently_and_in_any_order() {
+    let bytes_only = crate::runtime::parse_parquet_destination_uri(
+        "parquet://lake/data?object_target_bytes=100MiB",
+    )
+    .unwrap();
+    assert_eq!(
+        bytes_only.object_layout,
+        ParquetObjectLayoutPolicy::new(100 * 1024 * 1024, 8).unwrap()
     );
-    assert!(
-        crate::runtime::parse_parquet_destination_uri("parquet://lake/data?codec=snappy").is_err()
+
+    let segments_only = crate::runtime::parse_parquet_destination_uri(
+        "parquet://lake/data?max_segments_per_object=3",
+    )
+    .unwrap();
+    assert_eq!(
+        segments_only.object_layout,
+        ParquetObjectLayoutPolicy::new(256 * 1024 * 1024, 3).unwrap()
     );
+
+    let first = crate::runtime::parse_parquet_destination_uri(
+        "parquet://lake/data?compression=lz4&object_target_bytes=100&max_segments_per_object=3",
+    )
+    .unwrap();
+    let reordered = crate::runtime::parse_parquet_destination_uri(
+        "parquet://lake/data?max_segments_per_object=3&compression=lz4&object_target_bytes=100",
+    )
+    .unwrap();
+    assert_eq!(first, reordered);
+    assert_eq!(first.compression, ParquetCompression::Lz4Raw);
+    assert_eq!(
+        first.object_layout,
+        ParquetObjectLayoutPolicy::new(100, 3).unwrap()
+    );
+}
+
+#[test]
+fn parquet_destination_uri_rejects_every_invalid_option_without_echoing_credentials() {
+    let invalid = [
+        "duckdb://lake/data",
+        "parquet://",
+        "parquet://lake/data?",
+        "parquet://lake/data?compression",
+        "parquet://lake/data?=zstd",
+        "parquet://lake/data#fragment",
+        "parquet://lake/data?compression=zstd#fragment",
+        "parquet://lake/data?unknown=value",
+        "parquet://lake/data?compression=",
+        "parquet://lake/data?compression=uncompressed",
+        "parquet://lake/data?object_target_bytes=0",
+        "parquet://lake/data?object_target_bytes=1XB",
+        "parquet://lake/data?object_target_bytes=18446744073709551615TiB",
+        "parquet://lake/data?max_segments_per_object=0",
+        "parquet://lake/data?max_segments_per_object=-1",
+        "parquet://lake/data?max_segments_per_object=65536",
+        "parquet://lake/data?compression=zstd&compression=snappy",
+        "parquet://lake/data?object_target_bytes=1MiB&object_target_bytes=2MiB",
+        "parquet://lake/data?max_segments_per_object=1&max_segments_per_object=2",
+        "parquet://user:do-not-echo@lake/data",
+        "parquet://lake/data?access_token=do-not-echo",
+    ];
+    for uri in invalid {
+        let error = crate::runtime::parse_parquet_destination_uri(uri).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract, "{uri}");
+        assert!(!error.message.contains("do-not-echo"), "{error}");
+    }
 }
 
 #[test]
@@ -2262,7 +2322,7 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     )
     .unwrap();
     assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet_zstd");
-    assert_eq!(metadata["physical_plan_version"], 6);
+    assert_eq!(metadata["physical_plan_version"], 7);
     assert_eq!(
         metadata["object_publication_mode"],
         "atomic_content_create_v1"
@@ -2273,9 +2333,89 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     );
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
-    assert_eq!(metadata["object_target_package_bytes"], 256 * 1024 * 1024);
-    assert_eq!(metadata["max_segments_per_object"], 8);
+    assert_eq!(
+        metadata["object_layout"]["target_package_bytes"],
+        256 * 1024 * 1024
+    );
+    assert_eq!(metadata["object_layout"]["max_segments"], 8);
     staged.session.abort().unwrap();
+}
+
+#[test]
+fn nondefault_layout_round_trips_through_metadata_receipt_and_duplicate_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-layout-replay");
+    let built = build_package(
+        &package_dir,
+        "pkg-layout-replay",
+        (0..4)
+            .map(|ordinal| {
+                (
+                    format!("seg-{ordinal:06}"),
+                    vec![sample_batch(vec![i64::from(ordinal)], vec![Some("layout")])],
+                )
+            })
+            .collect(),
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::default());
+    let policy = ParquetObjectLayoutPolicy::new(1024_u64.pow(4), 3).unwrap();
+    let mut configured = test_object_store(Arc::clone(&store), "layout-replay")
+        .unwrap()
+        .with_object_layout_policy(policy)
+        .unwrap();
+
+    let first = commit_through_ingress(&mut configured, &package_dir, commit.clone()).unwrap();
+    assert!(!first.duplicate);
+    assert_eq!(first.object_manifest.object_layout, policy);
+    assert_eq!(first.object_manifest.physical_plan_version, 7);
+    assert_eq!(
+        first
+            .object_manifest
+            .objects
+            .iter()
+            .map(|object| object.segments.len())
+            .collect::<Vec<_>>(),
+        vec![3, 1]
+    );
+    assert_eq!(
+        first.receipt.verify.parameters.get("object_target_bytes"),
+        Some(&1024_u64.pow(4).to_string())
+    );
+    assert_eq!(
+        first
+            .receipt
+            .verify
+            .parameters
+            .get("max_segments_per_object"),
+        Some(&"3".to_owned())
+    );
+
+    let mut default_runtime = test_object_store(store, "layout-replay").unwrap();
+    assert_eq!(
+        default_runtime.object_layout_policy(),
+        ParquetObjectLayoutPolicy::default()
+    );
+    assert!(
+        default_runtime
+            .verify_receipt(&first.receipt)
+            .unwrap()
+            .verified,
+        "receipt verification must use its recorded manifest policy rather than runtime defaults"
+    );
+    let replay = commit_through_ingress(&mut default_runtime, &package_dir, commit).unwrap();
+    assert!(replay.duplicate);
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(replay.object_manifest.object_layout, policy);
+    assert_eq!(
+        replay
+            .object_manifest
+            .objects
+            .iter()
+            .map(|object| object.segments.len())
+            .collect::<Vec<_>>(),
+        vec![3, 1]
+    );
 }
 
 #[test]
@@ -2527,17 +2667,19 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
             destination.execution(),
             &metadata_key,
             serde_json::to_vec(&serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet_zstd",
-                "physical_plan_version": 6,
+                "physical_plan_version": 7,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
-                "object_target_package_bytes": 268_435_456,
-                "max_segments_per_object": 8,
+                "object_layout": {
+                    "target_package_bytes": 268_435_456,
+                    "max_segments": 8
+                },
                 "started_at_ms": 1,
                 "staging_lease": staging_lease.clone(),
             }))
@@ -2670,17 +2812,19 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                 destination.execution(),
                 &metadata_key,
                 serde_json::to_vec(&serde_json::json!({
-                    "version": 1,
+                    "version": 2,
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
                     "physical_plan_path": "arrow_ipc_to_parquet_zstd",
-                    "physical_plan_version": 6,
+                    "physical_plan_version": 7,
                     "object_publication_mode": "atomic_content_create_v1",
                     "writers": 1,
                     "rows_per_batch": 65_536,
                     "bytes_per_batch": 16_777_216,
-                    "object_target_package_bytes": 268_435_456,
-                    "max_segments_per_object": 8,
+                    "object_layout": {
+                        "target_package_bytes": 268_435_456,
+                        "max_segments": 8
+                    },
                     "started_at_ms": index,
                     "staging_lease": lease.clone(),
                 }))
@@ -2778,17 +2922,19 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
             destination.execution(),
             &marker,
             serde_json::to_vec(&serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet_zstd",
-                "physical_plan_version": 6,
+                "physical_plan_version": 7,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
-                "object_target_package_bytes": 268_435_456,
-                "max_segments_per_object": 8,
+                "object_layout": {
+                    "target_package_bytes": 268_435_456,
+                    "max_segments": 8
+                },
                 "started_at_ms": 1,
                 "staging_lease": lease.clone(),
             }))
@@ -2936,7 +3082,7 @@ fn staged_minimum_writer_is_reserved_before_input_and_not_charged_again() {
         )
         .unwrap();
     assert_eq!(bulk_path.writers, 2);
-    assert_eq!(bulk_path.bytes_per_batch, BATCH_BYTES);
+    assert_eq!(bulk_path.bytes_per_batch, Some(BATCH_BYTES));
     let attempt_id = cdf_runtime::LoadAttemptId::new("writer-headroom").unwrap();
     let target = cdf_kernel::TargetName::new("writer_headroom").unwrap();
     let managed_lease = destination

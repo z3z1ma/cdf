@@ -275,7 +275,7 @@ fn catalog_is_the_single_first_party_destination_enrollment_point() {
 }
 
 #[test]
-fn every_catalog_destination_publishes_measured_bulk_and_provenance_capabilities() {
+fn every_catalog_destination_publishes_typed_bulk_evidence_and_provenance_capabilities() {
     let temp = tempfile::tempdir().unwrap();
     let registry = registry().unwrap();
     let context = DestinationResolutionContext::for_project_inspection(temp.path());
@@ -382,17 +382,11 @@ fn assert_bulk_matrix_contract(inspection: &DestinationInspection) {
         "{} publishes no bulk path",
         inspection.description.destination_id
     );
-    assert!(runtime.bulk_evidence_version.is_some());
-    assert!(
-        runtime
-            .bulk_paths
-            .iter()
-            .all(|path| path.measured_evidence_version.is_some())
-    );
     let selected = runtime
         .bulk_path
         .as_deref()
-        .expect("measured destination must select a bulk path");
+        .expect("destination must select a bulk path");
+    assert!(runtime.selected_bulk_evidence().is_some());
     assert!(runtime.bulk_paths.iter().any(|path| {
         path.path_id == selected
             && path.ingress_mode == runtime.ingress_mode

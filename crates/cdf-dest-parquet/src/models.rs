@@ -4,17 +4,21 @@ use std::{
 };
 
 use cdf_kernel::{
-    CommitPlan, DestinationCommitRequest, DestinationCorrectionCommitPlan,
-    DestinationCorrectionCommitRequest, DestinationSheet, PlanId, Receipt, SchemaHash,
+    CdfError, CommitPlan, DestinationCommitRequest, DestinationCorrectionCommitPlan,
+    DestinationCorrectionCommitRequest, DestinationSheet, PlanId, Receipt, Result, SchemaHash,
 };
 
 use crate::{
-    compression::ParquetCompression,
+    compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    layout::ParquetObjectLayoutPolicy,
     manifest::{
         ParquetCorrectionSidecarManifest, ParquetObjectManifest, ParquetReplacePointerReceipt,
     },
     store::{ObjectKeyEncoder, StoreClient},
 };
+
+pub(crate) const STAGING_METADATA_VERSION: u16 = 2;
+pub(crate) const OBJECT_PUBLICATION_MODE: &str = "atomic_content_create_v1";
 
 #[derive(Clone)]
 pub struct ParquetDestination {
@@ -23,6 +27,7 @@ pub struct ParquetDestination {
     pub(crate) sheet: DestinationSheet,
     pub(crate) object_key_encoder: ObjectKeyEncoder,
     pub(crate) compression: ParquetCompression,
+    pub(crate) object_layout: ParquetObjectLayoutPolicy,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
     #[cfg(test)]
     pub(crate) encode_probe: Option<Arc<ParquetEncodeConcurrencyProbe>>,
@@ -52,7 +57,8 @@ pub(crate) struct ParquetCommitPlan {
     pub bytes_planned: u64,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct StagingAttemptMetadata {
     pub(crate) version: u16,
     pub(crate) target: String,
@@ -63,19 +69,62 @@ pub(crate) struct StagingAttemptMetadata {
     pub(crate) writers: u16,
     pub(crate) rows_per_batch: u64,
     pub(crate) bytes_per_batch: u64,
-    pub(crate) object_target_package_bytes: u64,
-    pub(crate) max_segments_per_object: u16,
+    pub(crate) object_layout: ParquetObjectLayoutPolicy,
     pub(crate) started_at_ms: i64,
     pub(crate) staging_lease: cdf_runtime::StagingLease,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+impl StagingAttemptMetadata {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.version != STAGING_METADATA_VERSION
+            || self.physical_plan_version != PHYSICAL_PLAN_VERSION
+            || self.object_publication_mode != OBJECT_PUBLICATION_MODE
+            || self.writers == 0
+            || self.rows_per_batch == 0
+            || self.bytes_per_batch == 0
+            || self.target.is_empty()
+            || self.attempt_id.is_empty()
+        {
+            return Err(CdfError::destination(
+                "Parquet staging metadata contains unsupported or zero physical-plan authority",
+            ));
+        }
+        ParquetCompression::from_path_id(&self.physical_plan_path).map_err(|_| {
+            CdfError::destination("Parquet staging metadata names an unsupported physical path")
+        })?;
+        self.object_layout.validate().map(|_| ()).map_err(|_| {
+            CdfError::destination("Parquet staging metadata contains invalid object-layout bounds")
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PublicationAttemptMetadata {
     pub(crate) version: u16,
     pub(crate) staging_lease: cdf_runtime::StagingLease,
     pub(crate) root_id: cdf_kernel::CommittedContentRootId,
     pub(crate) root_generation: u64,
     pub(crate) manifest_key: String,
+    pub(crate) object_layout: ParquetObjectLayoutPolicy,
+}
+
+impl PublicationAttemptMetadata {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.version != STAGING_METADATA_VERSION
+            || self.root_generation == 0
+            || self.manifest_key.is_empty()
+        {
+            return Err(CdfError::destination(
+                "Parquet publication metadata has an unsupported version",
+            ));
+        }
+        self.object_layout.validate().map(|_| ()).map_err(|_| {
+            CdfError::destination(
+                "Parquet publication metadata contains invalid object-layout bounds",
+            )
+        })
+    }
 }
 
 /// Proof that one exact immutable Parquet publication completed before checkpoint admission.

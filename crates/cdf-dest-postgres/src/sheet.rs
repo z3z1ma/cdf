@@ -69,6 +69,7 @@ impl DestinationProtocol for PostgresDestination {
     fn protocol_capabilities(&self) -> DestinationProtocolCapabilities {
         DestinationProtocolCapabilities::default()
             .with_corrections(postgres_correction_capabilities())
+            .with_routed_target_families()
     }
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
@@ -154,6 +155,7 @@ pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
             WriteDisposition::Append,
             WriteDisposition::Replace,
             WriteDisposition::Merge,
+            WriteDisposition::CdcApply,
         ],
         transactions: TransactionSupport::AtomicPackage,
         idempotency: IdempotencySupport::PackageToken,

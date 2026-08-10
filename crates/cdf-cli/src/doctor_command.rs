@@ -444,23 +444,34 @@ fn destination_bulk_path_check(
         )
         .with_details(json!({
             "selected_path": &capabilities.bulk_path,
-            "evidence_version": &capabilities.bulk_evidence_version,
+            "evidence": capabilities.selected_bulk_evidence(),
             "paths": &capabilities.bulk_paths,
         }));
     }
     let selected = capabilities.bulk_path.as_deref();
+    let evidence = capabilities
+        .selected_bulk_evidence()
+        .expect("validated destination bulk selection");
     let details = json!({
         "selected_path": selected,
-        "evidence_version": &capabilities.bulk_evidence_version,
+        "evidence": evidence,
         "paths": &capabilities.bulk_paths,
     });
-    DoctorCheck::passed(
-        "destination_bulk_paths",
-        format!(
-            "selected measured bulk path {}",
-            selected.unwrap_or("<unavailable>")
+    let selected = selected.unwrap_or("<unavailable>");
+    match evidence {
+        cdf_runtime::BulkPathEvidence::Measured { .. } => DoctorCheck::passed(
+            "destination_bulk_paths",
+            format!("selected measured bulk path {selected}"),
         ),
-    )
+        cdf_runtime::BulkPathEvidence::Inconclusive { .. } => DoctorCheck::warned(
+            "destination_bulk_paths",
+            format!("selected bulk path {selected} has inconclusive performance evidence"),
+        ),
+        cdf_runtime::BulkPathEvidence::Unmeasured => DoctorCheck::warned(
+            "destination_bulk_paths",
+            format!("selected bulk path {selected} has not been performance measured"),
+        ),
+    }
     .with_details(details)
 }
 
@@ -615,24 +626,51 @@ mod tests {
                 preferred: 1024,
                 maximum: 4096,
             },
-            max_useful_writers: 1,
+            batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+            maximum_writers: 1,
             blocking_lane: None,
             native_internal_parallelism: 1,
             external_staging: false,
             fallback: cdf_runtime::BulkFallbackMode::PreflightOnly,
             schema_preflight_version: "quasar-schema@1".to_owned(),
-            measured_evidence_version: None,
+            evidence: cdf_runtime::BulkPathEvidence::Unmeasured,
         };
         let check =
             destination_bulk_path_check(Some(cdf_runtime::DestinationRuntimeCapabilities {
-                bulk_paths: vec![descriptor],
+                bulk_paths: vec![descriptor.clone()],
                 bulk_path: Some("quasar_native".to_owned()),
                 ..Default::default()
             }));
 
-        assert_eq!(check.status, CheckStatus::Failed);
-        assert!(check.message.contains("measured evidence version"));
+        assert_eq!(check.status, CheckStatus::Warned);
+        assert!(check.message.contains("has not been performance measured"));
         assert_eq!(check.details.unwrap()["selected_path"], "quasar_native");
+
+        let mut inconclusive = descriptor.clone();
+        inconclusive.evidence = cdf_runtime::BulkPathEvidence::Inconclusive {
+            version: "quasar-inconclusive-v1".to_owned(),
+        };
+        let inconclusive =
+            destination_bulk_path_check(Some(cdf_runtime::DestinationRuntimeCapabilities {
+                bulk_paths: vec![inconclusive],
+                bulk_path: Some("quasar_native".to_owned()),
+                ..Default::default()
+            }));
+        assert_eq!(inconclusive.status, CheckStatus::Warned);
+        assert!(inconclusive.message.contains("inconclusive"));
+
+        let mut measured = descriptor;
+        measured.evidence = cdf_runtime::BulkPathEvidence::Measured {
+            version: "quasar-measured-v1".to_owned(),
+        };
+        let measured =
+            destination_bulk_path_check(Some(cdf_runtime::DestinationRuntimeCapabilities {
+                bulk_paths: vec![measured],
+                bulk_path: Some("quasar_native".to_owned()),
+                ..Default::default()
+            }));
+        assert_eq!(measured.status, CheckStatus::Passed);
+        assert!(measured.message.contains("selected measured bulk path"));
 
         let unavailable = destination_bulk_path_check(None);
         assert_eq!(unavailable.status, CheckStatus::Warned);

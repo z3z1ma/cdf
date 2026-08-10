@@ -2,7 +2,9 @@ use cdf_kernel::{CdfError, DestinationId, DestinationSheetArtifact, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bulk::{BulkPathDescriptor, BulkPathPreparation, PreparedBulkPath},
+    bulk::{
+        BulkBatchMode, BulkPathDescriptor, BulkPathEvidence, BulkPathPreparation, PreparedBulkPath,
+    },
     capability_types::{DestinationIngressMode, DestinationWriterModel},
     execution_host::BlockingLaneSpec,
     staging::StagedIngressCapabilities,
@@ -96,7 +98,6 @@ pub struct DestinationRuntimeCapabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bulk_paths: Vec<BulkPathDescriptor>,
     pub bulk_path: Option<String>,
-    pub bulk_evidence_version: Option<String>,
     pub replay_requires_explicit_target: bool,
     pub replay_target_hint: Option<String>,
 }
@@ -115,7 +116,6 @@ impl Default for DestinationRuntimeCapabilities {
             max_in_flight_bytes: None,
             bulk_paths: Vec::new(),
             bulk_path: None,
-            bulk_evidence_version: None,
             replay_requires_explicit_target: false,
             replay_target_hint: None,
         }
@@ -195,16 +195,6 @@ impl DestinationRuntimeCapabilities {
                     path.path_id
                 )));
             }
-            if path
-                .measured_evidence_version
-                .as_deref()
-                .is_none_or(str::is_empty)
-            {
-                return Err(CdfError::contract(format!(
-                    "bulk path {} requires a measured evidence version",
-                    path.path_id
-                )));
-            }
             if path.ingress_mode != self.ingress_mode || path.writer_model != self.writer_model {
                 return Err(CdfError::contract(format!(
                     "bulk path `{}` ingress/writer model differs from destination runtime capabilities",
@@ -212,20 +202,15 @@ impl DestinationRuntimeCapabilities {
                 )));
             }
         }
-        match (
-            self.bulk_paths.is_empty(),
-            self.bulk_path.as_deref(),
-            self.bulk_evidence_version.as_deref(),
-        ) {
-            (true, None, None) => {}
-            (true, _, _) => {
+        match (self.bulk_paths.is_empty(), self.bulk_path.as_deref()) {
+            (true, None) => {}
+            (true, _) => {
                 return Err(CdfError::contract(
-                    "destination bulk selection/evidence requires a declared bulk path",
+                    "destination bulk selection requires a declared bulk path",
                 ));
             }
-            (false, Some(selected_id), Some(evidence_version)) => {
-                let selected = self
-                    .bulk_paths
+            (false, Some(selected_id)) => {
+                self.bulk_paths
                     .iter()
                     .find(|path| path.path_id == selected_id)
                     .ok_or_else(|| {
@@ -233,19 +218,22 @@ impl DestinationRuntimeCapabilities {
                             "selected bulk path `{selected_id}` is not declared"
                         ))
                     })?;
-                if selected.measured_evidence_version.as_deref() != Some(evidence_version) {
-                    return Err(CdfError::contract(format!(
-                        "selected bulk path `{selected_id}` evidence version differs from destination runtime evidence version"
-                    )));
-                }
             }
-            (false, _, _) => {
+            (false, _) => {
                 return Err(CdfError::contract(
-                    "destination bulk descriptors require one selected path and matching evidence version",
+                    "destination bulk descriptors require one selected path",
                 ));
             }
         }
         Ok(())
+    }
+
+    pub fn selected_bulk_evidence(&self) -> Option<&BulkPathEvidence> {
+        let selected = self.bulk_path.as_deref()?;
+        self.bulk_paths
+            .iter()
+            .find(|path| path.path_id == selected)
+            .map(|path| &path.evidence)
     }
 
     pub fn validate_prepared_bulk_path(&self, prepared: &PreparedBulkPath) -> Result<()> {
@@ -282,11 +270,20 @@ impl BulkPathPreparation {
             .bulk_paths
             .iter()
             .cloned()
-            .map(|descriptor| PreparedBulkPath {
-                rows_per_batch: descriptor.rows.preferred,
-                bytes_per_batch: descriptor.bytes.preferred,
-                writers: 1,
-                descriptor,
+            .map(|descriptor| {
+                let (rows_per_batch, bytes_per_batch) = match descriptor.batch_mode {
+                    BulkBatchMode::DestinationControlled => (
+                        Some(descriptor.rows.preferred),
+                        Some(descriptor.bytes.preferred),
+                    ),
+                    BulkBatchMode::PassThrough => (None, None),
+                };
+                PreparedBulkPath {
+                    rows_per_batch,
+                    bytes_per_batch,
+                    writers: 1,
+                    descriptor,
+                }
             })
             .collect();
         let preparation = Self {

@@ -15,54 +15,119 @@ use cdf_runtime::{
 
 use crate::{
     compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    layout::ParquetObjectLayoutPolicy,
     models::ParquetDestination,
 };
 
 pub struct ParquetRuntimeDriver;
 
-pub(crate) fn parse_parquet_destination_uri(uri: &str) -> Result<(String, ParquetCompression)> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParsedParquetDestination {
+    pub(crate) path: String,
+    pub(crate) compression: ParquetCompression,
+    pub(crate) object_layout: ParquetObjectLayoutPolicy,
+}
+
+pub(crate) fn parse_parquet_destination_uri(uri: &str) -> Result<ParsedParquetDestination> {
     let raw = uri.strip_prefix("parquet://").ok_or_else(|| {
-        CdfError::contract(format!(
-            "destination URI `{uri}` is unsupported; expected parquet://path"
-        ))
+        CdfError::contract("destination URI is unsupported; expected parquet://path")
     })?;
     let (path, query) = raw
         .split_once('?')
         .map_or((raw, None), |(path, query)| (path, Some(query)));
-    if path.trim().is_empty() || path.contains("://") || path.contains('#') {
-        return Err(CdfError::contract(format!(
-            "destination URI `{uri}` is malformed or non-local; expected parquet://path"
-        )));
+    let first_path_component = path.split('/').next().unwrap_or_default();
+    if path.trim().is_empty()
+        || path.contains("://")
+        || path.contains('#')
+        || path.chars().any(char::is_control)
+        || first_path_component.contains('@')
+    {
+        return Err(CdfError::contract(
+            "destination URI is malformed, contains credentials, or is non-local; expected parquet://path",
+        ));
     }
     let mut compression = ParquetCompression::default();
+    let mut object_target_bytes = ParquetObjectLayoutPolicy::default().target_package_bytes();
+    let mut max_segments_per_object = ParquetObjectLayoutPolicy::default().max_segments();
     let mut compression_seen = false;
+    let mut object_target_seen = false;
+    let mut max_segments_seen = false;
     if let Some(query) = query {
         if query.is_empty() || query.contains('#') {
             return Err(CdfError::contract(
-                "Parquet destination query must contain compression=none|snappy|lz4|zstd",
+                "Parquet destination query must contain a supported nonempty key=value option and no fragment",
             ));
         }
         for option in query.split('&') {
             let (key, value) = option.split_once('=').ok_or_else(|| {
-                CdfError::contract(format!(
-                    "Parquet destination option `{option}` must use key=value syntax"
-                ))
+                CdfError::contract("Parquet destination options must use nonempty key=value syntax")
             })?;
-            if key != "compression" {
-                return Err(CdfError::contract(format!(
-                    "Parquet destination option `{key}` is unsupported; expected compression"
-                )));
-            }
-            if compression_seen {
+            if key.is_empty() || value.is_empty() {
                 return Err(CdfError::contract(
-                    "Parquet destination compression option may appear only once",
+                    "Parquet destination options must use nonempty key=value syntax",
                 ));
             }
-            compression = ParquetCompression::from_name(value)?;
-            compression_seen = true;
+            match key {
+                "compression" => {
+                    if compression_seen {
+                        return Err(CdfError::contract(
+                            "Parquet destination compression option may appear only once",
+                        ));
+                    }
+                    compression = ParquetCompression::from_name(value)?;
+                    compression_seen = true;
+                }
+                "object_target_bytes" => {
+                    if object_target_seen {
+                        return Err(CdfError::contract(
+                            "Parquet destination object_target_bytes option may appear only once",
+                        ));
+                    }
+                    object_target_bytes = cdf_kernel::parse_human_byte_size(
+                        "Parquet destination object_target_bytes",
+                        value,
+                    )?;
+                    object_target_seen = true;
+                }
+                "max_segments_per_object" => {
+                    if max_segments_seen {
+                        return Err(CdfError::contract(
+                            "Parquet destination max_segments_per_object option may appear only once",
+                        ));
+                    }
+                    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                        return Err(CdfError::contract(
+                            "Parquet destination max_segments_per_object must be a positive u16 integer",
+                        ));
+                    }
+                    max_segments_per_object = value.parse::<u16>().map_err(|_| {
+                        CdfError::contract(
+                            "Parquet destination max_segments_per_object must be a positive u16 integer",
+                        )
+                    })?;
+                    if max_segments_per_object == 0 {
+                        return Err(CdfError::contract(
+                            "Parquet destination max_segments_per_object must be greater than zero",
+                        ));
+                    }
+                    max_segments_seen = true;
+                }
+                _ => {
+                    return Err(CdfError::contract(
+                        "Parquet destination option is unsupported; expected compression, object_target_bytes, or max_segments_per_object",
+                    ));
+                }
+            }
         }
     }
-    Ok((path.to_owned(), compression))
+    Ok(ParsedParquetDestination {
+        path: path.to_owned(),
+        compression,
+        object_layout: ParquetObjectLayoutPolicy::new(
+            object_target_bytes,
+            max_segments_per_object,
+        )?,
+    })
 }
 
 impl DestinationDriver for ParquetRuntimeDriver {
@@ -75,14 +140,14 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
-        let (path, compression) = parse_parquet_destination_uri(uri)?;
-        let root = absolute_under_root(context.project_root()?, &path);
+        let parsed = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &parsed.path);
         let sheet_artifact = ParquetDestination::destination_sheet_artifact()?;
         Ok(DestinationInspection {
             description: filesystem_description(&root),
             sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
             sheet_artifact,
-            runtime: parquet_runtime_capabilities(compression),
+            runtime: parquet_runtime_capabilities(parsed.compression),
             health_probes: vec![DestinationHealthProbe {
                 probe_id: "filesystem_root".to_owned(),
                 description: format!("inspect Parquet filesystem root {}", root.display()),
@@ -97,13 +162,14 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
-        let (path, compression) = parse_parquet_destination_uri(uri)?;
-        let root = absolute_under_root(context.project_root()?, &path);
+        let parsed = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &parsed.path);
         Ok(Box::new(FilesystemParquetRuntime {
             destination: None,
             root,
             execution: None,
-            compression,
+            compression: parsed.compression,
+            object_layout: parsed.object_layout,
         }))
     }
 
@@ -112,8 +178,8 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Vec<DestinationHealthResult>> {
-        let (path, compression) = parse_parquet_destination_uri(uri)?;
-        let root = absolute_under_root(context.project_root()?, &path);
+        let parsed = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &parsed.path);
         Ok(vec![DestinationHealthResult {
             probe_id: "destination".to_owned(),
             status: DestinationHealthStatus::Passed,
@@ -125,7 +191,15 @@ impl DestinationDriver for ParquetRuntimeDriver {
                 ),
                 (
                     "compression".to_owned(),
-                    serde_json::json!(compression.name()),
+                    serde_json::json!(parsed.compression.name()),
+                ),
+                (
+                    "object_target_bytes".to_owned(),
+                    serde_json::json!(parsed.object_layout.target_package_bytes()),
+                ),
+                (
+                    "max_segments_per_object".to_owned(),
+                    serde_json::json!(parsed.object_layout.max_segments()),
                 ),
             ]
             .into_iter()
@@ -166,7 +240,12 @@ impl DestinationRuntime for ParquetDestination {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        prepare_parquet_bulk_paths(input, &self.runtime_capabilities(), Some(self.execution()))
+        prepare_parquet_bulk_paths(
+            input,
+            &self.runtime_capabilities(),
+            Some(self.execution()),
+            self.object_layout_policy(),
+        )
     }
 }
 
@@ -215,6 +294,7 @@ pub struct FilesystemParquetRuntime {
     root: PathBuf,
     execution: Option<cdf_runtime::ExecutionServices>,
     compression: ParquetCompression,
+    object_layout: ParquetObjectLayoutPolicy,
 }
 
 impl FilesystemParquetRuntime {
@@ -224,6 +304,7 @@ impl FilesystemParquetRuntime {
             root,
             execution: None,
             compression: ParquetCompression::default(),
+            object_layout: ParquetObjectLayoutPolicy::default(),
         }
     }
 
@@ -236,6 +317,7 @@ impl FilesystemParquetRuntime {
             root,
             execution: Some(execution),
             compression: ParquetCompression::default(),
+            object_layout: ParquetObjectLayoutPolicy::default(),
         }
     }
 
@@ -248,7 +330,8 @@ impl FilesystemParquetRuntime {
             })?;
             self.destination = Some(
                 ParquetDestination::new_filesystem(&self.root, execution)?
-                    .with_compression(self.compression),
+                    .with_compression(self.compression)
+                    .with_object_layout_policy(self.object_layout)?,
             );
         }
         Ok(self.destination.as_ref().expect("destination was just set"))
@@ -287,7 +370,12 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        prepare_parquet_bulk_paths(input, &self.runtime_capabilities(), self.execution.as_ref())
+        prepare_parquet_bulk_paths(
+            input,
+            &self.runtime_capabilities(),
+            self.execution.as_ref(),
+            self.object_layout,
+        )
     }
 
     fn destination_sheet(&self) -> Result<DestinationSheet> {
@@ -426,17 +514,19 @@ pub(crate) fn parquet_runtime_capabilities(
                     preferred: 16 * 1024 * 1024,
                     maximum: 64 * 1024 * 1024,
                 },
-                max_useful_writers: u16::MAX,
+                batch_mode: cdf_runtime::BulkBatchMode::DestinationControlled,
+                maximum_writers: u16::MAX,
                 blocking_lane: Some("parquet.encode".to_owned()),
                 native_internal_parallelism: 1,
                 external_staging: true,
                 fallback: cdf_runtime::BulkFallbackMode::Forbidden,
                 schema_preflight_version: "parquet-arrow-mapping@2".to_owned(),
-                measured_evidence_version: Some("p3-parquet-compression-2026-07-26-v1".to_owned()),
+                evidence: cdf_runtime::BulkPathEvidence::Measured {
+                    version: "p3-parquet-compression-2026-07-26-v1".to_owned(),
+                },
             })
             .collect(),
         bulk_path: Some(compression.path_id().to_owned()),
-        bulk_evidence_version: Some("p3-parquet-compression-2026-07-26-v1".to_owned()),
         replay_requires_explicit_target: false,
         replay_target_hint: None,
     }
@@ -446,7 +536,9 @@ fn prepare_parquet_bulk_paths(
     input: &cdf_runtime::BulkPathPreparationInput<'_>,
     capabilities: &DestinationRuntimeCapabilities,
     execution: Option<&cdf_runtime::ExecutionServices>,
+    object_layout: ParquetObjectLayoutPolicy,
 ) -> Result<cdf_runtime::BulkPathPreparation> {
+    object_layout.validate()?;
     cdf_package::validate_parquet_schema(input.output_schema)?;
     let mut preparation = cdf_runtime::BulkPathPreparation::from_capabilities(capabilities)?;
     let host_writers = input
@@ -454,9 +546,10 @@ fn prepare_parquet_bulk_paths(
         .as_ref()
         .map_or(1, |execution| execution.logical_cpu_slots.max(1));
     for path in &mut preparation.eligible {
+        let (rows_per_batch, bytes_per_batch) = path.controlled_batch_sizes()?;
         let settings = crate::package::ParquetWriterSettings {
-            rows_per_batch: path.rows_per_batch,
-            bytes_per_batch: path.bytes_per_batch,
+            rows_per_batch,
+            bytes_per_batch,
             compression: ParquetCompression::from_path_id(&path.descriptor.path_id)?,
         };
         let worker_bytes = crate::package::parquet_worker_working_set_bytes(settings)?;
@@ -472,7 +565,7 @@ fn prepare_parquet_bulk_paths(
         path.writers = host_writers
             .min(run_writers)
             .min(memory_writers)
-            .min(path.descriptor.max_useful_writers)
+            .min(path.descriptor.maximum_writers)
             .max(1);
     }
     preparation.validate()?;

@@ -22,8 +22,8 @@ use crate::{
         StatementExpectation,
     },
     validate::{
-        delivery_guarantee, ensure_supported_disposition, plan_id, plan_segment_acks,
-        plan_segments_in_receipt_order, stage_table_name, validate_columns, validate_merge_shape,
+        delivery_guarantee, ensure_supported_disposition, plan_id, plan_segments_in_receipt_order,
+        stage_table_name, validate_columns, validate_merge_shape,
     },
 };
 
@@ -40,9 +40,12 @@ pub fn plan_postgres_load(
     validate_columns(&input.columns)?;
     validate_merge_shape(&input)?;
 
-    let stage_table = (input.disposition == WriteDisposition::Merge)
-        .then(|| stage_table_name(&input.package_hash))
-        .transpose()?;
+    let stage_table = matches!(
+        input.disposition,
+        WriteDisposition::Merge | WriteDisposition::CdcApply
+    )
+    .then(|| stage_table_name(&input.package_hash))
+    .transpose()?;
     let target_name = input.target.target_name()?;
     let no_data = input.segments.is_empty();
     let migrations = if no_data {
@@ -139,6 +142,30 @@ pub struct PostgresReceiptVerification {
 }
 
 pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Result<Receipt> {
+    let request = DestinationCommitRequest {
+        package_hash: plan.package_hash.clone(),
+        content: plan.content.clone(),
+        target: plan.kernel.target.clone(),
+        disposition: plan.kernel.disposition.clone(),
+        segments: plan_segments_in_receipt_order(plan),
+        idempotency_token: plan.idempotency_token.clone(),
+    };
+    build_receipt_for_request(
+        &request,
+        &plan.kernel,
+        &plan.schema_hash,
+        &plan.verify,
+        input,
+    )
+}
+
+pub(crate) fn build_receipt_for_request(
+    request: &DestinationCommitRequest,
+    plan: &CommitPlan,
+    schema_hash: &cdf_kernel::SchemaHash,
+    verify: &cdf_kernel::VerifyClause,
+    input: PostgresReceiptInput,
+) -> Result<Receipt> {
     let mut transaction_values = BTreeMap::new();
     transaction_values.insert("xid".to_owned(), input.xid);
     transaction_values.insert("duplicate".to_owned(), input.duplicate.to_string());
@@ -149,21 +176,22 @@ pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Re
         CDF_QUARANTINE_TABLE.to_owned(),
     );
 
-    let request = DestinationCommitRequest {
-        package_hash: plan.package_hash.clone(),
-        content: plan.content.clone(),
-        target: plan.kernel.target.clone(),
-        disposition: plan.kernel.disposition.clone(),
-        segments: plan_segments_in_receipt_order(plan),
-        idempotency_token: plan.idempotency_token.clone(),
-    };
     ReceiptDraft::ordinary(
         input.receipt_id,
         DestinationId::new(POSTGRES_DESTINATION_ID)?,
-        &request,
-        &plan.kernel,
-        plan_segment_acks(plan),
-        plan.schema_hash.clone(),
+        request,
+        plan,
+        request
+            .segments
+            .iter()
+            .map(|segment| cdf_kernel::SegmentAck {
+                kind: segment.kind,
+                segment_id: segment.segment_id.clone(),
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
+            })
+            .collect(),
+        schema_hash.clone(),
         ReceiptEvidence {
             transaction: Some(TransactionMetadata {
                 system: POSTGRES_DESTINATION_ID.to_owned(),
@@ -171,7 +199,7 @@ pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Re
             }),
             counts: input.counts,
             committed_at_ms: input.committed_at_ms,
-            verify: plan.verify.clone(),
+            verify: verify.clone(),
         },
     )?
     .finalize()

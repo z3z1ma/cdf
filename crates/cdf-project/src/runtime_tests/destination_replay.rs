@@ -593,7 +593,6 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
             max_in_flight_bytes: Some(self.max_in_flight_bytes),
             bulk_paths: vec![path],
             bulk_path: Some("mock-staged".to_owned()),
-            bulk_evidence_version: Some("mock-v1".to_owned()),
             ..Default::default()
         }
     }

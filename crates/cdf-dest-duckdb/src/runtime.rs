@@ -142,6 +142,7 @@ impl DestinationRuntime for DuckDbDestination {
 
     fn commit_routed_package(
         &mut self,
+        _package: cdf_package_contract::SharedVerifiedPackageAccess,
         inputs: &cdf_package_contract::PackageReplayInputs,
         segments: cdf_kernel::CommitSegmentIterator,
     ) -> Result<cdf_runtime::DestinationCommitOutcome> {
@@ -150,6 +151,7 @@ impl DestinationRuntime for DuckDbDestination {
 
     fn commit_cdc_package(
         &mut self,
+        _package: cdf_package_contract::SharedVerifiedPackageAccess,
         inputs: &cdf_package_contract::PackageReplayInputs,
         output_schema: &Schema,
         segments: cdf_kernel::CommitSegmentIterator,
@@ -230,7 +232,6 @@ impl DestinationRuntime for DuckDbDestination {
             max_in_flight_bytes: Some(self.native_resources.max_in_flight_bytes),
             bulk_paths,
             bulk_path: Some(DUCKDB_BULK_PATH_SEGMENT_SCAN.to_owned()),
-            bulk_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
         }
@@ -297,13 +298,16 @@ fn duckdb_segment_scan_bulk_path_descriptor(
             preferred: 16 * 1024 * 1024,
             maximum: 64 * 1024 * 1024,
         },
-        max_useful_writers: 1,
+        batch_mode: cdf_runtime::BulkBatchMode::DestinationControlled,
+        maximum_writers: 1,
         blocking_lane: Some(DUCKDB_FINAL_BINDING_LANE.to_owned()),
         native_internal_parallelism,
         external_staging: true,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
         schema_preflight_version: "duckdb-canonical-segment-scan@2".to_owned(),
-        measured_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),
+        evidence: cdf_runtime::BulkPathEvidence::Measured {
+            version: "p3-d14-stock-scan-2026-07-19-v1".to_owned(),
+        },
     }
 }
 

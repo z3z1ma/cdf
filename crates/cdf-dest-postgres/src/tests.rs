@@ -104,6 +104,28 @@ fn zero_data_input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
     input
 }
 
+fn cdc_input(policy: cdf_kernel::DeleteApplicationPolicy) -> PostgresLoadPlanInput {
+    let mut input = input(WriteDisposition::Merge);
+    input.disposition = WriteDisposition::CdcApply;
+    if let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        deletion_capture,
+        delete_application,
+        ..
+    } = &mut input.content
+    {
+        *deletion_capture = cdf_kernel::DeletionCaptureAuthority {
+            support: cdf_kernel::DeletionCaptureSupport::Inherent,
+            enabled: true,
+            semantics_sha256: format!("sha256:{}", "c".repeat(64)),
+        };
+        *delete_application = cdf_kernel::DeleteApplicationAuthority::Apply { policy };
+    } else {
+        panic!("representative merge content must be keyed");
+    }
+    input.state_delta.as_mut().unwrap().content = input.content.clone();
+    input
+}
+
 fn conformance_case(
     destination: &PostgresDestination,
     disposition: WriteDisposition,
@@ -133,6 +155,14 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
     let destination = PostgresDestination::new();
     let sheet = destination.postgres_sheet();
 
+    let runtime = crate::runtime::postgres_runtime_capabilities();
+    runtime.validate().unwrap();
+    assert_eq!(runtime.blocking_lanes[0].maximum_concurrency, 1);
+    assert_eq!(
+        runtime.bulk_paths[0].batch_mode,
+        cdf_runtime::BulkBatchMode::PassThrough
+    );
+
     assert_eq!(sheet.kernel.destination.as_str(), POSTGRES_DESTINATION_ID);
     assert_eq!(sheet.kernel.transactions, TransactionSupport::AtomicPackage);
     assert_eq!(sheet.kernel.idempotency, IdempotencySupport::PackageToken);
@@ -142,6 +172,16 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
             .kernel
             .supported_dispositions
             .contains(&WriteDisposition::Merge)
+    );
+    assert!(
+        sheet
+            .kernel
+            .supported_dispositions
+            .contains(&WriteDisposition::CdcApply)
+    );
+    assert_eq!(
+        destination.protocol_capabilities().routed_target_families,
+        CapabilitySupport::Supported
     );
     let corrections = destination.protocol_capabilities().corrections;
     assert_eq!(
@@ -899,4 +939,141 @@ fn merge_requires_keys_and_rejects_existing_key_drift() {
         .unwrap(),
     );
     assert!(destination.plan_load(drift).is_err());
+}
+
+#[test]
+fn cdc_planning_requires_exact_keyed_authority_and_validates_soft_marker() {
+    let destination = PostgresDestination::new();
+
+    let mut rows = input(WriteDisposition::Append);
+    rows.disposition = WriteDisposition::CdcApply;
+    let error = destination.plan_load(rows).unwrap_err();
+    assert!(
+        error.message.contains("package-native keyed-change"),
+        "{error}"
+    );
+
+    let mut key_drift = cdc_input(cdf_kernel::DeleteApplicationPolicy::Hard);
+    key_drift.merge_keys = vec![PostgresIdentifier::user("name").unwrap()];
+    let error = destination.plan_load(key_drift).unwrap_err();
+    assert!(
+        error.message.contains("differs from planned ordered key"),
+        "{error}"
+    );
+
+    let mut source_owned_soft = cdc_input(cdf_kernel::DeleteApplicationPolicy::Soft {
+        marker_field: "deleted".to_owned(),
+    });
+    source_owned_soft
+        .columns
+        .push(PostgresColumn::new("deleted", "BOOLEAN", false).unwrap());
+    let error = destination.plan_load(source_owned_soft).unwrap_err();
+    assert!(error.message.contains("destination-owned"), "{error}");
+
+    let valid_soft = cdc_input(cdf_kernel::DeleteApplicationPolicy::Soft {
+        marker_field: "deleted".to_owned(),
+    });
+    let plan = destination.plan_load(valid_soft).unwrap();
+    assert_eq!(
+        plan.kernel.delivery_guarantee,
+        DeliveryGuarantee::EffectivelyOncePerPosition
+    );
+    assert!(plan.stage_table.is_some());
+    assert!(
+        plan.target_ddl
+            .iter()
+            .any(|statement| statement.name == "ensure_soft_delete_marker")
+    );
+    assert!(
+        plan.write_sql
+            .iter()
+            .find(|statement| statement.name == "merge_from_stage")
+            .unwrap()
+            .sql
+            .contains("FALSE")
+    );
+
+    let mut incompatible = cdc_input(cdf_kernel::DeleteApplicationPolicy::Soft {
+        marker_field: "deleted".to_owned(),
+    });
+    let mut existing = incompatible
+        .columns
+        .iter()
+        .map(|column| {
+            PostgresExistingColumn::new(column.name.as_str(), &column.data_type, column.nullable)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    existing.push(PostgresExistingColumn::new("deleted", "TEXT", true).unwrap());
+    incompatible.existing_table = Some(PostgresExistingTable::new(existing, vec!["id"]).unwrap());
+    let error = destination.plan_load(incompatible).unwrap_err();
+    assert!(error.message.contains("BOOLEAN NOT NULL"), "{error}");
+}
+
+#[test]
+fn duplicate_cdc_receipt_counts_reject_tampering_and_allow_soft_noop_omission() {
+    let destination = PostgresDestination::new();
+    let hard = destination
+        .plan_load(cdc_input(cdf_kernel::DeleteApplicationPolicy::Hard))
+        .unwrap();
+    let intent = cdf_kernel::KeyedEffectCounts {
+        upserts: 5,
+        deletes: 0,
+    };
+    let receipt = build_receipt(
+        &hard,
+        PostgresReceiptInput {
+            receipt_id: ReceiptId::new("receipt-cdc-hard").unwrap(),
+            xid: "1".to_owned(),
+            committed_at_ms: 1,
+            counts: CommitCounts::keyed_changes(
+                intent,
+                Some(2),
+                Some(3),
+                Some(0),
+                None,
+                Some(0),
+                None,
+            ),
+            duplicate: false,
+        },
+    )
+    .unwrap();
+    crate::commit::validate_postgres_duplicate_counts(&receipt).unwrap();
+
+    let mut impossible_sum = receipt.clone();
+    if let CommitCounts::KeyedChanges { rows_inserted, .. } = &mut impossible_sum.counts {
+        *rows_inserted = Some(1);
+    }
+    assert!(crate::commit::validate_postgres_duplicate_counts(&impossible_sum).is_err());
+
+    let mut wrong_policy = receipt;
+    if let CommitCounts::KeyedChanges {
+        hard_deletes,
+        soft_deletes,
+        ..
+    } = &mut wrong_policy.counts
+    {
+        *hard_deletes = None;
+        *soft_deletes = Some(0);
+    }
+    assert!(crate::commit::validate_postgres_duplicate_counts(&wrong_policy).is_err());
+
+    let soft = destination
+        .plan_load(cdc_input(cdf_kernel::DeleteApplicationPolicy::Soft {
+            marker_field: "deleted".to_owned(),
+        }))
+        .unwrap();
+    let omitted = build_receipt(
+        &soft,
+        PostgresReceiptInput {
+            receipt_id: ReceiptId::new("receipt-cdc-soft-noop").unwrap(),
+            xid: "2".to_owned(),
+            committed_at_ms: 2,
+            counts: CommitCounts::keyed_changes(intent, Some(5), Some(0), None, None, None, None),
+            duplicate: false,
+        },
+    )
+    .unwrap();
+    crate::commit::validate_postgres_duplicate_counts(&omitted).unwrap();
 }

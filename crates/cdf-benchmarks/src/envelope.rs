@@ -92,7 +92,7 @@ pub fn destination_execution_descriptor_sha256(
         .as_object_mut()
         .ok_or_else(|| bench_error("bulk path descriptor must serialize as an object"))?;
     object.remove("schema_preflight_version");
-    object.remove("measured_evidence_version");
+    object.remove("evidence");
     canonical_sha256(&execution)
 }
 
@@ -640,7 +640,7 @@ fn validate_destination_observation_joins(
                     .find(|path| path.path_id == identity.path_id)
             });
         let exact = if let Some(path) = matching_path {
-            path.measured_evidence_version.as_deref() == Some(identity.evidence_version.as_str())
+            path.evidence.version() == Some(identity.evidence_version.as_str())
                 && path.schema_preflight_version == identity.schema_preflight_version
                 && destination_execution_descriptor_sha256(path)?
                     == identity.execution_descriptor_sha256
@@ -722,12 +722,9 @@ fn validate_destination_observation_joins(
             .find(|target| target.destination_id == entry.destination_id)
             .expect("catalog/spec coverage validated before destination observation joins");
         for path in &entry.runtime.bulk_paths {
-            let evidence = path.measured_evidence_version.as_deref().ok_or_else(|| {
-                bench_error(format!(
-                    "destination path {}/{} has no measured evidence version",
-                    entry.destination_id, path.path_id
-                ))
-            })?;
+            let Some(evidence) = path.evidence.version() else {
+                continue;
+            };
             let execution_descriptor_sha256 = destination_execution_descriptor_sha256(path)?;
             for (eligibility, fixture) in [
                 ("eligible", target.eligible_schema_fixture.as_str()),
@@ -769,8 +766,7 @@ fn destination_path_row(
             .is_some_and(|identity| {
                 identity.destination_id == entry.destination_id
                     && identity.path_id == path.path_id
-                    && path.measured_evidence_version.as_deref()
-                        == Some(identity.evidence_version.as_str())
+                    && path.evidence.version() == Some(identity.evidence_version.as_str())
                     && execution_descriptor_sha256 == identity.execution_descriptor_sha256
                     && path.schema_preflight_version == identity.schema_preflight_version
                     && identity.eligibility == eligibility
@@ -820,11 +816,7 @@ fn destination_path_row(
         escape(&entry.destination_id),
         escape(&path.path_id),
         escape(&cell),
-        escape(
-            path.measured_evidence_version
-                .as_deref()
-                .unwrap_or("unmeasured")
-        ),
+        escape(path.evidence.version().unwrap_or("unmeasured")),
         escape(&host),
         escape(&target.target),
         escape(&observed),

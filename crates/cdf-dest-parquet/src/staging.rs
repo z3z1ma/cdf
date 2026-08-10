@@ -25,8 +25,8 @@ use crate::{
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
     models::{
-        ParquetCommitRequest, ParquetDestination, PublicationAttemptMetadata,
-        StagingAttemptMetadata,
+        OBJECT_PUBLICATION_MODE, ParquetCommitRequest, ParquetDestination,
+        PublicationAttemptMetadata, STAGING_METADATA_VERSION, StagingAttemptMetadata,
     },
     package::{
         ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
@@ -42,8 +42,6 @@ use crate::{
 };
 
 const ENCODE_LANE: &str = "parquet.encode";
-const STAGING_METADATA_VERSION: u16 = 1;
-const OBJECT_PUBLICATION_MODE: &str = "atomic_content_create_v1";
 
 fn parquet_writer_memory_request(bytes: u64) -> Result<cdf_memory::ReservationRequest> {
     Ok(cdf_memory::ReservationRequest::new(
@@ -89,14 +87,14 @@ impl ParquetPhysicalWritePlan {
             )));
         }
         let compression = ParquetCompression::from_path_id(&descriptor.path_id)?;
-        let object_layout = ParquetObjectLayoutPolicy::current().validate()?;
+        let object_layout = destination.object_layout_policy().validate()?;
         let live_single_object = match request.workload() {
             cdf_runtime::StagedIngressWorkload::PlannedStream {
                 partition_count,
                 planned_source_bytes: Some(planned_source_bytes),
             } => {
-                *partition_count <= u64::from(object_layout.max_segments)
-                    && *planned_source_bytes <= object_layout.target_package_bytes
+                *partition_count <= u64::from(object_layout.max_segments())
+                    && *planned_source_bytes <= object_layout.target_package_bytes()
             }
             // Finalized-package replay has durable IPC authority, not already-accounted live
             // batches. Decoding it through the live reader after reserving the Parquet writer
@@ -108,12 +106,13 @@ impl ParquetPhysicalWritePlan {
                 ..
             } => false,
         };
+        let (rows_per_batch, bytes_per_batch) = request.bulk_path().controlled_batch_sizes()?;
         Ok(Self {
             encoder: destination.object_key_encoder(),
             target: request.binding().target.clone(),
             writers: request.bulk_path().writers,
-            rows_per_batch: request.bulk_path().rows_per_batch,
-            bytes_per_batch: request.bulk_path().bytes_per_batch,
+            rows_per_batch,
+            bytes_per_batch,
             object_layout,
             live_single_object,
             compression,
@@ -206,8 +205,7 @@ impl ParquetStagedIngressSession {
             writers: physical_plan.writers,
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
-            object_target_package_bytes: physical_plan.object_layout.target_package_bytes,
-            max_segments_per_object: physical_plan.object_layout.max_segments,
+            object_layout: physical_plan.object_layout,
             started_at_ms,
             staging_lease: request.staging_lease().clone(),
         };
@@ -218,6 +216,20 @@ impl ParquetStagedIngressSession {
             canonical_json_bytes(&metadata)?,
         )?;
         request.mutation_guard().assert_current()?;
+        let recorded: StagingAttemptMetadata = serde_json::from_slice(
+            &destination
+                .store()
+                .get_required(destination.execution(), &metadata_key)?,
+        )
+        .map_err(|error| {
+            CdfError::destination(format!("decode recorded Parquet staging metadata: {error}"))
+        })?;
+        recorded.validate()?;
+        if recorded != metadata {
+            return Err(CdfError::destination(
+                "recorded Parquet staging metadata differs from the prepared physical authority",
+            ));
+        }
         Ok(Self {
             destination,
             request,
@@ -285,7 +297,7 @@ impl ParquetStagedIngressSession {
         // Commands retain only immutable durable-file capabilities. Arrow payload memory is
         // released immediately after handoff, so queue cardinality follows deterministic object
         // membership rather than the staged live-payload window.
-        let queued_segments = self.physical_plan.object_layout.max_segments;
+        let queued_segments = self.physical_plan.object_layout.max_segments();
         let (commands, command_receiver) = mpsc::sync_channel(usize::from(queued_segments));
         let task = self.destination.execution().spawn_blocking_value(
             &run_id,
@@ -857,8 +869,22 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                     "Parquet staged final binding commit plan differs from destination planning",
                 ));
             }
-            let root_intent = self.prepare_content_root(&request)?;
 
+            if let Some(existing) = existing_verified_manifest(
+                &self.destination,
+                &request,
+                &plan,
+                self.request.mutation_guard(),
+            )? {
+                self.cleanup()?;
+                let receipt = duplicate_parquet_receipt(request, plan, existing)?;
+                return Ok(DestinationCommitOutcome::new(
+                    receipt,
+                    DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+                ));
+            }
+
+            let root_intent = self.prepare_content_root(&request)?;
             let publication_key = package_publication_metadata_key(
                 self.destination.object_key_encoder(),
                 &request.commit.target,
@@ -867,37 +893,36 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 self.request.staging_lease().fencing_token(),
                 &request.commit.idempotency_token,
             );
+            let publication_metadata = PublicationAttemptMetadata {
+                version: STAGING_METADATA_VERSION,
+                staging_lease: self.request.staging_lease().clone(),
+                root_id: root_intent.root.root_id.clone(),
+                root_generation: root_intent.root.root_generation,
+                manifest_key: plan.manifest_key.clone(),
+                object_layout: self.physical_plan.object_layout,
+            };
             self.request.mutation_guard().assert_current()?;
             self.destination.store().put(
                 self.destination.execution(),
                 &publication_key,
-                canonical_json_bytes(&PublicationAttemptMetadata {
-                    version: STAGING_METADATA_VERSION,
-                    staging_lease: self.request.staging_lease().clone(),
-                    root_id: root_intent.root.root_id.clone(),
-                    root_generation: root_intent.root.root_generation,
-                    manifest_key: plan.manifest_key.clone(),
-                })?,
+                canonical_json_bytes(&publication_metadata)?,
             )?;
             self.request.mutation_guard().assert_current()?;
-
-            if let Some(existing) = existing_verified_manifest(
-                &self.destination,
-                &request,
-                &plan,
-                self.request.mutation_guard(),
-            )? {
-                validate_existing_manifest_content(&existing.manifest, &root_intent.root)?;
-                self.commit_prepared_root()?;
-                self.objects.clear();
-                self.destination
+            let recorded_publication: PublicationAttemptMetadata = serde_json::from_slice(
+                &self
+                    .destination
                     .store()
-                    .delete(self.destination.execution(), &publication_key)?;
-                self.cleanup()?;
-                let receipt = duplicate_parquet_receipt(request, plan, existing)?;
-                return Ok(DestinationCommitOutcome::new(
-                    receipt,
-                    DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+                    .get_required(self.destination.execution(), &publication_key)?,
+            )
+            .map_err(|error| {
+                CdfError::destination(format!(
+                    "decode recorded Parquet publication metadata: {error}"
+                ))
+            })?;
+            recorded_publication.validate()?;
+            if recorded_publication != publication_metadata {
+                return Err(CdfError::destination(
+                    "recorded Parquet publication metadata differs from the prepared physical authority",
                 ));
             }
 
@@ -947,6 +972,8 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 request,
                 plan,
                 objects,
+                self.physical_plan.compression,
+                self.physical_plan.object_layout,
                 self.request.mutation_guard(),
             )?;
             self.commit_prepared_root()?;
@@ -1011,47 +1038,6 @@ fn publication_root_id(
         .as_bytes(),
     );
     CommittedContentRootId::new(format!("parquet-{}", hex::encode(digest)))
-}
-
-fn validate_existing_manifest_content(
-    manifest: &crate::manifest::ParquetObjectManifest,
-    root: &CommittedContentRoot,
-) -> Result<()> {
-    let expected = match &root.membership {
-        CommittedContentMembership::Inline { identities } => identities
-            .iter()
-            .map(|identity| {
-                (
-                    identity.object_key.as_str(),
-                    identity.byte_count,
-                    identity.digest.value.as_str(),
-                )
-            })
-            .collect::<BTreeSet<_>>(),
-        CommittedContentMembership::Shard { .. } => {
-            return Err(CdfError::internal(
-                "Parquet content root unexpectedly uses sharded membership",
-            ));
-        }
-    };
-    let observed = manifest
-        .objects
-        .iter()
-        .map(|object| {
-            (
-                object.key.as_str(),
-                object.parquet_byte_count,
-                object.sha256.as_str(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    if observed == expected {
-        Ok(())
-    } else {
-        Err(CdfError::destination(
-            "existing Parquet manifest content differs from its prepared reachability root",
-        ))
-    }
 }
 
 fn attach_secondary(mut primary: CdfError, context: &str, secondary: CdfError) -> CdfError {

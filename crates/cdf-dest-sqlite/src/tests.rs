@@ -815,6 +815,14 @@ fn runtime_capabilities_pin_one_bounded_writer_lane() {
     assert_eq!(capabilities.max_in_flight_segments, Some(1));
     assert_eq!(capabilities.max_in_flight_bytes, Some(64 * 1024 * 1024));
     assert_eq!(
+        capabilities.bulk_paths[0].batch_mode,
+        cdf_runtime::BulkBatchMode::PassThrough
+    );
+    assert!(matches!(
+        capabilities.bulk_paths[0].evidence,
+        cdf_runtime::BulkPathEvidence::Inconclusive { .. }
+    ));
+    assert_eq!(
         capabilities.commit_payload_mode,
         cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming
     );

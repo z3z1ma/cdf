@@ -12,6 +12,8 @@ use crate::manifest::{
 };
 use crate::{
     DESTINATION_ID, MANIFEST_VERSION,
+    compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    layout::{ParquetObjectLayoutPolicy, ParquetSegmentLayout},
     models::{ParquetCommitPlan, ParquetCommitRequest, ParquetDestination},
 };
 
@@ -39,6 +41,22 @@ pub(crate) fn build_receipt(
         "schema_hash".to_owned(),
         request.schema_hash.as_str().to_owned(),
     );
+    transaction_values.insert(
+        "physical_plan_path".to_owned(),
+        manifest.physical_plan_path.clone(),
+    );
+    transaction_values.insert(
+        "physical_plan_version".to_owned(),
+        manifest.physical_plan_version.to_string(),
+    );
+    transaction_values.insert(
+        "object_target_bytes".to_owned(),
+        manifest.object_layout.target_package_bytes().to_string(),
+    );
+    transaction_values.insert(
+        "max_segments_per_object".to_owned(),
+        manifest.object_layout.max_segments().to_string(),
+    );
     if let Some(etag) = &manifest_etag {
         transaction_values.insert("manifest_etag".to_owned(), etag.clone());
     }
@@ -65,6 +83,22 @@ pub(crate) fn build_receipt(
     parameters.insert(
         "target".to_owned(),
         request.commit.target.as_str().to_owned(),
+    );
+    parameters.insert(
+        "physical_plan_path".to_owned(),
+        manifest.physical_plan_path.clone(),
+    );
+    parameters.insert(
+        "physical_plan_version".to_owned(),
+        manifest.physical_plan_version.to_string(),
+    );
+    parameters.insert(
+        "object_target_bytes".to_owned(),
+        manifest.object_layout.target_package_bytes().to_string(),
+    );
+    parameters.insert(
+        "max_segments_per_object".to_owned(),
+        manifest.object_layout.max_segments().to_string(),
     );
 
     ReceiptDraft::ordinary(
@@ -284,6 +318,7 @@ fn validate_manifest_matches_receipt(
             "manifest identity metadata does not match receipt",
         ));
     }
+    validate_physical_authority(manifest, receipt)?;
     if receipt.counts.row_outcomes().map(|counts| counts.0) != Some(manifest.total_rows) {
         return Err(CdfError::data(format!(
             "manifest row count {} does not match receipt row outcomes",
@@ -292,6 +327,7 @@ fn validate_manifest_matches_receipt(
     }
 
     let mut manifest_segments = BTreeMap::new();
+    let mut layout_segments = Vec::new();
     for object in &manifest.objects {
         if object.schema_hash != receipt.schema_hash.as_str() {
             return Err(CdfError::data(format!(
@@ -318,6 +354,12 @@ fn validate_manifest_matches_receipt(
             package_byte_count = package_byte_count
                 .checked_add(segment.package_byte_count)
                 .ok_or_else(|| CdfError::data("manifest object package byte count overflow"))?;
+            layout_segments.push(ParquetSegmentLayout {
+                segment_id: cdf_kernel::SegmentId::new(segment.segment_id.clone()).map_err(
+                    |_| CdfError::destination("Parquet manifest contains an invalid segment id"),
+                )?,
+                package_byte_count: segment.package_byte_count,
+            });
             if manifest_segments
                 .insert(segment.segment_id.as_str(), segment)
                 .is_some()
@@ -338,6 +380,28 @@ fn validate_manifest_matches_receipt(
                 object.key
             )));
         }
+    }
+    let expected_layout = manifest.object_layout.plan(layout_segments).map_err(|_| {
+        CdfError::destination("Parquet manifest object layout cannot be reconstructed")
+    })?;
+    if expected_layout.len() != manifest.objects.len()
+        || expected_layout
+            .iter()
+            .zip(&manifest.objects)
+            .any(|(expected, observed)| {
+                expected
+                    .segments
+                    .iter()
+                    .map(|segment| segment.segment_id.as_str())
+                    .ne(observed
+                        .segments
+                        .iter()
+                        .map(|segment| segment.segment_id.as_str()))
+            })
+    {
+        return Err(CdfError::destination(
+            "Parquet manifest object grouping differs from its recorded layout policy",
+        ));
     }
     for ack in &receipt.segment_acks {
         let object = manifest_segments
@@ -367,13 +431,58 @@ fn validate_manifest_matches_receipt(
     }
 
     if manifest_segments.len() != receipt.segment_acks.len() {
-        return Err(CdfError::data(format!(
+        return Err(CdfError::destination(format!(
             "manifest segment count {} does not match receipt segment count {}",
             manifest_segments.len(),
             receipt.segment_acks.len()
         )));
     }
 
+    Ok(())
+}
+
+fn validate_physical_authority(manifest: &ParquetObjectManifest, receipt: &Receipt) -> Result<()> {
+    if manifest.physical_plan_version != PHYSICAL_PLAN_VERSION {
+        return Err(CdfError::destination(format!(
+            "unsupported Parquet physical-plan version {}",
+            manifest.physical_plan_version
+        )));
+    }
+    ParquetCompression::from_path_id(&manifest.physical_plan_path).map_err(|_| {
+        CdfError::destination("Parquet manifest names an unsupported physical path")
+    })?;
+    let object_layout: ParquetObjectLayoutPolicy =
+        manifest.object_layout.validate().map_err(|_| {
+            CdfError::destination("Parquet manifest contains invalid object-layout bounds")
+        })?;
+    let expected = [
+        ("physical_plan_path", manifest.physical_plan_path.clone()),
+        (
+            "physical_plan_version",
+            manifest.physical_plan_version.to_string(),
+        ),
+        (
+            "object_target_bytes",
+            object_layout.target_package_bytes().to_string(),
+        ),
+        (
+            "max_segments_per_object",
+            object_layout.max_segments().to_string(),
+        ),
+    ];
+    let transaction = receipt
+        .transaction
+        .as_ref()
+        .ok_or_else(|| CdfError::destination("Parquet receipt is missing transaction metadata"))?;
+    for (key, value) in expected {
+        if receipt.verify.parameters.get(key) != Some(&value)
+            || transaction.values.get(key) != Some(&value)
+        {
+            return Err(CdfError::destination(format!(
+                "Parquet receipt {key} differs from its recorded manifest authority"
+            )));
+        }
+    }
     Ok(())
 }
 

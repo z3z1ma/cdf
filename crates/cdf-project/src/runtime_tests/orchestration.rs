@@ -1650,6 +1650,10 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     );
     assert_eq!(bulk.get("bulk_path_version"), Some(&RunEventValue::U64(1)));
     assert_eq!(
+        bulk.get("bulk_evidence_status"),
+        Some(&RunEventValue::String("measured".to_owned()))
+    );
+    assert_eq!(
         bulk.get("bulk_evidence_version"),
         Some(&RunEventValue::String(
             "p3-d14-stock-scan-2026-07-19-v1".to_owned()

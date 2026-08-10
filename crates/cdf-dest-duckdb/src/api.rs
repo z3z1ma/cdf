@@ -810,11 +810,13 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             expected_rows,
             &self.request.binding().merge_keys,
         )?;
+        let (rows_per_batch, bytes_per_batch) =
+            self.request.bulk_path().controlled_batch_sizes()?;
         let envelope = DuckDbIngestEnvelope::resolve(
             &self.destination.native_resources,
             self.request.segment_schema(),
-            self.request.bulk_path().rows_per_batch,
-            self.request.bulk_path().bytes_per_batch,
+            rows_per_batch,
+            bytes_per_batch,
         )?;
         let _lock = self.destination.acquire_writer_lock()?;
         let mut scan_threads = envelope.initial_scan_threads();

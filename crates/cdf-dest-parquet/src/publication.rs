@@ -2,6 +2,8 @@ use cdf_kernel::{CdfError, Receipt, Result};
 
 use crate::{
     DESTINATION_ID, MANIFEST_VERSION, REPLACE_POINTER_VERSION,
+    compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    layout::ParquetObjectLayoutPolicy,
     manifest::{
         CurrentReplacePointer, ParquetObjectEntry, ParquetObjectManifest,
         ParquetReplacePointerReceipt, ReplacePointer, canonical_json_bytes, sha256_hex,
@@ -69,8 +71,11 @@ pub(crate) fn finalize_parquet_objects(
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
     object_entries: Vec<ParquetObjectEntry>,
+    compression: ParquetCompression,
+    object_layout: ParquetObjectLayoutPolicy,
     mutation_guard: &cdf_runtime::StagingMutationGuard,
 ) -> Result<CommittedParquetPublication> {
+    let object_layout = object_layout.validate()?;
     mutation_guard.assert_current()?;
     let committed_at_ms = now_ms(destination.execution())?;
     let object_manifest = ParquetObjectManifest {
@@ -81,6 +86,9 @@ pub(crate) fn finalize_parquet_objects(
         idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
         disposition: request.commit.disposition.clone(),
         schema_hash: request.schema_hash.as_str().to_owned(),
+        physical_plan_path: compression.path_id().to_owned(),
+        physical_plan_version: PHYSICAL_PLAN_VERSION,
+        object_layout,
         committed_at_ms,
         total_rows: plan.rows_planned,
         objects: object_entries,

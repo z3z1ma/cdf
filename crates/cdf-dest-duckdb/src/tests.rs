@@ -1225,6 +1225,10 @@ fn duckdb_reserves_native_parallelism_only_for_final_binding() {
             .native_internal_parallelism,
         16
     );
+    assert_eq!(
+        capabilities.bulk_paths[0].batch_mode,
+        cdf_runtime::BulkBatchMode::DestinationControlled
+    );
 }
 
 #[test]

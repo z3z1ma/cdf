@@ -6,7 +6,9 @@ use cdf_kernel::{
     PackageHash, PipelineId, ResourceStream, Result, SchemaHash, SourcePosition, StateDelta,
     StateSegment, TargetName,
 };
-use cdf_package_contract::{PackageReplayInputs, VerifiedPackageAccess};
+use cdf_package_contract::{
+    PackageReplayInputs, SharedVerifiedPackageAccess, VerifiedPackageAccess,
+};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
@@ -139,6 +141,38 @@ impl PostgresRuntime {
 impl DestinationRuntime for PostgresRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol {
         &self.destination
+    }
+
+    fn plan_routed_package(
+        &mut self,
+        commit: &cdf_kernel::DestinationCommitRequest,
+    ) -> Result<cdf_kernel::CommitPlan> {
+        crate::cdc::plan_routed(commit)
+    }
+
+    fn commit_routed_package(
+        &mut self,
+        package: SharedVerifiedPackageAccess,
+        inputs: &PackageReplayInputs,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        crate::cdc::commit_routed(&self.destination, package.as_ref(), inputs, segments)
+    }
+
+    fn commit_cdc_package(
+        &mut self,
+        package: SharedVerifiedPackageAccess,
+        inputs: &PackageReplayInputs,
+        output_schema: &Schema,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        crate::cdc::commit_single_target(
+            &self.destination,
+            package.as_ref(),
+            inputs,
+            output_schema,
+            segments,
+        )
     }
 
     fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
@@ -341,7 +375,7 @@ pub(crate) fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities 
         blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
             lane_id: "postgres.sync".to_owned(),
             binding: cdf_runtime::BlockingLaneBinding::Static,
-            maximum_concurrency: 4,
+            maximum_concurrency: 1,
             cpu_slot_cost: 1,
             native_internal_parallelism: 1,
             affinity: cdf_runtime::LaneAffinity::Shared,
@@ -371,16 +405,18 @@ pub(crate) fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities 
                 preferred: 16 * 1024 * 1024,
                 maximum: 64 * 1024 * 1024,
             },
-            max_useful_writers: 1,
+            batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+            maximum_writers: 1,
             blocking_lane: Some("postgres.sync".to_owned()),
             native_internal_parallelism: 1,
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::Forbidden,
             schema_preflight_version: "postgres-binary-copy-mapping@2".to_owned(),
-            measured_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
+            evidence: cdf_runtime::BulkPathEvidence::Measured {
+                version: "p3-d3-2026-07-11-v1".to_owned(),
+            },
         }],
         bulk_path: Some("copy_binary".to_owned()),
-        bulk_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),
     }

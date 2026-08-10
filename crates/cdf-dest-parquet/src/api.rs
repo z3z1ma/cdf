@@ -19,6 +19,7 @@ use object_store::ObjectStore;
 use crate::{
     compression::ParquetCompression,
     corrections::{begin_correction_request, plan_correction_request, verify_correction_receipt},
+    layout::ParquetObjectLayoutPolicy,
     models::{
         ParquetCommitPlan, ParquetCommitRequest, ParquetDestination, ParquetRowLocation,
         PublicationAttemptMetadata, ReceiptVerification, StagingAttemptMetadata,
@@ -50,6 +51,7 @@ impl ParquetDestination {
             StoreClient::new_filesystem(root.as_ref())?,
             execution,
             ParquetCompression::default(),
+            ParquetObjectLayoutPolicy::default(),
         )
     }
 
@@ -63,6 +65,7 @@ impl ParquetDestination {
             StoreClient::new_object_store(namespace, store, root_prefix)?,
             execution,
             ParquetCompression::default(),
+            ParquetObjectLayoutPolicy::default(),
         )
     }
 
@@ -71,11 +74,21 @@ impl ParquetDestination {
         self
     }
 
+    pub fn with_object_layout_policy(
+        mut self,
+        object_layout: ParquetObjectLayoutPolicy,
+    ) -> Result<Self> {
+        self.object_layout = object_layout.validate()?;
+        Ok(self)
+    }
+
     fn from_store(
         store: StoreClient,
         execution: cdf_runtime::ExecutionServices,
         compression: ParquetCompression,
+        object_layout: ParquetObjectLayoutPolicy,
     ) -> Result<Self> {
+        let object_layout = object_layout.validate()?;
         execution
             .ensure_blocking_lanes(&parquet_runtime_capabilities(compression).blocking_lanes)?;
         let artifact = Self::destination_sheet_artifact()?;
@@ -88,6 +101,7 @@ impl ParquetDestination {
             sheet,
             object_key_encoder,
             compression,
+            object_layout,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             encode_probe: None,
@@ -167,6 +181,10 @@ impl ParquetDestination {
         self.compression
     }
 
+    pub(crate) fn object_layout_policy(&self) -> ParquetObjectLayoutPolicy {
+        self.object_layout
+    }
+
     pub fn reclaim_unreachable_content(
         &self,
         limit: u32,
@@ -200,6 +218,7 @@ impl ParquetDestination {
                             object.key
                         ))
                     })?;
+            metadata.validate()?;
             let expected = crate::store::staged_attempt_metadata_key(
                 self.object_key_encoder,
                 target,
@@ -244,6 +263,7 @@ impl ParquetDestination {
                             object.key
                         ))
                     })?;
+            metadata.validate()?;
             let expected_marker_prefix = format!(
                 "{}{}/{}/{}/",
                 publication_prefix,
@@ -303,6 +323,7 @@ impl ParquetDestination {
                 "decode Parquet publication metadata {marker}: {error}"
             ))
         })?;
+        metadata.validate()?;
         if !metadata.staging_lease.same_generation(candidate.lease()) {
             return Err(CdfError::contract(
                 "Parquet publication marker changed after cleanup candidacy",

@@ -20,7 +20,9 @@ use cdf_kernel::{
 };
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageReader, VerifiedPackage, VerifiedPackageReader};
-use cdf_package_contract::{PackageReplayInputs, PackageStatus, SegmentEntry};
+use cdf_package_contract::{
+    PackageReplayInputs, PackageStatus, SegmentEntry, SharedVerifiedPackageAccess,
+};
 use cdf_runtime::ExecutionServices;
 use sha2::{Digest, Sha256};
 
@@ -1940,10 +1942,12 @@ where
             )?;
             let segments =
                 stream.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
+            let verified_package: SharedVerifiedPackageAccess = Arc::new(package.clone());
             let outcome = if routed {
-                runtime.commit_routed_package(&inputs, Box::new(segments))?
+                runtime.commit_routed_package(verified_package, &inputs, Box::new(segments))?
             } else {
                 runtime.commit_cdc_package(
+                    verified_package,
                     &inputs,
                     output_schema
                         .as_ref()

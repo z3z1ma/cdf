@@ -132,30 +132,7 @@ impl<'a> ReplayProgressRecorder<'a> {
             } => {
                 let mut event = self.base_event(RunEventKind::DestinationCommitStarted);
                 event.plan_id = Some(plan_id.clone());
-                event.details = RunEventDetails::new([
-                    ("phase", RunEventValue::String("destination".to_owned())),
-                    ("segment_count", RunEventValue::U64(segment_count)),
-                    (
-                        "bulk_path_id",
-                        RunEventValue::String(bulk_path.descriptor.path_id.clone()),
-                    ),
-                    (
-                        "bulk_path_version",
-                        RunEventValue::U64(u64::from(bulk_path.descriptor.version)),
-                    ),
-                    (
-                        "bulk_rows_per_batch",
-                        RunEventValue::U64(bulk_path.rows_per_batch),
-                    ),
-                    (
-                        "bulk_bytes_per_batch",
-                        RunEventValue::U64(bulk_path.bytes_per_batch),
-                    ),
-                    (
-                        "bulk_writers",
-                        RunEventValue::U64(u64::from(bulk_path.writers)),
-                    ),
-                ]);
+                event.details = destination_commit_started_details(segment_count, bulk_path);
                 event
             }
             RuntimeStage::DestinationSegmentAcknowledged { ack } => {
@@ -205,6 +182,51 @@ impl<'a> ReplayProgressRecorder<'a> {
         event.checkpoint_id = Some(self.state_delta.checkpoint_id.clone());
         event
     }
+}
+
+fn destination_commit_started_details(
+    segment_count: u64,
+    bulk_path: &cdf_runtime::PreparedBulkPath,
+) -> RunEventDetails {
+    let mut details = vec![
+        (
+            "phase".to_owned(),
+            RunEventValue::String("destination".to_owned()),
+        ),
+        (
+            "segment_count".to_owned(),
+            RunEventValue::U64(segment_count),
+        ),
+        (
+            "bulk_path_id".to_owned(),
+            RunEventValue::String(bulk_path.descriptor.path_id.clone()),
+        ),
+        (
+            "bulk_path_version".to_owned(),
+            RunEventValue::U64(u64::from(bulk_path.descriptor.version)),
+        ),
+        (
+            "bulk_writers".to_owned(),
+            RunEventValue::U64(u64::from(bulk_path.writers)),
+        ),
+        (
+            "bulk_evidence_status".to_owned(),
+            RunEventValue::String(bulk_path.descriptor.evidence.status().to_owned()),
+        ),
+    ];
+    if let Some(rows) = bulk_path.rows_per_batch {
+        details.push(("bulk_rows_per_batch".to_owned(), RunEventValue::U64(rows)));
+    }
+    if let Some(bytes) = bulk_path.bytes_per_batch {
+        details.push(("bulk_bytes_per_batch".to_owned(), RunEventValue::U64(bytes)));
+    }
+    if let Some(version) = bulk_path.descriptor.evidence.version() {
+        details.push((
+            "bulk_evidence_version".to_owned(),
+            RunEventValue::String(version.to_owned()),
+        ));
+    }
+    RunEventDetails::new(details)
 }
 
 impl ReplayDestination {
@@ -665,5 +687,58 @@ pub(crate) fn run_package(
             CommandOutput::rendered_with_progress("run", document, cli_report, progress.finish())
         }
         None => CommandOutput::rendered("run", document, cli_report),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::destination_commit_started_details;
+
+    #[test]
+    fn replay_progress_omits_ineffective_pass_through_batch_settings() {
+        let capabilities = cdf_runtime::DestinationRuntimeCapabilities {
+            bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
+                path_id: "arrowstream".to_owned(),
+                version: 1,
+                ingress_mode: cdf_runtime::DestinationIngressMode::FinalizedPackageOnly,
+                writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
+                ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+                rows: cdf_runtime::BulkSizeRange {
+                    minimum: 1,
+                    preferred: 65_536,
+                    maximum: 1_000_000,
+                },
+                bytes: cdf_runtime::BulkSizeRange {
+                    minimum: 1,
+                    preferred: 16 * 1024 * 1024,
+                    maximum: 32 * 1024 * 1024,
+                },
+                batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+                maximum_writers: 1,
+                blocking_lane: None,
+                native_internal_parallelism: 1,
+                external_staging: false,
+                fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+                schema_preflight_version: "clickhouse-arrow-mapping@1".to_owned(),
+                evidence: cdf_runtime::BulkPathEvidence::Measured {
+                    version: "clickhouse-destination-roofline-v1".to_owned(),
+                },
+            }],
+            bulk_path: Some("arrowstream".to_owned()),
+            ..Default::default()
+        };
+        let selected = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)
+            .unwrap()
+            .into_selected(&capabilities)
+            .unwrap();
+
+        let details = destination_commit_started_details(1, &selected).attributes;
+
+        assert_eq!(
+            details.get("bulk_evidence_status"),
+            Some(&cdf_kernel::RunEventValue::String("measured".to_owned()))
+        );
+        assert!(!details.contains_key("bulk_rows_per_batch"));
+        assert!(!details.contains_key("bulk_bytes_per_batch"));
     }
 }

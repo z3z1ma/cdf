@@ -54,6 +54,13 @@ fn sheet_and_bulk_path_are_truthful() {
     assert_eq!(capabilities.bulk_path.as_deref(), Some("arrowstream"));
     assert_eq!(capabilities.max_in_flight_segments, Some(1));
     assert_eq!(capabilities.max_in_flight_bytes, Some(64 * 1024 * 1024));
+    let path = &capabilities.bulk_paths[0];
+    assert_eq!(path.batch_mode, cdf_runtime::BulkBatchMode::PassThrough);
+    assert_eq!(path.native_internal_parallelism, 1);
+    assert!(matches!(
+        path.evidence,
+        cdf_runtime::BulkPathEvidence::Measured { .. }
+    ));
 }
 
 #[test]

@@ -473,13 +473,16 @@ fn capabilities() -> DestinationRuntimeCapabilities {
             preferred: 16 * 1024 * 1024,
             maximum: 64 * 1024 * 1024,
         },
-        max_useful_writers: 1,
+        batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+        maximum_writers: 1,
         blocking_lane: None,
         native_internal_parallelism: 1,
         external_staging: false,
         fallback: BulkFallbackMode::Forbidden,
         schema_preflight_version: "quasar-schema-v1".to_owned(),
-        measured_evidence_version: Some("quasar-test-evidence-v1".to_owned()),
+        evidence: cdf_runtime::BulkPathEvidence::Measured {
+            version: "quasar-test-evidence-v1".to_owned(),
+        },
     };
     DestinationRuntimeCapabilities {
         commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
@@ -487,7 +490,6 @@ fn capabilities() -> DestinationRuntimeCapabilities {
         max_in_flight_bytes: Some(64 * 1024 * 1024),
         bulk_paths: vec![path],
         bulk_path: Some("quasar_native".to_owned()),
-        bulk_evidence_version: Some("quasar-test-evidence-v1".to_owned()),
         ..Default::default()
     }
 }

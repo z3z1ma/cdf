@@ -26,6 +26,7 @@ pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 
 mod api;
 mod binary_copy;
+mod cdc;
 mod commit;
 mod corrections;
 mod ddl;

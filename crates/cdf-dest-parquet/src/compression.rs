@@ -1,7 +1,7 @@
 use cdf_kernel::{CdfError, Result};
 use parquet::basic::{Compression, ZstdLevel};
 
-pub(crate) const PHYSICAL_PLAN_VERSION: u16 = 6;
+pub(crate) const PHYSICAL_PLAN_VERSION: u16 = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParquetCompression {
@@ -19,7 +19,7 @@ impl ParquetCompression {
         match self {
             Self::None => "none",
             Self::Snappy => "snappy",
-            Self::Lz4Raw => "lz4_raw",
+            Self::Lz4Raw => "lz4",
             Self::Zstd => "zstd",
         }
     }
@@ -35,13 +35,13 @@ impl ParquetCompression {
 
     pub(crate) fn from_name(value: &str) -> Result<Self> {
         match value {
-            "none" | "uncompressed" => Ok(Self::None),
+            "none" => Ok(Self::None),
             "snappy" => Ok(Self::Snappy),
-            "lz4" | "lz4_raw" => Ok(Self::Lz4Raw),
+            "lz4" => Ok(Self::Lz4Raw),
             "zstd" => Ok(Self::Zstd),
-            _ => Err(CdfError::contract(format!(
-                "Parquet destination compression `{value}` is unsupported; expected none, snappy, lz4, or zstd"
-            ))),
+            _ => Err(CdfError::contract(
+                "Parquet destination compression is unsupported; expected none, snappy, lz4, or zstd",
+            )),
         }
     }
 

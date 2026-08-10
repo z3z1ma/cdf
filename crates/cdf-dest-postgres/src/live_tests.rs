@@ -341,6 +341,692 @@ impl Drop for LivePostgres {
     }
 }
 
+fn live_cdc_package(
+    target: TargetName,
+    package_id: &str,
+    parent_package_id: Option<&str>,
+    policy: cdf_kernel::DeleteApplicationPolicy,
+    upserts: &[(i64, &str, bool)],
+    deletes: &[i64],
+) -> (
+    cdf_package_contract::PackageReplayInputs,
+    Schema,
+    Vec<cdf_kernel::CommitSegment>,
+) {
+    let fields = vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ];
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from_iter_values(
+            upserts.iter().map(|row| row.0),
+        )),
+        Arc::new(StringArray::from_iter(
+            upserts.iter().map(|row| Some(row.1)),
+        )),
+    ];
+    let schema = Schema::new(fields);
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema).unwrap();
+    let delete_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let delete_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&delete_schema).unwrap();
+    let content = cdf_kernel::PackageContentAuthority::KeyedChanges {
+        logical_schema_hash: schema_hash.clone(),
+        upsert_schema_hash: schema_hash.clone(),
+        delete_schema_hash: delete_schema_hash.clone(),
+        key: cdf_kernel::KeyAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            fields: vec!["id".to_owned()],
+            encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+            schema_hash: delete_schema_hash,
+        },
+        reduction: Box::new(cdf_kernel::KeyedEffectReductionAuthority {
+            version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+            winner: cdf_kernel::KeyedEffectWinnerPolicy::Last,
+            input_order: cdf_kernel::KeyedEffectInputOrder::SourceProtocol {
+                protocol: "postgres-live-cdc-fixture".to_owned(),
+                version: 1,
+                scope_sha256: format!("sha256:{}", "d".repeat(64)),
+            },
+            input: cdf_kernel::KeyedEffectCounts {
+                upserts: upserts.len() as u64,
+                deletes: deletes.len() as u64,
+            },
+            duplicate_key_count: 0,
+            surviving: cdf_kernel::KeyedEffectCounts {
+                upserts: upserts.len() as u64,
+                deletes: deletes.len() as u64,
+            },
+            provenance_format: "parquet".to_owned(),
+            provenance_version: 1,
+        }),
+        deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+            support: cdf_kernel::DeletionCaptureSupport::Inherent,
+            enabled: true,
+            semantics_sha256: format!("sha256:{}", "e".repeat(64)),
+        },
+        delete_application: cdf_kernel::DeleteApplicationAuthority::Apply { policy },
+    };
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0").unwrap(),
+    };
+    let position = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "event".to_owned(),
+        value: CursorValue::I64(package_id.bytes().fold(0_i64, |value, byte| {
+            value.wrapping_mul(31) + i64::from(byte)
+        })),
+    });
+    let mut states = Vec::new();
+    let mut commit_segments = Vec::new();
+    let mut ordinal = 0_u64;
+    if !upserts.is_empty() {
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), arrays).unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], ordinal)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let state = StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Upsert,
+            segment_id: SegmentId::new(format!("seg-{package_id}-upsert")).unwrap(),
+            scope: scope.clone(),
+            output_position: position.clone(),
+            row_count: upserts.len() as u64,
+            byte_count: 1024,
+        };
+        ordinal += upserts.len() as u64;
+        states.push(state.clone());
+        commit_segments.push(cdf_kernel::CommitSegment::new(state, 1024, vec![batch]));
+    }
+    if !deletes.is_empty() {
+        let batch = RecordBatch::try_new(
+            Arc::new(delete_schema),
+            vec![Arc::new(Int64Array::from_iter_values(
+                deletes.iter().copied(),
+            ))],
+        )
+        .unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], ordinal)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let state = StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Delete,
+            segment_id: SegmentId::new(format!("seg-{package_id}-delete")).unwrap(),
+            scope: scope.clone(),
+            output_position: position.clone(),
+            row_count: deletes.len() as u64,
+            byte_count: 512,
+        };
+        states.push(state.clone());
+        commit_segments.push(cdf_kernel::CommitSegment::new(state, 512, vec![batch]));
+    }
+    let package_hash = PackageHash::new(format!("sha256:{package_id}")).unwrap();
+    let delta = StateDelta {
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        pipeline_id: PipelineId::new("pipeline-postgres-live-cdc").unwrap(),
+        resource_id: ResourceId::new(format!(
+            "postgres_live_cdc_{}",
+            target.as_str().replace('.', "_")
+        ))
+        .unwrap(),
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: parent_package_id
+            .map(|parent| CheckpointId::new(format!("checkpoint-{parent}")))
+            .transpose()
+            .unwrap(),
+        input_position: None,
+        output_position: position,
+        output_watermark: None,
+        partition_watermarks: Vec::new(),
+        late_data_carryover: Vec::new(),
+        source_continuation: None,
+        package_hash: package_hash.clone(),
+        content: content.clone(),
+        schema_hash: schema_hash.clone(),
+        segments: states.clone(),
+    };
+    let request = DestinationCommitRequest {
+        package_hash: package_hash.clone(),
+        content,
+        target,
+        disposition: WriteDisposition::CdcApply,
+        segments: states,
+        idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+    };
+    (
+        cdf_package_contract::PackageReplayInputs {
+            input_checkpoint: None,
+            state_delta: delta,
+            destination_commit: request,
+            schema_hash,
+            merge_keys: vec!["id".to_owned()],
+            destination_policy: Default::default(),
+            run_schema_authority: None,
+        },
+        schema,
+        commit_segments,
+    )
+}
+
+struct LiveVerifiedPackageAccess {
+    package_hash: String,
+    quarantines: Vec<QuarantineRecord>,
+}
+
+impl LiveVerifiedPackageAccess {
+    fn empty(inputs: &cdf_package_contract::PackageReplayInputs) -> Self {
+        Self {
+            package_hash: inputs.destination_commit.package_hash.as_str().to_owned(),
+            quarantines: Vec::new(),
+        }
+    }
+}
+
+impl cdf_package_contract::VerifiedPackageAccess for LiveVerifiedPackageAccess {
+    fn package_hash(&self) -> &str {
+        &self.package_hash
+    }
+
+    fn for_each_identity_segment(
+        &self,
+        _visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        Err(CdfError::internal(
+            "live direct-commit package fixture does not expose identity segments",
+        ))
+    }
+
+    fn recorded_scan_plan(&self) -> Result<cdf_kernel::ScanPlan> {
+        Err(CdfError::internal(
+            "live direct-commit package fixture does not expose a scan plan",
+        ))
+    }
+
+    fn replay_inputs(&self) -> Result<cdf_package_contract::PackageReplayInputs> {
+        Err(CdfError::internal(
+            "live direct-commit package fixture does not expose replay inputs",
+        ))
+    }
+
+    fn runtime_arrow_schema(&self) -> Result<arrow_schema::SchemaRef> {
+        Err(CdfError::internal(
+            "live direct-commit package fixture does not expose a runtime schema",
+        ))
+    }
+
+    fn for_each_quarantine_record(
+        &self,
+        visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+    ) -> Result<()> {
+        self.quarantines.iter().cloned().try_for_each(visitor)
+    }
+}
+
+fn commit_live_cdc(
+    destination: &PostgresDestination,
+    inputs: &cdf_package_contract::PackageReplayInputs,
+    schema: &Schema,
+    segments: &[cdf_kernel::CommitSegment],
+) -> cdf_runtime::DestinationCommitOutcome {
+    let owned_segments = segments.to_vec();
+    let package = LiveVerifiedPackageAccess::empty(inputs);
+    crate::cdc::commit_single_target(
+        destination,
+        &package,
+        inputs,
+        schema,
+        Box::new(owned_segments.into_iter().map(Ok)),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "commit {} failed: {error}",
+            inputs.destination_commit.package_hash
+        )
+    })
+}
+
+fn live_routed_cdc_package(
+    logical_target: TargetName,
+    package_id: &str,
+    corrupt_second_schema: bool,
+) -> (
+    cdf_package_contract::PackageReplayInputs,
+    Vec<cdf_kernel::CommitSegment>,
+    Vec<TargetName>,
+) {
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]);
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema).unwrap();
+    let delete_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let delete_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&delete_schema).unwrap();
+    let route_values = StringArray::from(vec!["alpha", "beta"]);
+    let family = cdf_kernel::RouteTargetFamily::new(
+        cdf_kernel::RoutePlan::new("kind", 2).unwrap(),
+        logical_target.clone(),
+        Some(63),
+        (0..2).map(|index| {
+            (
+                cdf_kernel::RouteScalar::from_array(&route_values, index).unwrap(),
+                schema_hash.clone(),
+            )
+        }),
+    )
+    .unwrap();
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0").unwrap(),
+    };
+    let position = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "event".to_owned(),
+        value: CursorValue::I64(1),
+    });
+    let mut states = Vec::new();
+    let mut segments = Vec::new();
+    let mut outputs = Vec::new();
+    for (index, binding) in family.bindings.iter().enumerate() {
+        let segment_id = SegmentId::new(format!("seg-{package_id}-{index}")).unwrap();
+        let state = StateSegment {
+            kind: cdf_kernel::PackageSegmentKind::Upsert,
+            segment_id: segment_id.clone(),
+            scope: scope.clone(),
+            output_position: position.clone(),
+            row_count: 1,
+            byte_count: 1024,
+        };
+        let batch_schema = if corrupt_second_schema && index == 1 {
+            Schema::new(vec![Field::new("id", DataType::Int64, false)])
+        } else {
+            schema.clone()
+        };
+        let arrays: Vec<ArrayRef> = if corrupt_second_schema && index == 1 {
+            vec![Arc::new(Int64Array::from(vec![2_i64]))]
+        } else {
+            vec![
+                Arc::new(Int64Array::from(vec![index as i64 + 1])),
+                Arc::new(StringArray::from(vec![format!("route-{index}")])),
+            ]
+        };
+        let batch = RecordBatch::try_new(Arc::new(batch_schema), arrays).unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], index as u64)
+            .unwrap()
+            .pop()
+            .unwrap();
+        states.push(state.clone());
+        segments.push(cdf_kernel::CommitSegment::new(state, 1024, vec![batch]));
+        outputs.push(cdf_kernel::RoutedOutputContentAuthority {
+            output_binding: binding.output_binding.clone(),
+            schema: cdf_kernel::CanonicalArrowSchema::from_arrow(&schema).unwrap(),
+            content: Box::new(cdf_kernel::PackageContentAuthority::KeyedChanges {
+                logical_schema_hash: schema_hash.clone(),
+                upsert_schema_hash: schema_hash.clone(),
+                delete_schema_hash: delete_schema_hash.clone(),
+                key: cdf_kernel::KeyAuthority {
+                    version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+                    fields: vec!["id".to_owned()],
+                    encoding: cdf_kernel::DEDUP_KEY_ENCODING_VERSION.to_owned(),
+                    schema_hash: delete_schema_hash.clone(),
+                },
+                reduction: Box::new(cdf_kernel::KeyedEffectReductionAuthority {
+                    version: cdf_kernel::KEYED_EFFECT_AUTHORITY_VERSION,
+                    winner: cdf_kernel::KeyedEffectWinnerPolicy::Last,
+                    input_order: cdf_kernel::KeyedEffectInputOrder::SourceProtocol {
+                        protocol: "postgres-live-routed-cdc-fixture".to_owned(),
+                        version: 1,
+                        scope_sha256: format!("sha256:{}", "f".repeat(64)),
+                    },
+                    input: cdf_kernel::KeyedEffectCounts {
+                        upserts: 1,
+                        deletes: 0,
+                    },
+                    duplicate_key_count: 0,
+                    surviving: cdf_kernel::KeyedEffectCounts {
+                        upserts: 1,
+                        deletes: 0,
+                    },
+                    provenance_format: "parquet".to_owned(),
+                    provenance_version: 1,
+                }),
+                deletion_capture: cdf_kernel::DeletionCaptureAuthority {
+                    support: cdf_kernel::DeletionCaptureSupport::Inherent,
+                    enabled: true,
+                    semantics_sha256: format!("sha256:{}", "1".repeat(64)),
+                },
+                delete_application: cdf_kernel::DeleteApplicationAuthority::Apply {
+                    policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+                },
+            }),
+            segment_ids: vec![segment_id],
+        });
+    }
+    let physical_targets = family
+        .bindings
+        .iter()
+        .map(|binding| binding.physical_target.clone())
+        .collect::<Vec<_>>();
+    let family_hash = family.schema_family_hash.clone();
+    let content = cdf_kernel::PackageContentAuthority::Routed { family, outputs };
+    let package_hash = PackageHash::new(format!("sha256:{package_id}")).unwrap();
+    let delta = StateDelta {
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        pipeline_id: PipelineId::new("pipeline-postgres-live-routed-cdc").unwrap(),
+        resource_id: ResourceId::new(format!(
+            "postgres_live_routed_{}",
+            logical_target.as_str().replace('.', "_")
+        ))
+        .unwrap(),
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: position,
+        output_watermark: None,
+        partition_watermarks: Vec::new(),
+        late_data_carryover: Vec::new(),
+        source_continuation: None,
+        package_hash: package_hash.clone(),
+        content: content.clone(),
+        schema_hash: family_hash.clone(),
+        segments: states.clone(),
+    };
+    let request = DestinationCommitRequest {
+        package_hash: package_hash.clone(),
+        content,
+        target: logical_target,
+        disposition: WriteDisposition::CdcApply,
+        segments: states,
+        idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+    };
+    (
+        cdf_package_contract::PackageReplayInputs {
+            input_checkpoint: None,
+            state_delta: delta,
+            destination_commit: request,
+            schema_hash: family_hash,
+            merge_keys: vec!["id".to_owned()],
+            destination_policy: Default::default(),
+            run_schema_authority: None,
+        },
+        segments,
+        physical_targets,
+    )
+}
+
+#[test]
+fn live_cdc_applies_hard_ignore_soft_missing_and_duplicate_replay() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let destination = env.destination();
+
+    let hard_target = env.target("cdc_hard").target_name().unwrap();
+    let (base, schema, base_segments) = live_cdc_package(
+        hard_target.clone(),
+        "postgres-cdc-hard-base",
+        None,
+        cdf_kernel::DeleteApplicationPolicy::Hard,
+        &[(1, "one", false), (2, "two", false)],
+        &[],
+    );
+    commit_live_cdc(&destination, &base, &schema, &base_segments);
+    let (change, schema, change_segments) = live_cdc_package(
+        hard_target,
+        "postgres-cdc-hard-change",
+        Some("postgres-cdc-hard-base"),
+        cdf_kernel::DeleteApplicationPolicy::Hard,
+        &[(1, "one-updated", false)],
+        &[2, 999],
+    );
+    let first = commit_live_cdc(&destination, &change, &schema, &change_segments);
+    assert_eq!(
+        first.receipt.counts,
+        CommitCounts::keyed_changes(
+            cdf_kernel::KeyedEffectCounts {
+                upserts: 1,
+                deletes: 2,
+            },
+            Some(0),
+            Some(1),
+            Some(1),
+            None,
+            Some(1),
+            None,
+        )
+    );
+    let replay = commit_live_cdc(&destination, &change, &schema, &change_segments);
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(
+        replay.reporting_policy,
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    let mut client = env.client();
+    let rows = client
+        .query("SELECT id, name FROM cdc_hard ORDER BY id", &[])
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, i64>(0), 1);
+    assert_eq!(rows[0].get::<_, String>(1), "one-updated");
+
+    let (ignored, schema, ignored_segments) = live_cdc_package(
+        env.target("cdc_hard").target_name().unwrap(),
+        "postgres-cdc-ignore",
+        Some("postgres-cdc-hard-change"),
+        cdf_kernel::DeleteApplicationPolicy::Ignore,
+        &[],
+        &[1],
+    );
+    let ignored = commit_live_cdc(&destination, &ignored, &schema, &ignored_segments);
+    assert_eq!(
+        ignored.receipt.counts,
+        CommitCounts::keyed_changes(
+            cdf_kernel::KeyedEffectCounts {
+                upserts: 0,
+                deletes: 1,
+            },
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            Some(1),
+        )
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT COUNT(*)::bigint FROM cdc_hard", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+
+    let soft_target = env.target("cdc_soft").target_name().unwrap();
+    let soft_policy = cdf_kernel::DeleteApplicationPolicy::Soft {
+        marker_field: "deleted".to_owned(),
+    };
+    let (soft_base, schema, soft_base_segments) = live_cdc_package(
+        soft_target.clone(),
+        "postgres-cdc-soft-base",
+        None,
+        soft_policy.clone(),
+        &[(7, "seven", true)],
+        &[],
+    );
+    commit_live_cdc(&destination, &soft_base, &schema, &soft_base_segments);
+    let (soft_delete, schema, soft_delete_segments) = live_cdc_package(
+        soft_target.clone(),
+        "postgres-cdc-soft-delete",
+        Some("postgres-cdc-soft-base"),
+        soft_policy.clone(),
+        &[],
+        &[7, 888],
+    );
+    let soft_delete = commit_live_cdc(&destination, &soft_delete, &schema, &soft_delete_segments);
+    let CommitCounts::KeyedChanges {
+        soft_deletes,
+        missing_delete_keys,
+        ..
+    } = soft_delete.receipt.counts
+    else {
+        panic!("expected keyed soft-delete counts");
+    };
+    assert_eq!(soft_deletes, Some(1));
+    assert_eq!(missing_delete_keys, Some(1));
+    let (repeat_soft, schema, repeat_soft_segments) = live_cdc_package(
+        soft_target.clone(),
+        "postgres-cdc-soft-repeat",
+        Some("postgres-cdc-soft-delete"),
+        soft_policy.clone(),
+        &[],
+        &[7],
+    );
+    let repeat_soft = commit_live_cdc(&destination, &repeat_soft, &schema, &repeat_soft_segments);
+    let CommitCounts::KeyedChanges {
+        soft_deletes,
+        missing_delete_keys,
+        ..
+    } = repeat_soft.receipt.counts
+    else {
+        panic!("expected repeated soft-delete counts");
+    };
+    assert_eq!(soft_deletes, None);
+    assert_eq!(missing_delete_keys, None);
+    let row = client
+        .query_one("SELECT name, deleted FROM cdc_soft WHERE id = 7", &[])
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "seven");
+    assert!(row.get::<_, bool>(1));
+    let (resurrect, schema, resurrect_segments) = live_cdc_package(
+        soft_target,
+        "postgres-cdc-soft-resurrect",
+        Some("postgres-cdc-soft-repeat"),
+        soft_policy,
+        &[(7, "seven-live", true)],
+        &[],
+    );
+    commit_live_cdc(&destination, &resurrect, &schema, &resurrect_segments);
+    let row = client
+        .query_one("SELECT name, deleted FROM cdc_soft WHERE id = 7", &[])
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "seven-live");
+    assert!(!row.get::<_, bool>(1));
+}
+
+#[test]
+fn live_routed_cdc_commits_two_targets_atomically_and_rolls_back_family_failure() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let destination = env.destination();
+    let (inputs, segments, targets) = live_routed_cdc_package(
+        env.target("routed_events").target_name().unwrap(),
+        "postgres-routed-success",
+        false,
+    );
+    let routed_package = LiveVerifiedPackageAccess {
+        package_hash: inputs.destination_commit.package_hash.as_str().to_owned(),
+        quarantines: vec![QuarantineRecord {
+            source_row_ordinal: 11,
+            rule_id: "routed-cdc-rule".to_owned(),
+            error_code: "invalid_value".to_owned(),
+            source_position: None,
+            observed_value_redacted: QuarantineObservedValue::Omitted,
+        }],
+    };
+    let first = crate::cdc::commit_routed(
+        &destination,
+        &routed_package,
+        &inputs,
+        Box::new(segments.clone().into_iter().map(Ok)),
+    )
+    .unwrap();
+    let CommitCounts::Routed { targets: counts } = &first.receipt.counts else {
+        panic!("expected routed Postgres counts");
+    };
+    assert_eq!(counts.len(), 2);
+    let replay = crate::cdc::commit_routed(
+        &destination,
+        &routed_package,
+        &inputs,
+        Box::new(segments.into_iter().map(Ok)),
+    )
+    .unwrap();
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(
+        replay.reporting_policy,
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    let mut client = env.client();
+    assert_eq!(
+        client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*)::bigint FROM {} WHERE target = $1 AND package_hash = $2",
+                    quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
+                ),
+                &[
+                    &inputs.destination_commit.target.as_str(),
+                    &inputs.destination_commit.package_hash.as_str(),
+                ],
+            )
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    for target in &targets {
+        let target = PostgresTarget::parse(target.as_str()).unwrap();
+        assert_eq!(
+            client
+                .query_one(
+                    &format!("SELECT COUNT(*)::bigint FROM {}", target.sql()),
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+    }
+
+    let (failed_inputs, failed_segments, failed_targets) = live_routed_cdc_package(
+        env.target("routed_failure").target_name().unwrap(),
+        "postgres-routed-failure",
+        true,
+    );
+    let error = crate::cdc::commit_routed(
+        &destination,
+        &LiveVerifiedPackageAccess::empty(&failed_inputs),
+        &failed_inputs,
+        Box::new(failed_segments.into_iter().map(Ok)),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("package schema"), "{error}");
+    for target in failed_targets {
+        let target = PostgresTarget::parse(target.as_str()).unwrap();
+        let schema = target.schema.as_ref().map(PostgresIdentifier::as_str);
+        let exists: bool = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = COALESCE($1, current_schema()) AND table_name = $2)",
+                &[&schema, &target.table.as_str()],
+            )
+            .unwrap()
+            .get(0);
+        assert!(
+            !exists,
+            "failed routed transaction left {}",
+            target.display_name()
+        );
+    }
+    assert_eq!(
+        load_mirror_count(
+            &mut client,
+            failed_inputs.destination_commit.target.as_str(),
+            failed_inputs.destination_commit.package_hash.as_str(),
+        ),
+        0
+    );
+}
+
 #[test]
 fn live_idempotency_lock_serializes_same_package_before_payload_work() {
     let Some(env) = LivePostgres::start() else {
@@ -967,6 +1653,109 @@ fn replay_content(
     }
 }
 
+fn cdc_replay_content(upserts: u64, deletes: u64) -> cdf_kernel::PackageContentAuthority {
+    let mut content = cdf_conformance::destination::representative_merge_content(
+        schema_hash(),
+        vec!["id".to_owned()],
+        upserts,
+    );
+    let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        reduction,
+        deletion_capture,
+        delete_application,
+        ..
+    } = &mut content
+    else {
+        unreachable!("representative merge content is keyed")
+    };
+    reduction.input.deletes = deletes;
+    reduction.surviving.deletes = deletes;
+    *deletion_capture = cdf_kernel::DeletionCaptureAuthority {
+        support: cdf_kernel::DeletionCaptureSupport::Inherent,
+        enabled: true,
+        semantics_sha256: format!("sha256:{}", "9".repeat(64)),
+    };
+    *delete_application = cdf_kernel::DeleteApplicationAuthority::Apply {
+        policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+    };
+    content
+}
+
+fn build_cdc_replay_package_with_quarantines(
+    root: &Path,
+    package_id: &str,
+    target: TargetName,
+    quarantines: &[QuarantineRecord],
+) -> PackageManifest {
+    let builder = PackageBuilder::create(
+        root,
+        package_id,
+        cdc_replay_content(0, 0),
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    let row = batch(&[(1, Some("ada"))]);
+    builder
+        .write_runtime_arrow_schema(row.schema().as_ref())
+        .unwrap();
+    builder
+        .write_quarantine_records("part-000001.parquet", quarantines)
+        .unwrap();
+    let canonical = cdf_package_contract::append_package_row_ord(vec![row], 0).unwrap();
+    let entry = builder
+        .write_segment(
+            cdf_kernel::PackageSegmentKind::Upsert,
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &canonical,
+        )
+        .unwrap();
+    let content = cdc_replay_content(1, 0);
+    builder.set_content_authority(content.clone()).unwrap();
+    write_replay_artifacts(
+        &builder,
+        target,
+        WriteDisposition::CdcApply,
+        &format!("checkpoint-{package_id}"),
+        None,
+        &[entry],
+        content,
+    );
+    builder.finish().unwrap();
+    cdf_package::read_manifest(root).unwrap()
+}
+
+fn commit_verified_cdc_package(
+    env: &LivePostgres,
+    package_dir: &Path,
+) -> Result<cdf_runtime::DestinationCommitOutcome> {
+    let verified = PackageReader::open(package_dir)?.into_verified()?;
+    let inputs = cdf_package_contract::VerifiedPackageAccess::replay_inputs(&verified)?;
+    let output_schema =
+        cdf_package_contract::VerifiedPackageAccess::runtime_arrow_schema(&verified)?;
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new())?,
+    );
+    let segments = verified
+        .reader()
+        .verified_commit_segment_stream_with(
+            verified.verification(),
+            &inputs.destination_commit.segments,
+            memory,
+            64 * 1024 * 1024,
+        )?
+        .map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
+    let package: cdf_package_contract::SharedVerifiedPackageAccess = Arc::new(verified);
+    let destination = env.destination();
+    let mut runtime = PostgresRuntime::for_replay(
+        &destination,
+        PostgresTarget::parse(inputs.destination_commit.target.as_str())?,
+        None,
+    );
+    runtime.commit_cdc_package(package, &inputs, output_schema.as_ref(), Box::new(segments))
+}
+
 fn replay_segment_kind(disposition: &WriteDisposition) -> cdf_kernel::PackageSegmentKind {
     if disposition == &WriteDisposition::Merge {
         cdf_kernel::PackageSegmentKind::Upsert
@@ -1580,6 +2369,93 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
     let observed_json = row.get::<_, String>(3);
     assert!(observed_json.contains("sha256:abc123"));
     assert!(!observed_json.contains("pii-fixture-sensitive"));
+}
+
+#[test]
+fn live_cdc_mirrors_verified_quarantine_once_and_rolls_back_conflicting_evidence() {
+    let record = |value: &str| QuarantineRecord {
+        source_row_ordinal: 77,
+        rule_id: "cdc-row-rule".to_owned(),
+        error_code: "invalid_value".to_owned(),
+        source_position: Some(position(10)),
+        observed_value_redacted: QuarantineObservedValue::Hashed {
+            algorithm: "sha256".to_owned(),
+            value: value.to_owned(),
+        },
+    };
+
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let package_dir = tempfile::tempdir().unwrap();
+    let manifest = build_cdc_replay_package_with_quarantines(
+        package_dir.path(),
+        "postgres-cdc-quarantine",
+        env.target("cdc_quarantine").target_name().unwrap(),
+        &[record("sha256:first")],
+    );
+    let first = commit_verified_cdc_package(&env, package_dir.path()).unwrap();
+    let replay = commit_verified_cdc_package(&env, package_dir.path()).unwrap();
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(
+        replay.reporting_policy,
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    let mut client = env.client();
+    let mirrored: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {} WHERE target = $1 AND package_hash = $2",
+                quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
+            ),
+            &[
+                &env.target("cdc_quarantine").display_name(),
+                &manifest.package_hash,
+            ],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(mirrored, 1);
+    drop(client);
+    drop(env);
+
+    let Some(rollback_env) = LivePostgres::start() else {
+        return;
+    };
+    let rollback_dir = tempfile::tempdir().unwrap();
+    build_cdc_replay_package_with_quarantines(
+        rollback_dir.path(),
+        "postgres-cdc-quarantine-conflict",
+        rollback_env
+            .target("cdc_quarantine_conflict")
+            .target_name()
+            .unwrap(),
+        &[record("sha256:first"), record("sha256:conflict")],
+    );
+    let error = commit_verified_cdc_package(&rollback_env, rollback_dir.path()).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("quarantine identity records conflicting evidence"),
+        "{error}"
+    );
+    let mut rollback_client = rollback_env.client();
+    let target_exists: bool = rollback_client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)",
+            &[&rollback_env.schema, &"cdc_quarantine_conflict"],
+        )
+        .unwrap()
+        .get(0);
+    let mirror_exists: bool = rollback_client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)",
+            &[&rollback_env.schema, &CDF_QUARANTINE_TABLE],
+        )
+        .unwrap()
+        .get(0);
+    assert!(!target_exists);
+    assert!(!mirror_exists);
 }
 
 #[test]

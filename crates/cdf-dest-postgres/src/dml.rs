@@ -34,9 +34,9 @@ pub(crate) fn write_statements(
                 binary_copy_sql(&validated_target_sql(&input.target)?, &input.columns)?,
             ),
         ]),
-        WriteDisposition::Merge => {
+        WriteDisposition::Merge | WriteDisposition::CdcApply => {
             let stage_table = stage_table
-                .ok_or_else(|| CdfError::internal("Postgres merge plan omits its stage table"))?;
+                .ok_or_else(|| CdfError::internal("Postgres keyed plan omits its stage table"))?;
             let mut statements = vec![
                 PostgresStatement::execute(
                     "create_stage",
@@ -58,7 +58,6 @@ pub(crate) fn write_statements(
             ));
             Ok(statements)
         }
-        WriteDisposition::CdcApply => unreachable!("validated before write planning"),
     }
 }
 
@@ -97,10 +96,22 @@ pub(crate) fn merge_sql(
     input: &PostgresLoadPlanInput,
     stage_table: &PostgresIdentifier,
 ) -> Result<String> {
+    let marker = soft_marker(input)
+        .map(PostgresIdentifier::user)
+        .transpose()?
+        .as_ref()
+        .map(quote_user_identifier)
+        .transpose()?;
     let mut target_columns = quoted_column_names(&input.columns)?;
+    if let Some(marker) = &marker {
+        target_columns.push(marker.clone());
+    }
     target_columns.extend(quoted_system_target_column_names());
 
     let mut selected_columns = quoted_column_names(&input.columns)?;
+    if marker.is_some() {
+        selected_columns.push("FALSE".to_owned());
+    }
     selected_columns.extend(quoted_system_target_column_names());
 
     let conflict_columns = input
@@ -109,7 +120,10 @@ pub(crate) fn merge_sql(
         .map(quote_user_identifier)
         .collect::<Result<Vec<_>>>()?
         .join(", ");
-    let assignments = merge_assignments(&input.columns, &input.merge_keys)?.join(", ");
+    let mut assignments = merge_assignments(&input.columns, &input.merge_keys)?;
+    if let Some(marker) = &marker {
+        assignments.push(format!("{marker} = FALSE"));
+    }
 
     let source_table = quote_system_identifier(stage_table)?;
 
@@ -120,8 +134,22 @@ pub(crate) fn merge_sql(
         selected_columns.join(", "),
         source_table,
         conflict_columns,
-        assignments
+        assignments.join(", ")
     ))
+}
+
+fn soft_marker(input: &PostgresLoadPlanInput) -> Option<&str> {
+    let cdf_kernel::PackageContentAuthority::KeyedChanges {
+        delete_application:
+            cdf_kernel::DeleteApplicationAuthority::Apply {
+                policy: cdf_kernel::DeleteApplicationPolicy::Soft { marker_field },
+            },
+        ..
+    } = &input.content
+    else {
+        return None;
+    };
+    Some(marker_field)
 }
 
 pub(crate) fn duplicate_key_guard_sql(

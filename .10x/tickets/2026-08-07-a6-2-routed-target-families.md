@@ -114,6 +114,11 @@ user-ratified authority.
   routed segments, one atomic receipt, and one committed event-token checkpoint; receipt counts
   prove a hard delete, an update, and two inserts across the two targets. PostgreSQL atomic-family
   application and shared-extraction identity remain open.
+- 2026-08-10: Added PostgreSQL atomic-family settlement through the neutral routed destination
+  boundary. PostgreSQL now independently plans every output schema/key, applies ordinary or keyed
+  segments across all physical targets in one transaction, writes one routed receipt and mirror
+  transition, and returns the verified stored receipt on package-token replay. Empty family
+  packages do not create or mutate target tables.
 
 ## Blockers
 
@@ -168,6 +173,12 @@ must not become a parallel implementation.
   inserted one invoice and one order, updated one order, hard-deleted one invoice, wrote one routed
   receipt, and enabled one resume-token checkpoint. Direct table and receipt inspection confirmed
   every effect and zero missing delete keys.
+- PostgreSQL family settlement: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-dest-postgres
+  live_routed_cdc_commits_two_targets_atomically_and_rolls_back_family_failure --locked --
+  --nocapture` passed against an ephemeral PostgreSQL server. The test proves two target effects
+  and one routed receipt commit together, duplicate replay is a no-op, and a late second-output
+  schema failure leaves neither target nor load-mirror residue. Focused routed/count unit tests,
+  all-target affected-package check, and strict Clippy also passed.
 
 ## Review
 
@@ -175,4 +186,9 @@ Pending tranche-level review.
 
 ## Retrospective
 
-Pending implementation.
+PostgreSQL confirmed that the neutral route family is the correct transaction boundary: output
+schemas and keys remain independent plans, while package token, receipt, state, and commit remain
+family-wide authority. Destination-level routed capability cannot truthfully mean only one
+disposition, so the PostgreSQL implementation uses the same family transaction for ordinary
+append/replace/merge and CDC keyed effects instead of adding a CDC-specific routing surface.
+Shared-extraction identity and final release-sandbox closure remain owned by this active ticket.

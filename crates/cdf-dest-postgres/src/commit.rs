@@ -503,7 +503,10 @@ fn execute_statements(client: &mut Client, statements: &[PostgresStatement]) -> 
     Ok(())
 }
 
-fn find_duplicate_receipt(client: &mut Client, plan: &PostgresLoadPlan) -> Result<Option<Receipt>> {
+pub(crate) fn find_duplicate_receipt(
+    client: &mut Client,
+    plan: &PostgresLoadPlan,
+) -> Result<Option<Receipt>> {
     let mut backend = PostgresMirrorBackend { client, plan };
     TransactionalMirrorManager::new(&mut backend).find_duplicate(
         &LoadMirrorKey {
@@ -541,70 +544,24 @@ pub(crate) fn validate_postgres_duplicate_counts(stored: &Receipt) -> Result<()>
             .checked_add(ack.row_count)
             .ok_or_else(|| CdfError::data("Postgres duplicate row count overflowed"))
     })?;
-    let counts = &stored.counts;
-    let valid = if stored.segment_acks.is_empty() {
-        match (&stored.content, counts) {
-            (
-                cdf_kernel::PackageContentAuthority::Rows { .. },
-                CommitCounts::Rows {
-                    rows_written: 0,
-                    rows_inserted: None,
-                    rows_updated: None,
-                    rows_deleted: None,
-                },
-            ) => true,
-            (
-                cdf_kernel::PackageContentAuthority::KeyedChanges { reduction, .. },
-                CommitCounts::KeyedChanges {
-                    intent,
-                    rows_inserted: Some(0),
-                    rows_updated: Some(0),
-                    hard_deletes: None,
-                    soft_deletes: None,
-                    missing_delete_keys: None,
-                    ignored_deletes: None,
-                },
-            ) => *intent == reduction.surviving,
-            _ => false,
-        }
-    } else {
-        match (&stored.disposition, counts) {
-            (
-                WriteDisposition::Append | WriteDisposition::Replace,
-                CommitCounts::Rows {
-                    rows_written,
-                    rows_inserted,
-                    rows_updated,
-                    ..
-                },
-            ) => *rows_written == rows && *rows_inserted == Some(rows) && *rows_updated == Some(0),
-            (
-                WriteDisposition::Merge,
-                CommitCounts::KeyedChanges {
-                    intent,
-                    rows_inserted,
-                    rows_updated,
-                    hard_deletes,
-                    soft_deletes,
-                    missing_delete_keys,
-                    ignored_deletes,
-                },
-            ) => {
-                intent.upserts == rows
-                    && intent.deletes == 0
-                    && rows_inserted
-                        .zip(*rows_updated)
-                        .is_some_and(|(inserted, updated)| {
-                            inserted.checked_add(updated) == Some(rows)
-                        })
-                    && hard_deletes.is_none()
-                    && soft_deletes.is_none()
-                    && missing_delete_keys.is_none()
-                    && ignored_deletes.is_none()
-            }
-            _ => false,
-        }
-    };
+    stored.content.validate_segments(
+        stored
+            .segment_acks
+            .iter()
+            .map(|ack| (&ack.segment_id, &ack.kind, ack.row_count)),
+    )?;
+    let valid = stored.counts.settled_effect_count() == Some(rows)
+        && exact_duplicate_count_shape(
+            &stored.content,
+            &stored.counts,
+            &stored.disposition,
+            rows,
+            &stored
+                .segment_acks
+                .iter()
+                .map(|ack| (&ack.segment_id, ack.row_count))
+                .collect::<BTreeMap<_, _>>(),
+        );
     if valid {
         Ok(())
     } else {
@@ -614,7 +571,147 @@ pub(crate) fn validate_postgres_duplicate_counts(stored: &Receipt) -> Result<()>
     }
 }
 
-fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {
+fn exact_duplicate_count_shape(
+    content: &cdf_kernel::PackageContentAuthority,
+    counts: &CommitCounts,
+    disposition: &WriteDisposition,
+    expected_rows: u64,
+    segment_rows: &BTreeMap<&SegmentId, u64>,
+) -> bool {
+    match (content, counts) {
+        (
+            cdf_kernel::PackageContentAuthority::Rows { .. },
+            CommitCounts::Rows {
+                rows_written,
+                rows_inserted,
+                rows_updated,
+                rows_deleted,
+            },
+        ) => {
+            *rows_written == expected_rows
+                && match (disposition, rows_inserted, rows_updated, rows_deleted) {
+                    (WriteDisposition::Append | WriteDisposition::Replace, None, None, None) => {
+                        expected_rows == 0
+                    }
+                    (WriteDisposition::Append, Some(inserted), Some(0), Some(0)) => {
+                        *inserted == expected_rows
+                    }
+                    (WriteDisposition::Replace, Some(inserted), Some(0), Some(_)) => {
+                        *inserted == expected_rows
+                    }
+                    _ => false,
+                }
+        }
+        (
+            cdf_kernel::PackageContentAuthority::KeyedChanges {
+                reduction,
+                delete_application,
+                ..
+            },
+            CommitCounts::KeyedChanges {
+                intent,
+                rows_inserted,
+                rows_updated,
+                hard_deletes,
+                soft_deletes,
+                missing_delete_keys,
+                ignored_deletes,
+            },
+        ) => {
+            *intent == reduction.surviving
+                && intent.upserts.checked_add(intent.deletes) == Some(expected_rows)
+                && rows_inserted
+                    .zip(*rows_updated)
+                    .is_some_and(|(inserted, updated)| {
+                        inserted.checked_add(updated) == Some(intent.upserts)
+                    })
+                && exact_duplicate_delete_shape(
+                    delete_application,
+                    intent.deletes,
+                    *hard_deletes,
+                    *soft_deletes,
+                    *missing_delete_keys,
+                    *ignored_deletes,
+                )
+        }
+        (
+            cdf_kernel::PackageContentAuthority::Routed { family, outputs },
+            CommitCounts::Routed { targets },
+        ) => {
+            targets.len() == outputs.len()
+                && targets.iter().zip(&family.bindings).zip(outputs).all(
+                    |((target, binding), output)| {
+                        let output_rows = output
+                            .segment_ids
+                            .iter()
+                            .try_fold(0_u64, |total, segment_id| {
+                                total.checked_add(*segment_rows.get(segment_id)?)
+                            });
+                        target.output_binding == binding.output_binding
+                            && target.target == binding.physical_target
+                            && target.schema_hash == binding.schema_hash
+                            && output.output_binding == binding.output_binding
+                            && output_rows.is_some_and(|output_rows| {
+                                exact_duplicate_count_shape(
+                                    output.content.as_ref(),
+                                    target.counts.as_ref(),
+                                    disposition,
+                                    output_rows,
+                                    segment_rows,
+                                )
+                            })
+                    },
+                )
+        }
+        _ => false,
+    }
+}
+
+fn exact_duplicate_delete_shape(
+    authority: &cdf_kernel::DeleteApplicationAuthority,
+    intent: u64,
+    hard: Option<u64>,
+    soft: Option<u64>,
+    missing: Option<u64>,
+    ignored: Option<u64>,
+) -> bool {
+    match authority {
+        cdf_kernel::DeleteApplicationAuthority::NotApplicable => {
+            intent == 0
+                && hard.is_none()
+                && soft.is_none()
+                && missing.is_none()
+                && ignored.is_none()
+        }
+        cdf_kernel::DeleteApplicationAuthority::Apply {
+            policy: cdf_kernel::DeleteApplicationPolicy::Ignore,
+        } => ignored == Some(intent) && hard.is_none() && soft.is_none() && missing.is_none(),
+        cdf_kernel::DeleteApplicationAuthority::Apply {
+            policy: cdf_kernel::DeleteApplicationPolicy::Hard,
+        } => {
+            soft.is_none()
+                && ignored.is_none()
+                && hard
+                    .zip(missing)
+                    .is_some_and(|(applied, missing)| applied.checked_add(missing) == Some(intent))
+        }
+        cdf_kernel::DeleteApplicationAuthority::Apply {
+            policy: cdf_kernel::DeleteApplicationPolicy::Soft { .. },
+        } => {
+            hard.is_none()
+                && ignored.is_none()
+                && match (soft, missing) {
+                    (Some(applied), Some(missing)) => applied.checked_add(missing) == Some(intent),
+                    // Repeated soft deletes against rows already marked true have no representable
+                    // transition/missing partition. Outcomes are optional; intent remains exact.
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+    }
+}
+
+pub(crate) fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {
     client
         .query_one(&plan.xid_probe.sql, &[])
         .map(|row| row.get(0))
@@ -866,7 +963,7 @@ fn require_complete_package_segments(
     )))
 }
 
-fn allocate_row_key_range(client: &mut Client, row_count: u64) -> Result<i64> {
+pub(crate) fn allocate_row_key_range(client: &mut Client, row_count: u64) -> Result<i64> {
     let row_count = i64::try_from(row_count)
         .map_err(|_| CdfError::data("Postgres segment row count exceeds BIGINT"))?;
     if row_count <= 0 {
@@ -942,7 +1039,7 @@ fn merge_match_predicate(keys: &[PostgresIdentifier]) -> Result<String> {
         .map(|predicates| predicates.join(" AND "))
 }
 
-fn apply_mirror_commit(
+pub(crate) fn apply_mirror_commit(
     client: &mut Client,
     package: &dyn cdf_package_contract::VerifiedPackageAccess,
     plan: &PostgresLoadPlan,
@@ -1392,7 +1489,7 @@ fn decode_quarantine_row(row: Row, key: &QuarantineMirrorKey) -> Result<Quaranti
     })
 }
 
-fn verify_receipt_in_transaction(client: &mut Client, receipt: &Receipt) -> Result<()> {
+pub(crate) fn verify_receipt_in_transaction(client: &mut Client, receipt: &Receipt) -> Result<()> {
     let row = client
         .query_opt(
             &receipt.verify.statement,
@@ -1472,7 +1569,7 @@ fn receipt_from_verify_row(row: Row) -> Result<Receipt> {
     serde_json::from_str(&json).map_err(json_error)
 }
 
-fn receipt_id(plan: &PostgresLoadPlan) -> Result<ReceiptId> {
+pub(crate) fn receipt_id(plan: &PostgresLoadPlan) -> Result<ReceiptId> {
     ReceiptId::new(format!(
         "postgres:{}:{}",
         plan.kernel.target.as_str(),
@@ -1501,16 +1598,16 @@ fn optional_to_i64(value: Option<u64>, name: &str) -> Result<Option<i64>> {
     value.map(|value| to_i64(value, name)).transpose()
 }
 
-fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
+pub(crate) fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
     i64::try_from(execution.unix_now().as_millis())
         .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))
 }
 
-fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
+pub(crate) fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
     CdfError::destination(format!("{}: {}", context.into(), error))
 }
 
-fn postgres_copy_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
+pub(crate) fn postgres_copy_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
     let context = context.into();
     if error
         .code()

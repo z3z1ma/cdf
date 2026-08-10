@@ -1,7 +1,7 @@
 use cdf_kernel::{CdfError, Result, SegmentId};
 
-pub(crate) const TARGET_PACKAGE_BYTES_PER_OBJECT: u64 = 256 * 1024 * 1024;
-pub(crate) const MAX_SEGMENTS_PER_OBJECT: u16 = 8;
+const DEFAULT_TARGET_PACKAGE_BYTES_PER_OBJECT: u64 = 256 * 1024 * 1024;
+const DEFAULT_MAX_SEGMENTS_PER_OBJECT: u16 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ParquetSegmentLayout {
@@ -16,18 +16,20 @@ pub(crate) struct ParquetObjectLayout {
     pub(crate) package_byte_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ParquetObjectLayoutPolicy {
-    pub(crate) target_package_bytes: u64,
-    pub(crate) max_segments: u16,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParquetObjectLayoutPolicy {
+    target_package_bytes: u64,
+    max_segments: u16,
 }
 
 impl ParquetObjectLayoutPolicy {
-    pub(crate) const fn current() -> Self {
+    pub fn new(target_package_bytes: u64, max_segments: u16) -> Result<Self> {
         Self {
-            target_package_bytes: TARGET_PACKAGE_BYTES_PER_OBJECT,
-            max_segments: MAX_SEGMENTS_PER_OBJECT,
+            target_package_bytes,
+            max_segments,
         }
+        .validate()
     }
 
     pub(crate) fn validate(self) -> Result<Self> {
@@ -37,6 +39,14 @@ impl ParquetObjectLayoutPolicy {
             ));
         }
         Ok(self)
+    }
+
+    pub const fn target_package_bytes(self) -> u64 {
+        self.target_package_bytes
+    }
+
+    pub const fn max_segments(self) -> u16 {
+        self.max_segments
     }
 
     pub(crate) fn closes_before(
@@ -75,6 +85,15 @@ impl ParquetObjectLayoutPolicy {
     }
 }
 
+impl Default for ParquetObjectLayoutPolicy {
+    fn default() -> Self {
+        Self {
+            target_package_bytes: DEFAULT_TARGET_PACKAGE_BYTES_PER_OBJECT,
+            max_segments: DEFAULT_MAX_SEGMENTS_PER_OBJECT,
+        }
+    }
+}
+
 fn push_layout(
     layouts: &mut Vec<ParquetObjectLayout>,
     current: &mut Vec<ParquetSegmentLayout>,
@@ -96,18 +115,18 @@ mod tests {
 
     #[test]
     fn layout_is_deterministic_and_bounds_non_oversized_groups() {
-        let policy = ParquetObjectLayoutPolicy {
-            target_package_bytes: 100,
-            max_segments: 3,
-        };
-        let layouts = policy
-            .plan([60_u64, 40, 1, 1, 200, 1].into_iter().enumerate().map(
-                |(index, package_byte_count)| ParquetSegmentLayout {
-                    segment_id: SegmentId::new(format!("seg-{index}")).unwrap(),
-                    package_byte_count,
-                },
-            ))
-            .unwrap();
+        let policy = ParquetObjectLayoutPolicy::new(100, 3).unwrap();
+        let segments = [60_u64, 40, 1, 1, 200, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(index, package_byte_count)| ParquetSegmentLayout {
+                segment_id: SegmentId::new(format!("seg-{index}")).unwrap(),
+                package_byte_count,
+            })
+            .collect::<Vec<_>>();
+        let layouts = policy.plan(segments.clone()).unwrap();
+        let repeated = policy.plan(segments).unwrap();
+        assert_eq!(layouts, repeated);
         assert_eq!(layouts.len(), 4);
         assert_eq!(layouts[0].package_byte_count, 100);
         assert_eq!(layouts[0].segments.len(), 2);
@@ -118,17 +137,36 @@ mod tests {
     }
 
     #[test]
-    fn current_layout_groups_seventeen_canonical_segments_as_eight_eight_one() {
-        let segment_bytes = TARGET_PACKAGE_BYTES_PER_OBJECT / u64::from(MAX_SEGMENTS_PER_OBJECT);
+    fn oversized_segment_is_a_singleton_without_weakening_later_groups() {
+        let policy = ParquetObjectLayoutPolicy::new(100, 3).unwrap();
+        let layouts = policy
+            .plan([200_u64, 50, 50, 1].into_iter().enumerate().map(
+                |(index, package_byte_count)| ParquetSegmentLayout {
+                    segment_id: SegmentId::new(format!("seg-{index}")).unwrap(),
+                    package_byte_count,
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            layouts
+                .iter()
+                .map(|layout| (layout.package_byte_count, layout.segments.len()))
+                .collect::<Vec<_>>(),
+            vec![(200, 1), (100, 2), (1, 1)]
+        );
+    }
+
+    #[test]
+    fn default_layout_groups_seventeen_canonical_segments_as_eight_eight_one() {
+        let policy = ParquetObjectLayoutPolicy::default();
+        let segment_bytes = policy.target_package_bytes() / u64::from(policy.max_segments());
         let segments = (0..17).map(|index| ParquetSegmentLayout {
             segment_id: SegmentId::new(format!("seg-{index:06}")).unwrap(),
             package_byte_count: segment_bytes,
         });
 
-        let first = ParquetObjectLayoutPolicy::current()
-            .plan(segments.clone())
-            .unwrap();
-        let second = ParquetObjectLayoutPolicy::current().plan(segments).unwrap();
+        let first = policy.plan(segments.clone()).unwrap();
+        let second = policy.plan(segments).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(

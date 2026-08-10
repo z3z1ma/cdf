@@ -19,6 +19,9 @@ contributors.
 - [MongoDB collection source](mongodb.md) documents credential-safe finite collection reads,
   bounded discovery, exact BSON-to-Arrow mapping, stable cursor windows, runtime bounds, failure
   ownership, and the direct raw-BSON roofline.
+- [Parquet destination](operators/parquet-destination.md) documents local-filesystem roots,
+  compression and deterministic object-layout controls, runtime writer admission, and recorded
+  replay authority.
 - [SQLite destination](operators/sqlite-destination.md) documents local-file configuration,
   append/replace/merge semantics, durability preservation, receipt recovery, failure ownership,
   and the direct-library destination roofline.
@@ -31,7 +34,7 @@ contributors.
 - [Foreign source boundaries](interop-boundaries.md) documents Python and
   subprocess transfer, copy, memory, and host-labelled performance evidence.
 - [Operators](operators/README.md) contains scoped operational guides for
-  recovery, replay, SQLite destination operation, backfill, doctor/status,
+  recovery, replay, Parquet and SQLite destination operation, backfill, doctor/status,
   installation, and troubleshooting.
 - [Commands](commands/README.md) is reserved for generated command reference
   output owned by

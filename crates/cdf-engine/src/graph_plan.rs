@@ -497,8 +497,9 @@ fn destination_node(
             GraphNodeKind::DestinationBind
         },
         implementation_version: destination
-            .bulk_evidence_version
-            .clone()
+            .selected_bulk_evidence()
+            .and_then(cdf_runtime::BulkPathEvidence::version)
+            .map(str::to_owned)
             .unwrap_or_else(|| "destination-driver-v1".to_owned()),
         executor,
         blocking_lane: lane,

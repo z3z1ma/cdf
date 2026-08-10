@@ -397,6 +397,7 @@ pub trait DestinationRuntime {
 
     fn commit_routed_package(
         &mut self,
+        _package: SharedVerifiedPackageAccess,
         _inputs: &PackageReplayInputs,
         _segments: CommitSegmentIterator,
     ) -> Result<DestinationCommitOutcome> {
@@ -412,6 +413,7 @@ pub trait DestinationRuntime {
     /// than pretending key-only delete segments are row batches. The default remains closed.
     fn commit_cdc_package(
         &mut self,
+        _package: SharedVerifiedPackageAccess,
         _inputs: &PackageReplayInputs,
         _output_schema: &Schema,
         _segments: CommitSegmentIterator,

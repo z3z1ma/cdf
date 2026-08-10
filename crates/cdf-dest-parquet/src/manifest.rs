@@ -5,6 +5,8 @@ use cdf_kernel::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::layout::ParquetObjectLayoutPolicy;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParquetObjectManifest {
     pub manifest_version: u16,
@@ -14,6 +16,9 @@ pub struct ParquetObjectManifest {
     pub idempotency_token: String,
     pub disposition: WriteDisposition,
     pub schema_hash: String,
+    pub physical_plan_path: String,
+    pub physical_plan_version: u16,
+    pub object_layout: ParquetObjectLayoutPolicy,
     pub committed_at_ms: i64,
     pub total_rows: u64,
     pub objects: Vec<ParquetObjectEntry>,

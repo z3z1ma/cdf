@@ -309,28 +309,26 @@ impl<'a> ProjectRunRecorder<'a> {
                     "bulk_path_version".to_owned(),
                     RunEventValue::U64(u64::from(bulk_path.descriptor.version)),
                 );
-                details.insert(
-                    "bulk_rows_per_batch".to_owned(),
-                    RunEventValue::U64(bulk_path.rows_per_batch),
-                );
-                details.insert(
-                    "bulk_bytes_per_batch".to_owned(),
-                    RunEventValue::U64(bulk_path.bytes_per_batch),
-                );
+                if let Some(rows) = bulk_path.rows_per_batch {
+                    details.insert("bulk_rows_per_batch".to_owned(), RunEventValue::U64(rows));
+                }
+                if let Some(bytes) = bulk_path.bytes_per_batch {
+                    details.insert("bulk_bytes_per_batch".to_owned(), RunEventValue::U64(bytes));
+                }
                 details.insert(
                     "bulk_writers".to_owned(),
                     RunEventValue::U64(u64::from(bulk_path.writers)),
                 );
                 details.insert(
-                    "bulk_evidence_version".to_owned(),
-                    RunEventValue::String(
-                        bulk_path
-                            .descriptor
-                            .measured_evidence_version
-                            .clone()
-                            .expect("validated prepared bulk path"),
-                    ),
+                    "bulk_evidence_status".to_owned(),
+                    RunEventValue::String(bulk_path.descriptor.evidence.status().to_owned()),
                 );
+                if let Some(version) = bulk_path.descriptor.evidence.version() {
+                    details.insert(
+                        "bulk_evidence_version".to_owned(),
+                        RunEventValue::String(version.to_owned()),
+                    );
+                }
                 event.details = RunEventDetails {
                     attributes: details,
                 };
@@ -1026,6 +1024,87 @@ mod tests {
             self.observations.lock().unwrap().push(observation.clone());
             cdf_kernel::RunEventSinkResult::Accepted
         }
+    }
+
+    #[test]
+    fn pass_through_destination_ledger_omits_ineffective_batch_settings() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run = ledger
+            .create_run(Some(RunId::new("run-pass-through-bulk").unwrap()))
+            .unwrap();
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run.run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-pass-through-bulk".to_owned(),
+                package_path: "pkg-pass-through-bulk".to_owned(),
+                destination_id: DestinationId::new("sqlite").unwrap(),
+                plan_id: PlanId::new("plan-pass-through-bulk").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-pass-through-bulk").unwrap(),
+            },
+            None,
+            RunTelemetryConfig::disabled(),
+        );
+        let capabilities = cdf_runtime::DestinationRuntimeCapabilities {
+            bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
+                path_id: "prepared_statement".to_owned(),
+                version: 1,
+                ingress_mode: cdf_runtime::DestinationIngressMode::FinalizedPackageOnly,
+                writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
+                ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+                rows: cdf_runtime::BulkSizeRange {
+                    minimum: 1,
+                    preferred: 8_192,
+                    maximum: 65_536,
+                },
+                bytes: cdf_runtime::BulkSizeRange {
+                    minimum: 1,
+                    preferred: 8 * 1024 * 1024,
+                    maximum: 64 * 1024 * 1024,
+                },
+                batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+                maximum_writers: 1,
+                blocking_lane: None,
+                native_internal_parallelism: 1,
+                external_staging: false,
+                fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+                schema_preflight_version: "sqlite-arrow-mapping@1".to_owned(),
+                evidence: cdf_runtime::BulkPathEvidence::Inconclusive {
+                    version: "sqlite-destination-roofline-v1".to_owned(),
+                },
+            }],
+            bulk_path: Some("prepared_statement".to_owned()),
+            ..Default::default()
+        };
+        let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)
+            .unwrap()
+            .into_selected(&capabilities)
+            .unwrap();
+
+        recorder
+            .append_replay_stage(RuntimeStage::DestinationCommitStarted {
+                plan_id: &PlanId::new("plan-pass-through-bulk").unwrap(),
+                segment_count: 1,
+                bulk_path: &bulk_path,
+            })
+            .unwrap();
+
+        let events = ledger.events(&run.run_id).unwrap();
+        let details = &events[0].details.attributes;
+        assert_eq!(
+            details.get("bulk_evidence_status"),
+            Some(&RunEventValue::String("inconclusive".to_owned()))
+        );
+        assert_eq!(
+            details.get("bulk_evidence_version"),
+            Some(&RunEventValue::String(
+                "sqlite-destination-roofline-v1".to_owned()
+            ))
+        );
+        assert!(!details.contains_key("bulk_rows_per_batch"));
+        assert!(!details.contains_key("bulk_bytes_per_batch"));
     }
 
     struct ProgressEventSink {

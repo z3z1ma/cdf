@@ -1302,13 +1302,16 @@ pub(super) fn mock_bulk_path(
             preferred: 1024 * 1024,
             maximum: 64 * 1024 * 1024,
         },
-        max_useful_writers: 1,
+        batch_mode: cdf_runtime::BulkBatchMode::PassThrough,
+        maximum_writers: 1,
         blocking_lane: blocking_lane.map(str::to_owned),
         native_internal_parallelism: 1,
         external_staging: false,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
         schema_preflight_version: "mock-v1".to_owned(),
-        measured_evidence_version: Some("mock-v1".to_owned()),
+        evidence: cdf_runtime::BulkPathEvidence::Measured {
+            version: "mock-v1".to_owned(),
+        },
     }
 }
 
@@ -1363,7 +1366,6 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
             max_in_flight_bytes: Some(64 * 1024 * 1024),
             bulk_paths: vec![path],
             bulk_path: Some("mock-finalized".to_owned()),
-            bulk_evidence_version: Some("mock-v1".to_owned()),
             ..Default::default()
         }
     }
@@ -1393,6 +1395,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
 
     fn commit_cdc_package(
         &mut self,
+        _package: cdf_package_contract::SharedVerifiedPackageAccess,
         inputs: &PackageReplayInputs,
         _output_schema: &Schema,
         segments: cdf_kernel::CommitSegmentIterator,

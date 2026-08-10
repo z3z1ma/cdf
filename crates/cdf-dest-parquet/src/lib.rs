@@ -18,7 +18,7 @@ use cdf_package::PackageReader;
 use object_store::{ObjectStore, ObjectStoreExt};
 
 const DESTINATION_ID: &str = "parquet_object_store";
-const MANIFEST_VERSION: u16 = 4;
+const MANIFEST_VERSION: u16 = 5;
 const REPLACE_POINTER_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;
@@ -43,5 +43,6 @@ pub use compression::ParquetCompression;
 pub use corrections::{
     ParquetVersionedRematerializationPlan, ParquetVersionedRematerializationRequest,
 };
+pub use layout::ParquetObjectLayoutPolicy;
 pub use models::{ParquetDestination, ParquetRowLocation, ReceiptVerification};
 pub use runtime::{FilesystemParquetRuntime, ParquetRuntimeDriver};

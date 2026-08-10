@@ -21,6 +21,57 @@ pub enum BulkFallbackMode {
     Forbidden,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BulkBatchMode {
+    DestinationControlled,
+    PassThrough,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BulkPathEvidence {
+    Measured { version: String },
+    Inconclusive { version: String },
+    Unmeasured,
+}
+
+impl BulkPathEvidence {
+    pub const fn status(&self) -> &'static str {
+        match self {
+            Self::Measured { .. } => "measured",
+            Self::Inconclusive { .. } => "inconclusive",
+            Self::Unmeasured => "unmeasured",
+        }
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Measured { version } | Self::Inconclusive { version } => Some(version),
+            Self::Unmeasured => None,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let Some(version) = self.version() else {
+            return Ok(());
+        };
+        if version.is_empty()
+            || version.len() > 128
+            || version.chars().any(|ch| {
+                !(ch.is_ascii_lowercase()
+                    || ch.is_ascii_digit()
+                    || matches!(ch, '-' | '_' | '.' | '@'))
+            })
+        {
+            return Err(CdfError::contract(
+                "bulk evidence version must contain 1..=128 lowercase ASCII letters, digits, `-`, `_`, `.`, or `@`",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl BulkFallbackMode {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -63,13 +114,14 @@ pub struct BulkPathDescriptor {
     pub ordering: BulkOrdering,
     pub rows: BulkSizeRange,
     pub bytes: BulkSizeRange,
-    pub max_useful_writers: u16,
+    pub batch_mode: BulkBatchMode,
+    pub maximum_writers: u16,
     pub blocking_lane: Option<String>,
     pub native_internal_parallelism: u16,
     pub external_staging: bool,
     pub fallback: BulkFallbackMode,
     pub schema_preflight_version: String,
-    pub measured_evidence_version: Option<String>,
+    pub evidence: BulkPathEvidence,
 }
 
 impl BulkPathDescriptor {
@@ -84,10 +136,7 @@ impl BulkPathDescriptor {
                 "bulk path id must contain 1..=128 lowercase ASCII letters, digits, `_`, or `-`",
             ));
         }
-        if self.version == 0
-            || self.max_useful_writers == 0
-            || self.native_internal_parallelism == 0
-        {
+        if self.version == 0 || self.maximum_writers == 0 || self.native_internal_parallelism == 0 {
             return Err(CdfError::contract(
                 "bulk path version, writer count, and native parallelism must be nonzero",
             ));
@@ -104,6 +153,7 @@ impl BulkPathDescriptor {
                 "bulk schema-preflight version must contain 1..=128 lowercase ASCII letters, digits, `-`, `_`, `.`, or `@`",
             ));
         }
+        self.evidence.validate()?;
         self.rows.validate("row")?;
         self.bytes.validate("byte")
     }
@@ -138,26 +188,48 @@ impl<'a> BulkPathPreparationInput<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedBulkPath {
     pub descriptor: BulkPathDescriptor,
-    pub rows_per_batch: u64,
-    pub bytes_per_batch: u64,
+    pub rows_per_batch: Option<u64>,
+    pub bytes_per_batch: Option<u64>,
     pub writers: u16,
 }
 
 impl PreparedBulkPath {
     pub fn validate(&self) -> Result<()> {
         self.descriptor.validate()?;
-        if !(self.descriptor.rows.minimum..=self.descriptor.rows.maximum)
-            .contains(&self.rows_per_batch)
-            || !(self.descriptor.bytes.minimum..=self.descriptor.bytes.maximum)
-                .contains(&self.bytes_per_batch)
-            || self.writers == 0
-            || self.writers > self.descriptor.max_useful_writers
+        let batching_is_valid = match (
+            self.descriptor.batch_mode,
+            self.rows_per_batch,
+            self.bytes_per_batch,
+        ) {
+            (BulkBatchMode::DestinationControlled, Some(rows), Some(bytes)) => {
+                (self.descriptor.rows.minimum..=self.descriptor.rows.maximum).contains(&rows)
+                    && (self.descriptor.bytes.minimum..=self.descriptor.bytes.maximum)
+                        .contains(&bytes)
+            }
+            (BulkBatchMode::PassThrough, None, None) => true,
+            _ => false,
+        };
+        if !batching_is_valid || self.writers == 0 || self.writers > self.descriptor.maximum_writers
         {
             return Err(CdfError::contract(
                 "prepared bulk settings are outside the descriptor's safe ranges",
             ));
         }
         Ok(())
+    }
+
+    pub fn controlled_batch_sizes(&self) -> Result<(u64, u64)> {
+        match (
+            self.descriptor.batch_mode,
+            self.rows_per_batch,
+            self.bytes_per_batch,
+        ) {
+            (BulkBatchMode::DestinationControlled, Some(rows), Some(bytes)) => Ok((rows, bytes)),
+            _ => Err(CdfError::contract(format!(
+                "bulk path `{}` does not control destination batch sizing",
+                self.descriptor.path_id
+            ))),
+        }
     }
 }
 
