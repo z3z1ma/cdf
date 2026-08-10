@@ -207,6 +207,13 @@ retention, and live replica-set/Atlas certification.
   the last epoch. Collection is now candidate/resource scoped, and drain reports carry aggregate
   rows, bytes, segments, and wall time for truthful terminal/JSON summaries.
 
+- 2026-08-09: Repeated the continuous certificate with the optimized production binary. Two live
+  Atlas mutations in different collections committed as two independently receipt-gated epochs;
+  the next change-stream read began immediately after each checkpoint rather than pausing for a
+  repository-wide package scan. The first package was tombstoned after the second checkpoint under
+  one-run retention, SIGINT woke an idle third epoch and exited at the last committed token, and
+  the terminal report aggregated both epochs rather than presenting only the final one.
+
 ## Blockers
 
 None. Continuous live-stop, envelope, replica-set, and remaining operational certificates are open
@@ -303,6 +310,20 @@ implementation work, not unresolved semantics.
   bootstrap validation. Strict affected-package Clippy passes for MongoDB, builtin composition,
   project, and CLI; the explicit cognitive-complexity diagnostic reports only the pre-existing
   kernel Arrow type parser and no changed MongoDB function.
+- Final production-profile continuous Atlas certificate: portable plan
+  `.cdf/atlas-live-continuous2.plan.json` watched the admitted Atlas database from one long-lived
+  process and committed one orders event followed by one invoices event as two epochs. Each epoch
+  entered its next Read phase immediately after checkpoint settlement. The first package was
+  collected after the second checkpoint (`22` files / `132 KiB` reclaimed), while the newest
+  package retained its Arrow payload and the older package retained only manifest/receipt proof.
+  First SIGINT during the idle third stream wait printed the graceful-stop notice and exited `0`.
+  The final report truthfully aggregated `2` rows, `19 KiB`, `2` segments, and `1m 57s`. Read-only
+  DuckDB inspection returned the tagged order and invoice in distinct physical tables
+  `atlas_database_typed_cdc_continuous__cdf_cdc_acceptance_orders` and
+  `atlas_database_typed_cdc_continuous__cdf_cdc_acceptance_invoices`, with their exact
+  `source_collection` routing values and no residual variant evidence. The binary was built with
+  the normal optimized release profile; neither source nor any validation command used
+  `RUST_MIN_STACK`.
 
 ## Review
 

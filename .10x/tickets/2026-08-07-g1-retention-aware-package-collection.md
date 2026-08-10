@@ -75,6 +75,11 @@ behavioral tests.
   and promotion inventory is limited to every local package for the candidate resources. This
   preserves last-promotable-copy authority while making the steady-state no-candidate path
   metadata-only.
+- 2026-08-09: Repeated the Atlas continuous run with the optimized production binary. The next
+  change-stream read began immediately after each committed epoch despite unrelated multi-gigabyte
+  sandbox packages, and one-run retention collected the older selected-resource package before
+  the process stopped. This closes the observed steady-state performance regression while keeping
+  deletion verification and promotion protection on actual candidates.
 
 ## Blockers
 
@@ -97,6 +102,12 @@ None. The ticket is executable after this record-publication turn.
   observed the post-checkpoint hook once for each of two independently committed drain epochs.
 - Affected compilation: `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-project -p cdf-state-sqlite -p
   cdf-package -p cdf-cli-core -p cdf-cli --all-targets --locked` passed.
+- Production Atlas continuous certificate: one long-lived release `cdf run` committed two
+  independently checkpointed MongoDB database-watch epochs. Collection between them reclaimed the
+  older package's `22` payload/evidence files (`132 KiB`) and left manifest/receipt proof, while the
+  newest epoch retained its Arrow payload. The next Read phase started immediately after each
+  commit, establishing that unrelated retained packages no longer impose full-payload hashing or
+  promotion scans on the no-candidate hot path.
 
 ## Review
 
