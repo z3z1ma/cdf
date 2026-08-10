@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     LocalPromotionCollectionAction, LocalPromotionCollectionAssessment, RetentionPolicy,
-    RetentionRule, assess_local_promotion_collection, inspect_local_package_promotion_availability,
+    RetentionRule, assess_local_promotion_collection,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,7 +198,7 @@ pub fn plan_package_collection(
                 right.retention_reason.as_str(),
             ))
     });
-    let promotion_availability = promotion_availability(request.package_root, &artifacts)?;
+    let promotion_availability = promotion_availability(request, &artifacts)?;
     Ok(PackageCollectionPlan {
         package_root: request.package_root.display().to_string(),
         evaluated_at_ms: request.evaluated_at_ms,
@@ -258,7 +258,7 @@ pub fn execute_package_collection(
         artifact.reclaimed_byte_count = Some(reclaimed_byte_count);
     }
 
-    let promotion_availability = promotion_availability(request.package_root, &artifacts)?;
+    let promotion_availability = promotion_availability(request, &artifacts)?;
     Ok(PackageCollectionPlan {
         package_root: current.package_root,
         evaluated_at_ms: request.evaluated_at_ms,
@@ -465,6 +465,44 @@ fn classify_package(
         };
     }
     let verdict = package_hash.as_ref().and_then(|hash| verdicts.get(hash));
+    if verdict.is_some() && manifest.lifecycle.status != PackageStatus::Checkpointed {
+        return Ok(artifact(
+            package_path,
+            hash_text,
+            PackageCollectionClassification::Retained,
+            PackageCollectionReason::CheckpointLifecycleIncomplete,
+            PackageCollectionAction::Retain,
+        ));
+    }
+    match verdict {
+        Some(RetentionVerdict::Retain(reason)) => {
+            return Ok(artifact(
+                package_path,
+                hash_text,
+                PackageCollectionClassification::Protected,
+                *reason,
+                PackageCollectionAction::Retain,
+            ));
+        }
+        Some(RetentionVerdict::Invalid) => {
+            return Ok(artifact(
+                package_path,
+                hash_text,
+                PackageCollectionClassification::Corrupt,
+                PackageCollectionReason::InconsistentCheckpointReceipt,
+                PackageCollectionAction::Retain,
+            ));
+        }
+        None => {
+            return classify_uncommitted(
+                package_dir,
+                package_path,
+                hash_text,
+                manifest.lifecycle.status,
+            );
+        }
+        Some(RetentionVerdict::Collect) => {}
+    }
     if let Err(error) = cdf_package::verify_package(package_dir) {
         if error.kind != cdf_kernel::ErrorKind::Data {
             return Err(error);
@@ -478,15 +516,6 @@ fn classify_package(
             } else {
                 PackageCollectionReason::VerificationFailed
             },
-            PackageCollectionAction::Retain,
-        ));
-    }
-    if verdict.is_some() && manifest.lifecycle.status != PackageStatus::Checkpointed {
-        return Ok(artifact(
-            package_path,
-            hash_text,
-            PackageCollectionClassification::Retained,
-            PackageCollectionReason::CheckpointLifecycleIncomplete,
             PackageCollectionAction::Retain,
         ));
     }
@@ -524,35 +553,13 @@ fn classify_package(
             ));
         }
     }
-    match verdict {
-        Some(RetentionVerdict::Collect) => Ok(artifact(
-            package_path,
-            hash_text,
-            PackageCollectionClassification::Collectible,
-            PackageCollectionReason::RetentionExpired,
-            PackageCollectionAction::WouldCollect,
-        )),
-        Some(RetentionVerdict::Retain(reason)) => Ok(artifact(
-            package_path,
-            hash_text,
-            PackageCollectionClassification::Protected,
-            *reason,
-            PackageCollectionAction::Retain,
-        )),
-        Some(RetentionVerdict::Invalid) => Ok(artifact(
-            package_path,
-            hash_text,
-            PackageCollectionClassification::Corrupt,
-            PackageCollectionReason::InconsistentCheckpointReceipt,
-            PackageCollectionAction::Retain,
-        )),
-        None => classify_uncommitted(
-            package_dir,
-            package_path,
-            hash_text,
-            manifest.lifecycle.status,
-        ),
-    }
+    Ok(artifact(
+        package_path,
+        hash_text,
+        PackageCollectionClassification::Collectible,
+        PackageCollectionReason::RetentionExpired,
+        PackageCollectionAction::WouldCollect,
+    ))
 }
 
 fn archived_package_has_residual_identity_files(package_dir: &Path) -> Result<bool> {
@@ -644,10 +651,29 @@ fn artifact(
 }
 
 fn promotion_availability(
-    package_root: &Path,
+    request: &PackageCollectionRequest<'_>,
     artifacts: &[PackageCollectionArtifact],
 ) -> Result<Vec<LocalPromotionCollectionAssessment>> {
-    let local = inspect_local_package_promotion_availability(package_root)?;
+    let candidate_hashes = artifacts
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                artifact.planned_action,
+                PackageCollectionAction::WouldCollect | PackageCollectionAction::Collected
+            )
+        })
+        .filter_map(|artifact| artifact.package_hash.clone())
+        .collect::<BTreeSet<_>>();
+    let candidate_resources = request
+        .committed_checkpoints
+        .iter()
+        .filter(|checkpoint| candidate_hashes.contains(checkpoint.delta.package_hash.as_str()))
+        .map(|checkpoint| checkpoint.delta.resource_id.clone())
+        .collect::<BTreeSet<_>>();
+    let local = crate::promotion::inspect_local_package_promotion_availability_for_resources(
+        request.package_root,
+        &candidate_resources,
+    )?;
     let actions = artifacts
         .iter()
         .filter_map(|artifact| {

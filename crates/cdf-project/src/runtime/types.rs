@@ -161,7 +161,9 @@ impl ProjectRunNoOpReason {
 pub struct ProjectDrainRunReport {
     pub epoch_count: u64,
     pub total_row_count: u64,
+    pub total_byte_count: u64,
     pub total_segment_count: u64,
+    pub elapsed_milliseconds: u64,
     pub first_run_id: RunId,
     pub last_epoch: Box<ProjectDrainEpochReport>,
 }

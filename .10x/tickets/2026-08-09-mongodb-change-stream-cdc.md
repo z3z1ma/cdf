@@ -199,6 +199,14 @@ retention, and live replica-set/Atlas certification.
   retention collector after each committed checkpoint rather than accumulating package buffers
   until the command exits.
 
+- 2026-08-09: The first production-profile continuous Atlas database run committed two routed CDC
+  epochs from one long-lived command, collected the first package under one-run retention, then
+  accepted SIGINT during the next idle change-stream wait and exited successfully at the last
+  committed frontier. That run also exposed two reporting/steady-state defects: automatic
+  retention scanned unrelated multi-gigabyte packages, and the final CLI summary reported only
+  the last epoch. Collection is now candidate/resource scoped, and drain reports carry aggregate
+  rows, bytes, segments, and wall time for truthful terminal/JSON summaries.
+
 ## Blockers
 
 None. Continuous live-stop, envelope, replica-set, and remaining operational certificates are open

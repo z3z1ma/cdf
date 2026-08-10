@@ -15,8 +15,8 @@ use cdf_contract::{
 use cdf_declarative::{CompiledResource, parse_arrow_field_type};
 use cdf_kernel::{
     CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, DestinationSheetArtifact,
-    PackageHash, PromotionId, RowProvenanceAddress, SchemaAuthorityPrecondition, SchemaHead,
-    SchemaHeadStatus, SchemaVersion, TypeMappingFidelity,
+    PackageHash, PromotionId, ResourceId, RowProvenanceAddress, SchemaAuthorityPrecondition,
+    SchemaHead, SchemaHeadStatus, SchemaVersion, TypeMappingFidelity,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::PackageReader;
@@ -402,6 +402,20 @@ impl PromotionEvidenceInventory for LocalPackagePromotionEvidenceInventory {
 pub fn inspect_local_package_promotion_availability(
     package_root: &Path,
 ) -> cdf_kernel::Result<Vec<LocalPackagePromotionAvailability>> {
+    inspect_local_package_promotion_availability_scoped(package_root, None)
+}
+
+pub(crate) fn inspect_local_package_promotion_availability_for_resources(
+    package_root: &Path,
+    resources: &BTreeSet<ResourceId>,
+) -> cdf_kernel::Result<Vec<LocalPackagePromotionAvailability>> {
+    inspect_local_package_promotion_availability_scoped(package_root, Some(resources))
+}
+
+fn inspect_local_package_promotion_availability_scoped(
+    package_root: &Path,
+    resources: Option<&BTreeSet<ResourceId>>,
+) -> cdf_kernel::Result<Vec<LocalPackagePromotionAvailability>> {
     if !promotion_inventory_directory_exists(package_root)? {
         return Ok(Vec::new());
     }
@@ -421,10 +435,36 @@ pub fn inspect_local_package_promotion_availability(
         }
     }
     directories.sort();
-    directories
-        .into_iter()
-        .map(|directory| inspect_local_promotion_package(&directory))
-        .collect()
+    let mut availability = Vec::new();
+    for directory in directories {
+        let matches = match resources {
+            Some(resources) => promotion_package_matches_resources(&directory, resources)?,
+            None => true,
+        };
+        if matches {
+            availability.push(inspect_local_promotion_package(&directory)?);
+        }
+    }
+    Ok(availability)
+}
+
+fn promotion_package_matches_resources(
+    package_dir: &Path,
+    resources: &BTreeSet<ResourceId>,
+) -> cdf_kernel::Result<bool> {
+    if resources.is_empty() {
+        return Ok(false);
+    }
+    let reader = match PackageReader::open(package_dir) {
+        Ok(reader) => reader,
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match reader.state_delta_preimage() {
+        Ok(delta) => Ok(resources.contains(&delta.resource_id)),
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn promotion_inventory_directory_exists(path: &Path) -> cdf_kernel::Result<bool> {

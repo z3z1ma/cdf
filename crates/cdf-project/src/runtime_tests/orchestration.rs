@@ -1789,7 +1789,9 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     let drain = report.drain.as_ref().expect("drain summary");
     assert_eq!(drain.epoch_count, 2);
     assert_eq!(drain.total_row_count, 2);
+    assert!(drain.total_byte_count > 0);
     assert_eq!(drain.total_segment_count, 2);
+    assert!(drain.elapsed_milliseconds > 0);
     assert_eq!(drain.first_run_id.as_str(), "run-drain");
     assert_eq!(drain.last_epoch.epoch_ordinal, 1);
     assert_eq!(

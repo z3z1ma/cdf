@@ -332,6 +332,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     let mut first_run_id = None;
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
+    let mut total_byte_count = 0_u64;
     let mut total_segment_count = 0_u64;
     let mut last_committed = None::<(ProjectRunReport, ProjectDrainEpochReport)>;
     let drain_command_started = Instant::now();
@@ -410,7 +411,12 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                     committed.drain = Some(ProjectDrainRunReport {
                         epoch_count,
                         total_row_count,
+                        total_byte_count,
                         total_segment_count,
+                        elapsed_milliseconds: u64::try_from(
+                            drain_command_started.elapsed().as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
                         first_run_id: first_run_id.clone().ok_or_else(|| {
                             CdfError::internal("drain run omitted its first run id")
                         })?,
@@ -456,6 +462,19 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         total_segment_count = total_segment_count
             .checked_add(unit.report.segment_count)
             .ok_or_else(|| CdfError::data("drain segment count overflow"))?;
+        let epoch_byte_count =
+            unit.report
+                .receipt
+                .segment_acks
+                .iter()
+                .try_fold(0_u64, |total, segment| {
+                    total
+                        .checked_add(segment.byte_count)
+                        .ok_or_else(|| CdfError::data("drain epoch byte count overflow"))
+                })?;
+        total_byte_count = total_byte_count
+            .checked_add(epoch_byte_count)
+            .ok_or_else(|| CdfError::data("drain byte count overflow"))?;
         let last_epoch = ProjectDrainEpochReport {
             epoch_ordinal,
             run_id: unit.report.run_id.clone(),
@@ -475,7 +494,10 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             report.drain = Some(ProjectDrainRunReport {
                 epoch_count,
                 total_row_count,
+                total_byte_count,
                 total_segment_count,
+                elapsed_milliseconds: u64::try_from(drain_command_started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX),
                 first_run_id: first_run_id
                     .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?,
                 last_epoch: Box::new(last_epoch),

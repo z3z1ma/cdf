@@ -145,7 +145,7 @@ impl RunCliReport {
         memory: RunMemoryReport,
     ) -> Self {
         let receipt_source_kind = destination.receipt_source_kind;
-        let byte_count = report
+        let last_epoch_byte_count = report
             .receipt
             .segment_acks
             .iter()
@@ -153,14 +153,30 @@ impl RunCliReport {
                 total.checked_add(segment.byte_count)
             })
             .unwrap_or(u64::MAX);
-        let elapsed_ms = report
-            .ledger_snapshot
-            .events
-            .first()
-            .zip(report.ledger_snapshot.events.last())
-            .map(|(first, last)| last.timestamp_ms.saturating_sub(first.timestamp_ms))
-            .and_then(|elapsed| u64::try_from(elapsed).ok())
-            .unwrap_or(0);
+        let (row_count, byte_count, segment_count, elapsed_ms) = match &report.drain {
+            Some(drain) => (
+                drain.total_row_count,
+                drain.total_byte_count,
+                drain.total_segment_count,
+                drain.elapsed_milliseconds,
+            ),
+            None => {
+                let elapsed_ms = report
+                    .ledger_snapshot
+                    .events
+                    .first()
+                    .zip(report.ledger_snapshot.events.last())
+                    .map(|(first, last)| last.timestamp_ms.saturating_sub(first.timestamp_ms))
+                    .and_then(|elapsed| u64::try_from(elapsed).ok())
+                    .unwrap_or(0);
+                (
+                    report.row_count,
+                    last_epoch_byte_count,
+                    report.segment_count,
+                    elapsed_ms,
+                )
+            }
+        };
         Self {
             command: "run",
             run_id: report.run_id.to_string(),
@@ -185,9 +201,9 @@ impl RunCliReport {
                 &report.receipt_source,
                 receipt_source_kind,
             ),
-            row_count: report.row_count,
+            row_count,
             byte_count,
-            segment_count: report.segment_count,
+            segment_count,
             admission: RunAdmissionReport::from_project(report),
             elapsed_ms,
             file_manifest: report

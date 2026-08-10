@@ -67,6 +67,14 @@ behavioral tests.
   epoch, and the CLI binds that hook to the same canonical collector as `cdf package gc
   --execute`. Collection no longer waits for the overall command to return, so a forever-running
   source cannot retain every settled package buffer indefinitely.
+- 2026-08-09: Production Atlas execution exposed that collection still verified every retained
+  package and ran the complete schema-promotion inventory after each epoch. In a sandbox with a
+  multi-gigabyte retained package this consumed a CPU core and delayed the next CDC epoch by about
+  a minute. Retained packages now fail closed from their manifest/checkpoint retention verdict
+  without payload rehashing; only deletion candidates receive full package/receipt verification,
+  and promotion inventory is limited to every local package for the candidate resources. This
+  preserves last-promotable-copy authority while making the steady-state no-candidate path
+  metadata-only.
 
 ## Blockers
 
