@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-09
 Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -25,31 +25,31 @@ retention, and live replica-set/Atlas certification.
 
 ## Acceptance criteria
 
-- [ ] Static authoring and compilation support collection/database watch scope, explicit
+- [x] Static authoring and compilation support collection/database watch scope, explicit
       bootstrap, typed/envelope representation, include/exclude collection patterns, source
       defaults with resource overrides, protected collection routing, and closed option schemas
       without source contact.
-- [ ] Collection discovery reuses the exact finite MongoDB discovery/mapping authority; typed
+- [x] Collection discovery reuses the exact finite MongoDB discovery/mapping authority; typed
       database discovery deterministically inventories and independently discovers every admitted
       collection with configured `schema_depth` defaulting to `1`, bounded concurrency, aggregate
       evidence, and all-or-nothing schema-family publication.
-- [ ] Envelope mode preserves BSON type/value meaning as deterministic Canonical Extended JSON;
+- [x] Envelope mode preserves BSON type/value meaning as deterministic Canonical Extended JSON;
       typed mode decodes complete images against per-output schema authority without unioning
       unrelated collections.
-- [ ] Change-stream execution requires MongoDB 7.0+, supported topology, enabled collection
+- [x] Change-stream execution requires MongoDB 7.0+, supported topology, enabled collection
       post-images, exact `fullDocument: required`, exact document keys, and rejects missing images,
       malformed/unsupported events, invalidation, DDL, and resume-history loss before token advance.
-- [ ] Collection events settle one target; database events route atomically across deterministic
+- [x] Collection events settle one target; database events route atomically across deterministic
       physical targets with one package, receipt, checkpoint, and resume token. A newly matching
       collection or one failed target advances nothing.
-- [ ] Latest bootstrap records a source-issued resume token and excludes prior history; snapshot
+- [x] Latest bootstrap records a source-issued resume token and excludes prior history; snapshot
       bootstrap opens the stream first and completes a bounded, gapless snapshot-to-stream handoff.
-- [ ] Continuous run repeats finite drain epochs, reports liveness/retries/backoff, resumes from the
+- [x] Continuous run repeats finite drain epochs, reports liveness/retries/backoff, resumes from the
       receipt-covered token, and garbage-collects only packages made collectible by durable
       destination settlement/checkpoint/retention authority.
-- [ ] Driver/codec/network errors preserve typed ownership, source provenance, retry metadata, and
+- [x] Driver/codec/network errors preserve typed ownership, source provenance, retry metadata, and
       redaction; no URI credentials, BSON payload, pipeline, or resume token is displayed.
-- [ ] Synthetic, local replica-set, crash/replay, jobs/rechunking, bounded-memory, and
+- [x] Synthetic, local replica-set, crash/replay, jobs/rechunking, bounded-memory, and
       same-semantics throughput certificates pass. Final acceptance includes a production-binary
       sandbox run against the authorized Atlas deployment watching the full admitted database and
       proving real multi-collection fan-out; a synthetic or single-collection run is insufficient.
@@ -214,10 +214,19 @@ retention, and live replica-set/Atlas certification.
   one-run retention, SIGINT woke an idle third epoch and exited at the last committed token, and
   the terminal report aggregated both epochs rather than presenting only the final one.
 
+- 2026-08-09: Final envelope acceptance exposed a logical/physical schema boundary defect:
+  discovered governed authority carries identity-preserving source-name metadata and may carry the
+  framework residual column, while the MongoDB adapter required byte-for-byte equality with the
+  bare four-field physical envelope. Validation now accepts only the exact four envelope fields,
+  their identity source-name metadata, and an optional genuine trailing framework residual field.
+  Runtime materializes the bare discovered physical envelope so normal admission owns the logical
+  residual column. A production plan then resumed from its receipt-covered token and routed two
+  tagged Atlas events into distinct envelope tables.
+
 ## Blockers
 
-None. Continuous live-stop, envelope, replica-set, and remaining operational certificates are open
-implementation work, not unresolved semantics.
+None. Implementation and acceptance evidence are complete; tranche-level independent review is the
+remaining closure gate.
 
 ## Evidence
 
@@ -324,6 +333,38 @@ implementation work, not unresolved semantics.
   `source_collection` routing values and no residual variant evidence. The binary was built with
   the normal optimized release profile; neither source nor any validation command used
   `RUST_MIN_STACK`.
+- Production-profile envelope Atlas certificate: after focused adapter test/check/strict Clippy,
+  `.cdf/atlas-envelope-final2.plan.json` passed portable preflight and resumed the admitted
+  two-collection database watch from its committed token. It committed exactly two tagged events
+  as two routed segments under one package/receipt/checkpoint. Read-only DuckDB inspection found
+  the order only in `atlas_database_cdc__cdf_cdc_acceptance_orders` and the invoice only in
+  `atlas_database_cdc__cdf_cdc_acceptance_invoices`; `source_collection` matched each route and
+  `_cdf_variant` was null. The stored deterministic Canonical Extended JSON preserved the order's
+  Decimal128 as `$numberDecimal`, the invoice's Int64 as `$numberLong`, timestamps as `$date` plus
+  `$numberLong`, and nested document/array structure. This used the normal optimized release
+  binary and the authorized Atlas database.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mongodb
+  envelope_cdc_accepts_the_framework_residual_column --lib --locked` passed, reproducing the
+  discovered logical envelope shape with source-name metadata plus the genuine framework residual
+  field. `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-source-mongodb --all-targets --locked` and
+  strict affected-crate Clippy passed.
+- Local replica-set certificate: the existing MongoDB 8.0.13 `rs0` sandbox source at
+  `localhost:27020` passed discovery, compilation, portable planning, and collection CDC without a
+  resource cursor. One epoch reduced two updates of `_id=1001` to the final post-image and applied
+  the hard delete of `_id=1002`; DuckDB contained only `id=1001`, `status=cdc-local-final`, and
+  `amount=202.2`. Re-running the retained package through `cdf run --package` returned the existing
+  receipt as an idempotent no-op with no second destination load.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project
+  mongo_event_prefix_drain_recovers_receipt_checkpoint_crash_without_source_reopen --lib --locked`
+  passed after bringing its destination fixture onto the finalized atomic CDC boundary. It proves
+  receipt-before-checkpoint recovery commits the exact terminal Mongo token without reopening the
+  source or writing destination effects twice.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-engine
+  package_identity_is_invariant_to_source_batch_rechunking --lib --locked`,
+  `fixed_drain_epoch_packages_are_jobs_invariant`, and the randomized jobs-invariance matrix all
+  passed. The first test's one-batch/many-batch identity assertions remained intact; its serialized
+  golden was refreshed only after tracing the intended compiled-admission evidence added by
+  `daf49326c`.
 
 ## Review
 
@@ -331,4 +372,12 @@ Not started.
 
 ## Retrospective
 
-Pending execution.
+- Live Atlas acceptance found integration defects that adapter-only fixtures could not: logical
+  versus physical envelope metadata, idle-stream shutdown, per-epoch collection cost, and aggregate
+  reporting. Keeping the production binary and destination inspection in the acceptance loop was
+  essential.
+- MongoDB database CDC is safest when discovery inventories ordinary collections deterministically
+  and runtime treats any uncompiled collection as a stop condition. Change-stream traffic is not a
+  schema-discovery sample.
+- Resource cursors and native CDC positions are different authorities. Keeping Mongo resume tokens
+  below the resource grammar avoided forcing cursor semantics onto replace/bounded resources.

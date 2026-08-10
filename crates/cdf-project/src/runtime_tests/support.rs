@@ -1391,6 +1391,29 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         Ok(DestinationCommitPlanningOutcome::new(sheet, plan))
     }
 
+    fn commit_cdc_package(
+        &mut self,
+        inputs: &PackageReplayInputs,
+        _output_schema: &Schema,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        let plan = self.destination.plan_commit(&inputs.destination_commit)?;
+        let mut session = self.destination.begin_with_schema(
+            inputs.destination_commit.clone(),
+            plan,
+            inputs.schema_hash.clone(),
+        )?;
+        session.apply_migrations()?;
+        session.write_segments(segments)?;
+        let receipt = session.finalize()?;
+        let verification = self.destination.verify(&receipt)?;
+        cdf_runtime::DestinationCommitOutcome::new(
+            receipt,
+            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        )
+        .with_commit_verification(verification)
+    }
+
     fn secret_redaction(&self) -> Option<&str> {
         Some("quasar-secret")
     }

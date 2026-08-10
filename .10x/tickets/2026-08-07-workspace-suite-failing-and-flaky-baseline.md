@@ -300,6 +300,16 @@ deleted, and no enforcement was relaxed. **CI is green** (`237583ac`, `9a6e73de`
   a change touches a versioned serialized artifact, compare failure *sets* against a stashed
   baseline rather than reading a red suite and assuming the failures are someone else's.
 
+- 2026-08-09: MongoDB CDC closure reran the rechunking certificate and found its serialized golden
+  stale again after `daf49326c` bound compiled admission programs into stream evidence. The
+  one-batch/many-batch segment, lineage, manifest, and package hashes were still identical, so the
+  invariant held. The intended authority addition was traced in the introducing diff before the
+  golden was updated from `55a44f7a...` to `5a3b6011...`; no behavioral assertion was weakened.
+  The exact Mongo receipt/checkpoint crash test also exposed a stale destination fixture that did
+  not implement the current finalized single-target CDC boundary. The mock now performs the same
+  atomic segment/finalize/verified-receipt sequence, allowing the original crash and no-source-
+  reopen assertions to execute and pass.
+
 ## Blockers
 
 None. Classification can begin immediately and needs no ratification.

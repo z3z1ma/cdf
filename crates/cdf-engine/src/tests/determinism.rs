@@ -288,13 +288,12 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     // format drift is visible. It legitimately changes only when package content authority changes,
     // and every such change must refresh every package-hash golden together.
     //
-    // Last moved by `fe53f2a5 feat: lower cdc batches to canonical keyed effects`, which altered
-    // package content authority and refreshed the sibling golden in
-    // `fixed_fixture_hash_is_deterministic_across_repeated_runs` but missed this one. Bisect
-    // confirmed the test passes at `f5d4d4c2` and fails at `fe53f2a5` on this line alone.
+    // Last moved by `daf49326c feat(cdc): support heterogeneous MongoDB database fanout`, which
+    // binds the compiled admission program into stream evidence. The one/many comparisons above
+    // prove that the intentional authority addition did not weaken rechunking invariance.
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:55a44f7aef1b175399fa1a1fb4493c428fc04dd0ba9fac316e83b50b33438c8d"
+        "sha256:5a3b6011e8d8c4fd62f95d099215062c4616f13235bcb68cde60fdaeeafa7071"
     );
 }
 
