@@ -1086,6 +1086,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "btoi"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b5ab9db53bcda568284df0fd39f6eac24ad6f7ba7ff1168b9e76eba6576b976"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1344,6 +1353,7 @@ dependencies = [
  "cdf-source-glue",
  "cdf-source-iceberg",
  "cdf-source-mongodb",
+ "cdf-source-mysql",
  "cdf-source-postgres",
  "cdf-source-rest",
  "cdf-source-sqlite",
@@ -2179,6 +2189,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-source-mysql"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "base64",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "mysql_async",
+ "serde",
+ "serde_json",
+ "sqlparser",
+ "url",
+]
+
+[[package]]
 name = "cdf-source-postgres"
 version = "0.2.0-alpha.1"
 dependencies = [
@@ -2843,6 +2873,15 @@ name = "crossbeam-epoch"
 version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "803d13fb3b09d88be9f4dbc29062c66b19bf7170867ceb746d2a8689bf6c7a26"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -4886,6 +4925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyed_priority_queue"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ee7893dab2e44ae5f9d0173f26ff4aa327c10b01b06a72b52dd9405b628640d"
+dependencies = [
+ "indexmap 2.14.0",
+]
+
+[[package]]
 name = "lexical-core"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5060,6 +5108,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "lru"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5143,6 +5200,29 @@ name = "macro_rules_attribute-proc_macro"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
+
+[[package]]
+name = "manyhow"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b33efb3ca6d3b07393750d4030418d594ab1139cee518f0dc88db70fec873587"
+dependencies = [
+ "manyhow-macros",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "manyhow-macros"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46fce34d199b78b6e6073abf984c9cf5fd3e9330145a93ee0738a7443e371495"
+dependencies = [
+ "proc-macro-utils",
+ "proc-macro2",
+ "quote",
+]
 
 [[package]]
 name = "maybe-owned"
@@ -5270,7 +5350,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_with",
- "sha1",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "socket2",
  "stringprep",
@@ -5302,6 +5382,81 @@ name = "murmur3"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
+
+[[package]]
+name = "mysql-common-derive"
+version = "0.32.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4db8a44120571277accfaa3f3d91e7d3989d601d817c2fc01a9391b86135666"
+dependencies = [
+ "darling 0.23.0",
+ "heck",
+ "manyhow",
+ "num-bigint",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "termcolor",
+ "thiserror",
+]
+
+[[package]]
+name = "mysql_async"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3519e91b0d254ac1ffa495bc42053286cb2172ad7241d5b3b1b9f8a891f21ee2"
+dependencies = [
+ "bytes",
+ "crossbeam-queue",
+ "crossbeam-utils",
+ "flate2",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "keyed_priority_queue",
+ "lru",
+ "mysql_common",
+ "percent-encoding",
+ "rand 0.10.2",
+ "rustls",
+ "serde",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "twox-hash",
+ "url",
+ "webpki-roots",
+]
+
+[[package]]
+name = "mysql_common"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f27695f286b461da077b8c2f72f47feaa04ce3c3f9c0976257410e90e21208a"
+dependencies = [
+ "base64",
+ "bitflags",
+ "btoi",
+ "byteorder",
+ "bytes",
+ "crc32fast",
+ "flate2",
+ "getrandom 0.3.4",
+ "mysql-common-derive",
+ "num-bigint",
+ "num-traits",
+ "regex",
+ "saturating",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "thiserror",
+ "uuid",
+]
 
 [[package]]
 name = "ndk-context"
@@ -5883,6 +6038,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
  "toml_edit",
+]
+
+[[package]]
+name = "proc-macro-utils"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeaf08a13de400bc215877b5bdc088f241b12eb42f0a548d3390dc1c56bb7071"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "smallvec",
 ]
 
 [[package]]
@@ -6701,6 +6867,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "saturating"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ece8e78b2f38ec51c51f5d475df0a7187ba5111b2a28bdc761ee05b075d40a71"
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6941,6 +7113,17 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -7291,6 +7474,15 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]

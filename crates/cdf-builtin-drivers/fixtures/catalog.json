@@ -22,8 +22,13 @@
     },
     {
       "id": "mongodb",
-      "descriptor_sha256": "sha256:f24dcb8fe5f2435aaea25aed4d37b590f3f02f671e77bcc682b3417e8ffb41dd",
-      "option_schema_sha256": "sha256:224c484429eb18146f5e86674c7b37ffbf3895e56d6fffecd32ebd53712c6e69"
+      "descriptor_sha256": "sha256:7ea5c735419303eb73734870832e044ebe99546fc609e43bf6737e2fad2b6aa4",
+      "option_schema_sha256": "sha256:3b181e522ef8b347b958d0619c3c62197d56baaa8dc0eae22c4d69c4ffcbbdea"
+    },
+    {
+      "id": "mysql",
+      "descriptor_sha256": "sha256:996795c8002138e14617b7143c6fa01feafc880097a59f9ccc4f0142e248c0b8",
+      "option_schema_sha256": "sha256:be6d8d3fd894a2e8da264f3d0187039bab5ca1e4884da2507f120f087e3b702e"
     },
     {
       "id": "postgres",
@@ -78,27 +83,27 @@
     {
       "id": "clickhouse",
       "schemes": ["clickhouse", "clickhouses"],
-      "inspection_sha256": "sha256:b3cbf67e3ef5ba89ee222b0349680438e70381646bb1199e73b0b290ab5b9a63"
+      "inspection_sha256": "sha256:8049f8846348dcaf635bc5b8da32046fd205c580c438379fd7daa71e25696686"
     },
     {
       "id": "duckdb",
       "schemes": ["duckdb"],
-      "inspection_sha256": "sha256:b7b8d5bc8eec1fadfcd689b270b627a92b03693ad400e3e3e0924995bd6f0642"
+      "inspection_sha256": "sha256:05181e0785d00e302619c9c924b02b8cb68d0a7fc0639cedaa31879c6222ae83"
     },
     {
       "id": "parquet_object_store",
       "schemes": ["parquet"],
-      "inspection_sha256": "sha256:ee6c2224ef6c8f682ea4a439af4ea9fbc0aeb766dc284e320051066da1b02d8d"
+      "inspection_sha256": "sha256:91ee8ede73c24331e554f52d1a75fa7269ee8211f95b3bdeacfe0c19985e7155"
     },
     {
       "id": "postgres",
       "schemes": ["postgres", "postgresql"],
-      "inspection_sha256": "sha256:15f29fc349f4f582bf02443299579d928422eb182987b0db8449ce6daa9926e0"
+      "inspection_sha256": "sha256:28fda05f7af97e09bd810305953e1d40b7e5b12041a9ba9a8a92aa596e778452"
     },
     {
       "id": "sqlite",
       "schemes": ["sqlite"],
-      "inspection_sha256": "sha256:a95efa41bcb89a1b36ca35350d01835bb4a8cb52e9b5bd9231b778432222ce9c"
+      "inspection_sha256": "sha256:35bdfa0ad8391eee647b51fe24cec2427be04c2bb057fc83d8af8a7fa73aa0e2"
     }
   ]
 }

@@ -33,6 +33,7 @@ members = [
     "crates/cdf-transform-snappy",
     "crates/cdf-postgres",
     "crates/cdf-source-postgres",
+    "crates/cdf-source-mysql",
     "crates/cdf-source-sqlite",
     "crates/cdf-source-clickhouse",
     "crates/cdf-source-mongodb",

@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-08-08
 Updated: 2026-08-09
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -60,6 +60,21 @@ statements, or credential literals.
 - 2026-08-09: The user ratified source defaults plus explicit resource overrides for operational
   controls. The MySQL implementation MUST ship that precedence from its first version; no
   resource-only intermediate surface or compatibility path is allowed.
+- 2026-08-09: Execution started from the accepted native-query contract. Selected
+  `mysql_async` 0.37's prepared binary result stream as the production transport: it streams rows
+  without materializing the result and keeps transport backpressure in the async client. Cursor
+  authoring remains conditional runtime intent; bounded/replace resources do not require one.
+- 2026-08-09: Implemented the finite MySQL driver, configured-source catalog discovery, `cdf add`,
+  exact prepared metadata, binary streaming decode, read-only consistent snapshots, bounded Arrow
+  batches, portable attestation, and catalog enrollment. A live replace rerun exposed that prepared
+  schema generation had been mistaken for cursor resume authority. Corrected the seam: generation
+  attests a portable/full scan, a replace rerun clears its start position, and only a descriptor
+  with an authored cursor binds a cursor predicate.
+- 2026-08-09: Release E2E against MySQL 8.4.11 covered a 14-domain type sheet, a CTE/window/JSON
+  native query, a 250,000-row full scan, configured-source discovery, portable plans, incremental
+  cursor advancement, package replay, DuckDB receipts/checkpoints, and query/credential redaction.
+  The full CDF pipeline loaded 250,000 mixed rows (11 MiB) in 1.0--1.2 seconds; the cursor rerun
+  loaded exactly the one newly inserted row. No stack-size override was used.
 
 ## Blockers
 
@@ -67,7 +82,22 @@ None.
 
 ## Evidence
 
-Pending.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-source-mysql --lib`: 8 passed, covering strict query
+  classification, option bounds/precedence, identifiers, metadata type mapping, redacted compile,
+  and cursor-optional `cdf add`.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo clippy -p cdf-source-mysql --all-targets -- -D warnings` and
+  `DUCKDB_DOWNLOAD_LIB=1 cargo check -p cdf-cli --bin cdf`: passed.
+- `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-builtin-drivers
+  tests::catalog_matches_the_data_driven_first_party_fixture -- --exact`: passed.
+- Release `cdf discover source mysql_native --progress never`: complete `mysql_relation` catalog;
+  both live tables carried exact prepared schemas (6 and 14 fields).
+- Release bounded runs: exact decimal, UTF-8, binary, bit, JSON, negative/max TIME, enum/set, and
+  spatial values survived source-to-DuckDB; a second replace run re-read two rows without a cursor.
+- Release cursor run: initial append committed 250,000 rows, then a newly inserted `id=250001`
+  produced exactly one row and advanced the cursor checkpoint. Replaying that retained package was
+  an existing-receipt no-op.
+- Remaining closure evidence: same-client `bench-max` roofline, final focused cancellation/error
+  certificates, and independent review.
 
 ## Review
 

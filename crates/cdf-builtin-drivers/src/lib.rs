@@ -22,6 +22,7 @@ use cdf_source_iceberg::{
     AwsIcebergGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver,
 };
 use cdf_source_mongodb::MongoDbSourceDriver;
+use cdf_source_mysql::MySqlSourceDriver;
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use cdf_source_sqlite::SqliteSourceDriver;
@@ -220,6 +221,7 @@ fn build_source_registry(
     let mut registry = SourceRegistry::new();
     registry.register(ClickHouseSourceDriver::new()?)?;
     registry.register(MongoDbSourceDriver::new()?)?;
+    registry.register(MySqlSourceDriver::new()?)?;
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
     registry.register(SqliteSourceDriver::new()?)?;
