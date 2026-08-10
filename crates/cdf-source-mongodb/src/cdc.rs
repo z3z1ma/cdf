@@ -1548,8 +1548,12 @@ fn envelope_upsert_batch(
         document
             .ok_or_else(|| CdfError::data("MongoDB CDC event omitted required fullDocument"))?,
     )?;
+    let physical_schema = resource
+        .physical_schema
+        .as_ref()
+        .unwrap_or(&resource.schema);
     RecordBatch::try_new(
-        Arc::clone(&resource.schema),
+        Arc::clone(physical_schema),
         vec![
             Arc::new(StringArray::from(vec![resource.database.as_str()])) as ArrayRef,
             Arc::new(StringArray::from(vec![collection])) as ArrayRef,

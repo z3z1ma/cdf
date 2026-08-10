@@ -2277,9 +2277,21 @@ pub(crate) fn mongodb_change_stream_scope(
 
 fn validate_envelope_schema(schema: &arrow_schema::Schema) -> Result<()> {
     let expected = mongodb_envelope_schema();
-    if schema != expected.as_ref() {
+    let envelope_fields = schema
+        .fields()
+        .iter()
+        .take(expected.fields().len())
+        .cloned()
+        .collect::<Vec<_>>();
+    let envelope =
+        arrow_schema::Schema::new_with_metadata(envelope_fields, schema.metadata().clone());
+    let field_count = schema.fields().len();
+    let valid_variant = field_count == expected.fields().len()
+        || (field_count == expected.fields().len() + 1
+            && cdf_contract::is_framework_variant_field(schema.field(field_count - 1)));
+    if envelope != *expected || !valid_variant {
         return Err(CdfError::contract(
-            "MongoDB envelope CDC schema must contain non-null UTF-8 source_database, source_collection, document_key, and document fields in that order",
+            "MongoDB envelope CDC schema must contain non-null UTF-8 source_database, source_collection, document_key, and document fields in that order, with only the optional framework residual column",
         ));
     }
     Ok(())

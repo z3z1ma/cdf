@@ -1,15 +1,23 @@
-use std::{collections::BTreeMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+    sync::Arc,
+};
 
 use arrow_array::{
     Array, Decimal128Array, FixedSizeBinaryArray, Int64Array, ListArray, StringArray, StructArray,
     TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use cdf_contract::{
+    CDF_VARIANT_SEMANTIC, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
+    VARIANT_COLUMN_NAME,
+};
 use cdf_kernel::{
     CompiledScanIntent, CursorPosition, CursorSpec, CursorValue, PartitionId, PartitionPlan,
-    PartitionRetrySafety, ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey,
-    SourcePosition, TrustLevel, WriteDisposition, physical_type, with_physical_type, with_semantic,
-    with_source_name,
+    PartitionRetrySafety, ResourceDescriptor, ResourceId, SEMANTIC_METADATA_KEY, SchemaHash,
+    SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition, physical_type,
+    with_physical_type, with_semantic, with_source_name,
 };
 use cdf_runtime::{SourceAddRequest, SourceCompileRequest, SourceDriver, SourceExecutorClass};
 use mongodb::bson::{
@@ -157,6 +165,66 @@ fn cdc_compilation_uses_native_resume_tokens_without_requiring_a_cursor() {
     );
     assert_eq!(plan.redacted_options["change_pipeline_stages"], 1);
     assert!(plan.redacted_options.get("change_pipeline").is_none());
+}
+
+#[test]
+fn envelope_cdc_accepts_the_framework_residual_column() {
+    let driver = MongoDbSourceDriver::new().unwrap();
+    let variant =
+        Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true).with_metadata(HashMap::from([
+            (
+                SEMANTIC_METADATA_KEY.to_owned(),
+                CDF_VARIANT_SEMANTIC.to_owned(),
+            ),
+            (
+                RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                RESIDUAL_ENCODING_NAME.to_owned(),
+            ),
+        ]));
+    let schema = Schema::new(vec![
+        Field::new("source_database", DataType::Utf8, false),
+        Field::new("source_collection", DataType::Utf8, false),
+        Field::new("document_key", DataType::Utf8, false),
+        Field::new("document", DataType::Utf8, false),
+        variant,
+    ]);
+    let plan = driver
+        .compile(SourceCompileRequest {
+            source_kind: "mongodb".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "warehouse".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
+            source_options: BTreeMap::from([
+                (
+                    "endpoint".to_owned(),
+                    serde_json::json!("mongodb://warehouse.example:27017"),
+                ),
+                ("database".to_owned(), serde_json::json!("analytics")),
+            ]),
+            resource_options: BTreeMap::from([
+                ("mode".to_owned(), serde_json::json!("cdc")),
+                ("watch".to_owned(), serde_json::json!("database")),
+                ("representation".to_owned(), serde_json::json!("envelope")),
+                ("bootstrap".to_owned(), serde_json::json!("latest")),
+                (
+                    "include_collections".to_owned(),
+                    serde_json::json!(["orders"]),
+                ),
+            ]),
+            descriptor: cdc_descriptor(false, "document_key"),
+            schema,
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(plan.schema.fields().len(), 5);
+    assert!(cdf_contract::is_framework_variant_field(
+        plan.schema.field(4)
+    ));
 }
 
 #[test]
