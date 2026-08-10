@@ -12,6 +12,7 @@ mod interop;
 mod lab;
 mod matrix;
 mod mongodb_source_roofline;
+mod mysql_source_roofline;
 mod package_shape;
 mod postgres_source_roofline;
 mod profiling;
@@ -80,6 +81,7 @@ pub use matrix::{
     cases_for, coverage_matrix,
 };
 pub use mongodb_source_roofline::{MongoDbSourceRooflineReport, run_mongodb_source_roofline};
+pub use mysql_source_roofline::{MySqlSourceRooflineReport, run_mysql_source_roofline};
 pub use package_shape::{
     PackageReadSummary, PackageShapeSummary, read_package_batches, summarize_package_shape,
 };
