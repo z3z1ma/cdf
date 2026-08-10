@@ -633,8 +633,8 @@ fn execution_capabilities(query_input: bool) -> SourceExecutionCapabilities {
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
         maximum_emitted_batch_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
-        maximum_concurrency: 4,
-        useful_concurrency: 4,
+        maximum_concurrency: 1,
+        useful_concurrency: 1,
         executor_class: SourceExecutorClass::BlockingLane,
         blocking_lane: Some(postgres_source_blocking_lane()),
         pausable: true,
@@ -727,6 +727,8 @@ mod tests {
             plan.execution_capabilities.executor_class,
             SourceExecutorClass::BlockingLane
         );
+        assert_eq!(plan.execution_capabilities.maximum_concurrency, 1);
+        assert_eq!(plan.execution_capabilities.useful_concurrency, 1);
         assert_eq!(
             plan.execution_capabilities
                 .blocking_lane

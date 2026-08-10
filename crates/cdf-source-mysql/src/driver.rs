@@ -442,8 +442,8 @@ fn execution_capabilities(query_input: bool) -> SourceExecutionCapabilities {
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: MYSQL_MAXIMUM_BATCH_BYTES,
         maximum_emitted_batch_bytes: MYSQL_MAXIMUM_BATCH_BYTES,
-        maximum_concurrency: 4,
-        useful_concurrency: 4,
+        maximum_concurrency: 1,
+        useful_concurrency: 1,
         executor_class: SourceExecutorClass::Io,
         blocking_lane: None,
         pausable: true,
@@ -542,6 +542,8 @@ mod tests {
             plan.resource_capabilities.incremental,
             cdf_kernel::IncrementalShape::Full
         );
+        assert_eq!(plan.execution_capabilities.maximum_concurrency, 1);
+        assert_eq!(plan.execution_capabilities.useful_concurrency, 1);
         let encoded = serde_json::to_string(&plan).unwrap();
         assert!(encoded.contains("secret://env/MYSQL_URL"));
         assert!(!encoded.contains("password"));
